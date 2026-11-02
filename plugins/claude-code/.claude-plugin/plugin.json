@@ -3,7 +3,7 @@
   "version": "0.2.0",
   "description": "Record Claude Code delegated agent work as attributed Kata child issues.",
   "author": {
-    "name": "salmonumbrella"
+    "name": "Dangerboi"
   },
   "license": "MIT",
   "types": "./types/index.d.ts",

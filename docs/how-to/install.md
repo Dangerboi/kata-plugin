@@ -44,7 +44,7 @@ omp --no-extensions -e /path/to/kata-plugin/plugins/oh-my-pi/kata.ts
 pi install /path/to/kata-plugin/plugins/pi
 ```
 
-The root manifest supports `pi install git:github.com/salmonumbrella/kata-plugin`. Pi 1.0.2 cannot select a repository subdirectory through a Git URL; appending `/plugins/pi` changes the clone URL. Use the root shim or a local plugin directory.
+The root manifest supports `pi install git:github.com/Dangerboi/kata-plugin`. Pi 1.0.2 cannot select a repository subdirectory through a Git URL; appending `/plugins/pi` changes the clone URL. Use the root shim or a local plugin directory.
 
 For one run: `pi --no-extensions -e /path/to/kata-plugin/plugins/pi/kata.ts`. Remove any other todo extension first. Keep each plugin directory intact: its adjacent `kata-core.ts` is required. Do not overwrite the native adapter at the user extension path `kata.ts`.
 
