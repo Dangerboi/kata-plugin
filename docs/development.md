@@ -28,6 +28,23 @@ Kata failures are read from Kata's `--json` error envelope and exit code, never 
 
 For live smoke tests, use a fresh Git folder and throwaway store as in the [tutorial](tutorials/first-session.md). Point `KATA_OMP_EXECUTABLE` or `KATA_PI_EXECUTABLE` at the guarded binary before launch. Inspect actual issues and close events; stop the test daemon and close any terminal panes you created. Keep transcripts and temporary reports outside the repository.
 
+## Smoke test against a real omp
+
+`bun run smoke:omp` loads `plugins/oh-my-pi/kata.ts` into a real, headless `omp -p` and checks the result in a real Kata daemon. Run it after each omp release and move the tested version in the README and install guide once it passes. It needs `omp` and `kata` on `PATH` and no credentials: a smoke-only extension (`scripts/smoke-omp-provider.ts`) registers a scripted model provider through `pi.registerProvider`, so the model calls are fixed. Each run uses a fresh Git folder, `KATA_HOME` and `PI_CODING_AGENT_DIR` set on the omp and Kata child processes only (your `~/.omp` and Kata store are never touched), and stops its Kata daemon at the end, pass or fail. It prints one `PASS`/`FAIL` line per check and exits non-zero on any failure.
+
+The default scenario checks that `todo init` creates the automatic parent and its plan tasks, that a `task` delegation binds to its plan task (the delegate carries `omp.subagent_id`, which proves omp's undocumented `task:subagent:lifecycle` payload still works), that `todo done` closes with the given evidence, and that session shutdown closes the automatic parent.
+
+```sh
+bun run smoke:omp                       # every scenario, scripted model
+bun run smoke:omp --scenario default    # one scenario
+bun run smoke:omp --verbose             # also print omp's JSON event stream
+bun run smoke:omp --live                # same checks with your configured model
+```
+
+Scenarios are data in `scripts/smoke-omp-scenarios.ts`: scripted turns per agent (a turn may be a function of the conversation so far) plus assertions over the store. Add one by appending an entry to `SCENARIOS`; the driver and provider need no changes.
+
+`--live` has the real model do the work from a plain-language prompt, so it needs your omp login. The driver copies `config.yml`, `agent.db` and `agent.db-wal` from `$PI_CODING_AGENT_DIR` (default `~/.omp/agent`) into the throwaway agent directory, reading the originals and never writing them. Live runs spend tokens and can fail on model behaviour rather than plugin behaviour.
+
 ## Releases
 
 Installs come from the marketplace (`kata@kata-plugin`) and Git; nothing is published to npm.
