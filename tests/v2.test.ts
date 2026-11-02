@@ -1179,6 +1179,60 @@ test("a ticket with open children stays open when its last item is done, with a 
   expect(await closesOf(umbrella)).toHaveLength(0);
 });
 
+const blockingComments = async (ref: string) => (await commentsOf(ref)).filter(c => /open child|open children/.test(c));
+const closeCalls = (app: { calls: string[][] }, ref: string) => app.calls.filter(c => c[0] === "close" && c[1].endsWith(`#${ref}`));
+
+test("a claimed ticket named by an item closes once its plan children close, with the ticket item's evidence", async () => {
+  const app = host(); await app.event("session_start");
+  const ticket = await issue("Claimed ticket"); await kata(["claim", ticket, "--json"]);
+  await app.event("tool_result", { toolName: "bash", input: { command: `kata claim v2test#${ticket}` }, isError: false, details: { exitCode: 0 } });
+  const init = await app.call({ op: "init", items: [`v2test#${ticket}: write the greeting`, "Add the ignore file"] });
+  expect(init.isError, init.content[0].text).toBeUndefined();
+  expect(init.details.kata.parent).toBe(`v2test#${ticket}`);
+  await app.call({ op: "done", task: `v2test#${ticket}: write the greeting`, message, evidence: ["test:ticket item evidence"] });
+  expect((await show(ticket)).issue.status).toBe("open");
+  expect(await blockingComments(ticket)).toHaveLength(1);
+  expect((await blockingComments(ticket))[0]).toMatch(/closes once that child is closed/);
+  const last = await app.call({ op: "done", task: "Add the ignore file", message, evidence });
+  expect(last.isError, last.content[0].text).toBeUndefined();
+  const closed = await show(ticket);
+  expect(closed.issue.status).toBe("closed");
+  expect(await closesOf(ticket)).toHaveLength(1);
+  expect(JSON.stringify(closed)).toContain("test:ticket item evidence");
+  expect(await blockingComments(ticket)).toHaveLength(1);
+});
+
+test("an umbrella ticket whose open child is outside the plan stays open without repeated close attempts or comments", async () => {
+  const app = host(); await app.event("session_start");
+  const umbrella = await issue("Umbrella"), other = await issue("Other ticket");
+  await kata(["create", "Outside child", "--parent", umbrella, "--force-new", "--json"]);
+  await app.call({ op: "init", items: [`v2test#${umbrella}: finish the umbrella`, `v2test#${other}: unrelated step`] });
+  await app.call({ op: "done", task: `v2test#${umbrella}: finish the umbrella`, message, evidence });
+  await app.call({ op: "done", task: `v2test#${other}: unrelated step`, message, evidence });
+  await app.call({ op: "view" });
+  await app.event("session_shutdown");
+  expect((await show(umbrella)).issue.status).toBe("open");
+  expect((await show(other)).issue.status).toBe("closed");
+  expect(await blockingComments(umbrella)).toHaveLength(1);
+  expect(closeCalls(app, umbrella)).toHaveLength(1);
+});
+
+test("a pending ticket close survives resume and closes once the children close", async () => {
+  const first = host(); await first.event("session_start");
+  const ticket = await issue("Resumed ticket"); await kata(["claim", ticket, "--json"]);
+  await first.event("tool_result", { toolName: "bash", input: { command: `kata claim v2test#${ticket}` }, isError: false, details: { exitCode: 0 } });
+  await first.call({ op: "init", items: [`v2test#${ticket}: ship it`, "Plain step"] });
+  await first.call({ op: "done", task: `v2test#${ticket}: ship it`, message, evidence: ["test:survives resume"] });
+  const resumed = host({ sid: first.sid, entries: first.entries }); await resumed.event("session_start");
+  const child = (await show(ticket)).children[0].short_id;
+  await kata(["close", child, "--done", "--message", message, "--test", "closed outside", "--json"]);
+  await resumed.event("session_shutdown");
+  const closed = await show(ticket);
+  expect(closed.issue.status).toBe("closed");
+  expect(JSON.stringify(closed)).toContain("test:survives resume");
+  expect(await blockingComments(ticket)).toHaveLength(1);
+});
+
 test("a done replayed after the close failed leaves one comment and closes once", async () => {
   let outage = true;
   const app = host({ before: (args: string[]) => args[0] === "close" && outage ? down() : undefined }); await app.event("session_start");

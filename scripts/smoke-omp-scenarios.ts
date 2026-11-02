@@ -221,4 +221,36 @@ export const SCENARIOS: Scenario[] = [{
 			{ name: "a delegate bound the ticket its item names and closed it", ok: !!gamma?.metadata["omp.subagent_id"] && gamma.status === "closed" && !issues.some(i => i.title.startsWith("Subagent")), detail: `${gamma?.status} ${JSON.stringify(gamma?.metadata)}` },
 		];
 	},
+}, {
+	name: "claimed",
+	prompt: `${MAIN} Claim the ticket, plan it through the todo tool, then stop.`,
+	livePrompt: ({ t }) => [
+		`Kata ticket omp-smoke#${t} already exists. Change no files. As Kata's contract says, claim it first with bash (kata claim omp-smoke#${t}), then use the todo tool in this order:`,
+		`1. init a plan with the items 'omp-smoke#${t}: write the greeting' and 'Add the ignore file'.`,
+		`2. Mark 'omp-smoke#${t}: write the greeting' done with evidence test:bun smoke scenario ticket item and a 40+ character message.`,
+		`3. Mark 'Add the ignore file' done with evidence ${evidence} and a 40+ character message. Do not close the ticket yourself.`,
+	].join("\n"),
+	setup: create => ({ t: create("Ticket claimed first") }),
+	scripts: {
+		[MAIN]: [
+			() => [{ tool: "bash", args: { command: `kata claim omp-smoke#${vars().t}` } }],
+			() => [{ tool: "todo", args: { op: "init", items: [`omp-smoke#${vars().t}: write the greeting`, "Add the ignore file"] } }],
+			() => [{ tool: "todo", args: { op: "done", task: `omp-smoke#${vars().t}: write the greeting`, message, evidence: ["test:bun smoke scenario ticket item"] } }],
+			[{ tool: "todo", args: { op: "done", task: "Add the ignore file", message, evidence: [evidence] } }],
+			["The ticket is worked."],
+			["Nothing else to do."],
+			["Nothing else to do."],
+		],
+	},
+	async check(store, { t }) {
+		const issues = await store.issues();
+		const ticket = issues.find(i => i.ref === t);
+		const closed = ticket?.events.filter(e => e.type === "issue.closed") ?? [];
+		const blocking = ticket?.events.filter(e => /comment/.test(e.type) && /open child/.test(JSON.stringify(e.payload))) ?? [];
+		return [
+			{ name: "the claimed ticket is the plan parent: the plain item is its child", ok: issues.some(i => i.title === "Add the ignore file" && i.status === "closed"), detail: issues.map(i => `${i.title}:${i.status}`).join(", ") },
+			{ name: "the ticket closes once its plan children close, with the ticket item's evidence", ok: ticket?.status === "closed" && closed.length === 1 && JSON.stringify(closed[0].payload.evidence) === JSON.stringify([{ type: "test", command: "bun smoke scenario ticket item" }]), detail: `${ticket?.status} ${JSON.stringify(closed)}` },
+			{ name: "the refused close left exactly one blocking comment", ok: blocking.length === 1, detail: `${blocking.length} comments` },
+		];
+	},
 }];

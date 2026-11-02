@@ -594,6 +594,25 @@ test("pi items that name a ticket work and log on it without creating an issue o
   expect((await kata(["list", "--status", "all", "--limit", "0", "--json"])).issues).toHaveLength(before);
 });
 
+test("pi closes a claimed ticket named by an item once its plan children close", async () => {
+  const app = await host(); await app.event("session_start", { reason: "startup" });
+  const ticket = (await kata(["create", "Claimed pi ticket", "--force-new", "--json"])).issue.short_id;
+  await kata(["claim", ticket, "--json"]);
+  await app.event("tool_result", { toolName: "bash", input: { command: `kata claim pitest#${ticket}` }, isError: false, details: {} });
+  const started = await app.call({ op: "init", items: [`pitest#${ticket}: write the greeting`, "Add the ignore file"] });
+  expect(started.isError, started.content[0].text).toBeUndefined();
+  expect(started.details.kata.parent).toBe(`pitest#${ticket}`);
+  await app.call({ op: "done", task: `pitest#${ticket}: write the greeting`, message, evidence: ["test:pi ticket item"] });
+  expect((await show(ticket)).issue.status).toBe("open");
+  expect((await app.call({ op: "done", task: "Add the ignore file", message, evidence })).isError).toBeUndefined();
+  const closed = await show(ticket);
+  expect(closed.issue.status).toBe("closed");
+  expect(closed.comments.filter((c: any) => /open child/.test(c.body))).toHaveLength(1);
+  const rows = (await kata(["audit", "closes", "--json"])).rows.filter((r: any) => r.issue === ticket);
+  expect(rows).toHaveLength(1);
+  expect((await kata(["events", "--after", String(rows[0].event_id - 1), "--limit", "1", "--json"])).events[0].payload.evidence).toEqual([{ type: "test", command: "pi ticket item" }]);
+});
+
 test("pi init without replace goes through when the new list keeps every open task", async () => {
   const app = await host(); const parent = await app.init(["Open pi task"]);
   const result = await app.call({ op: "init", items: ["Open pi task", "Added pi task"] });

@@ -427,6 +427,8 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 	const autoParents = new Map<string, Binding>();
 	let registered: { id?: string; names: Promise<Set<string>> } | undefined;
 	const retries = new Map<string, { task: Task; to: Status; change: Change; cwd: string; at: number }>();
+	// A named ticket whose close Kata refused for open children: retried once they close.
+	const pendingCloses = new Map<string, { key: string; message: string; evidence: string[]; cwd: string }>();
 	let retryTimer: ReturnType<typeof setTimeout> | undefined;
 	let retryTimerCtx: any;
 	let lastSnapshot: string | undefined;
@@ -442,6 +444,7 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 		if (!currentId || !main(currentCtx)) return;
 		const data = { version: 1, sessionId: currentId,
 			plan: structuredClone({ ...plan, tasks: plan.tasks.filter(t => !t.ticket) }), autoParents: [...autoParents.values()], retries: [...retries.entries()],
+			...(pendingCloses.size ? { pendingCloses: [...pendingCloses.entries()] } : {}),
 			...(named.length ? { named: structuredClone(named) } : {}) };
 		const encoded = JSON.stringify(data);
 		if (encoded === lastSnapshot) return;
@@ -752,7 +755,7 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 		currentCtx = ctx;
 		plan = { tasks: [] }; named = [];
 		scope = "unknown"; refusal = ""; outage = "";
-		retries.clear(); autoParents.clear();
+		retries.clear(); autoParents.clear(); pendingCloses.clear();
 		clearRetryTimer();
 		const branch: any[] = ctx.sessionManager?.getBranch?.() ?? [];
 		const snapshotOf = (owner: unknown) => [...branch].reverse().find((entry: any) => entry?.type === "custom" && entry.customType === SNAPSHOT_ENTRY && entry.data?.version === 1 && entry.data.sessionId === owner)?.data;
@@ -771,6 +774,7 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 			if (!source) {
 				for (const binding of snapshot.autoParents ?? []) autoParents.set(binding.parent, binding);
 				for (const [ref, pending] of snapshot.retries ?? []) retries.set(ref, pending);
+				for (const [ticket, pending] of snapshot.pendingCloses ?? []) pendingCloses.set(ticket, pending);
 				if (retries.size) scheduleRetry();
 				if (snapshot.plan?.local && !explicit) plan = structuredClone(snapshot.plan);
 			}
@@ -1024,20 +1028,38 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 	}
 
 	// The last item of a ticket is done: close it with that item's evidence. Kata
-	// refuses a ticket with open children; that stays open and says why.
+	// refuses a ticket with open children; it stays open, says why once, and the
+	// close is retried (see closePending) when the children close.
 	async function closeTicket(task: Task, decision: any, change: Change, cwd: string) {
 		const ticket = task.ticket!;
-		const args = ["close", ticket, "--done", "--if-match", String(decision.revision), "--idempotency-key", noteKey(task, "close"), "--message", `${change.message} (item: ${task.content}; ${ticket})`];
-		for (const e of change.evidence!) args.push("--evidence", e);
-		try { await kata(args, cwd); }
+		const pending = { key: noteKey(task, "close"), message: `${change.message} (item: ${task.content}; ${ticket})`, evidence: change.evidence!, cwd };
+		try { await closeWith(ticket, decision, pending); }
 		catch (error) {
 			if (!isKataCode(error, "parent_has_open_children")) throw error;
-			const open = ((JSON.parse(await kata(["show", ticket, "--json"], cwd)).children ?? []) as any[]).filter(c => c.status !== "closed").length;
-			await note(task, "blocked", `Every todo item for ${ticket} is done, but ${open} open ${open === 1 ? "child blocks" : "children block"} closing it, so it stays open. Close ${open === 1 ? "it" : "them"} first.`, cwd);
-			return;
+			const open = openChildren(JSON.parse(await kata(["show", ticket, "--json"], cwd)));
+			pendingCloses.set(ticket, { ...pending, key: noteKey(task, "close-after-children") });
+			await note(task, "blocked", `Every todo item for ${ticket} is done, but ${open} open ${open === 1 ? "child blocks" : "children block"} closing it, so it stays open. It closes once ${open === 1 ? "that child is" : "those children are"} closed; the plugin retries when ${open === 1 ? "it closes" : "they close"} during this session.`, cwd);
 		}
+	}
+	const openChildren = (view: any) => ((view.children ?? []) as any[]).filter(c => c.status !== "closed").length;
+	async function closeWith(ticket: string, decision: any, pending: { key: string; message: string; evidence: string[]; cwd: string }) {
+		const args = ["close", ticket, "--done", "--if-match", String(decision.revision), "--idempotency-key", pending.key, "--message", pending.message];
+		for (const e of pending.evidence) args.push("--evidence", e);
+		await kata(args, pending.cwd);
 		if (decision.metadata?.["todo.status"] !== undefined) {
-			await owned(ticket, cwd, "check", true).then(closed => work(ticket, "todo.status", "completed", cwd, closed)).catch(debug);
+			await owned(ticket, pending.cwd, "check", true).then(closed => work(ticket, "todo.status", "completed", pending.cwd, closed)).catch(debug);
+		}
+	}
+	// Retry the closes Kata refused for open children. Silent unless it closes the ticket.
+	async function closePending() {
+		for (const [ticket, pending] of pendingCloses) {
+			try {
+				const view = JSON.parse(await kata(["show", ticket, "--json"], pending.cwd));
+				if (view.issue.status !== "open" || named.some(t => t.ticket === ticket && OPEN.has(t.status))) { pendingCloses.delete(ticket); continue; }
+				if (openChildren(view)) continue;
+				await closeWith(ticket, await owned(ticket, pending.cwd, "check"), pending);
+				pendingCloses.delete(ticket);
+			} catch (error) { debug(error); }
 		}
 	}
 
@@ -1237,6 +1259,7 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 	const delegatedRunning = () => host.delegatedRunning?.() ?? false;
 	async function reconcile() {
 		await host.beforeReconcile?.();
+		await closePending();
 		for (const binding of autoParents.values()) {
 			const { parent, workspace } = binding;
 			let decision: any;
