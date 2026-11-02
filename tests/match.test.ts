@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { itemTicket, matchDelegation, namedTargets, namedTasks, QUALIFIED_REF, qualifiedRefs, taskTokens, type Status, type Task } from "../core/kata-core";
+import { itemTicket, matchDelegation, namedTargets, namedTasks, qualifiedRefs, taskTokens, type Status, type Task } from "../core/kata-core";
 
 const task = (ref: string, content: string, status: Status = "pending", extra: Partial<Task> = {}): Task => ({ ref, content, phase: "Tasks", status, ...extra });
 const pick = (tasks: Task[], text: string, unavailable: string[] = [], single = true) => matchDelegation(tasks, text, { unavailable: new Set(unavailable), single })?.ref;
@@ -79,11 +79,10 @@ test("only a project name with a valid short id is a qualified ref", () => {
   expect(qualifiedRefs("kata#bc7q-2 and kata#bc7qX")).toEqual([]);
 });
 
-test("the ref grammar parses a strict prefix", () => {
-  const prefix = new RegExp(`^${QUALIFIED_REF}`);
-  expect(prefix.exec("kata-plugin#bc7q: write the script")?.[0]).toBe("kata-plugin#bc7q");
-  expect(prefix.exec("do kata-plugin#bc7q: write the script")).toBeNull();
-  expect(prefix.exec("bc7q: write the script")).toBeNull();
+test("qualifiedRefs counts only refs of the given registered projects", () => {
+  const projects = new Set(["kata-plugin", "other.proj"]);
+  expect(qualifiedRefs("Fix README.md#tasks and CHANGELOG.md#added", projects)).toEqual([]);
+  expect(qualifiedRefs("see kata-plugin#bc7q and README.md#tasks and other.proj#ce9x", projects)).toEqual(["kata-plugin#bc7q", "other.proj#ce9x"]);
 });
 
 test("an explicit ref wins over a better word overlap", () => {
@@ -101,10 +100,11 @@ test("a text naming several plan tasks binds none, whatever the overlap", () => 
 
 test("tickets outside the plan are named targets, and the plan parent is not", () => {
   const plan = [task("w#aa11", "Write widget tests")];
-  expect(namedTargets(plan, "work on other#zz99 now", "w#pa4e")).toEqual({ tasks: [], tickets: ["other#zz99"] });
-  expect(namedTargets(plan, "w#aa11 and other#zz99", "w#pa4e")).toMatchObject({ tickets: ["other#zz99"], tasks: [{ ref: "w#aa11" }] });
-  expect(namedTargets(plan, "inside w#pa4e do w#aa11", "w#pa4e")).toMatchObject({ tickets: [], tasks: [{ ref: "w#aa11" }] });
-  expect(namedTargets(plan, "Reply with exactly: OK").tickets).toEqual([]);
+  const all = new Set(["w", "other"]);
+  expect(namedTargets(plan, "work on other#zz99 now", all, "w#pa4e")).toEqual({ tasks: [], tickets: ["other#zz99"] });
+  expect(namedTargets(plan, "w#aa11 and other#zz99", all, "w#pa4e")).toMatchObject({ tickets: ["other#zz99"], tasks: [{ ref: "w#aa11" }] });
+  expect(namedTargets(plan, "inside w#pa4e do w#aa11", all, "w#pa4e")).toMatchObject({ tickets: [], tasks: [{ ref: "w#aa11" }] });
+  expect(namedTargets(plan, "Reply with exactly: OK", all).tickets).toEqual([]);
 });
 
 // The 2026-10-20 third run: a short spec that also says "then run python3 -m
@@ -161,8 +161,8 @@ test("matches are always available open tasks", () => {
 });
 
 test("an item names a ticket only with a qualified ref prefix and a colon", () => {
-  expect(itemTicket("kata-plugin#bc6m: write the real-omp smoke script")).toEqual({ ref: "kata-plugin#bc6m", action: "write the real-omp smoke script" });
-  expect(itemTicket("  other.proj#ce3w:   fetch inbox\neach turn")).toEqual({ ref: "other.proj#ce3w", action: "fetch inbox\neach turn" });
-  for (const text of ["bc6m: write the script", "write the script for kata-plugin#bc6m", "see kata-plugin#bc6m: write", "kata-plugin#bc6m write the script",
-    "kata-plugin#bc6m:", "kata-plugin#bc6m:write", "kata-plugin#bcl6: write", "update CHANGELOG", "#bc6m: write"]) expect(itemTicket(text)).toBeUndefined();
+  expect(itemTicket("kata-plugin#bc7q: write the smoke script")).toEqual({ ref: "kata-plugin#bc7q", action: "write the smoke script" });
+  expect(itemTicket("  other.proj#ce9x:   fetch inbox\neach turn")).toEqual({ ref: "other.proj#ce9x", action: "fetch inbox\neach turn" });
+  for (const text of ["bc7q: write the script", "write the script for kata-plugin#bc7q", "see kata-plugin#bc7q: write", "kata-plugin#bc7q write the script",
+    "kata-plugin#bc7q:", "kata-plugin#bc7q:write", "kata-plugin#abl6: write", "update CHANGELOG", "#bc7q: write"]) expect(itemTicket(text)).toBeUndefined();
 });

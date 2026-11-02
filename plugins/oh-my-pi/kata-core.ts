@@ -212,12 +212,14 @@ const escape = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 // Crockford base32 characters (no i, l, o, u); a project name is one token of
 // word characters, dots and dashes (Kata allows more, but a token that can be
 // told apart in prose needs no spaces). The source is anchored by lookarounds
-// only, so `new RegExp(`^${QUALIFIED_REF}`)` parses a strict prefix and
-// `new RegExp(QUALIFIED_REF, "g")` scans text for whole-token refs.
-export const QUALIFIED_REF = "(?<![\\w./#-])[A-Za-z0-9_][\\w.-]*#[0-9a-hjkmnp-tv-z]{4,26}(?![\\w-])";
-// Distinct qualified refs in order of appearance.
-export function qualifiedRefs(text: string): string[] {
-	return [...new Set([...text.matchAll(new RegExp(QUALIFIED_REF, "g"))].map(match => match[0]))];
+// only, so the one source parses a strict prefix (`itemTicket`) and scans text
+// for whole-token refs (`qualifiedRefs`).
+const QUALIFIED_REF = "(?<![\\w./#-])[A-Za-z0-9_][\\w.-]*#[0-9a-hjkmnp-tv-z]{4,26}(?![\\w-])";
+// Distinct qualified refs in order of appearance. Prose holds look-alikes
+// (`README.md#tasks`), so with `projects` only refs of those projects count.
+export function qualifiedRefs(text: string, projects?: ReadonlySet<string>): string[] {
+	const refs = [...new Set([...text.matchAll(new RegExp(QUALIFIED_REF, "g"))].map(match => match[0]))];
+	return projects ? refs.filter(ref => projects.has(ref.slice(0, ref.lastIndexOf("#")))) : refs;
 }
 
 // The ticket a todo item names: a strict `<project>#<short_id>: <action>` prefix.
@@ -244,10 +246,11 @@ export function namedTasks(tasks: Task[], text: string): Task[] {
 }
 
 // Everything a delegation prompt names: plan tasks, and qualified refs that are
-// no plan item (the plan parent itself is no work target).
-export function namedTargets(tasks: Task[], text: string, parent?: string): { tasks: Task[]; tickets: string[] } {
+// no plan item (the plan parent itself is no work target). Only refs of the
+// registered `projects` are tickets; any other look-alike is text.
+export function namedTargets(tasks: Task[], text: string, projects: ReadonlySet<string>, parent?: string): { tasks: Task[]; tickets: string[] } {
 	const known = new Set(tasks.map(t => t.ref));
-	return { tasks: namedTasks(tasks, text), tickets: qualifiedRefs(text).filter(ref => !known.has(ref) && ref !== parent) };
+	return { tasks: namedTasks(tasks, text), tickets: qualifiedRefs(text, projects).filter(ref => !known.has(ref) && ref !== parent) };
 }
 
 export type MatchOptions = { unavailable?: ReadonlySet<string>; single?: boolean; label?: string };
@@ -415,6 +418,7 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 	let progressed = true;
 	let cache: { id?: string; contract?: string; inbox?: string; pending?: Promise<void>; inboxPending?: Promise<void> } = {};
 	const autoParents = new Map<string, Binding>();
+	let registered: { id?: string; names: Promise<Set<string>> } | undefined;
 	const retries = new Map<string, { task: Task; to: Status; change: Change; cwd: string; at: number }>();
 	let retryTimer: ReturnType<typeof setTimeout> | undefined;
 	let retryTimerCtx: any;
@@ -640,7 +644,7 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 	// Register the inferred project in the daemon (idempotent; no files in the repo).
 	async function destination(cwd: string) {
 		const target = candidate(cwd);
-		if (target.register) await kata(["projects", "create", target.project!, "--json"], cwd, 20_000, false);
+		if (target.register) { registered = undefined; await kata(["projects", "create", target.project!, "--json"], cwd, 20_000, false); }
 		return target;
 	}
 
@@ -684,6 +688,18 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 			scheduleRetry();
 			throw error;
 		}
+	}
+
+	// Names of the registered Kata projects, read once per session. An unreadable
+	// list is empty, so no ref in prose is taken for a ticket.
+	function projectNames(cwd: string): Promise<Set<string>> {
+		if (registered?.id !== currentId) registered = undefined;
+		registered ??= {
+			id: currentId,
+			names: kata(["projects", "list", "--json"], cwd).then(out => new Set<string>(JSON.parse(out).projects.map((p: any) => p.name)))
+				.catch(error => { debug(error); registered = undefined; return new Set<string>(); }),
+		};
+		return registered.names;
 	}
 
 	async function pin(ref: string, cwd: string): Promise<string> {
@@ -1538,7 +1554,7 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 		get cache() { return cache; },
 		stateEntry: STATE_ENTRY,
 		resetReminders() { reminders = 0; },
-		debug, bounded, serial, kata, actor, owned, work, load, refresh, probe, bind, handBack,
+		debug, bounded, serial, kata, projectNames, actor, owned, work, load, refresh, probe, bind, handBack,
 		ensureParent, destination, candidate, adopt, reconcile, drainRetries, apply, execute, command,
 		observeToolResult, remind, warm, tickets,
 	};

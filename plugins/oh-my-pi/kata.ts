@@ -36,6 +36,10 @@ type Coordinator = {
 };
 // OMP rebinds extension factories in the same module graph. Session file is the
 // correlation key: agent names alone can collide across simultaneous sessions.
+// What a task call asked for: names and texts per spawn; once a plan or ticket
+// was seen, the ref each spawn works and which of those are named tickets.
+type Assignment = { labels: string[]; texts: string[]; refs?: (string | undefined)[]; tickets?: Set<string>; waiting?: { plain: number; ticket: number } };
+
 const delegatesBySession = new Map<string, Delegate>();
 
 export default function ompKata(pi: any) {
@@ -44,7 +48,7 @@ export default function ompKata(pi: any) {
 	let attentionSession: { id: string; cwd: string; ref?: string } | undefined;
 	let coordinator: Coordinator | undefined;
 	// Spawn text per task tool call; refs once a plan existed when it was seen.
-	const assignments = new Map<string, { labels: string[]; texts: string[]; refs?: (string | undefined)[]; tickets?: Set<string>; waiting?: { plain: number; ticket: number } }>();
+	const assignments = new Map<string, Assignment>();
 	const core = createKataCore({
 		exec: (...args) => pi.exec(...args),
 		appendEntry: (...args) => pi.appendEntry(...args),
@@ -257,7 +261,7 @@ export default function ompKata(pi: any) {
 			// omp's short task name is the clearest signal; the task text is the fallback.
 			const labels = items.map(item => typeof item?.name === "string" ? item.name : "");
 			const texts = items.map(item => [item?.task, item?.description].filter(value => typeof value === "string").join("\n"));
-			const assignment: { labels: string[]; texts: string[]; refs?: (string | undefined)[]; tickets?: Set<string>; waiting?: { plain: number; ticket: number } } = { labels, texts };
+			const assignment: Assignment = { labels, texts };
 			assignments.set(event.toolCallId, assignment);
 			return serial(async () => {
 				// Items that name a ticket are bindable without a plan parent.
@@ -266,21 +270,24 @@ export default function ompKata(pi: any) {
 				const tasks: Task[] = planned ? core.plan.tasks.filter(t => !core.plan.local || t.ticket) : [];
 				const workspace = core.plan.workspace || ctx.cwd;
 				const taken = reserved();
+				const projects = await core.projectNames(workspace);
 				const refs: (string | undefined)[] = [], tickets = new Set<string>();
 				for (const [index, text] of texts.entries()) {
-					const { tasks: named, tickets: others } = namedTargets(tasks, `${labels[index]}\n${text}`, core.plan.parent);
+					const { tasks: named, tickets: others } = namedTargets(tasks, `${labels[index]}\n${text}`, projects, core.plan.parent);
 					const targets = [...new Set([...named.map(t => t.ticket ?? t.ref), ...others])];
 					if (targets.length > 1) throw new Error(`Task ${index + 1} names more than one ticket or plan item (${targets.join(", ")}). Name one ticket per task and split the work across tasks.`);
-					let ticket = others[0] ?? named[0]?.ticket, selected: Task | undefined;
-					if (!ticket) {
+					let ticket: string;
+					const direct = others[0] ?? named[0]?.ticket;
+					if (direct) ticket = direct;
+					else {
 						if (named[0] && (taken.has(named[0].ref) || named[0].delegated)) throw new Error(`Plan task ${named[0].ref} is already delegated.`);
-						selected = planned ? matchDelegation(tasks, text, { unavailable: taken, single: texts.length === 1, label: labels[index] }) : undefined;
-						ticket = selected?.ticket;
-						if (!ticket) {
+						const selected = planned ? matchDelegation(tasks, text, { unavailable: taken, single: texts.length === 1, label: labels[index] }) : undefined;
+						if (!selected?.ticket) {
 							if (selected) taken.add(selected.ref);
 							refs.push(selected?.ref);
 							continue;
 						}
+						ticket = selected.ticket;
 					}
 					if (taken.has(ticket)) throw new Error(`Ticket ${ticket} is already delegated.`);
 					try { await owned(ticket, workspace, "check"); }

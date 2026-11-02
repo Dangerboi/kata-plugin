@@ -572,6 +572,15 @@ test("a task prompt naming an unusable ticket is blocked", async () => {
   await blocked(`Do v2test#${foreign} now`, "foreign");
 });
 
+test("a file anchor is plain text in a task prompt; a ref in a registered project must resolve", async () => {
+  const app = host(); await app.event("session_start"); await app.init(["Implement widget"]);
+  const spawn = (text: string, id: string) => app.event("tool_call", { toolName: "task", toolCallId: id, input: { task: text } });
+  expect(await spawn("Fix the link in README.md#tasks", "one-anchor")).toBeUndefined();
+  expect(await spawn("Fix README.md#tasks and CHANGELOG.md#added", "two-anchors")).toBeUndefined();
+  expect(await spawn("See ghostproject#zzzz for background", "unregistered-project")).toBeUndefined();
+  expect(await spawn("Do v2test#zzzz and README.md#tasks", "registered-missing")).toMatchObject({ block: true });
+});
+
 test("local plan and blockers survive extension recreation through session entries", async () => {
   const app = host({ cwd: outside, before: down }); await app.event("session_start");
   await app.init(["Durable local first", "Durable local second"]);
