@@ -60,6 +60,7 @@ export type Scenario = {
 
 const MAIN = "[smoke:main]";
 const SUB = "[smoke:sub]";
+const SCOUT = "[smoke:scout]";
 const vars = (): Record<string, string> => JSON.parse(process.env.KATA_SMOKE_VARS ?? "{}");
 const lastRef = (ctx: TurnContext, pattern: RegExp) => ctx.texts.join("\n").match(pattern)?.[0];
 
@@ -251,6 +252,38 @@ export const SCENARIOS: Scenario[] = [{
 			{ name: "the claimed ticket is the plan parent: the plain item is its child", ok: issues.some(i => i.title === "Add the ignore file" && i.status === "closed"), detail: issues.map(i => `${i.title}:${i.status}`).join(", ") },
 			{ name: "the ticket closes once its plan children close, with the ticket item's evidence", ok: ticket?.status === "closed" && closed.length === 1 && JSON.stringify(closed[0].payload.evidence) === JSON.stringify([{ type: "test", command: "bun smoke scenario ticket item" }]), detail: `${ticket?.status} ${JSON.stringify(closed)}` },
 			{ name: "the refused close left exactly one blocking comment", ok: blocking.length === 1, detail: `${blocking.length} comments` },
+		];
+	},
+}, {
+	name: "untracked",
+	prompt: `${MAIN} Plan the docs work, send a scout to survey the repo, close both items, then stop.`,
+	livePrompt: () => `Use the todo tool to plan two items, 'Write migration guide' and 'Refresh release notes'. Then use the task tool to send one subagent with agent "scout" to list the top-level directories of this repository and report them. After it reports, mark both items done through the todo tool with evidence ${evidence} and a 40+ character message. Change no files. Stop when both are closed.`,
+	scripts: {
+		[MAIN]: [
+			[{ tool: "todo", args: { op: "init", list: [{ phase: "Docs", items: ["Write migration guide", "Refresh release notes"] }], message: "Smoke untracked session" } }],
+			// No bash for this agent, and nothing in the prompt matches a plan item or names a ticket.
+			[{ tool: "task", args: { name: "Survey", agent: "scout", task: `${SCOUT} Survey the repository layout and report the top-level directories.`, solutionSpace: "one answer: a plain text report" } }],
+			[{ tool: "todo", args: { op: "done", task: "Write migration guide", message, evidence: ["test:bun smoke scenario first"] } }],
+			[{ tool: "todo", args: { op: "done", task: "Refresh release notes", message, evidence: ["test:bun smoke scenario second"] } }],
+			["All docs work is finished."],
+			["The scout has reported back."],
+			["Nothing else to do."],
+		],
+		[SCOUT]: [["The repository has no interesting layout."]],
+	},
+	async check(store) {
+		const issues = await store.issues();
+		const children = issues.filter(i => i.metadata["todo.phase"]);
+		const parent = issues.find(i => i.metadata["omp.session_id"] && !i.metadata["todo.phase"]);
+		// kata notify stores a request as notify.<recipient> metadata.
+		const requests = issues.filter(i => Object.keys(i.metadata).some(key => key.startsWith("notify."))).map(i => i.ref);
+		const labelled = issues.filter(i => i.events.some(e => /label/.test(e.type) && JSON.stringify(e.payload).includes("needs-review")));
+		return [
+			{ name: "only the parent and the two plan items exist", ok: issues.length === 3 && children.length === 2 && !!parent, detail: issues.map(i => i.title).join(", ") },
+			{ name: "the scout created no Subagent issue", ok: !issues.some(i => i.title.startsWith("Subagent")), detail: issues.map(i => i.title).join(", ") },
+			{ name: "no issue carries needs-review", ok: labelled.length === 0, detail: labelled.map(i => i.ref).join(", ") },
+			{ name: "the lead got no inbox request", ok: requests.length === 0, detail: requests.join(", ") },
+			{ name: "session shutdown closed the automatic parent", ok: parent?.status === "closed", detail: parent?.status },
 		];
 	},
 }];

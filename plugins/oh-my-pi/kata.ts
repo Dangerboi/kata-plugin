@@ -18,7 +18,7 @@
 
 import path from "node:path";
 import { createKataCore, DESCRIPTION, sessionKey, render, matchDelegation, namedTargets,
-	kataCommands as parseKataCommands, teammateFor, ticketAutocomplete, delegateCommand, delegateContext, type Binding, type Task } from "./kata-core";
+	kataCommands as parseKataCommands, teammateFor, ticketAutocomplete, delegateCommand, delegateContext, untrackedDelegateContext, type Binding, type Task } from "./kata-core";
 
 const EXECUTABLE = process.env.KATA_OMP_EXECUTABLE || "kata";
 const EXECUTABLE_VARS = ["KATA_OMP_EXECUTABLE"];
@@ -26,7 +26,7 @@ export const kataCommands = (command: string) => parseKataCommands(command, EXEC
 
 type Delegate = {
 	id: string; teammate: string; sessionFile?: string; parentAgentId?: string;
-	state: string; planRef?: string; ticket?: boolean; label?: string; text?: string; single?: boolean; ref?: string; binding?: Binding; ready?: Promise<void>; prepareError?: string; reported?: string;
+	state: string; planRef?: string; ticket?: boolean; untracked?: boolean; label?: string; text?: string; single?: boolean; ref?: string; binding?: Binding; ready?: Promise<void>; prepareError?: string; reported?: string;
 	coordinator: Coordinator;
 };
 type Coordinator = {
@@ -38,7 +38,7 @@ type Coordinator = {
 // correlation key: agent names alone can collide across simultaneous sessions.
 // What a task call asked for: names and texts per spawn; once a plan or ticket
 // was seen, the ref each spawn works and which of those are named tickets.
-type Assignment = { labels: string[]; texts: string[]; refs?: (string | undefined)[]; tickets?: Set<string>; waiting?: { plain: number; ticket: number } };
+type Assignment = { labels: string[]; texts: string[]; refs?: (string | undefined)[]; tickets?: Set<string> };
 
 const delegatesBySession = new Map<string, Delegate>();
 
@@ -65,7 +65,7 @@ export default function ompKata(pi: any) {
 		// A finished delegate that left its task open hands it back once settled.
 		isDelegated: ref => [...(coordinator?.records.values() ?? [])].some(record => (record.ref || record.planRef) === ref && (record.state === "started" || record.reported !== record.state)),
 		beforeReconcile: syncSnapshots,
-		delegatedRunning: () => [...(coordinator?.records.values() ?? [])].some(record => record.state === "started" || !record.ref || record.ready) ||
+		delegatedRunning: () => [...(coordinator?.records.values() ?? [])].some(record => record.state === "started" || (!record.ref && !record.untracked) || record.ready) ||
 			(core.currentCtx?.getAsyncJobSnapshot?.()?.running ?? []).some((job: any) => job.type === "task"),
 	}, { namespace: "omp", executable: EXECUTABLE, executableVars: EXECUTABLE_VARS, delegateKeys: ["omp.subagent_id"], debugFile: process.env.KATA_OMP_DEBUG });
 	// /tan runs a side conversation in a sub session whose agent id omp mints as
@@ -74,7 +74,7 @@ export default function ompKata(pi: any) {
 	// delegate's lifecycle record, so it cannot misroute a delegate that is still
 	// being registered. A record, if present, always wins.
 	const untrackedTan = (ctx: any) => ctx?.agent?.kind === "sub" && /^Tan-/.test(ctx.agent.id ?? "") && !self(ctx);
-	const { serial, bounded, debug, kata, actor, owned, load, bind, ensureParent, reconcile } = core;
+	const { serial, bounded, debug, kata, actor, owned, load, bind, reconcile } = core;
 	const warm = (ctx: any) => core.warm(ctx, self(ctx)?.binding?.workspace || ctx.cwd);
 	pi.registerTool({
 		name: "todo",
@@ -94,7 +94,11 @@ export default function ompKata(pi: any) {
 			evidence: z.array(z.string()).optional().describe("required for done: commit:<sha>, test:<cmd>, pr:<url>, reviewed-paths:<path>"),
 		}),
 		async execute(_id: string, params: any, signal: AbortSignal | undefined, onUpdate: any, ctx: any) {
-			if (untrackedTan(ctx) && typeof ctx.invokeTool === "function") return ctx.invokeTool(params, { signal, onUpdate });
+			// A delegate that matched no plan item or ticket has no issue; omp's own list serves it.
+			const record = !main(ctx) ? self(ctx) : undefined;
+			if (record) await prepare(record);
+			if ((untrackedTan(ctx) || record?.untracked) && typeof ctx.invokeTool === "function") return ctx.invokeTool(params, { signal, onUpdate });
+			if (record?.untracked) return { content: [{ type: "text" as const, text: `Subagent ${record.id} matched no plan item or ticket, so it has no Kata issue and no todo list.` }], details: { op: params.op, kata: {} }, isError: true };
 			return core.execute(params, ctx);
 		},
 	});
@@ -135,40 +139,31 @@ export default function ompKata(pi: any) {
 					const item = matchDelegation(core.plan.tasks, record.text ?? "", { unavailable: reserved(record), single: record.single, label: record.label });
 					if (item?.ticket) { record.planRef = item.ticket; record.ticket = true; }
 				}
-				// A ticket the prompt named is worked as it is, with or without a plan.
-				if (!record.ticket) await ensureParent({}, ctx);
-				if (!record.ticket && (!core.plan.parent || core.plan.local)) return;
+				// Only a plan item or a named ticket gets an issue; any other spawn gets none.
+				if (!record.ticket && !record.planRef && (!core.plan.parent || core.plan.local || !(record.text || record.label)?.trim())) { record.untracked = true; return; }
 				const binding: Binding = record.ticket
 					? { parent: record.planRef!, workspace: core.plan.workspace || ctx.cwd, sessionId: id }
 					: { parent: core.plan.parent!, workspace: core.plan.workspace!, sessionId: id, auto: core.plan.auto, label: core.plan.label };
-				record.binding = binding;
 				// Match what the plan holds now.
 				if (!record.planRef && (record.text || record.label)?.trim()) {
 					await load(binding.workspace);
 					const match = matchDelegation(core.plan.tasks, record.text ?? "", { unavailable: reserved(record), single: record.single, label: record.label });
 					record.planRef = match?.ticket ?? match?.ref;
 				}
-				if (record.planRef) {
-					const ref = record.planRef;
-					let issue = JSON.parse(await kata(["show", ref, "--json"], binding.workspace)).issue;
-					// Retry an interrupted transfer only if it is already ours.
-					if (issue.metadata?.teammate !== record.teammate || issue.owner !== await actor(binding.workspace)) {
-						issue = await owned(ref, binding.workspace, true);
-						await kata(["meta", "set", ref, "teammate", record.teammate, "--if-match", String(issue.revision)], binding.workspace);
-					}
-					if (issue.status !== "open") throw new Error(`Delegated task ${ref} is already closed.`);
-					for (const [key, value] of Object.entries({ "omp.subagent_id": record.id, "omp.session_id": id, "omp.parent_agent_id": record.parentAgentId || "main", "omp.status": "running", "todo.status": "in_progress" })) {
-						await kata(["meta", "set", ref, key, value], binding.workspace);
-					}
-					record.ref = ref;
-				} else {
-					const out = JSON.parse(await kata(["create", `Subagent ${record.id}`, "--parent", binding.parent, "--project", binding.parent.split("#")[0],
-						"--body", `Delegated OMP work for agent ${record.id}, session ${id}. The subagent must close this issue itself with its verification evidence.`,
-						"--owner", await actor(binding.workspace), "--teammate", record.teammate, ...(binding.label ? ["--label", binding.label] : []),
-						"--meta", `omp.subagent_id=${record.id}`, "--meta", `omp.session_id=${id}`, "--meta", `omp.parent_agent_id=${record.parentAgentId || "main"}`,
-						"--meta", "omp.status=running", "--idempotency-key", `omp-agent:${id}:${record.id}`, "--force-new", "--json"], binding.workspace));
-					record.ref = `${binding.parent.split("#")[0]}#${out.issue.short_id}`;
+				if (!record.planRef) { record.untracked = true; return; }
+				record.binding = binding;
+				const ref = record.planRef;
+				let issue = JSON.parse(await kata(["show", ref, "--json"], binding.workspace)).issue;
+				// Retry an interrupted transfer only if it is already ours.
+				if (issue.metadata?.teammate !== record.teammate || issue.owner !== await actor(binding.workspace)) {
+					issue = await owned(ref, binding.workspace, true);
+					await kata(["meta", "set", ref, "teammate", record.teammate, "--if-match", String(issue.revision)], binding.workspace);
 				}
+				if (issue.status !== "open") throw new Error(`Delegated task ${ref} is already closed.`);
+				for (const [key, value] of Object.entries({ "omp.subagent_id": record.id, "omp.session_id": id, "omp.parent_agent_id": record.parentAgentId || "main", "omp.status": "running", "todo.status": "in_progress" })) {
+					await kata(["meta", "set", ref, key, value], binding.workspace);
+				}
+				record.ref = ref;
 			}),
 			settle: record => serial(async () => { await settleRecord(record); await reconcile(); }),
 		};
@@ -214,7 +209,7 @@ export default function ompKata(pi: any) {
 	}
 
 	function prepare(record: Delegate) {
-		if (record.ref || record.ready) return record.ready;
+		if (record.ref || record.untracked || record.ready) return record.ready;
 		record.prepareError = undefined;
 		record.ready = record.coordinator.prepare(record).catch(error => {
 			record.prepareError = error instanceof Error ? error.message : String(error);
@@ -225,11 +220,7 @@ export default function ompKata(pi: any) {
 
 	pi.on("before_subagent_spawn", async (_event: any, ctx: any) => {
 		core.currentCtx = ctx;
-		const owner = root(ctx);
-		// Subagents about to start on tickets need no session parent; any other spawn does.
-		const waiting = [...assignments.values()].flatMap(a => a.waiting ? [a.waiting] : []).filter(w => w.plain + w.ticket > 0);
-		const ticketsOnly = waiting.length > 0 && waiting.every(w => w.plain === 0);
-		if (main(ctx) && owner && !ticketsOnly) await bounded(serial(() => ensureParent({}, ctx)));
+		root(ctx);
 	});
 
 	pi.events?.on("task:subagent:lifecycle", (event: any) => {
@@ -244,7 +235,6 @@ export default function ompKata(pi: any) {
 				const planRef = assignment?.refs?.[event.index ?? 0];
 				const ticket = !!planRef && !!assignment?.tickets?.has(planRef);
 				if (assignment?.refs) assignment.refs[event.index ?? 0] = undefined; // the record holds it now
-				if (assignment?.waiting) assignment.waiting[ticket ? "ticket" : "plain"] = Math.max(0, assignment.waiting[ticket ? "ticket" : "plain"] - 1);
 				record = { id: event.id, planRef, ticket, label: assignment?.labels[event.index ?? 0], text, single: (assignment?.texts.length ?? 1) === 1, teammate: teammateFor(event.id, owner.id), parentAgentId: core.currentCtx.agent?.id, sessionFile: event.sessionFile, state: "started", coordinator: owner };
 				owner.records.set(event.id, record);
 			}
@@ -303,7 +293,6 @@ export default function ompKata(pi: any) {
 					taken.add(ticket); tickets.add(ticket); refs.push(ticket);
 				}
 				assignment.refs = refs; assignment.tickets = tickets;
-				assignment.waiting = { ticket: refs.filter(ref => ref && tickets.has(ref)).length, plain: refs.filter(ref => !ref || !tickets.has(ref)).length };
 			}).catch(error => { assignments.delete(event.toolCallId); return { block: true, reason: String(error) }; });
 		}
 		if (ctx.agent?.kind !== "sub" || event.toolName !== "bash" || typeof event.input?.command !== "string") return;
@@ -319,7 +308,7 @@ export default function ompKata(pi: any) {
 		// Started delegates hold their own tasks; a denied or partial spawn releases
 		// the rest. The text stays for a delegate whose start is reported late.
 		const assignment = event.toolName === "task" ? assignments.get(event.toolCallId) : undefined;
-		if (assignment) { assignment.refs = undefined; assignment.waiting = undefined; }
+		if (assignment) assignment.refs = undefined;
 		return core.observeToolResult(event, ctx);
 	});
 	pi.on("session_stop", async (event: any, ctx: any) => {
@@ -344,6 +333,8 @@ export default function ompKata(pi: any) {
 		const delegate = !main(ctx) ? self(ctx) : undefined;
 		if (delegate?.ref && delegate.binding) {
 			sections.push(`<kata_binding>\n${delegateContext(EXECUTABLE, ctx.agent.id, delegate.ref, delegate.teammate, delegate.binding)}\n</kata_binding>`);
+		} else if (delegate?.untracked) {
+			sections.push(`<kata_binding>\n${untrackedDelegateContext(ctx.agent.id)}\n</kata_binding>`);
 		}
 		if (core.cache.inbox) sections.push(`<kata_inbox>\n${core.cache.inbox}\n</kata_inbox>`);
 		if (main(ctx) && (core.plan.parent || core.plan.tasks.some(t => t.ticket))) sections.push(`<kata_todo>\nThe todo tool is backed by Kata. Current plan:\n${render(core.plan)}\n</kata_todo>`);

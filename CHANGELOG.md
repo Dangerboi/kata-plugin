@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- **omp: a `task` that matches no plan item and names no ticket gets no issue.** It used to get a `Subagent` issue, which an agent without `bash` (the `scout`) could not close, leaving an open issue, a `needs-review` label, a `kata notify` and a parent that never closed. Now only a delegation matched to a plan item or naming a ticket binds an issue; any other subagent gets a short note instead of a binding, its `todo` uses omp's own list (an error on an omp without `ctx.invokeTool`), and the automatic parent closes from the plan's own items. pi is unchanged.
+
 ## oh-my-pi 2.3.0 / pi 1.3.0 — 2026-11-03
 
 The repository moved to Dangerboi/kata-plugin, and the Claude Code plugin is gone.
