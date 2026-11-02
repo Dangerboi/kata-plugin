@@ -16,22 +16,40 @@ export type Issue = {
 	ref: string; title: string; status: string; owner?: string; metadata: Record<string, string>;
 	events: { type: string; payload: any }[];
 };
+/** One model request as the scripted provider saw it. */
+export type Request = { agent: string; system: string };
 export type Store = {
+	/** Requests recorded by the scripted provider, oldest first. */
+	requests(): Request[];
 	/** Every issue in the project except the ones filtered out by `parent`. */
 	issues(): Promise<Issue[]>;
 };
 export type Check = { name: string; ok: boolean; detail?: string };
 
+/** What an interactive scenario can do to a running omp session. */
+export type Session = {
+	/** Sends a prompt and resolves once the agent has yielded. */
+	prompt(text: string): Promise<void>;
+	/** Runs kata against the throwaway store, from outside omp. */
+	kata(args: string[]): string;
+	/** Requests recorded so far. */
+	requests(): Request[];
+};
+
 export type Scenario = {
 	name: string;
-	/** User prompt for the main agent; it must contain the main script's marker. */
-	prompt: string;
-	/** Prompt for --live, where the user's real model has to do the same work unscripted. */
-	livePrompt: string;
+	/** One-shot scenarios: user prompt for the main agent; it must contain the main script's marker. */
+	prompt?: string;
+	/** Prompt for --live, where the user's real model has to do the same work unscripted. Scenarios without one are scripted-only. */
+	livePrompt?: string;
+	/** Interactive scenarios: drive one long-lived omp session (RPC) prompt by prompt. Runs before `check`. */
+	drive?(session: Session): Promise<Check[]>;
+	/** Environment for the omp child. */
+	env?: Record<string, string>;
 	/** Scripted turns keyed by a marker that appears in the agent's first user message. */
 	scripts: Record<string, Turn[]>;
 	/** Assertions run through `kata show --json` after omp has exited. */
-	check(store: Store): Promise<Check[]>;
+	check?(store: Store): Promise<Check[]>;
 };
 
 const MAIN = "[smoke:main]";
@@ -82,5 +100,32 @@ export const SCENARIOS: Scenario[] = [{
 			{ name: "delegate closed its own task with evidence", ok: parser?.status === "closed" && closeEvidence(parser).some(hasRecorded), detail: `${parser?.status} ${JSON.stringify(closeEvidence(parser))}` },
 			{ name: "session shutdown closed the automatic parent", ok: parent?.status === "closed", detail: parent?.status },
 		];
+	},
+}, {
+	name: "inbox",
+	env: { KATA_INBOX_USER: "smoke-user" },
+	scripts: { [MAIN]: Array.from({ length: 12 }, () => ["noted"]) },
+	async drive(session) {
+		const MARK = "smoke-inbox-marker";
+		const target = JSON.parse(session.kata(["create", "Inbox target", "--json"])).issue.short_id;
+		const latest = () => session.requests().filter(r => r.agent === MAIN).at(-1)?.system ?? "";
+		const seen = () => latest().includes("<kata_inbox>") && latest().includes(MARK);
+		// A read slower than the hook's budget lands on the following turn, so allow two.
+		const within = async (limit: number, want: boolean) => {
+			for (let n = 1; n <= limit; n++) { await session.prompt(`turn ${n}`); if (seen() === want) return n; }
+			return 0;
+		};
+		const checks: Check[] = [];
+		await session.prompt(`${MAIN} start`);
+		checks.push({ name: "no inbox section before any notify", ok: !seen() });
+		session.kata(["notify", target, "--to", "smoke-user", "--message", MARK]);
+		const shown = await within(2, true);
+		checks.push({ name: "notify sent mid-session reaches the system prompt within two turns", ok: shown > 0, detail: "never appeared" });
+		session.kata(["notify", target, "--to", "smoke-user", "--clear"]);
+		const cleared = await within(2, false);
+		checks.push({ name: "clearing the request removes the section within two turns", ok: cleared > 0, detail: "still present" });
+		await session.prompt("one more turn");
+		checks.push({ name: "the cleared request stays gone", ok: !seen() });
+		return checks;
 	},
 }];

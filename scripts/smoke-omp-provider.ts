@@ -2,6 +2,7 @@
 // answers with the next scripted turn of the agent it belongs to. The turn index
 // is the number of assistant messages already in the context, so the provider
 // keeps no state of its own.
+import { appendFileSync } from "node:fs";
 import { AssistantMessageEventStream } from "@oh-my-pi/pi-ai";
 import { SCENARIOS, type Block, type TurnContext } from "./smoke-omp-scenarios";
 
@@ -27,6 +28,8 @@ export default function (pi: any) {
 			const turnIndex = messages.filter(m => m.role === "assistant").length;
 			const turn = key ? scenario.scripts[key][turnIndex] : undefined;
 			const ctx: TurnContext = { texts: messages.map(textOf), system: [context.systemPrompt].flat().filter(Boolean).join("\n") };
+			// The driver reads this to see what the agent was actually shown.
+			if (process.env.KATA_SMOKE_RECORD) appendFileSync(process.env.KATA_SMOKE_RECORD, JSON.stringify({ agent: key ?? "", system: ctx.system }) + "\n");
 			const blocks: Block[] = turn ? (typeof turn === "function" ? turn(ctx) : turn) : [`(smoke script has no turn ${turnIndex} for ${key ?? "this agent"})`];
 			const content = blocks.map(block => typeof block === "string" ? { type: "text" as const, text: block }
 				: { type: "toolCall" as const, id: `smoke-${++counter}`, name: block.tool, arguments: block.args });
