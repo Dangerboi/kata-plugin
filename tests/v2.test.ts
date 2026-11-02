@@ -364,7 +364,7 @@ test("a delegate's first prompt waits for a slow binding instead of dropping it"
 
 test("explicitly adopting the auto issue revokes and persists automatic close authority", async () => {
   const app = host(); const parent = await app.init(["Explicitly retained task"]);
-  await app.call({ op: "init", ref: parent, items: ["Explicitly retained task"], replace: true });
+  await app.call({ op: "init", ref: parent, items: ["Explicitly retained task"] });
   expect(app.entries.filter(e => e.customType === "io.kata.omp.parent").at(-1).data.auto).toBe(false);
   await app.call({ op: "done", message, evidence });
   expect((await show(parent)).issue.status).toBe("open");
@@ -1264,6 +1264,28 @@ test("init without replace refuses a plan with open tasks and writes nothing to 
   const text = result.content[0].text;
   for (const title of ["Started task", "Waiting task", "Pending task"]) expect(text).toContain(title);
   expect(text).toContain("replace: true");
+  expect(kataWrites(app.calls.slice(mark))).toEqual([]);
+  expect(await show(parent)).toEqual(before);
+});
+
+test("init without replace goes through when the new list keeps every open task", async () => {
+  const app = host(); const parent = await app.init(["One", "Two"]);
+  const result = await app.call({ op: "init", items: ["One", "Two", "Three"] });
+  expect(result.isError, result.content[0].text).toBeUndefined();
+  const children = (await show(parent)).children;
+  expect(children.map((c: any) => c.title).sort()).toEqual(["One", "Three", "Two"]);
+  expect(children.every((c: any) => c.status === "open")).toBe(true);
+});
+
+test("init without replace names only the open tasks the new list leaves out", async () => {
+  const app = host(); const parent = await app.init(["One", "Two", "Three"]);
+  const before = await show(parent);
+  const mark = app.calls.length;
+  const result = await app.call({ op: "init", items: ["One", "Four"] });
+  expect(result.isError).toBe(true);
+  const text = result.content[0].text.split("\n\n")[0];
+  expect(text).toContain("Two"); expect(text).toContain("Three");
+  expect(text).not.toContain("One"); expect(text).not.toContain("Four");
   expect(kataWrites(app.calls.slice(mark))).toEqual([]);
   expect(await show(parent)).toEqual(before);
 });

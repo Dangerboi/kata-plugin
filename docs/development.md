@@ -43,7 +43,7 @@ bun run smoke:omp --live                # same checks with your configured model
 
 The `inbox` scenario drives one long-lived `omp --mode rpc` session prompt by prompt. Between prompts it runs `kata notify` against the throwaway store, then checks the system prompts the scripted provider recorded: the request must appear as `<kata_inbox>` within two turns (a read slower than the hook's budget lands on the next turn) and disappear within two turns of clearing it. It is scripted-only and skipped by `--live`.
 
-Scenarios are data in `scripts/smoke-omp-scenarios.ts`: scripted turns per agent (a turn may be a function of the conversation so far) plus assertions over the store. Add one by appending an entry to `SCENARIOS`; the driver and provider need no changes.
+Scenarios are data in `scripts/smoke-omp-scenarios.ts`: scripted turns per agent (a turn may be a function of the conversation so far) plus assertions over the store. Add one by appending an entry to `SCENARIOS`; a scenario that only scripts turns and checks the store needs no driver or provider changes, but one that needs a new RPC command or a persisted session (like `fork`) also extends the driver.
 
 `--live` has the real model do the work from a plain-language prompt, so it needs your omp login. The driver copies `config.yml`, `agent.db` and `agent.db-wal` from `$PI_CODING_AGENT_DIR` (default `~/.omp/agent`) into the throwaway agent directory, reading the originals and never writing them. Live runs spend tokens and can fail on model behaviour rather than plugin behaviour.
 

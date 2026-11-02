@@ -69,7 +69,7 @@ export default function ompKata(pi: any) {
 			(core.currentCtx?.getAsyncJobSnapshot?.()?.running ?? []).some((job: any) => job.type === "task"),
 	}, { namespace: "omp", executable: EXECUTABLE, executableVars: EXECUTABLE_VARS, delegateKeys: ["omp.subagent_id"], debugFile: process.env.KATA_OMP_DEBUG });
 	// /tan runs a side conversation in a sub session whose agent id omp mints as
-	// `Tan-<snowflake>` (tan-command-controller.ts); task spawns get ids from the
+	// `Tan-<snowflake>`; task spawns get ids from the
 	// task name or a generated name, never that prefix. The id is known at the very
 	// first todo call, unlike a delegate's lifecycle record, so it cannot misroute a
 	// delegate that is still being registered. A record, if present, always wins.

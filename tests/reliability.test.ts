@@ -29,8 +29,8 @@ function app(options: any = {}) {
 const down = daemonUnavailable;
 const message = "Verified the isolated reliability task with the behavioral regression suite.";
 const done = { op: "done", message, evidence: ["test:reliability fixture"] };
-async function init(a: ReturnType<typeof app>, items = ["First", "Second"], replace = false) {
-  const r = await a.call({ op: "init", items, ...(replace ? { replace } : {}) }); if (r.isError) throw new Error(r.content[0].text); return r.details.kata.parent!;
+async function init(a: ReturnType<typeof app>, items = ["First", "Second"], options: { replace?: true } = {}) {
+  const r = await a.call({ op: "init", items, ...options }); if (r.isError) throw new Error(r.content[0].text); return r.details.kata.parent!;
 }
 beforeAll(async () => { expect((await run(["init", "--project", "reliability-test"])).code).toBe(0); expect((await run(["init", "--project", "local-reliability"], localProject)).code).toBe(0); });
 beforeEach(() => { process.env.KATA_AUTHOR = "actor-a"; delete process.env.KATA_TEAMMATE; delete process.env.KATA_REF; });
@@ -100,9 +100,9 @@ test("a conflicting explicit binding is refused before either plan changes", asy
 test("qualified full UID and short ref restore the same removed child", async () => {
   const a = app(); const p = await init(a); const uid = (await show(p)).uid;
   const b = app({ ref: `reliability-test#${uid.toLowerCase()}` });
-  await init(b, ["Replay"], true); const first = b.core.plan.tasks[0].ref;
+  await init(b, ["Replay"], { replace: true }); const first = b.core.plan.tasks[0].ref;
   await b.call({ op: "rm", task: "Replay" });
-  const c = app({ ref: p }); await init(c, ["Replay"], true);
+  const c = app({ ref: p }); await init(c, ["Replay"]);
   expect(c.core.plan.tasks[0].ref).toBe(first);
 });
 for (const failure of ["marker", "claim"]) test(`automatic parent setup recovers after failed ${failure}`, async () => {
@@ -147,7 +147,7 @@ test("a deferred removal is invalidated when init keeps the task", async () => {
   const a = app({ before: (args: string[]) => args[0] === "close" && throttle ? siblingThrottle() : undefined });
   const p = await init(a); const ref = a.core.plan.tasks[0].ref;
   await a.call({ op: "rm", task: "First" });
-  await init(a, undefined, true);
+  await init(a);
   const saved = a.entries.filter(e => e.customType === "io.kata.omp.state").at(-1).data;
   // Resume after the retry deadline without sleeping or patching production time.
   for (const [, pending] of saved.retries) pending.at = 0;
@@ -164,7 +164,7 @@ for (const op of ["init", "append"]) test(`kept ${op} preserves a promised compl
     ? siblingThrottle() : undefined });
   await init(a); const ref = a.core.plan.tasks[0].ref;
   expect((await a.call({ ...done, task: "First" })).isError).toBeUndefined();
-  expect((await a.call({ op, items: op === "init" ? ["First", "Second"] : ["First"], ...(op === "init" ? { replace: true } : {}) })).isError).toBeUndefined();
+  expect((await a.call({ op, items: op === "init" ? ["First", "Second"] : ["First"] })).isError).toBeUndefined();
   const saved = a.entries.filter(e => e.customType === "io.kata.omp.state").at(-1).data;
   for (const [, pending] of saved.retries) pending.at = 0;
   throttle = false;
@@ -386,9 +386,9 @@ test("an unclaimed pending task can retire, re-add and complete without being cl
 });
 test("matching qualified init resolves a short explicit binding in its pinned workspace", async () => {
   const origin = app(); const parent = await init(origin), short = parent.split("#")[1];
-  const bound = app({ ref: short }); await init(bound, undefined, true);
+  const bound = app({ ref: short }); await init(bound);
   bound.ctx.cwd = outside;
-  const result = await bound.call({ op: "init", ref: parent, items: ["First", "Second"], replace: true });
+  const result = await bound.call({ op: "init", ref: parent, items: ["First", "Second"] });
   expect(result.isError, result.content[0].text).toBeUndefined();
   expect(result.details.kata.parent).toBe(parent);
 });

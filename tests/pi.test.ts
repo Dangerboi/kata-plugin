@@ -594,6 +594,13 @@ test("pi items that name a ticket work and log on it without creating an issue o
   expect((await kata(["list", "--status", "all", "--limit", "0", "--json"])).issues).toHaveLength(before);
 });
 
+test("pi init without replace goes through when the new list keeps every open task", async () => {
+  const app = await host(); const parent = await app.init(["Open pi task"]);
+  const result = await app.call({ op: "init", items: ["Open pi task", "Added pi task"] });
+  expect(result.isError, result.content[0].text).toBeUndefined();
+  expect((await show(parent)).children.map((c: any) => c.title).sort()).toEqual(["Added pi task", "Open pi task"]);
+});
+
 test("pi accepts replace on todo init and refuses without it while tasks are open", async () => {
   const app = await host(); const parent = await app.init(["Open pi task", "Other pi task"]);
   expect(Value.Check(app.tool.parameters, { op: "init", items: ["Next pi task"], replace: true })).toBe(true);
