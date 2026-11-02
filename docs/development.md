@@ -29,3 +29,11 @@ The semantic canary copies the default database and WAL into a disposable direct
 Claude hooks, typed state contracts, and tests live under `plugins/claude-code`. Its package exposes `test:engine`, `test:properties`, `test:real-kata`, `typecheck`, and `validate`; use the root wrapper for ordinary test runs so the semantic canary covers them together.
 
 For live smoke tests, use a fresh Git folder and throwaway store as in the [tutorial](tutorials/first-session.md). Point `kataExecutable` (Claude), `KATA_OMP_EXECUTABLE`, or `KATA_PI_EXECUTABLE` at the guarded binary before launch. Inspect actual issues and close events; stop the test daemon and close any terminal panes you created. Keep transcripts and temporary reports outside the repository.
+
+## Releases
+
+Installs come from the marketplace (`kata@kata-plugin`) and Git; nothing is published to npm.
+
+1. Bump `version` by hand in each changed plugin's `plugins/*/package.json` (and `plugins/claude-code/.claude-plugin/plugin.json` for Claude Code). Keep the root `package.json` version equal to pi's: the root manifest is what `pi install git:…` installs.
+2. Add a `CHANGELOG.md` heading naming each plugin version and the date, for example `## oh-my-pi 2.2.0 / pi 1.2.0 — 2026-10-31`.
+3. After the change merges, tag `main` as `v<root version>` and publish a GitHub release from that tag with the changelog section as its notes.
