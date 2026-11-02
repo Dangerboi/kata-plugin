@@ -728,6 +728,13 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 		if (candidates.length === 1) return { parent: candidates[0].qualified_id, workspace: candidates[0].metadata[`${namespace}.workspace`], sessionId: id, auto: true, label: where.label };
 	}
 
+	// omp records the fork source in the session header: its id, or its session file `<timestamp>_<id>.jsonl`.
+	function forkSource(parentSession: unknown) {
+		if (typeof parentSession !== "string" || !parentSession) return undefined;
+		const name = path.basename(parentSession);
+		return name.endsWith(".jsonl") ? name.slice(name.indexOf("_") + 1, -".jsonl".length) || undefined : parentSession;
+	}
+
 	async function bind(ctx: any, explicit = options.explicitRef?.() ?? process.env.KATA_REF, replay = true) {
 		if (!main(ctx) && !host.binding) return;
 		bound = false;
@@ -745,23 +752,33 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 		scope = "unknown"; refusal = ""; outage = "";
 		retries.clear(); autoParents.clear();
 		clearRetryTimer();
-		let snapshot: any;
-		for (const entry of ctx.sessionManager?.getBranch?.() ?? []) {
-			if (entry?.type === "custom" && entry.customType === SNAPSHOT_ENTRY && entry.data?.version === 1 && entry.data.sessionId === id) snapshot = entry.data;
+		const branch: any[] = ctx.sessionManager?.getBranch?.() ?? [];
+		const snapshotOf = (owner: unknown) => branch.reduce((found: any, entry: any) => entry?.type === "custom" && entry.customType === SNAPSHOT_ENTRY && entry.data?.version === 1 && entry.data.sessionId === owner ? entry.data : found, undefined);
+		let snapshot = snapshotOf(id);
+		// A fork gets a new session id and copies the source's entries. It shares the source's work:
+		// adopt its parent and ticket items, but not its retries (the source still owns those closes)
+		// nor its offline plan (replaying that would make a second automatic parent).
+		let source: string | undefined;
+		if (!snapshot && id) {
+			source = forkSource(ctx.sessionManager?.getHeader?.()?.parentSession);
+			snapshot = source && snapshotOf(source);
 		}
 		if (snapshot) {
-			for (const binding of snapshot.autoParents ?? []) autoParents.set(binding.parent, binding);
-			for (const [ref, pending] of snapshot.retries ?? []) retries.set(ref, pending);
-			if (retries.size) scheduleRetry();
-			if (snapshot.plan?.local && !explicit) plan = structuredClone(snapshot.plan);
+			if (!source) {
+				for (const binding of snapshot.autoParents ?? []) autoParents.set(binding.parent, binding);
+				for (const [ref, pending] of snapshot.retries ?? []) retries.set(ref, pending);
+				if (retries.size) scheduleRetry();
+				if (snapshot.plan?.local && !explicit) plan = structuredClone(snapshot.plan);
+			}
 			named = structuredClone(snapshot.named ?? []);
 			stamp = Math.max(0, ...named.map(t => t.at || 0));
 			plan.tasks = withNamed(plan.tasks);
 		}
 		let stored: any = snapshot?.plan?.parent ? snapshot.plan : undefined;
-		for (const entry of ctx.sessionManager?.getBranch?.() ?? []) {
-			if (entry?.type === "custom" && entry.customType === STATE_ENTRY && typeof entry.data?.parent === "string" && (!entry.data.sessionId || entry.data.sessionId === id)) stored = entry.data;
+		for (const entry of branch) {
+			if (entry?.type === "custom" && entry.customType === STATE_ENTRY && typeof entry.data?.parent === "string" && (!entry.data.sessionId || entry.data.sessionId === (source ?? id))) stored = entry.data;
 		}
+		if (source && !snapshot) stored = stored && { ...stored, sessionId: source };
 		if (plan.local && !explicit) stored = undefined;
 		if (!explicit && !stored) {
 			if (!await probe(ctx.cwd)) { await drainRetries(); bound = true; refresh(ctx); return; }
@@ -774,8 +791,10 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 			const qualified = await pin(parent, workspace);
 			const issue = JSON.parse(await kata(["show", qualified, "--json"], workspace)).issue;
 			const marker = issue.metadata?.[`${namespace}.auto_parent`];
-			const auto = !explicit && stored?.auto !== false && (marker === true || (stored?.auto === true && marker === undefined)) && issue.metadata?.[`${namespace}.session_id`] === id;
-			setParent({ parent: qualified, workspace, sessionId: id, auto, label: explicit ? undefined : stored?.label });
+			// A forked session keeps the source id as the parent's owner: the parent's session_id metadata names it.
+			const owner = !explicit && stored?.auto && typeof stored.sessionId === "string" && stored.sessionId !== id ? stored.sessionId : id;
+			const auto = !explicit && stored?.auto !== false && (marker === true || (stored?.auto === true && marker === undefined)) && issue.metadata?.[`${namespace}.session_id`] === owner;
+			setParent({ parent: qualified, workspace, sessionId: owner, auto, label: explicit ? undefined : stored?.label });
 			await load(workspace);
 		}
 		if (replay) await drainRetries();

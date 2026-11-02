@@ -30,6 +30,8 @@ export type Check = { name: string; ok: boolean; detail?: string };
 export type Session = {
 	/** Sends a prompt and resolves once the agent has yielded. */
 	prompt(text: string): Promise<void>;
+	/** Forks the conversation (RPC `fork`): the process moves onto a new session with the same transcript. */
+	fork(): Promise<void>;
 	/** Runs kata against the throwaway store, from outside omp. */
 	kata(args: string[]): string;
 	/** Requests recorded so far. */
@@ -44,6 +46,8 @@ export type Scenario = {
 	livePrompt?: string;
 	/** Interactive scenarios: drive one long-lived omp session (RPC) prompt by prompt. Runs before `check`. */
 	drive?(session: Session): Promise<Check[]>;
+	/** Keeps the session file on disk (omp's `--no-session` is dropped); RPC `fork` needs one. */
+	persist?: boolean;
 	/** Environment for the omp child. */
 	env?: Record<string, string>;
 	/** Scripted turns keyed by a marker that appears in the agent's first user message. */
@@ -130,6 +134,27 @@ export const SCENARIOS: Scenario[] = [{
 		await session.prompt("one more turn");
 		checks.push({ name: "the cleared request stays gone", ok: !seen() });
 		return checks;
+	},
+}, {
+	name: "fork",
+	persist: true,
+	// Stop reminders re-prompt the agent, so a turn chooses by what it was last told rather than by its position.
+	scripts: { [MAIN]: [
+		[{ tool: "todo", args: { op: "init", items: ["Shared plan item one", "Shared plan item two"] } }],
+		...Array.from({ length: 12 }, () => (ctx: TurnContext) => ctx.texts.at(-1)?.includes("extend the plan")
+			? [{ tool: "todo", args: { op: "append", items: ["Added after the fork"] } }] : ["Noted."]),
+	] },
+	async drive(session) {
+		await session.prompt(`${MAIN} plan the work`);
+		await session.fork();
+		await session.prompt("extend the plan");
+		const issues: any[] = JSON.parse(session.kata(["list", "--status", "all", "--json"])).issues;
+		const parents = issues.filter(i => i.metadata?.["omp.auto_parent"] === true);
+		const children: any[] = parents.length === 1 ? JSON.parse(session.kata(["show", parents[0].short_id, "--json"])).children : [];
+		return [
+			{ name: "a forked session creates no second automatic parent", ok: parents.length === 1, detail: `${parents.length} parents` },
+			{ name: "the fork's new item joins the source plan", ok: children.map(c => c.title).sort().join("|") === "Added after the fork|Shared plan item one|Shared plan item two", detail: children.map(c => c.title).join(", ") },
+		];
 	},
 }, {
 	name: "tickets",

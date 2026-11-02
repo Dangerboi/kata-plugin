@@ -39,7 +39,7 @@ function host(options: any = {}) {
   const ctx: any = {
     cwd: options.cwd || cwd,
     agent: options.agent || { kind: "main", id: `main-${sid}` },
-    sessionManager: { getSessionId: () => sid, getSessionFile: () => options.sessionFile || `${scratch}/${sid}.jsonl`, getBranch: () => entries },
+    sessionManager: { getSessionId: () => sid, getSessionFile: () => options.sessionFile || `${scratch}/${sid}.jsonl`, getBranch: () => entries, getHeader: () => options.header },
     getAsyncJobSnapshot: () => options.snapshot?.() || { running: [], recent: [] },
     ui: { notify: (...args: any[]) => notices.push(args), setWidget: (...args: any[]) => widgets.push(args) },
   };
@@ -1349,4 +1349,74 @@ test("a delegate spawned under a Tan- name keeps its record and the Kata path", 
   const result = await worker.call({ op: "init", items: ["Delegated step"] }, { ...worker.ctx, invokeTool: async () => { native++; return { content: [], details: {} }; } });
   expect(native).toBe(0);
   expect(result.details.kata.parent).toMatch(/^v2test#/);
+});
+
+// An omp fork gets a new session id and copies the source's entries: the fork shares the source's work.
+function fork(source: ReturnType<typeof host>, form: "id" | "file", options: any = {}) {
+  const parentSession = form === "id" ? source.sid : `/sessions/2026-11-02T10-00-00-000Z_${source.sid}.jsonl`;
+  return host({ entries: structuredClone(source.entries), header: { parentSession }, ...options });
+}
+async function sessionParents(sid: string) { return (await kata(["list", "--status", "all", "--meta", `omp.session_id=${sid}`, "--json"])).issues; }
+for (const form of ["id", "file"] as const) test(`a fork (parentSession as ${form}) keeps the source plan and makes no new parent`, async () => {
+  const source = host(); const parent = await source.init(["Shared alpha", "Shared beta"]);
+  const next = fork(source, form); await next.event("session_start");
+  const view = await next.call({ op: "view" });
+  expect(view.details.kata.parent).toBe(parent);
+  expect(view.content[0].text).toContain("Shared alpha");
+  expect((await next.call({ op: "append", items: ["Fork gamma"] })).isError).toBeUndefined();
+  await next.event("before_subagent_spawn", { agent: "task" }); await next.call({ op: "view" });
+  expect(await sessionParents(next.sid)).toEqual([]);
+  expect((await show(parent)).children.map((c: any) => c.title).sort()).toEqual(["Fork gamma", "Shared alpha", "Shared beta"]);
+});
+
+test("a fork does not replay the source's pending close retries", async () => {
+  const { app: source, lift } = throttledClose();
+  const parent = await source.init(["Throttled shared"]);
+  await source.call({ op: "done", message, evidence });
+  expect((await show(parent)).issue.status).toBe("open");
+  lift();
+  const next = fork(source, "id"); await next.event("session_start");
+  expect((await next.call({ op: "view" })).details.kata.parent).toBe(parent);
+  expect((await show(parent)).children.map((c: any) => c.status)).toEqual(["open"]);
+  expect(next.calls.some(a => a[0] === "close")).toBe(false);
+});
+
+test("a fork does not adopt the source's offline plan", async () => {
+  const source = host({ before: (a: string[]) => a[0] !== "init" && a[0] !== "projects" ? down() : undefined });
+  await source.event("session_start");
+  await source.call({ op: "init", items: ["Offline only"] });
+  expect(source.entries.some(e => e.data?.plan?.local)).toBe(true);
+  const next = fork(source, "id"); await next.event("session_start");
+  expect((await next.call({ op: "view" })).content[0].text).not.toContain("Offline only");
+});
+
+test("shutting down either session keeps the shared parent open until every task is closed", async () => {
+  const source = host(); const parent = await source.init(["Shared one", "Shared two"]);
+  const next = fork(source, "id"); await next.event("session_start");
+  await source.event("session_shutdown");
+  await next.event("session_shutdown");
+  expect((await show(parent)).issue.status).toBe("open");
+  await next.call({ op: "done", message, evidence });
+  await next.call({ op: "done", message, evidence });
+  expect((await show(parent)).issue.status).toBe("closed");
+  await source.event("session_shutdown");
+  expect((await show(parent)).issue.status).toBe("closed");
+});
+
+test("a restarted fork still owns the shared parent", async () => {
+  const source = host(); const parent = await source.init(["Shared once"]);
+  const next = fork(source, "id"); await next.event("session_start");
+  await next.call({ op: "view" });
+  const resumed = host({ sid: next.sid, entries: next.entries, header: next.ctx.sessionManager.getHeader() });
+  await resumed.event("session_start");
+  expect((await resumed.call({ op: "view" })).details.kata.parent).toBe(parent);
+  await resumed.call({ op: "done", message, evidence });
+  expect((await show(parent)).issue.status).toBe("closed");
+});
+
+test("a session without parentSession ignores another session's entries", async () => {
+  const source = host(); const parent = await source.init(["Not shared"]);
+  const next = host({ entries: structuredClone(source.entries), header: {} }); await next.event("session_start");
+  expect((await next.call({ op: "view" })).details.kata.parent).toBeUndefined();
+  expect((await show(parent)).issue.status).toBe("open");
 });

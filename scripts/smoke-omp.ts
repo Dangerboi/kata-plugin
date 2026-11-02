@@ -79,6 +79,7 @@ async function drive(scenario: Scenario, args: string[], env: NodeJS.ProcessEnv,
 			let frame: any;
 			try { frame = JSON.parse(line); } catch { continue; }
 			if (frame.type === "ready") ready.resolve();
+			if (frame.type === "response" && frame.command === "fork") waiting.get(frame.id)?.(frame);
 			if (frame.type === "prompt_result" && waiting.has(frame.id)) waiting.get(frame.id)!(frame);
 			// A prompt that finishes locally never gets a prompt_result.
 			if (frame.type === "response" && frame.command === "prompt" && frame.data?.agentInvoked === false) waiting.get(frame.id)?.(frame);
@@ -89,6 +90,13 @@ async function drive(scenario: Scenario, args: string[], env: NodeJS.ProcessEnv,
 	const session: Session = {
 		kata: args => kata(env, work, args),
 		requests: () => requestsIn(records),
+		async fork() {
+			const id = `f${++sequence}`;
+			const done = new Promise<any>(resolve => waiting.set(id, resolve));
+			child.stdin.write(JSON.stringify({ id, type: "fork" }) + "\n");
+			const frame = await done;
+			if (!frame.success || frame.data?.cancelled) throw new Error(`fork failed: ${JSON.stringify(frame)}`);
+		},
 		async prompt(text) {
 			const id = `p${++sequence}`;
 			const done = new Promise<any>(resolve => waiting.set(id, resolve));
@@ -125,7 +133,7 @@ async function run(scenario: Scenario) {
 		const vars = scenario.setup?.(title => JSON.parse(kata(env, work, ["create", title, "--force-new", "--json"])).issue.short_id) ?? {};
 		env.KATA_SMOKE_VARS = JSON.stringify(vars);
 		if (live) copyUserConfig(agentDir);
-		const args = ["--no-extensions", "--no-skills", "--no-rules", "--no-context-files", "--no-lsp", "--no-title", "--no-session",
+		const args = ["--no-extensions", "--no-skills", "--no-rules", "--no-context-files", "--no-lsp", "--no-title", ...(scenario.persist ? [] : ["--no-session"]),
 			"-e", path.join(root, "plugins/oh-my-pi/kata.ts")];
 		if (!live) args.push("-e", path.join(root, "scripts/smoke-omp-provider.ts"), "--model", "kata-smoke/scripted");
 		let code: number | null, output: string, checks: Check[] = [];
