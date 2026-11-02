@@ -1,8 +1,8 @@
 # Changelog
 
-## Unreleased
+## oh-my-pi 2.3.0 / pi 1.3.0 — 2026-11-03
 
-The repository moved to Dangerboi/kata-plugin. Versions are bumped at release time.
+The repository moved to Dangerboi/kata-plugin, and the Claude Code plugin is gone.
 
 - **`init` no longer drops open tasks by surprise.** An `init` whose new list leaves out open tasks changes nothing and names them; pass `replace: true` to replace them. A list that keeps every open task goes through. omp's `todo.eager` reminder (first prompt, and after every compaction) could otherwise make the model re-`init` and close real tasks. Breaking for callers that re-`init` to drop open tasks: add `replace: true`.
 - **Todo items can work existing tickets.** An item that starts with `<project>#<short_id>: ` works that ticket instead of creating an issue. `start` claims it and marks it in progress, `done` comments on it, and the last open item naming it closes it with that item's evidence. If Kata refuses that close because the ticket's children are still open and they are all tasks of this plan (as when you claim a ticket, which makes it the plan parent), the plugin closes it once they close; children outside the plan leave it open for you. `drop` and `rm` only comment. A plan whose items all name tickets creates no parent issue. An unresolvable or closed ref is an error and creates nothing.
