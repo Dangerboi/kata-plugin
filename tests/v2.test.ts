@@ -1202,6 +1202,23 @@ test("a claimed ticket named by an item closes once its plan children close, wit
   expect(await blockingComments(ticket)).toHaveLength(1);
 });
 
+test("an umbrella ticket stays open after its outside children close, even across resume", async () => {
+  const app = host(); await app.event("session_start");
+  const umbrella = await issue("Umbrella with outside child"), other = await issue("Other ticket");
+  const outside = (await kata(["create", "Outside child", "--parent", umbrella, "--force-new", "--json"])).issue.short_id;
+  await app.call({ op: "init", items: [`v2test#${umbrella}: finish the umbrella`, `v2test#${other}: unrelated step`] });
+  await app.call({ op: "done", task: `v2test#${umbrella}: finish the umbrella`, message, evidence });
+  expect(await blockingComments(umbrella)).toHaveLength(1);
+  expect((await blockingComments(umbrella))[0]).toMatch(/outside this todo plan, so close the ticket yourself/);
+  await kata(["close", outside, "--done", "--message", message, "--test", "closed outside", "--json"]);
+  await app.call({ op: "done", task: `v2test#${other}: unrelated step`, message, evidence });
+  const resumed = host({ sid: app.sid, entries: app.entries }); await resumed.event("session_start");
+  await resumed.call({ op: "view" }); await resumed.event("session_shutdown");
+  expect((await show(umbrella)).issue.status).toBe("open");
+  expect(closeCalls(app, umbrella)).toHaveLength(1);
+  expect(closeCalls(resumed, umbrella)).toHaveLength(0);
+});
+
 test("an umbrella ticket whose open child is outside the plan stays open without repeated close attempts or comments", async () => {
   const app = host(); await app.event("session_start");
   const umbrella = await issue("Umbrella"), other = await issue("Other ticket");

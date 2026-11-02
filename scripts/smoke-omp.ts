@@ -65,7 +65,7 @@ function store(env: NodeJS.ProcessEnv, cwd: string, records: string): Store {
 // and can log the user's own omp out. The original database is opened read-only.
 function copyUserConfig(agentDir: string) {
 	const home = process.env.PI_CODING_AGENT_DIR ?? path.join(os.homedir(), ".omp", "agent");
-	if (!existsSync(path.join(home, "agent.db"))) return;
+	if (!existsSync(path.join(home, "agent.db"))) { console.error(`--live needs an omp login: no agent.db in ${home}`); process.exit(2); }
 	const target = path.join(agentDir, "agent.db");
 	const source = new Database(path.join(home, "agent.db"), { readonly: true });
 	try { source.run("VACUUM INTO ?", [target]); } finally { source.close(); }
