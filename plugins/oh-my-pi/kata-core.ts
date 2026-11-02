@@ -287,7 +287,7 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 	let currentCtx: any;
 	let reminders = 0;
 	let progressed = true;
-	let cache: { id?: string; contract?: string; inbox?: string; pending?: Promise<void> } = {};
+	let cache: { id?: string; contract?: string; inbox?: string; pending?: Promise<void>; inboxPending?: Promise<void> } = {};
 	const autoParents = new Map<string, Binding>();
 	const retries = new Map<string, { task: Task; to: Status; change: Change; cwd: string; at: number }>();
 	let retryTimer: ReturnType<typeof setTimeout> | undefined;
@@ -1206,24 +1206,29 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 			].join("\n");
 	}
 
+	// The contract is fetched once per session; the inbox on every call, so a request
+	// sent mid-session reaches a later turn. A read slower than the caller's budget
+	// keeps running and lands in the cache for the next turn.
 	function warm(ctx: any, cwd = ctx.cwd) {
 		const id = ctx.sessionManager?.getSessionId?.();
 		if (cache.id !== id) cache = { id };
 		const entry = cache;
-		if (entry.pending || entry.contract) return entry.pending;
-		entry.pending = (async () => {
-			if (!await probe(cwd)) return;
-			const [contract, inbox] = await Promise.allSettled([
+		if (!entry.pending && !entry.contract) {
+			entry.pending = (async () => {
+				if (!await probe(cwd)) return;
 				// Exactly these arguments: some Kata builds print nothing for any other form.
-				kata(["agent-contract-hook", "--source", "kata-agent-contract-hook"], cwd, 1000, false).then(out => JSON.parse(out)?.hookSpecificOutput?.additionalContext),
-				process.env.KATA_INBOX_USER ? kata(["inbox", "--context", "--for", process.env.KATA_INBOX_USER], cwd) : Promise.resolve(undefined),
-			]);
-			if (contract.status === "fulfilled" && typeof contract.value === "string") entry.contract = contract.value;
-			else if (contract.status === "rejected") debug(contract.reason);
-			if (inbox.status === "fulfilled") entry.inbox = inbox.value?.trim();
-			else debug(inbox.reason);
-		})().catch(debug).finally(() => { entry.pending = undefined; });
-		return entry.pending;
+				const out = await kata(["agent-contract-hook", "--source", "kata-agent-contract-hook"], cwd, 1000, false).then(out => JSON.parse(out)?.hookSpecificOutput?.additionalContext);
+				if (typeof out === "string") entry.contract = out;
+			})().catch(debug).finally(() => { entry.pending = undefined; });
+		}
+		const user = process.env.KATA_INBOX_USER;
+		if (user && !entry.inboxPending) {
+			// Empty output means no requests; a failed read keeps the last inbox.
+			entry.inboxPending = kata(["inbox", "--context", "--for", user], cwd)
+				.then(out => { entry.inbox = out?.trim(); }, debug)
+				.finally(() => { entry.inboxPending = undefined; });
+		}
+		return Promise.all([entry.pending, entry.inboxPending]).then(() => undefined);
 	}
 
 	return {

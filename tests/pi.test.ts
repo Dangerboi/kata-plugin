@@ -164,7 +164,7 @@ test("pi uses structured prompt sections, preserves other extensions, and caches
   expect(sections.kata_contract).toBe(contract);
   await app.event("before_agent_start", prompt);
   expect(app.calls.filter(a => a[0] === "agent-contract-hook")).toHaveLength(1);
-  expect(app.calls.filter(a => a[0] === "inbox")).toHaveLength(1);
+  expect(app.calls.filter(a => a[0] === "inbox")).toHaveLength(3);
 });
 
 for (const [scope, workspace, enabled, expected] of [

@@ -137,7 +137,7 @@ test("successful standalone main claim preserves a populated auto parent relatio
   expect((await show(auto)).issue.status).toBe("open");
 });
 
-test("contract is cached verbatim, inbox cached, slow hooks bounded and failures quiet", async () => {
+test("contract is cached verbatim, inbox read every turn, slow hooks bounded and failures quiet", async () => {
   process.env.KATA_INBOX_USER = "v2-builder";
   const app = host(); await app.event("session_start"); await app.contractReady;
   const first = await app.event("before_agent_start", { systemPrompt: ["base"] });
@@ -146,7 +146,7 @@ test("contract is cached verbatim, inbox cached, slow hooks bounded and failures
   expect(first.systemPrompt.join("\n")).toContain(contract);
   expect(second.systemPrompt.join("\n")).toContain(contract);
   expect(app.calls.filter(a => a[0] === "agent-contract-hook")).toHaveLength(1);
-  expect(app.calls.filter(a => a[0] === "inbox")).toHaveLength(1);
+  expect(app.calls.filter(a => a[0] === "inbox")).toHaveLength(3);
   const slow = host({ before: async () => { await Bun.sleep(600); return { code: 1, stderr: "offline", stdout: "" }; } });
   const start = performance.now(); await slow.event("session_start"); await slow.event("before_agent_start", { systemPrompt: ["base"] });
   expect(performance.now() - start).toBeLessThan(600);
@@ -863,4 +863,20 @@ test("a revive before_agent_start makes no Kata calls while a prompt still injec
   expect(app.calls.length).toBe(before);
   const prompt = await app.event("before_agent_start", { reason: "prompt", systemPrompt: ["base"] });
   expect(prompt.systemPrompt.join("\n")).toContain("<kata_contract>");
+});
+
+test("a request sent mid-session reaches the inbox section by the next turn and clearing removes it", async () => {
+  process.env.KATA_INBOX_USER = "v2-midsession";
+  const app = host(); await app.event("session_start"); await app.contractReady;
+  const ref = await issue();
+  const turn = async () => (await app.event("before_agent_start", { systemPrompt: ["base"] })).systemPrompt.join("\n");
+  expect(await turn()).not.toContain("<kata_inbox>");
+  await kata(["notify", ref, "--to", "v2-midsession", "--message", "midsession-ping-7731", "--json"]);
+  await turn();
+  const delivered = await turn();
+  expect(delivered).toContain("<kata_inbox>");
+  expect(delivered).toContain("midsession-ping-7731");
+  await kata(["notify", ref, "--to", "v2-midsession", "--clear", "--json"]);
+  await turn();
+  expect(await turn()).not.toContain("midsession-ping-7731");
 });
