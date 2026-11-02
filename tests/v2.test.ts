@@ -1301,3 +1301,52 @@ test("init needs no replace once every task of the plan is closed", async () => 
   expect(result.isError).toBeUndefined();
   expect((await show(ref)).children.find((c: any) => c.title === "Follow-up task").status).toBe("open");
 });
+
+// omp's /tan runs a side conversation in a sub session named Tan-<snowflake>
+// that no task spawn created; it keeps the todo tool.
+test("an untracked /tan sub session uses omp's native todo and makes no Kata calls", async () => {
+  const app = host();
+  const received: any[] = [];
+  const native = { content: [{ type: "text", text: "native list" }], details: { phases: [] } };
+  const tan = host({ agent: { kind: "sub", id: "Tan-7000000000001", parentId: app.ctx.agent.id }, sessionFile: `${scratch}/Tan-7000000000001.jsonl` });
+  const ctx = { ...tan.ctx, invokeTool: async (params: any) => { received.push(params); return native; } };
+  const params = { op: "init", list: [{ phase: "Side", items: ["Look into the question"] }] };
+  const result = await tan.call(params, ctx);
+  expect(result).toBe(native);
+  expect(received).toEqual([params]);
+  expect(tan.calls).toEqual([]);
+});
+
+test("a /tan sub session on an omp without invokeTool keeps the binding error", async () => {
+  const tan = host({ agent: { kind: "sub", id: "Tan-7000000000002", parentId: "main" } });
+  const result = await tan.call({ op: "view" });
+  expect(result.isError).toBe(true);
+  expect(result.content[0].text).toContain("worker binding unavailable");
+});
+
+test("a delegate whose binding failed still gets the binding error, not the native list", async () => {
+  let refuse = false;
+  const lead = host({ before: (args: string[]) => refuse && args[0] === "create" ? { code: 1, stdout: "", stderr: "create refused" } : undefined });
+  await lead.init(["Delegated plan"]);
+  refuse = true;
+  const sessionFile = `${scratch}/failed-binding.jsonl`;
+  lead.emit("task:subagent:lifecycle", { id: "failed-binding", status: "started", sessionFile });
+  const worker = host({ sessionFile, agent: { kind: "sub", id: "failed-binding", parentId: lead.ctx.agent.id } });
+  let native = 0;
+  const result = await worker.call({ op: "view" }, { ...worker.ctx, invokeTool: async () => { native++; return { content: [], details: {} }; } });
+  expect(native).toBe(0);
+  expect(result.isError).toBe(true);
+  expect(result.content[0].text).toContain("worker binding");
+});
+
+test("a delegate spawned under a Tan- name keeps its record and the Kata path", async () => {
+  const lead = host();
+  await lead.init(["Plan one"]);
+  const sessionFile = `${scratch}/Tan-named.jsonl`;
+  lead.emit("task:subagent:lifecycle", { id: "Tan-named", status: "started", sessionFile });
+  const worker = host({ sessionFile, agent: { kind: "sub", id: "Tan-named", parentId: lead.ctx.agent.id } });
+  let native = 0;
+  const result = await worker.call({ op: "init", items: ["Delegated step"] }, { ...worker.ctx, invokeTool: async () => { native++; return { content: [], details: {} }; } });
+  expect(native).toBe(0);
+  expect(result.details.kata.parent).toMatch(/^v2test#/);
+});

@@ -67,6 +67,12 @@ export default function ompKata(pi: any) {
 		delegatedRunning: () => [...(coordinator?.records.values() ?? [])].some(record => record.state === "started" || !record.ref || record.ready) ||
 			(core.currentCtx?.getAsyncJobSnapshot?.()?.running ?? []).some((job: any) => job.type === "task"),
 	}, { namespace: "omp", executable: EXECUTABLE, executableVars: EXECUTABLE_VARS, delegateKeys: ["omp.subagent_id"], debugFile: process.env.KATA_OMP_DEBUG });
+	// /tan runs a side conversation in a sub session whose agent id omp mints as
+	// `Tan-<snowflake>` (tan-command-controller.ts); task spawns get ids from the
+	// task name or a generated name, never that prefix. The id is known at the very
+	// first todo call, unlike a delegate's lifecycle record, so it cannot misroute a
+	// delegate that is still being registered. A record, if present, always wins.
+	const untrackedTan = (ctx: any) => ctx?.agent?.kind === "sub" && /^Tan-/.test(ctx.agent.id ?? "") && !self(ctx);
 	const { serial, bounded, debug, kata, actor, owned, load, bind, ensureParent, reconcile } = core;
 	const warm = (ctx: any) => core.warm(ctx, self(ctx)?.binding?.workspace || ctx.cwd);
 	pi.registerTool({
@@ -86,7 +92,8 @@ export default function ompKata(pi: any) {
 			message: z.string().optional().describe("done: what changed and how it was verified (40+ chars); drop/rm: reason; init without ref: title for the new Kata parent"),
 			evidence: z.array(z.string()).optional().describe("required for done: commit:<sha>, test:<cmd>, pr:<url>, reviewed-paths:<path>"),
 		}),
-		async execute(_id: string, params: any, _signal: AbortSignal | undefined, _onUpdate: unknown, ctx: any) {
+		async execute(_id: string, params: any, signal: AbortSignal | undefined, onUpdate: any, ctx: any) {
+			if (untrackedTan(ctx) && typeof ctx.invokeTool === "function") return ctx.invokeTool(params, { signal, onUpdate });
 			return core.execute(params, ctx);
 		},
 	});
