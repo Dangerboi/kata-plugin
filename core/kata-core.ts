@@ -1040,7 +1040,7 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 			if (!isKataCode(error, "parent_has_open_children")) throw error;
 			const open = openChildren(JSON.parse(await kata(["show", ticket, "--json"], cwd)), ticket);
 			const many = open.length !== 1;
-			const ours = open.every(ref => plan.tasks.some(t => !t.ticket && t.ref === ref));
+			const ours = open.every(ref => plan.tasks.some(t => (t.ticket ?? t.ref) === ref));
 			if (ours) pendingCloses.set(ticket, { ...request, key: noteKey(task, "close-after-children") });
 			const why = `Every todo item for ${ticket} is done, but ${open.length} open ${many ? "children block" : "child blocks"} closing it, so it stays open.`;
 			await note(task, "blocked", ours

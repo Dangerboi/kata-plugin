@@ -1219,6 +1219,23 @@ test("an umbrella ticket stays open after its outside children close, even acros
   expect(closeCalls(resumed, umbrella)).toHaveLength(0);
 });
 
+test("a ticket whose open child is named by another plan item closes after that child closes", async () => {
+  const app = host(); await app.event("session_start");
+  const parent = await issue("Parent ticket");
+  const child = (await kata(["create", "Named child", "--parent", parent, "--force-new", "--json"])).issue.short_id;
+  await app.call({ op: "init", items: [`v2test#${parent}: finish the parent`, `v2test#${child}: finish the child`] });
+  await app.call({ op: "done", task: `v2test#${parent}: finish the parent`, message, evidence: ["test:parent item evidence"] });
+  expect(await blockingComments(parent)).toHaveLength(1);
+  expect((await blockingComments(parent))[0]).toMatch(/closes once that child is closed/);
+  const last = await app.call({ op: "done", task: `v2test#${child}: finish the child`, message, evidence });
+  expect(last.isError, last.content[0].text).toBeUndefined();
+  expect((await show(child)).issue.status).toBe("closed");
+  const closed = await show(parent);
+  expect(closed.issue.status).toBe("closed");
+  expect(JSON.stringify(closed)).toContain("test:parent item evidence");
+  expect(await blockingComments(parent)).toHaveLength(1);
+});
+
 test("an umbrella ticket whose open child is outside the plan stays open without repeated close attempts or comments", async () => {
   const app = host(); await app.event("session_start");
   const umbrella = await issue("Umbrella"), other = await issue("Other ticket");
