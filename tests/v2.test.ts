@@ -352,6 +352,16 @@ test("relative lifecycle session paths join the child's absolute session path", 
   expect(result.systemPrompt.join("\n")).toContain("relative-child");
 });
 
+test("a delegate's first prompt waits for a slow binding instead of dropping it", async () => {
+  const app = host({ before: async (args: string[]) => { if (args[0] === "create") await Bun.sleep(600); return undefined; } });
+  await app.event("session_start"); await app.init(["Slow delegate binding"]);
+  app.emit("task:subagent:lifecycle", { id: "slow-child", agent: "task", status: "started", sessionFile: `${scratch}/slow-child.jsonl` });
+  const child = host({ agent: { kind: "sub", id: "slow-child", parentId: app.ctx.agent.id }, sessionFile: `${scratch}/slow-child.jsonl` });
+  await child.event("session_start");
+  const result = await child.event("before_agent_start", { systemPrompt: ["base"] });
+  expect(result.systemPrompt.join("\n")).toContain("<kata_binding>");
+});
+
 test("explicitly adopting the auto issue revokes and persists automatic close authority", async () => {
   const app = host(); const parent = await app.init(["Explicitly retained task"]);
   await app.call({ op: "init", ref: parent, items: ["Explicitly retained task"] });

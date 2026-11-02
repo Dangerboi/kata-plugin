@@ -284,7 +284,7 @@ export default function ompKata(pi: any) {
 		await bounded(Promise.all([
 			main(ctx) && core.currentId !== ctx.sessionManager?.getSessionId?.() ? serial(() => bind(ctx)) : undefined,
 			(async () => { if (!main(ctx)) await prepareIfTracked(ctx); await warm(ctx); })(),
-		]));
+		]), main(ctx) ? 250 : 3000); // a delegate cannot learn its issue later
 		const base = (Array.isArray(event.systemPrompt) ? event.systemPrompt : [event.systemPrompt || ""]).filter((s: string) => !/^<kata_(contract|todo|inbox|binding)>/.test(s));
 		const sections: string[] = [];
 		// Something else (an earlier injection, another installer) may already carry the contract.
