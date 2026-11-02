@@ -82,6 +82,7 @@ export function inferredName(message: string, cwd: string): string {
 export function quote(value: string): string { return `'${value.replace(/'/g, "'\\''")}'`; }
 
 export const OPEN: ReadonlySet<Status> = new Set(["pending", "in_progress", "blocked"]);
+const WORKING: ReadonlySet<Status> = new Set(["in_progress", "blocked"]);
 const MARK: Record<Status, string> = { pending: "[ ]", in_progress: "[/]", completed: "[x]", abandoned: "[~]", blocked: "[!]" };
 
 export const DESCRIPTION = `Track multi-step work as a todo list stored in Kata. Tasks are identified by verbatim content (or Kata ref), NEVER generated IDs. Unique, stable task/phase names; lost text: view, NEVER guess.
@@ -936,7 +937,7 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 	// An unowned-by-us or closed ticket is left alone.
 	async function settleTicket(task: Task, cwd: string): Promise<void> {
 		const ticket = task.ticket!;
-		if (named.some(other => other !== task && other.ticket === ticket && (other.status === "in_progress" || other.status === "blocked"))) return;
+		if (named.some(other => other !== task && other.ticket === ticket && WORKING.has(other.status))) return;
 		let decision: any;
 		try { decision = await owned(ticket, cwd, "check"); }
 		catch (error) { debug(error); return; }
@@ -953,7 +954,7 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 		if (to === "completed") requireProof(task, ticket, change);
 		if (to === "abandoned") {
 			await note(task, "drop", `Dropped from the todo plan: "${task.content}". Reason: ${change.message || change.reason || "no longer needed"}. The ticket stays open.`, cwd);
-			if (from === "in_progress" || from === "blocked") { task.status = to; task.blocker = undefined; await settleTicket(task, cwd); }
+			if (WORKING.has(from)) await settleTicket(task, cwd);
 		} else {
 			const shown = JSON.parse(await kata(["show", ticket, "--json"], cwd)).issue;
 			if (shown.status !== "open") {
@@ -964,7 +965,7 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 				const decision = await owned(ticket, cwd, "check");
 				await note(task, "done", `Todo item done: "${task.content}"\n${change.message}\nEvidence: ${change.evidence!.join(", ")}`, cwd);
 				if (!named.some(other => other !== task && other.ticket === ticket && OPEN.has(other.status))) await closeTicket(task, decision, change, cwd);
-				else if (from === "in_progress" || from === "blocked") { task.status = to; await settleTicket(task, cwd); }
+				else if (WORKING.has(from)) await settleTicket(task, cwd);
 			}
 		}
 		task.status = to;
@@ -1047,7 +1048,7 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 
 	async function remove(task: Task, change: Change, cwd: string): Promise<void> {
 		if (task.ticket) {
-			const working = task.status === "in_progress" || task.status === "blocked";
+			const working = WORKING.has(task.status);
 			if (OPEN.has(task.status)) await note(task, "rm", `Removed from the todo plan: "${task.content}". Reason: ${change.message || change.reason || "no longer needed"}. The ticket stays open.`, cwd);
 			named = named.filter(t => t !== task);
 			plan.tasks = plan.tasks.filter(t => t !== task);
