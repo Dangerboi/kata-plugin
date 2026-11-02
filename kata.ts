@@ -20,8 +20,8 @@ import { createKataCore, DESCRIPTION, sessionKey, render, matchDelegation, named
 	kataCommands as parseKataCommands, teammateFor, delegateCommand, delegateContext, type Binding } from "./core/kata-core";
 
 const EXECUTABLE = process.env.KATA_OMP_EXECUTABLE || "kata";
-const STATE_ENTRY = "io.kata.omp.parent";
-export const kataCommands = (command: string) => parseKataCommands(command, EXECUTABLE);
+const EXECUTABLE_VARS = ["KATA_OMP_EXECUTABLE"];
+export const kataCommands = (command: string) => parseKataCommands(command, EXECUTABLE, EXECUTABLE_VARS);
 
 type Delegate = {
 	id: string; teammate: string; sessionFile?: string; parentAgentId?: string;
@@ -62,7 +62,7 @@ export default function ompKata(pi: any) {
 		beforeReconcile: syncSnapshots,
 		delegatedRunning: () => [...(coordinator?.records.values() ?? [])].some(record => record.state === "started" || !record.ref || record.ready) ||
 			(core.currentCtx?.getAsyncJobSnapshot?.()?.running ?? []).some((job: any) => job.type === "task"),
-	}, { namespace: "omp", executable: EXECUTABLE, debugFile: process.env.KATA_OMP_DEBUG });
+	}, { namespace: "omp", executable: EXECUTABLE, executableVars: EXECUTABLE_VARS, debugFile: process.env.KATA_OMP_DEBUG });
 	const { serial, bounded, debug, kata, actor, owned, load, bind, ensureParent, reconcile } = core;
 	const warm = (ctx: any) => core.warm(ctx, self(ctx)?.binding?.workspace || ctx.cwd);
 	pi.registerTool({
@@ -145,7 +145,6 @@ export default function ompKata(pi: any) {
 						"--meta", "omp.status=running", "--idempotency-key", `omp-agent:${id}:${record.id}`, "--force-new", "--json"], binding.workspace));
 					record.ref = `${binding.parent.split("#")[0]}#${out.issue.short_id}`;
 				}
-				pi.appendEntry(`${STATE_ENTRY}.delegate`, { id: record.id, ref: record.ref, teammate: record.teammate, sessionFile: record.sessionFile, binding });
 			}),
 			settle: record => serial(async () => { await settleRecord(record); await reconcile(); }),
 		};
@@ -261,7 +260,7 @@ export default function ompKata(pi: any) {
 		if (!commands.length) return;
 		const record = self(ctx);
 		const teammate = record?.teammate || teammateFor(ctx.agent.id);
-		try { return { input: { ...event.input, command: delegateCommand(event.input.command, EXECUTABLE, teammate, record?.binding) } }; }
+		try { return { input: { ...event.input, command: delegateCommand(event.input.command, EXECUTABLE, EXECUTABLE_VARS, teammate, record?.binding) } }; }
 		catch (error) { return { block: true, reason: String(error) }; }
 	});
 

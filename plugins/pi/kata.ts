@@ -72,6 +72,7 @@ export default async function piKata(pi: ExtensionAPI) {
 	let delegate: { id: string; ref: string; teammate: string; binding: Binding; restore?: Restore; fresh?: boolean } | undefined;
 	let toolCalls = 0;
 	const { Type } = await import("typebox");
+	const EXECUTABLE_VARS = ["KATA_PI_EXECUTABLE", "KATA_OMP_EXECUTABLE"];
 	const executable = process.env.KATA_PI_EXECUTABLE || process.env.KATA_OMP_EXECUTABLE || "kata";
 	const core = createKataCore({
 		exec: (...args) => pi.exec(...args),
@@ -79,7 +80,7 @@ export default async function piKata(pi: ExtensionAPI) {
 		getSessionName: () => pi.getSessionName(),
 		allowUI: ctx => ctx.hasUI === true,
 		isMain: () => !inherited,
-	}, { namespace: "pi", executable, explicitRef: () => inherited ? undefined : explicit, debugFile: process.env.KATA_PI_DEBUG || process.env.KATA_OMP_DEBUG });
+	}, { namespace: "pi", executable, executableVars: EXECUTABLE_VARS, explicitRef: () => inherited ? undefined : explicit, debugFile: process.env.KATA_PI_DEBUG || process.env.KATA_OMP_DEBUG });
 
 	function exportParent(ctx: ExtensionContext) {
 		process.env.KATA_PI_PARENT = JSON.stringify({ pid: process.pid, sessionId: ctx.sessionManager.getSessionId(),
@@ -218,10 +219,10 @@ export default async function piKata(pi: ExtensionAPI) {
 		let command = event.input.command;
 		if (inherited) {
 			if (!delegate) return { block: true, reason: "Kata child binding is unavailable; retry after parent startup." };
-			try { command = delegateCommand(command, executable, delegate.teammate, delegate.binding); }
+			try { command = delegateCommand(command, executable, EXECUTABLE_VARS, delegate.teammate, delegate.binding); }
 			catch (error) { return { block: true, reason: String(error) }; }
 		}
-		for (const invocation of kataCommands(command, executable).reverse()) {
+		for (const invocation of kataCommands(command, executable, EXECUTABLE_VARS).reverse()) {
 			if (invocation.executable.value !== "kata" || executable === "kata") continue;
 			command = command.slice(0, invocation.executable.start) + quote(executable) + command.slice(invocation.executable.end);
 		}

@@ -25,6 +25,8 @@ export interface CoreHost {
 export interface CoreOptions {
 	namespace: string;
 	executable: string;
+	// Environment variable names (without $) a shell command may use for the executable.
+	executableVars: readonly string[];
 	debugFile?: string;
 	explicitRef?(): string | undefined;
 }
@@ -77,7 +79,7 @@ export function digest(...parts: string[]): string {
 type ShellWord = { value: string; start: number; end: number };
 // Inspect command positions only. Quoted arguments and heredoc bodies are data;
 // this lexer never infers whether a test/commit command proves completion.
-export function kataCommands(command: string, configuredExecutable = "kata"): { executable: ShellWord; words: ShellWord[] }[] {
+export function kataCommands(command: string, configuredExecutable = "kata", executableVars: readonly string[] = []): { executable: ShellWord; words: ShellWord[] }[] {
 	const segments: ShellWord[][] = [[]];
 	let i = 0, heredoc: string | undefined, wantDelimiter = false;
 	while (i < command.length) {
@@ -110,7 +112,7 @@ export function kataCommands(command: string, configuredExecutable = "kata"): { 
 		let j = 0;
 		while (j < segment.length && (/^[A-Za-z_][A-Za-z0-9_]*=/.test(segment[j].value) || ["if", "then", "elif", "do", "else", "!", "command", "env", "time"].includes(segment[j].value))) j++;
 		const executable = segment[j];
-		if (executable && (path.basename(executable.value) === "kata" || executable.value === configuredExecutable || ["$KATA_OMP_EXECUTABLE", "${KATA_OMP_EXECUTABLE}", "$KATA_PI_EXECUTABLE", "${KATA_PI_EXECUTABLE}"].includes(executable.value))) commands.push({ executable, words: segment.slice(j + 1) });
+		if (executable && (path.basename(executable.value) === "kata" || executable.value === configuredExecutable || executableVars.some(name => executable.value === `$${name}` || executable.value === `\${${name}}`))) commands.push({ executable, words: segment.slice(j + 1) });
 	}
 	return commands;
 }
@@ -139,9 +141,9 @@ export function teammateFor(id: string, salt?: string): string {
 	return `${base.slice(0, 57)}-${digest(salt ? `${salt}:${id}` : id).slice(0, 6)}`;
 }
 
-export function delegateCommand(command: string, executable: string, teammate: string, binding?: Binding): string {
+export function delegateCommand(command: string, executable: string, executableVars: readonly string[], teammate: string, binding?: Binding): string {
 	const edits: { start: number; end: number; value: string }[] = [];
-	for (const invocation of kataCommands(command, executable)) {
+	for (const invocation of kataCommands(command, executable, executableVars)) {
 		const parsed = shellOptions(invocation.words);
 		if (parsed.options.has("--as")) throw new Error("Kata subagents keep the current actor. Use your assigned --teammate; --as is not permitted.");
 		for (const previous of parsed.occurrences.get("--teammate") ?? []) edits.push({ start: previous[0].start, end: previous.at(-1)!.end, value: "" });
@@ -345,7 +347,7 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 	async function owned(ref: string, cwd: string, mayClaim: boolean | "check" = false, allowClosed = false, revision?: number): Promise<any> {
 		let issue = JSON.parse(await kata(["show", ref, "--json"], cwd)).issue;
 		if (revision !== undefined && issue.revision !== revision) throw new Error(`Kata issue ${ref} changed since the task was selected; no work metadata was written.`);
-		if (main(currentCtx) && (issue.metadata?.["omp.subagent_id"] || issue.metadata?.["pi.subagent_id"])) throw new Error(`Kata issue ${ref} belongs to a delegate; no work metadata was written.`);
+		if (main(currentCtx) && issue.metadata?.[`${namespace}.subagent_id`]) throw new Error(`Kata issue ${ref} belongs to a delegate; no work metadata was written.`);
 		const currentActor = await actor(cwd, ref);
 		const teammate = sessionTeammate ?? process.env.KATA_TEAMMATE ?? "";
 		if (issue?.status !== "open" && !(allowClosed && issue?.status === "closed")) throw new Error(`Kata issue ${ref} is closed or unavailable; no work metadata was written.`);
@@ -365,7 +367,7 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 		}
 		const unclaimed = mayClaim === "check" && !issue.owner;
 		if ((issue.status !== "open" && !(allowClosed && issue.status === "closed")) || (!unclaimed && (issue.owner !== currentActor || (issue.metadata?.teammate || "") !== teammate)) ||
-			(main(currentCtx) && (issue.metadata?.["omp.subagent_id"] || issue.metadata?.["pi.subagent_id"]))) {
+			(main(currentCtx) && issue.metadata?.[`${namespace}.subagent_id`])) {
 			throw new Error(`Kata issue ${ref} is not owned by actor ${currentActor} and teammate ${teammate || "(none)"}; no work metadata was written.`);
 		}
 		if (!Number.isInteger(issue.revision) || issue.revision < 0) throw new Error(`Kata issue ${ref} has no valid metadata revision; no work metadata was written.`);
@@ -414,7 +416,7 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 					content: c.title,
 					phase: meta["todo.phase"],
 					revision: c.revision,
-					delegated: !!(meta["omp.subagent_id"] || meta["pi.subagent_id"]) && (meta.teammate || "") !== (sessionTeammate ?? process.env.KATA_TEAMMATE ?? ""),
+					delegated: !!meta[`${namespace}.subagent_id`] && (meta.teammate || "") !== (sessionTeammate ?? process.env.KATA_TEAMMATE ?? ""),
 					review: (c.labels ?? []).some((l: any) => (typeof l === "string" ? l : l?.label) === "needs-review"),
 					status,
 					blocker: status === "blocked" ? meta["work.attention_msg"] : undefined,
@@ -1152,7 +1154,7 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 		if (!main(ctx) || (options.explicitRef?.() ?? process.env.KATA_REF) || event.toolName !== "bash" || event.isError || (event.details?.exitCode !== undefined && event.details.exitCode !== 0)) return;
 		const command = event.input?.command;
 		if (typeof command !== "string" || /[;|\n]/.test(command)) return;
-		for (const invocation of kataCommands(command, options.executable)) {
+		for (const invocation of kataCommands(command, options.executable, options.executableVars)) {
 			const parsed = shellOptions(invocation.words), args = parsed.args;
 			let ref = args[0] === "claim" ? args[1] : args[0] === "meta" && args[1] === "set" && args[3] === "work.attention" && args[4] === "ok" ? args[2] : undefined;
 			if (!ref || parsed.options.has("--as")) continue;

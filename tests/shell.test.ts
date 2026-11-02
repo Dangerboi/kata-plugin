@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 import { assertIsolated } from "./isolation";
 import { kataCommands } from "../kata";
+import { kataCommands as coreCommands } from "../core/kata-core";
 assertIsolated();
 
 test("only command positions are Kata invocations", () => {
@@ -14,4 +15,11 @@ test("quoted heredoc text is never a Kata command", () => {
 test("the configured executable variable is recognized without evaluating shell code", () => {
   expect(kataCommands('"$KATA_OMP_EXECUTABLE" list')).toHaveLength(1);
   expect(kataCommands('"${KATA_OMP_EXECUTABLE}" list')).toHaveLength(1);
+});
+test("each adapter recognizes only its own executable variables", () => {
+  const pi = ["KATA_PI_EXECUTABLE", "KATA_OMP_EXECUTABLE"];
+  expect(kataCommands('"$KATA_PI_EXECUTABLE" list')).toHaveLength(0);
+  expect(kataCommands('"${KATA_PI_EXECUTABLE}" list')).toHaveLength(0);
+  expect(coreCommands('"$KATA_PI_EXECUTABLE" list', "kata", pi)).toHaveLength(1);
+  expect(coreCommands('"${KATA_PI_EXECUTABLE}" list', "kata", pi)).toHaveLength(1);
 });
