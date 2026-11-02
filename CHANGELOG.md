@@ -1,5 +1,19 @@
 # Changelog
 
+## Unreleased
+
+The repository moved to Dangerboi/kata-plugin. Versions are bumped at release time.
+
+- **Todo items can work existing tickets.** An item that starts with `<project>#<short_id>: ` works that ticket instead of creating an issue. `start` claims it and marks it in progress, `done` comments on it, and the last open item naming it closes it with that item's evidence. `drop` and `rm` only comment. A plan whose items all name tickets creates no parent issue. An unresolvable or closed ref is an error and creates nothing.
+- **A `task` naming a ticket binds to it.** A prompt that names exactly one ticket gives the subagent that ticket, with no "Subagent" issue. A prompt naming several tickets or plan items is refused: name one per task.
+- **Type `#` to pick a ticket.** In an interactive omp or pi session, `#` plus part of a short id or title word offers open Kata issues next to the host's own items, and inserts the qualified ref. A digits-only `#1234` stays GitHub's.
+- **The inbox is read every turn.** A `kata notify` sent mid-session reaches the agent on that turn or the next. The contract is still fetched once per session.
+- **Delegates get their binding.** A delegate's first prompt waits up to 3 s for its issue binding instead of 250 ms, so a slow Kata no longer leaves it without its issue.
+- **Kata errors are read from codes.** The plugin passes `--json` and branches on Kata's error codes and exit codes (`daemon_unavailable`, `project_not_initialized`, `sibling_throttle`), not on message wording.
+- omp: a `revive` of a parked subagent does no Kata work, and the close retry timer runs on omp's session timer, so shutdown clears it.
+- **Claude Code adapter removed.** Use Kata's own hook: `kata agent-hook install claude`. Existing Claude installs stay on adapter 0.2.0. The `test:claude` and `validate` scripts are gone.
+- Development: `bun run smoke:omp` runs the omp plugin in a real headless omp with a scripted model. Tested with oh-my-pi 18.15.0.
+
 ## oh-my-pi 2.2.0 / pi 1.2.0 — 2026-10-31
 
 Installing the oh-my-pi plugin now makes Kata the only todo system, in every folder, with no setup.
