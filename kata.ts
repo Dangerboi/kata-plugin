@@ -279,6 +279,8 @@ export default function ompKata(pi: any) {
 	async function prepareIfTracked(ctx: any) { const record = self(ctx); if (record) await prepare(record); }
 
 	pi.on("before_agent_start", async (event: any, ctx: any) => {
+		// omp discards the result of a revive and nothing needs the work.
+		if (event.reason === "revive") return;
 		await bounded(Promise.all([
 			main(ctx) && core.currentId !== ctx.sessionManager?.getSessionId?.() ? serial(() => bind(ctx)) : undefined,
 			(async () => { if (!main(ctx)) await prepareIfTracked(ctx); await warm(ctx); })(),

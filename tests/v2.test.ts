@@ -854,3 +854,13 @@ test("worker binding reports the preparation error and recovers after it clears"
   expect(recovered.isError).toBeUndefined();
   expect(recovered.content[0].text).not.toContain("permission denied");
 });
+
+test("a revive before_agent_start makes no Kata calls while a prompt still injects the contract", async () => {
+  const app = host(); await app.event("session_start"); await app.contractReady;
+  const before = app.calls.length;
+  const revive = await app.event("before_agent_start", { reason: "revive", systemPrompt: ["base"] });
+  expect(revive).toBeUndefined();
+  expect(app.calls.length).toBe(before);
+  const prompt = await app.event("before_agent_start", { reason: "prompt", systemPrompt: ["base"] });
+  expect(prompt.systemPrompt.join("\n")).toContain("<kata_contract>");
+});
