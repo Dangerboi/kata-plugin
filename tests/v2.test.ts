@@ -246,6 +246,40 @@ test("new work reopens an auto parent; all-wontfix parents require review", asyn
   expect(view.labels.some((l: any) => l.label === "needs-review")).toBe(true);
 });
 
+// Like omp: the host owns retry timers, and sweeps whatever is pending on shutdown.
+function throttledClose() {
+  const timers = new Set<{ run: () => void }>();
+  let throttled = true;
+  const app = host({ before: (a: string[]) => a[0] === "close" && throttled
+    ? { code: 1, stdout: "", stderr: "sibling-close throttle: you closed 3 children of kata-1 in the last 1m0s:\n  kata-2 closed 5s ago\nSlow down and review the scope of each remaining child before closing." } : undefined });
+  app.ctx.setTimeout = (callback: () => void) => { const timer = { run: callback }; timers.add(timer); return timer; };
+  app.ctx.clearTimer = (timer: any) => { timers.delete(timer); };
+  return { app, timers, lift: () => { throttled = false; } };
+}
+test("a throttled close is retried by the host timer", async () => {
+  const { app, timers, lift } = throttledClose();
+  const parent = await app.init(["Throttled task"]);
+  expect((await app.call({ op: "done", message, evidence })).content[0].text).toContain("retry");
+  expect(timers.size).toBe(1);
+  lift();
+  const actualNow = Date.now;
+  Date.now = () => actualNow() + 61_000;
+  try {
+    for (const timer of [...timers]) timer.run();
+    for (let i = 0; i < 100 && (await show(parent)).issue.status !== "closed"; i++) await new Promise(resolve => setTimeout(resolve, 50));
+  } finally { Date.now = actualNow; }
+  expect((await show(parent)).issue.status).toBe("closed");
+});
+test("binding another session cancels the pending retry through the host", async () => {
+  const { app, timers } = throttledClose();
+  await app.init(["Throttled task"]);
+  await app.call({ op: "done", message, evidence });
+  expect(timers.size).toBe(1);
+  const other = { ...app.ctx, sessionManager: { getSessionId: () => `${app.sid}-other`, getBranch: () => [] } };
+  await app.event("session_branch", {}, other);
+  expect(timers.size).toBe(0);
+});
+
 test("sibling throttle retries the pinned close and does not falsely complete metadata", async () => {
   let throttled = false;
   const app = host({ before: (a: string[]) => {

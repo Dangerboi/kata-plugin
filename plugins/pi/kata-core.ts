@@ -291,6 +291,7 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 	const autoParents = new Map<string, Binding>();
 	const retries = new Map<string, { task: Task; to: Status; change: Change; cwd: string; at: number }>();
 	let retryTimer: ReturnType<typeof setTimeout> | undefined;
+	let retryTimerCtx: any;
 	let lastSnapshot: string | undefined;
 	function persist() {
 		if (!currentId || !main(currentCtx)) return;
@@ -564,7 +565,7 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 		plan = { tasks: [] };
 		scope = "unknown"; refusal = ""; outage = "";
 		retries.clear(); autoParents.clear();
-		if (retryTimer) { clearTimeout(retryTimer); retryTimer = undefined; }
+		clearRetryTimer();
 		let snapshot: any;
 		for (const entry of ctx.sessionManager?.getBranch?.() ?? []) {
 			if (entry?.type === "custom" && entry.customType === SNAPSHOT_ENTRY && entry.data?.version === 1 && entry.data.sessionId === id) snapshot = entry.data;
@@ -860,8 +861,20 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 	class DeferredClose extends Error {}
 	function scheduleRetry() {
 		if (retryTimer) return;
-		retryTimer = setTimeout(() => { retryTimer = undefined; void serial(drainRetries).catch(debug); }, 60_100);
-		retryTimer.unref?.();
+		const fire = () => { retryTimer = undefined; retryTimerCtx = undefined; void serial(drainRetries).catch(debug); };
+		// omp's ctx timer is contained and cleared on session_shutdown; pi has none.
+		if (typeof currentCtx?.setTimeout === "function" && typeof currentCtx.clearTimer === "function") {
+			retryTimerCtx = currentCtx;
+			retryTimer = currentCtx.setTimeout(fire, 60_100);
+		} else {
+			retryTimer = setTimeout(fire, 60_100);
+			retryTimer.unref?.();
+		}
+	}
+	function clearRetryTimer() {
+		if (!retryTimer) return;
+		if (retryTimerCtx) retryTimerCtx.clearTimer(retryTimer); else clearTimeout(retryTimer);
+		retryTimer = undefined; retryTimerCtx = undefined;
 	}
 	async function closeTask(args: string[], task: Task, to: Status, change: Change, cwd: string) {
 		try { await kata(args, cwd); }
