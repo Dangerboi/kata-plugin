@@ -18,7 +18,7 @@
 
 import path from "node:path";
 import { createKataCore, DESCRIPTION, sessionKey, render, matchDelegation, namedTargets,
-	kataCommands as parseKataCommands, teammateFor, delegateCommand, delegateContext, type Binding } from "./kata-core";
+	kataCommands as parseKataCommands, teammateFor, ticketAutocomplete, delegateCommand, delegateContext, type Binding } from "./kata-core";
 
 const EXECUTABLE = process.env.KATA_OMP_EXECUTABLE || "kata";
 const EXECUTABLE_VARS = ["KATA_OMP_EXECUTABLE"];
@@ -334,8 +334,19 @@ export default function ompKata(pi: any) {
 		}
 	}
 
+	// One provider per editor: omp rebuilds its stack from every registered factory,
+	// and begin runs again on every session switch.
+	const typeahead = new WeakSet<object>();
+	function offerTickets(ctx: any) {
+		if (!ctx.ui?.addAutocompleteProvider || typeahead.has(ctx.ui)) return;
+		typeahead.add(ctx.ui);
+		core.currentCtx = ctx;
+		ctx.ui.addAutocompleteProvider((current: any) => ticketAutocomplete(current, core.tickets, { defaultProject: process.env.KATA_DEFAULT_PROJECT?.trim() || undefined }));
+	}
+
 	async function begin(ctx: any) {
 		if (!main(ctx)) { core.currentCtx = ctx; void prepareIfTracked(ctx).then(() => warm(ctx)).catch(debug); return; }
+		offerTickets(ctx);
 		const explicit = process.env.KATA_REF;
 		const previous = attentionSession;
 		const id = ctx.sessionManager?.getSessionId?.();

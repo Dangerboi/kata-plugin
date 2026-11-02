@@ -1,6 +1,6 @@
 import path from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { createdParentRef, createKataCore, DESCRIPTION, kataCommands, matchDelegation, quote, render, teammateFor, delegateCommand, delegateContext, type Binding, type Task } from "./kata-core";
+import { createdParentRef, createKataCore, DESCRIPTION, kataCommands, matchDelegation, quote, render, teammateFor, delegateCommand, delegateContext, ticketAutocomplete, type Binding, type Task } from "./kata-core";
 
 // Match the native adapter's capability/scope selection, including a project
 // root boundary. Recheck at prompt time: either factory can load first.
@@ -263,6 +263,7 @@ export default async function piKata(pi: ExtensionAPI) {
 		if (!inherited) exportParent(ctx);
 		core.resetReminders();
 	}));
+	const typeahead = new WeakSet<object>();
 	pi.on("session_start", async (_event, ctx) => {
 		const saved = (ctx.sessionManager.getBranch() as any[]).filter(e => e.type === "custom" && e.customType === "io.kata.pi.delegate" && e.data?.id === ctx.sessionManager.getSessionId()).at(-1)?.data;
 		if (saved?.parentMarker && (!explicit || inherited)) {
@@ -279,6 +280,12 @@ export default async function piKata(pi: ExtensionAPI) {
 			const switched = same || (!!model && await pi.setModel(model).catch(error => { core.debug(error); return false; }));
 			// The parent's thinking level only fits the parent's model.
 			if (switched && inherit.thinking && inherited.thinking) pi.setThinkingLevel(inherited.thinking as any);
+		}
+		// Only the interactive main session has an editor; session_start fires again per session.
+		if (!inherited && ctx.hasUI && ctx.ui.addAutocompleteProvider && !typeahead.has(ctx.ui)) {
+			typeahead.add(ctx.ui);
+			core.currentCtx = ctx;
+			ctx.ui.addAutocompleteProvider(current => ticketAutocomplete(current, core.tickets, { defaultProject: process.env.KATA_DEFAULT_PROJECT?.trim() || undefined }));
 		}
 		isolateChildAttention(ctx, inherited ? undefined : explicit);
 		return bind(ctx);
