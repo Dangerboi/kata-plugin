@@ -47,11 +47,33 @@ export function slug(text: string | undefined, keepCase = false): string | undef
 	const value = (keepCase ? text ?? "" : (text ?? "").toLowerCase()).replace(keepCase ? /[^A-Za-z0-9._-]+/g : /[^a-z0-9._-]+/g, "-").replace(/^[-._]+|[-._]+$/g, "").slice(0, 64).replace(/[-._]+$/, "");
 	return value || undefined;
 }
-// The name Kata would infer for an unregistered workspace, read from its own
-// refusal ("alias github.com/owner/repo is not registered"), else the folder.
-export function inferredName(refusal: string, cwd: string): string {
-	const named = /project (\S+) is not registered/.exec(refusal)?.[1];
-	const alias = /alias (\S+) is not registered/.exec(refusal)?.[1]?.replace(/^local:\/\//, "").replace(/\/+$/, "").split("/").pop();
+// A failed Kata call. Kata's own error envelope (`--json`: {error:{kind,code,
+// hint,message,exit_code}}) and its documented exit code are kept so callers
+// branch on them, never on message wording.
+export class KataError extends Error {
+	constructor(message: string, readonly info: {
+		exit: number;
+		code?: string; // the envelope's error code, e.g. project_not_initialized
+		detail?: string; // Kata's own message
+		killed?: boolean; // our timeout killed it
+		notRun?: boolean; // Kata never ran: missing executable
+	}) { super(message); }
+	get code() { return this.info.code; }
+	// Kata cannot serve requests: not runnable, timed out, or daemon unreachable (exit 7).
+	get unusable() { return Boolean(this.info.notRun || this.info.killed || this.info.code === "daemon_unavailable" || this.info.exit === 7); }
+}
+export const isUnusable = (error: unknown) => error instanceof KataError && error.unusable;
+export const isKataCode = (error: unknown, code: string) => error instanceof KataError && error.code === code;
+
+// The workspace name Kata would infer, read from its project_not_initialized
+// message ("alias github.com/owner/repo is not registered", "project x is not
+// registered"), else the folder. Kata has no structured field for it (the error
+// carries only `message` and `hint`): that is the one place this core reads
+// Kata's wording. Upstream request: include the alias or project name as data
+// on the project_not_initialized error (see the issue draft).
+export function inferredName(message: string, cwd: string): string {
+	const named = /project (\S+) is not registered/.exec(message)?.[1];
+	const alias = /alias (\S+) is not registered/.exec(message)?.[1]?.replace(/^local:\/\//, "").replace(/\/+$/, "").split("/").pop();
 	return slug((named ?? alias ?? path.basename(path.resolve(cwd))).replace(/\.git$/, ""), true) ?? slug(path.basename(path.resolve(cwd)), true) ?? "workspace";
 }
 
@@ -313,13 +335,23 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 	}
 
 	async function kata(args: string[], cwd: string, timeout = 120_000, workspace = true): Promise<string> {
-		const flags = [...(sessionTeammate !== undefined && args[0] !== "agent-contract-hook" ? ["--teammate", sessionTeammate] : []), ...(workspace ? ["--workspace", path.resolve(cwd)] : [])];
+		// --json makes every failure carry Kata's error code; the contract hook and --context print their own format.
+		const json = args[0] !== "agent-contract-hook" && !args.includes("--json") && !args.includes("--context");
+		const flags = [...(json ? ["--json"] : []), ...(sessionTeammate !== undefined && args[0] !== "agent-contract-hook" ? ["--teammate", sessionTeammate] : []), ...(workspace ? ["--workspace", path.resolve(cwd)] : [])];
 		const end = args.indexOf("--");
 		args = [...args.slice(0, end < 0 ? args.length : end), ...flags, ...(end < 0 ? [] : args.slice(end))];
-		const result = await host.exec(options.executable, args, { cwd, timeout });
+		let result: Awaited<ReturnType<CoreHost["exec"]>>;
+		try { result = await host.exec(options.executable, args, { cwd, timeout }); }
+		catch (error) {
+			if ((error as { code?: unknown })?.code !== "ENOENT") throw error;
+			throw new KataError(`kata ${args[0]} could not run: ${(error as Error).message}`, { exit: -1, notRun: true });
+		}
 		if (result.code !== 0 || result.killed) {
-			const detail = (result.stderr || result.stdout || "").trim().split("\n").slice(-3).join(" ");
-			throw new Error(`kata ${args[0]} ${result.killed ? `timed out after ${timeout}ms` : "failed"}${detail ? `: ${detail}` : ""}`);
+			const envelope = [result.stdout, result.stderr].map(text => { try { return JSON.parse(text ?? "").error; } catch { return undefined; } }).find(e => e && typeof e === "object");
+			const detail = envelope?.message ?? (result.stderr || result.stdout || "").trim().split("\n").slice(-3).join(" ");
+			// A host that fails to spawn reports a bare failure with no output at all; Kata always says something.
+			const notRun = !result.killed && !envelope && !detail;
+			throw new KataError(`kata ${args[0]} ${result.killed ? `timed out after ${timeout}ms` : notRun ? "could not run" : "failed"}${detail ? `: ${detail}` : ""}`, { exit: result.code, code: envelope?.code, detail, killed: result.killed, notRun });
 		}
 		return result.stdout;
 	}
@@ -455,8 +487,6 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 		ui.setWidget(WIDGET, [line]);
 	}
 
-	// Kata itself cannot run: no executable, or a daemon that cannot be reached.
-	const UNUSABLE = /\bENOENT\b|\bECONN(?:REFUSED|RESET)\b|executable file not found|not found in \$PATH|command not found|connection refused|dial tcp|no such host|daemon[^\n]{0,40}(?:unavailable|unreachable|not running|did not start|failed to start)|timed out after/i;
 	// True while Kata answers. An unregistered cwd is not an outage: it resolves
 	// to the default or inferred project. Only an unusable Kata (missing
 	// executable, unreachable daemon) is down, and it is probed again next time.
@@ -464,8 +494,8 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 		if (scope !== "unknown" && scope !== "down") return true;
 		try { await kata(["list", "--limit", "1", "--json"], cwd, 15_000); scope = "workspace"; refusal = ""; }
 		catch (error) {
-			if (/\bproject_not_initialized\b/.test(String(error))) { scope = "unbound"; refusal = String(error); }
-			else if (UNUSABLE.test(String(error))) { scope = "down"; outage = (error as Error)?.message ?? String(error); debug(error); return false; }
+			if (isKataCode(error, "project_not_initialized")) { scope = "unbound"; refusal = (error as KataError).info.detail ?? ""; }
+			else if (isUnusable(error)) { scope = "down"; outage = (error as Error)?.message ?? String(error); debug(error); return false; }
 			else throw error; // a missing project or a refused login is an error, never a local plan
 		}
 		return true;
@@ -543,7 +573,7 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 		const where = candidate(ctx.cwd);
 		let list: any[];
 		try { list = JSON.parse(await kata(["list", "--status", "all", ...(where.project ? ["--project", where.project] : []), "--meta", `${namespace}.session_id=${id}`, "--label", `${namespace}-session`, "--limit", "2", "--json"], ctx.cwd)).issues ?? []; }
-		catch (error) { if (where.project && /project_not_initialized/.test(String(error))) return; throw error; } // the project is not registered yet: no earlier parent
+		catch (error) { if (where.project && isKataCode(error, "project_not_initialized")) return; throw error; } // the project is not registered yet: no earlier parent
 		// Creation records session identity before the guarded claim can finish.
 		const candidates = list.filter((issue: any) => (issue.metadata?.[`${namespace}.auto_parent`] === true || issue.metadata?.[`${namespace}.auto_parent`] === undefined) && issue.metadata?.[`${namespace}.session_id`] === id && sessionKey(issue.metadata?.[`${namespace}.workspace`] || ".", ctx.cwd) === sessionKey(ctx.cwd, ctx.cwd));
 		if (candidates.length === 1) return { parent: candidates[0].qualified_id, workspace: candidates[0].metadata[`${namespace}.workspace`], sessionId: id, auto: true, label: where.label };
@@ -836,7 +866,7 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 			out = JSON.parse(await kata(["create", ...(where.project ? ["--project", where.project] : []), ...(where.label ? ["--label", where.label] : []), "--body", `Todo plan from ${namespace} session ${sessionId}.`, "--meta", `${namespace}.session_id=${sessionId}`, "--meta", `${namespace}.workspace=${cwd}`, "--label", `${namespace}-session`, "--idempotency-key", `${namespace}-session:${sessionId}`, "--force-new", "--json", "--", title], cwd));
 		} catch (error) {
 			// A folder with no git ancestor is refused client-side, so the probe never reached the daemon.
-			if (!UNUSABLE.test(String(error))) throw error;
+			if (!isUnusable(error)) throw error;
 			scope = "down"; outage = (error as Error)?.message ?? String(error); debug(error);
 			goLocal(ctx); return;
 		}
@@ -879,7 +909,7 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 	async function closeTask(args: string[], task: Task, to: Status, change: Change, cwd: string) {
 		try { await kata(args, cwd); }
 		catch (error) {
-			if (!/throttl|sibling.*(burst|rate)|too many.*clos/i.test(String(error))) throw error;
+			if (!isKataCode(error, "sibling_throttle")) throw error;
 			retries.set(task.ref, { task: { ...task }, to, change: { ...change }, cwd, at: Date.now() + 60_000 });
 			persist();
 			scheduleRetry();
@@ -962,7 +992,7 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 				await kata(["close", parent, "--done", "--if-match", String(final.issue.revision), "--idempotency-key", `${namespace}-parent-close:${parent}:${final.issue.revision}`, "--message", `${namespace.toUpperCase()} session ${binding.sessionId}: all ${final.children.length} child issues are closed in Kata and delegated work has settled. Evidence is the union of their current Kata-recorded close events.`, ...proof], workspace);
 			} catch (error) {
 				debug(error);
-				if (/throttl|sibling.*(burst|rate)|too many.*clos/i.test(String(error))) scheduleRetry();
+				if (isKataCode(error, "sibling_throttle")) scheduleRetry();
 				try { const live = await owned(parent, workspace); if (!decision || live.revision === decision.revision) await kata(["label", "add", parent, "needs-review"], workspace); } catch (error) { debug(error); }
 			}
 		}

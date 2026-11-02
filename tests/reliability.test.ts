@@ -4,6 +4,7 @@ import path from "node:path";
 import { createKataCore } from "../core/kata-core";
 import { assertIsolated } from "./isolation";
 import { isolatedKata } from "./kata-fixture";
+import { daemonUnavailable, notInitialized, siblingThrottle } from "./kata-errors";
 assertIsolated();
 const binary = process.env.KATA_TEST_EXECUTABLE!;
 const root = mkdtempSync(path.join(process.env.KATA_TEST_ROOT!, "reliability-"));
@@ -25,7 +26,7 @@ function app(options: any = {}) {
   return { core, calls, entries, ctx, call: (p: any) => core.execute(p, ctx) };
 }
 // Kata unusable: the only case that selects a session-local plan.
-const down = () => ({ code: 1, stdout: "", stderr: "dial tcp: connection refused" });
+const down = daemonUnavailable;
 const message = "Verified the isolated reliability task with the behavioral regression suite.";
 const done = { op: "done", message, evidence: ["test:reliability fixture"] };
 async function init(a: ReturnType<typeof app>, items = ["First", "Second"]) {
@@ -143,7 +144,7 @@ test("automatic parent refuses foreign owner after children close", async () => 
 });
 test("a deferred removal is invalidated when init keeps the task", async () => {
   let throttle = true;
-  const a = app({ before: (args: string[]) => args[0] === "close" && throttle ? { code: 1, stdout: "", stderr: "sibling close throttle" } : undefined });
+  const a = app({ before: (args: string[]) => args[0] === "close" && throttle ? siblingThrottle() : undefined });
   const p = await init(a); const ref = a.core.plan.tasks[0].ref;
   await a.call({ op: "rm", task: "First" });
   await init(a);
@@ -160,7 +161,7 @@ test("a deferred removal is invalidated when init keeps the task", async () => {
 for (const op of ["init", "append"]) test(`kept ${op} preserves a promised completion through restored retry`, async () => {
   let throttle = true;
   const a = app({ before: (args: string[]) => args[0] === "close" && args.includes("--done") && throttle
-    ? { code: 1, stdout: "", stderr: "sibling close throttle" } : undefined });
+    ? siblingThrottle() : undefined });
   await init(a); const ref = a.core.plan.tasks[0].ref;
   expect((await a.call({ ...done, task: "First" })).isError).toBeUndefined();
   expect((await a.call({ op, items: op === "init" ? ["First", "Second"] : ["First"] })).isError).toBeUndefined();
@@ -320,7 +321,7 @@ for (const op of ["done", "drop", "rm"]) test(`${op} preserves another delegate'
 
 test("throttled First completion survives starting Second and retry drain", async () => {
   let throttle = true;
-  const a = app({ before: (args: string[]) => args[0] === "close" && throttle ? { code: 1, stdout: "", stderr: "sibling close throttle" } : undefined });
+  const a = app({ before: (args: string[]) => args[0] === "close" && throttle ? siblingThrottle() : undefined });
   await init(a);
   const first = a.core.plan.tasks[0].ref;
   const completion = await a.call({ ...done, task: "First" });
@@ -344,7 +345,7 @@ test("throttled First completion survives starting Second and retry drain", asyn
 for (const invalid of ["missing proof", "short message"]) test(`rejected done with ${invalid} preserves its promised close`, async () => {
   let throttle = true;
   const a = app({ before: (args: string[]) => args[0] === "close" && throttle
-    ? { code: 1, stdout: "", stderr: "sibling close throttle" } : undefined });
+    ? siblingThrottle() : undefined });
   await init(a); const ref = a.core.plan.tasks[0].ref;
   const promised = await a.call({ ...done, task: "First" });
   expect(promised.isError).toBeUndefined();
@@ -394,7 +395,7 @@ test("matching qualified init resolves a short explicit binding in its pinned wo
 for (const outcome of ["interrupted", "unrelated", "reassigned"]) test(`deferred removal handles an ${outcome} close without hiding newer work`, async () => {
   let throttle = true;
   const a = app({ before: (args: string[]) => args[0] === "close" && throttle
-    ? { code: 1, stdout: "", stderr: "sibling close throttle" } : undefined });
+    ? siblingThrottle() : undefined });
   await init(a); const ref = a.core.plan.tasks[0].ref;
   expect((await a.call({ op: "rm", task: "First" })).isError).toBeUndefined();
   const saved = a.entries.filter(e => e.customType === "io.kata.omp.state").at(-1).data;
@@ -480,7 +481,7 @@ test("refused replacement leaves every previous task unchanged", async () => {
 test("refused replacement retains a previously promised completion", async () => {
   let throttle = true;
   const a = app({ before: (args: string[]) => args[0] === "close" && args.includes("--done") && throttle
-    ? { code: 1, stdout: "", stderr: "sibling close throttle" } : undefined });
+    ? siblingThrottle() : undefined });
   await init(a); const first = a.core.plan.tasks[0].ref, second = a.core.plan.tasks[1].ref;
   expect((await a.call({ ...done, task: "First" })).isError).toBeUndefined();
   await kata(["claim", second, "--as", "actor-b", "--force", "--json"]);
@@ -493,4 +494,39 @@ test("refused replacement retains a previously promised completion", async () =>
   await resumed.call({ op: "view" });
   expect((await show(first)).status).toBe("closed");
   expect(await show(second)).toEqual(foreign);
+});
+
+// Kata's error codes and exit codes decide the branch; the wording around them may change.
+const reworded = (failure: { code: number; stderr: string }, from: string, to: string) => ({ ...failure, stderr: failure.stderr.replace(from, to) });
+test("an unreachable daemon is recognised by its code, whatever the message says", async () => {
+  const a = app({ cwd: outside, before: () => reworded(daemonUnavailable(), "selected daemon is unavailable while connecting", "kata could not reach its server") });
+  const r = await a.call({ op: "init", items: ["Offline by code"] });
+  expect(r.isError).toBeUndefined();
+  expect(r.content[0].text).toContain("Session-local");
+});
+test("outage wording on a failure Kata gave another code is an error, not a local plan", async () => {
+  const a = app({ cwd: outside, before: () => ({ code: 1, stdout: "", stderr: '{"error":{"kind":"internal","code":"internal","message":"connection refused by upstream hook; dial tcp daemon unreachable","exit_code":1}}\n' }) });
+  const r = await a.call({ op: "init", items: ["Not offline"] });
+  expect(r.isError).toBe(true);
+  expect(r.content[0].text).not.toContain("Session-local");
+});
+test("a throttled close is deferred by its code, whatever the message says", async () => {
+  const a = app({ before: (args: string[]) => args[0] === "close" ? reworded(siblingThrottle(), "sibling-close throttle", "too fast") : undefined });
+  await init(a); const ref = a.core.plan.tasks[0].ref;
+  const r = await a.call({ ...done, task: "First" });
+  expect(r.isError).toBeUndefined();
+  expect(r.content[0].text).toContain("retry after 60 seconds");
+  expect((await show(ref)).status).toBe("open");
+});
+test("throttle wording on a close Kata refused for another reason is an error, not a deferral", async () => {
+  const a = app({ before: (args: string[]) => args[0] === "close" ? { code: 1, stdout: "", stderr: '{"error":{"kind":"internal","code":"internal","message":"sibling-close throttle: too many closes","exit_code":1}}\n' } : undefined });
+  await init(a);
+  const r = await a.call({ ...done, task: "First" });
+  expect(r.isError).toBe(true);
+  expect(a.entries.filter(e => e.customType === "io.kata.omp.state").at(-1)?.data.retries ?? []).toHaveLength(0);
+});
+test("an unregistered workspace plans in the project named by Kata's refusal", async () => {
+  const a = app({ cwd: outside, before: (args: string[]) => args[0] === "list" && args.includes("--limit") && args[args.indexOf("--limit") + 1] === "1" ? notInitialized("github.com/acme/inferred-widgets") : undefined });
+  const parent = await init(a);
+  expect(parent).toMatch(/^inferred-widgets#/);
 });

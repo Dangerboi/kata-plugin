@@ -5,6 +5,7 @@ import path from "node:path";
 import { Value } from "typebox/value";
 import { assertIsolated } from "./isolation";
 import { isolatedKata } from "./kata-fixture";
+import { daemonUnavailable, siblingThrottle } from "./kata-errors";
 import piKata, { launchesPi } from "../plugins/pi/kata";
 assertIsolated();
 const binary = process.env.KATA_TEST_EXECUTABLE!;
@@ -22,7 +23,7 @@ async function kata(args: string[], workspace = cwd): Promise<any> {
 }
 const show = (ref: string) => kata(["show", ref, "--json"]);
 let sequence = 0;
-const down = () => ({ code: 1, stdout: "", stderr: "dial tcp: connection refused" });
+const down = daemonUnavailable;
 const evidence = ["test:bun test pi fixture"];
 const message = "Implemented the stock pi fixture and verified it with the isolated integration suite.";
 const nativeKey = Symbol.for("kata.pi.native.v1");
@@ -336,7 +337,7 @@ test("pi local plans and queued closes survive a fresh extension instance", asyn
   const restored = await host({cwd:outside, before: down, sid:local.sid, entries:JSON.parse(JSON.stringify(local.entries))});
   await restored.event("session_start", {reason:"resume"});
   expect((await restored.call({op:"view"})).content[0].text).toContain("Wait through restart");
-  const app = await host({before:(a:string[])=>a[0]==="close"?{code:1,stdout:"",stderr:"sibling close throttle"}:undefined});
+  const app = await host({before:(a:string[])=>a[0]==="close"?siblingThrottle():undefined});
   const ref = await app.init(["Durable pi close"]); await app.call({op:"done", message, evidence});
   const entries=JSON.parse(JSON.stringify(app.entries)), now=Date.now;
   Date.now=()=>now()+61_000;

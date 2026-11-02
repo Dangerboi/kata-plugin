@@ -4,6 +4,7 @@ import { existsSync, mkdirSync, mkdtempSync } from "node:fs";
 import path from "node:path";
 import { assertIsolated } from "./isolation";
 import { isolatedKata } from "./kata-fixture";
+import { daemonUnavailable, missingExecutable } from "./kata-errors";
 import ompKata from "../kata";
 assertIsolated();
 const binary = process.env.KATA_TEST_EXECUTABLE!;
@@ -140,7 +141,7 @@ test("todo results leave omp's native todo tracker nothing to track", async () =
 test("an unreachable Kata keeps a visible session-local plan and replays it when Kata returns", async () => {
   const dir = repo("outagerepo");
   let down = true;
-  const app = host({ cwd: dir, before: () => down ? { code: 1, stdout: "", stderr: "dial tcp: connection refused" } : undefined });
+  const app = host({ cwd: dir, before: () => down ? daemonUnavailable() : undefined });
   await app.event("session_start");
   const first = await app.call({ op: "init", items: ["Written offline", "Also offline"] });
   expect(first.isError).toBeUndefined();
@@ -165,7 +166,7 @@ test("an unreachable Kata keeps a visible session-local plan and replays it when
 
 test("a replay that fails partway keeps the local plan and finishes on the next call", async () => {
   let down = true, flaky = false;
-  const app = host({ cwd: repo("flakyreplay"), before: (a: string[]) => down ? { code: 1, stdout: "", stderr: "connection refused" }
+  const app = host({ cwd: repo("flakyreplay"), before: (a: string[]) => down ? daemonUnavailable()
     : flaky && a[0] === "create" && a.includes("--parent") ? { code: 1, stdout: "", stderr: "storage hiccup" } : undefined });
   await app.call({ op: "init", items: ["Kept one", "Kept two"] });
   down = false; flaky = true;
@@ -184,7 +185,7 @@ test("a replay that fails partway keeps the local plan and finishes on the next 
 test("a resumed session replays an offline plan even after a partly failed replay", async () => {
   let down = true, flaky = false;
   const dir = repo("resumereplay");
-  const before = (a: string[]) => down ? { code: 1, stdout: "", stderr: "connection refused" }
+  const before = (a: string[]) => down ? daemonUnavailable()
     : flaky && a[0] === "create" && a.includes("--parent") ? { code: 1, stdout: "", stderr: "storage hiccup" } : undefined;
   const first = host({ cwd: dir, before });
   await first.call({ op: "init", items: ["Survives one", "Survives two"] });
@@ -202,7 +203,7 @@ test("a resumed session replays an offline plan even after a partly failed repla
 
 test("a daemon that dies after a client-side refusal still yields a local plan", async () => {
   const dir = path.join(scratch, "nogit-outage"); mkdirSync(dir);
-  const app = host({ cwd: dir, before: (a: string[]) => a[0] === "projects" || a[0] === "create" ? { code: 7, stdout: "", stderr: '{"error":{"code":"daemon_unavailable"}}' } : undefined });
+  const app = host({ cwd: dir, before: (a: string[]) => a[0] === "projects" || a[0] === "create" ? daemonUnavailable() : undefined });
   const result = await app.call({ op: "init", items: ["Offline in a plain folder"] });
   expect(result.isError).toBeUndefined();
   expect(result.content[0].text).toContain("Session-local");
@@ -210,7 +211,7 @@ test("a daemon that dies after a client-side refusal still yields a local plan",
 });
 
 test("a missing executable is an outage too", async () => {
-  const app = host({ cwd: repo("noexec"), before: () => { throw new Error("Executable not found in $PATH: \"kata\""); } });
+  const app = host({ cwd: repo("noexec"), before: () => { throw missingExecutable(); } });
   const first = await app.call({ op: "init", items: ["No binary"] });
   expect(first.content[0].text).toContain("Session-local");
   expect(app.notices.filter(n => n[1] === "warning")).toHaveLength(1);

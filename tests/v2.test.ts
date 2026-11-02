@@ -6,6 +6,7 @@ import path from "node:path";
 import { promisify } from "node:util";
 import { assertIsolated } from "./isolation";
 import { isolatedKata } from "./kata-fixture";
+import { daemonUnavailable, siblingThrottle } from "./kata-errors";
 import ompKata from "../kata";
 assertIsolated();
 const exec = promisify(execFile);
@@ -25,7 +26,7 @@ async function kata(args: string[], workspace = cwd): Promise<any> {
 const show = async (ref: string) => kata(["show", ref, "--json"]);
 let sequence = 0;
 async function issue(title = "Explicit parent") { return (await kata(["create", `${title} ${++sequence}`, "--force-new", "--json"])).issue.short_id; }
-const down = () => ({ code: 1, stdout: "", stderr: "dial tcp: connection refused" });
+const down = daemonUnavailable;
 const evidence = ["test:bun test fixture"];
 const message = "Implemented this isolated fixture and verified its behavior with the regression suite.";
 function host(options: any = {}) {
@@ -250,8 +251,7 @@ test("new work reopens an auto parent; all-wontfix parents require review", asyn
 function throttledClose() {
   const timers = new Set<{ run: () => void }>();
   let throttled = true;
-  const app = host({ before: (a: string[]) => a[0] === "close" && throttled
-    ? { code: 1, stdout: "", stderr: "sibling-close throttle: you closed 3 children of kata-1 in the last 1m0s:\n  kata-2 closed 5s ago\nSlow down and review the scope of each remaining child before closing." } : undefined });
+  const app = host({ before: (a: string[]) => a[0] === "close" && throttled ? siblingThrottle() : undefined });
   app.ctx.setTimeout = (callback: () => void) => { const timer = { run: callback }; timers.add(timer); return timer; };
   app.ctx.clearTimer = (timer: any) => { timers.delete(timer); };
   return { app, timers, lift: () => { throttled = false; } };
@@ -283,7 +283,7 @@ test("binding another session cancels the pending retry through the host", async
 test("sibling throttle retries the pinned close and does not falsely complete metadata", async () => {
   let throttled = false;
   const app = host({ before: (a: string[]) => {
-    if (!throttled && a[0] === "close") { throttled = true; return { code: 1, stdout: "", stderr: "sibling close throttle; retry after 60s" }; }
+    if (!throttled && a[0] === "close") { throttled = true; return siblingThrottle(); }
   } });
   const parent = await app.init(["Throttled task"]);
   const result = await app.call({ op: "done", message, evidence });
@@ -498,7 +498,7 @@ test("local plan and blockers survive extension recreation through session entri
 });
 
 test("queued close survives extension recreation and retries only after its deadline", async () => {
-  const app = host({ before: (a: string[]) => a[0] === "close" ? { code: 1, stdout: "", stderr: "sibling close throttle" } : undefined });
+  const app = host({ before: (a: string[]) => a[0] === "close" ? siblingThrottle() : undefined });
   const parent = await app.init(["Durable queued close"]);
   await app.call({ op: "done", message, evidence });
   const entries = JSON.parse(JSON.stringify(app.entries));
