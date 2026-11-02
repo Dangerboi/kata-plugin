@@ -84,6 +84,8 @@ export function quote(value: string): string { return `'${value.replace(/'/g, "'
 export const OPEN: ReadonlySet<Status> = new Set(["pending", "in_progress", "blocked"]);
 const WORKING: ReadonlySet<Status> = new Set(["in_progress", "blocked"]);
 const MARK: Record<Status, string> = { pending: "[ ]", in_progress: "[/]", completed: "[x]", abandoned: "[~]", blocked: "[!]" };
+// A plan item's identity: init keeps, refuses and closes by this same key.
+const itemKey = (item: { phase: string; content: string }) => `${item.phase}\u0000${item.content}`;
 
 export const DESCRIPTION = `Track multi-step work as a todo list stored in Kata. Tasks are identified by verbatim content (or Kata ref), NEVER generated IDs. Unique, stable task/phase names; lost text: view, NEVER guess.
 Before work, init for 3+ steps, requested task sets, or new instructions. MUST list EVERY user item separately; NEVER omit or remember leftovers.
@@ -1016,7 +1018,7 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 				catch (error) { throw new Error(`Todo item "${item.content}" cannot work ${ticket}: ${(error as Error).message} Nothing was created.`); }
 				checked.set(ref, ticket);
 			}
-			tickets.set(`${item.phase}\u0000${item.content}`, ticket);
+			tickets.set(itemKey(item), ticket);
 		}
 		return tickets;
 	}
@@ -1285,9 +1287,9 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 	// ---------------------------------------------------------------------- ops
 
 	// init closes every task missing from the new list; leaving out an open task needs an explicit replace.
-	function refuseOpen(params: any, tasks: Task[], wanted: Set<string>): void {
-		if (params.replace === true) return;
-		const open = tasks.filter(t => OPEN.has(t.status) && !wanted.has(`${t.phase}\u0000${t.content}`));
+	function refuseOpen(replace: boolean, tasks: Task[], wanted: Set<string>): void {
+		if (replace) return;
+		const open = tasks.filter(t => OPEN.has(t.status) && !wanted.has(itemKey(t)));
 		if (!open.length) return;
 		throw new Error(`The new todo list leaves out open tasks, so init changed nothing:\n${open.map(t => `- ${MARK[t.status]} ${t.content}`).join("\n")}\nTo replace them, call init again with replace: true.`);
 	}
@@ -1314,7 +1316,7 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 				: (params.items ?? []).map((content: string) => ({ phase: params.phase || "Tasks", content }));
 			if (desired.length === 0) throw new Error("init needs list (phases with items) or items.");
 			if (desired.some(d => !d.content.trim() || !d.phase.trim())) throw new Error("Task and phase names must not be blank.");
-			const wanted = new Set(desired.map(d => `${d.phase}\u0000${d.content}`));
+			const wanted = new Set(desired.map(itemKey));
 			const resolved = await resolveNamed(desired, plan.workspace || ctx.cwd, d => !named.some(t => t.phase === d.phase && t.content === d.content));
 			const explicit = assignedRef ?? options.explicitRef?.() ?? process.env.KATA_REF;
 			const target = explicit || params.ref || plan.parent;
@@ -1323,28 +1325,28 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 				const parent = target === plan.parent ? target : await pin(target, workspace);
 				if (explicit && params.ref && parent !== await pin(params.ref, workspace)) throw new Error(`Kata init ref ${params.ref} conflicts with the explicit binding ${explicit}; neither plan was replaced.`);
 				const tasks = tasksOf(await childrenOf(parent, workspace), parent);
-				refuseOpen(params, [...tasks, ...named], wanted);
-				const kept = tasks.filter(t => wanted.has(`${t.phase}\u0000${t.content}`));
+				refuseOpen(params.replace === true, [...tasks, ...named], wanted);
+				const kept = tasks.filter(t => wanted.has(itemKey(t)));
 				const affected = new Set(tasks.filter(t => !kept.includes(t)));
 				const next = nextTask(kept);
 				if (next) affected.add(next);
 				for (const task of affected) await owned(task.ref, workspace, "check", true, task.revision);
 			}
-			if (!target) refuseOpen(params, plan.tasks, wanted);
+			if (!target) refuseOpen(params.replace === true, plan.tasks, wanted);
 			if (target || needsParent(desired.map(d => d.content))) await ensureParent(params, ctx);
 			cwd = plan.workspace || ctx.cwd;
 			await load(cwd);
-			for (const task of plan.tasks) if (wanted.has(`${task.phase}\u0000${task.content}`) && retries.get(task.ref)?.change.remove) retries.delete(task.ref);
+			for (const task of plan.tasks) if (wanted.has(itemKey(task)) && retries.get(task.ref)?.change.remove) retries.delete(task.ref);
 			for (const task of plan.tasks) {
-				if (!wanted.has(`${task.phase}\u0000${task.content}`)) await remove(task, { message: "replaced by a new todo plan" }, cwd);
+				if (!wanted.has(itemKey(task))) await remove(task, { message: "replaced by a new todo plan" }, cwd);
 			}
-			const have = new Set(plan.tasks.map(t => `${t.phase}\u0000${t.content}`));
-			for (const d of desired) if (!have.has(`${d.phase}\u0000${d.content}`)) {
-				const ticket = resolved.get(`${d.phase}\u0000${d.content}`);
+			const have = new Set(plan.tasks.map(itemKey));
+			for (const d of desired) if (!have.has(itemKey(d))) {
+				const ticket = resolved.get(itemKey(d));
 				if (ticket) addNamed(d.phase, d.content, ticket);
 				else if (plan.local) plan.tasks.push({ ...d, ref: `local-${digest(d.phase, d.content)}`, status: "pending", at: nextStamp() });
 				else await create(d.phase, d.content, plan.workspace!);
-				have.add(`${d.phase}\u0000${d.content}`);
+				have.add(itemKey(d));
 			}
 			await load(cwd);
 			await advance(cwd);
@@ -1375,7 +1377,7 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 				}
 				await reopenParent();
 				for (const content of items) {
-					const ticket = resolved.get(`${phase}\u0000${content}`);
+					const ticket = resolved.get(itemKey({ phase, content }));
 					if (ticket) {
 						// A finished or dropped item comes back as a fresh one.
 						named = named.filter(t => t.phase !== phase || t.content !== content || OPEN.has(t.status));

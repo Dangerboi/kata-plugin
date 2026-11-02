@@ -68,10 +68,10 @@ export default function ompKata(pi: any) {
 			(core.currentCtx?.getAsyncJobSnapshot?.()?.running ?? []).some((job: any) => job.type === "task"),
 	}, { namespace: "omp", executable: EXECUTABLE, executableVars: EXECUTABLE_VARS, delegateKeys: ["omp.subagent_id"], debugFile: process.env.KATA_OMP_DEBUG });
 	// /tan runs a side conversation in a sub session whose agent id omp mints as
-	// `Tan-<snowflake>`; task spawns get ids from the
-	// task name or a generated name, never that prefix. The id is known at the very
-	// first todo call, unlike a delegate's lifecycle record, so it cannot misroute a
-	// delegate that is still being registered. A record, if present, always wins.
+	// `Tan-<snowflake>`; task spawns get ids from the task name or a generated name,
+	// never that prefix. The id is known at the very first todo call, unlike a
+	// delegate's lifecycle record, so it cannot misroute a delegate that is still
+	// being registered. A record, if present, always wins.
 	const untrackedTan = (ctx: any) => ctx?.agent?.kind === "sub" && /^Tan-/.test(ctx.agent.id ?? "") && !self(ctx);
 	const { serial, bounded, debug, kata, actor, owned, load, bind, ensureParent, reconcile } = core;
 	const warm = (ctx: any) => core.warm(ctx, self(ctx)?.binding?.workspace || ctx.cwd);
