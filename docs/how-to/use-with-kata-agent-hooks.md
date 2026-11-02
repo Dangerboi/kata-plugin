@@ -1,14 +1,6 @@
 # Use with Kata agent hooks
 
-Kata's native hooks provide contract/inbox context and optional session attention. This repository adds delegated issue tracking or todo plans. These plugins require Kata 0.19.
-
-## Claude Code
-
-```sh
-kata agent-hook install claude --attention
-```
-
-Use the native adapter for the lead session's contract and attention. The Claude plugin caches the canonical contract and injects it into tracked Agent prompts along with each child's ref and teammate. It does not inject a second lead contract or implement lead session attention. Workflow agents cannot receive this injection on the tested Claude API.
+Kata's native hooks (Claude Code uses them directly: `kata agent-hook install claude --attention`) provide contract/inbox context and optional session attention. This repository adds delegated issue tracking or todo plans. These plugins require Kata 0.19.
 
 ## Pi
 

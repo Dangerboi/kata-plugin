@@ -14,12 +14,6 @@ kata init --project example
 
 Set a Git identity if one is not already configured. Keep this environment in the terminal that launches the harness.
 
-## Claude Code
-
-Launch Claude with the plugin. Ask: “Use one foreground Agent to create a small Python function and unittest, run the tests, commit the files, and close its assigned Kata issue with that evidence. Then report the result.”
-
-The first delegation creates an automatic session parent. The child receives its issue and teammate identity. After it completes and the lead settles, `/kata` shows the binding and children. Inspect `kata list --status all` in the same exercise folder. The child and automatic parent should be closed; use `kata show <ref>` to inspect evidence and any review label.
-
 ## Oh-my-pi
 
 Start OMP; no configuration is needed. To see the default-project behavior, run it in a folder with no Kata project: the plan lands in the project registered for the folder, or in `KATA_DEFAULT_PROJECT` labeled with the folder name. Ask: “Use todo to plan two tasks: implement a small function, then test it. Complete each task with a substantive message and passing test or commit evidence. Let the plugin close the automatic parent.”

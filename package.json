@@ -3,7 +3,7 @@
   "version": "1.2.0",
   "private": true,
   "type": "module",
-  "description": "Kata work tracking for Claude Code, oh-my-pi, and pi",
+  "description": "Kata work tracking for oh-my-pi and pi",
   "license": "MIT",
   "author": "Dangerboi",
   "keywords": [
@@ -20,12 +20,10 @@
   "scripts": {
     "test": "bun tests/run.ts all",
     "test:todo": "bun tests/run.ts",
-    "test:claude": "bun tests/run.ts claude",
     "test:revisions": "bun tests/run.ts revisions",
     "build:plugins": "bun scripts/vendor-core.ts",
     "check:plugins": "bun scripts/vendor-core.ts --check",
-    "typecheck": "tsc -p tsconfig.json && tsc -p plugins/claude-code",
-    "validate": "claude plugin validate plugins/claude-code && claude plugin validate .claude-plugin/marketplace.json"
+    "typecheck": "tsc -p tsconfig.json"
   },
   "devDependencies": {
     "@earendil-works/pi-coding-agent": "1.0.2",

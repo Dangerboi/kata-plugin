@@ -16,9 +16,8 @@ try {
   const todoTests = readdirSync("tests").filter(file => file.endsWith(".test.ts")).map(file => "./tests/" + file);
   const commands = args[0] === "all" ? [
     [process.execPath, "test", "--timeout", "15000", ...todoTests],
-    ["npm", "--prefix", "plugins/claude-code", "test"],
     [process.execPath, "tests/revision-conformance.ts"],
-  ] : args[0] === "claude" ? [["npm", "--prefix", "plugins/claude-code", "test"]]
+  ]
     : [[process.execPath, ...(args[0] === "revisions" ? ["tests/revision-conformance.ts"] : ["test", "--timeout", "15000", ...(args.length ? args : todoTests)])]];
   for (const command of commands) {
     const code = await Bun.spawn(command, { env, stdout: "inherit", stderr: "inherit" }).exited;
