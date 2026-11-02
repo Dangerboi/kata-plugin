@@ -1,6 +1,6 @@
 {
   "name": "kata-omp",
-  "version": "2.2.0",
+  "version": "2.3.0",
   "type": "module",
   "description": "Kata plans and subagent tracking for oh-my-pi",
   "omp": {
