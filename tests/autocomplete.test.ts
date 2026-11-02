@@ -3,7 +3,7 @@ import { ticketAutocomplete, type Ticket } from "../core/kata-core";
 
 // Fixture project and ids; none of these exist in any Kata store.
 const issue = (short_id: string, title: string, project = "demo"): Ticket => ({ short_id, title, qualified_id: `${project}#${short_id}` });
-const bound = [issue("bc6m", "Smoke test the editor"), issue("x9k2", "Rework the ticket cache"), issue("1234", "Numeric id")];
+const bound = [issue("bc7q", "Tidy the sample board"), issue("x9k2", "Rework the ticket cache"), issue("1234", "Numeric id")];
 const other = [issue("zz11", "Elsewhere only", "other")];
 
 const github = { items: [{ value: "pr://3164", label: "PR #3164" }, { value: "issue://3164", label: "Issue #3164" }], prefix: "#3164" };
@@ -22,16 +22,16 @@ test("#bc offers the matching ticket and accepting inserts the qualified ref wit
 	const provider = ticketAutocomplete(wrapped(), source({ "": bound }));
 	const result = await ask(provider, "see #bc");
 	expect(result.prefix).toBe("#bc");
-	expect(result.items.map((i: any) => i.value)).toEqual(["demo#bc6m"]);
-	expect(result.items[0].label).toBe("bc6m Smoke test the editor");
+	expect(result.items.map((i: any) => i.value)).toEqual(["demo#bc7q"]);
+	expect(result.items[0].label).toBe("bc7q Tidy the sample board");
 	const applied = provider.applyCompletion(["see #bc"], 0, 7, result.items[0], result.prefix);
-	expect(applied).toEqual({ lines: ["see demo#bc6m "], cursorLine: 0, cursorCol: 14 });
+	expect(applied).toEqual({ lines: ["see demo#bc7q "], cursorLine: 0, cursorCol: 14 });
 });
 
 test("kata tickets are added to the wrapped provider's items in one list", async () => {
 	const inner = wrapped({ items: [{ value: "#bc-action", label: "bc action" }], prefix: "#bc" });
 	const result = await ask(ticketAutocomplete(inner, source({ "": bound })), "#bc");
-	expect(result.items.map((i: any) => i.value)).toEqual(["#bc-action", "demo#bc6m"]);
+	expect(result.items.map((i: any) => i.value)).toEqual(["#bc-action", "demo#bc7q"]);
 	// A wrapped item still applies through the wrapped provider.
 	const applied = ticketAutocomplete(inner, source({})).applyCompletion(["#bc"], 0, 3, result.items[0], "#bc");
 	expect(applied.lines).toEqual(["wrapped:#bc-action:#bc"]);
@@ -46,7 +46,7 @@ test("a digits-only token stays GitHub's", async () => {
 
 test("title words match, not only short ids", async () => {
 	const provider = ticketAutocomplete(wrapped(), source({ "": bound }));
-	expect((await ask(provider, "#smoke")).items.map((i: any) => i.value)).toEqual(["demo#bc6m"]);
+	expect((await ask(provider, "#tidy")).items.map((i: any) => i.value)).toEqual(["demo#bc7q"]);
 	expect((await ask(provider, "#CACHE")).items.map((i: any) => i.value)).toEqual(["demo#x9k2"]);
 	expect(await ask(provider, "#nomatch")).toBeNull();
 });
@@ -63,7 +63,7 @@ test("#project#token searches that project, and an all-digit id is reachable tha
 test("the default project is searched after the bound one", async () => {
 	const provider = ticketAutocomplete(wrapped(), source({ "": bound, other }), { defaultProject: "other" });
 	expect((await ask(provider, "#zz")).items.map((i: any) => i.value)).toEqual(["other#zz11"]);
-	expect((await ask(provider, "#bc")).items.map((i: any) => i.value)).toEqual(["demo#bc6m"]);
+	expect((await ask(provider, "#bc")).items.map((i: any) => i.value)).toEqual(["demo#bc7q"]);
 });
 
 test("a token inside a word or without #-boundary is left to the wrapped provider", async () => {
@@ -102,5 +102,5 @@ test("pi-style options object: abort is honoured and '#' becomes a trigger chara
 	controller.abort();
 	expect(await pending).toEqual(inner);
 	const live = ticketAutocomplete(wrapped(), source({ "": bound })) as any;
-	expect((await live.getSuggestions(["#bc"], 0, 3, { signal: new AbortController().signal })).items.map((i: any) => i.value)).toEqual(["demo#bc6m"]);
+	expect((await live.getSuggestions(["#bc"], 0, 3, { signal: new AbortController().signal })).items.map((i: any) => i.value)).toEqual(["demo#bc7q"]);
 });

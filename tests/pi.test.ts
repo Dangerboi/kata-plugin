@@ -402,6 +402,19 @@ async function childOf(parent: any, options: any = {}) {
 function leaveChild() { for (const key of ["KATA_TEAMMATE", "KATA_INBOX_USER", "KATA_PI_PARENT"]) delete process.env[key]; }
 const piPlan = ["Implement word_count and top_words", "Delegate: subagent writes unittest suite in tests/ for both functions", "Run python3 -m unittest"];
 
+test("a pi main session leaves a plan task held by an omp delegate alone", async () => {
+  const parent = await host(); await parent.event("session_start", { reason: "startup" });
+  const ref = await parent.init(["Remaining lead work", "Held by omp delegate"]);
+  const held = (await show(ref)).children.find((c: any) => c.title === "Held by omp delegate");
+  await kata(["meta", "set", held.short_id, "omp.subagent_id", "omp-worker", "--json"]);
+  await kata(["meta", "set", held.short_id, "teammate", "omp-worker-abc123", "--json"]);
+  const started = await parent.call({ op: "start", task: "Held by omp delegate" });
+  expect(started.isError).toBe(true);
+  expect(JSON.stringify(started)).toContain("belongs to a delegate");
+  const after = (await show(`pitest#${held.short_id}`)).issue;
+  expect(after.metadata["todo.status"]).not.toBe("in_progress");
+});
+
 test("a child binds the plan task its prompt describes, not the lead's active task", async () => {
   const parent = await host(); await parent.event("session_start", { reason: "startup" });
   const ref = await parent.init(piPlan);

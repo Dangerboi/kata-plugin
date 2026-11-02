@@ -63,7 +63,7 @@ export default function ompKata(pi: any) {
 		beforeReconcile: syncSnapshots,
 		delegatedRunning: () => [...(coordinator?.records.values() ?? [])].some(record => record.state === "started" || !record.ref || record.ready) ||
 			(core.currentCtx?.getAsyncJobSnapshot?.()?.running ?? []).some((job: any) => job.type === "task"),
-	}, { namespace: "omp", executable: EXECUTABLE, executableVars: EXECUTABLE_VARS, debugFile: process.env.KATA_OMP_DEBUG });
+	}, { namespace: "omp", executable: EXECUTABLE, executableVars: EXECUTABLE_VARS, delegateKeys: ["omp.subagent_id"], debugFile: process.env.KATA_OMP_DEBUG });
 	const { serial, bounded, debug, kata, actor, owned, load, bind, ensureParent, reconcile } = core;
 	const warm = (ctx: any) => core.warm(ctx, self(ctx)?.binding?.workspace || ctx.cwd);
 	pi.registerTool({

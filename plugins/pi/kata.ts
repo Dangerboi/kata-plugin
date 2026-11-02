@@ -73,6 +73,7 @@ export default async function piKata(pi: ExtensionAPI) {
 	let toolCalls = 0;
 	const { Type } = await import("typebox");
 	const EXECUTABLE_VARS = ["KATA_PI_EXECUTABLE", "KATA_OMP_EXECUTABLE"];
+	const DELEGATE_KEYS = ["pi.subagent_id", "omp.subagent_id"];
 	const executable = process.env.KATA_PI_EXECUTABLE || process.env.KATA_OMP_EXECUTABLE || "kata";
 	const core = createKataCore({
 		exec: (...args) => pi.exec(...args),
@@ -80,7 +81,7 @@ export default async function piKata(pi: ExtensionAPI) {
 		getSessionName: () => pi.getSessionName(),
 		allowUI: ctx => ctx.hasUI === true,
 		isMain: () => !inherited,
-	}, { namespace: "pi", executable, executableVars: EXECUTABLE_VARS, explicitRef: () => inherited ? undefined : explicit, debugFile: process.env.KATA_PI_DEBUG || process.env.KATA_OMP_DEBUG });
+	}, { namespace: "pi", executable, executableVars: EXECUTABLE_VARS, delegateKeys: DELEGATE_KEYS, explicitRef: () => inherited ? undefined : explicit, debugFile: process.env.KATA_PI_DEBUG || process.env.KATA_OMP_DEBUG });
 
 	function exportParent(ctx: ExtensionContext) {
 		process.env.KATA_PI_PARENT = JSON.stringify({ pid: process.pid, sessionId: ctx.sessionManager.getSessionId(),
@@ -136,7 +137,7 @@ export default async function piKata(pi: ExtensionAPI) {
 		const refOf = (c: any) => c.qualified_id || `${binding.parent.split("#")[0]}#${c.short_id}`;
 		const actor = await core.actor(binding.workspace, binding.parent), lead = inherited.teammate;
 		// Another delegate's issue, or one another writer owns, is never a candidate.
-		const foreign = (c: any) => !!(c.metadata?.["pi.subagent_id"] || c.metadata?.["omp.subagent_id"]) ||
+		const foreign = (c: any) => DELEGATE_KEYS.some(key => !!c.metadata?.[key]) ||
 			(!!c.owner && (c.owner !== actor || ![lead, teammate].includes(c.metadata?.teammate || "")));
 		const tasks: Task[] = children.map((c: any) => ({ ref: refOf(c), content: c.title, phase: c.metadata?.["todo.phase"] ?? "",
 			status: ["in_progress", "blocked"].includes(c.metadata?.["todo.status"]) ? c.metadata["todo.status"] : "pending", delegated: foreign(c) }));

@@ -27,6 +27,9 @@ export interface CoreOptions {
 	executable: string;
 	// Environment variable names (without $) a shell command may use for the executable.
 	executableVars: readonly string[];
+	// Metadata keys that mark a plan task as held by a delegate. Pi also honours
+	// omp's key, since both adapters can run side by side; omp reads no pi names.
+	delegateKeys: readonly string[];
 	debugFile?: string;
 	explicitRef?(): string | undefined;
 }
@@ -69,8 +72,7 @@ export const isKataCode = (error: unknown, code: string) => error instanceof Kat
 // message ("alias github.com/owner/repo is not registered", "project x is not
 // registered"), else the folder. Kata has no structured field for it (the error
 // carries only `message` and `hint`): that is the one place this core reads
-// Kata's wording. Upstream request: include the alias or project name as data
-// on the project_not_initialized error (see the issue draft).
+// Kata's wording.
 export function inferredName(message: string, cwd: string): string {
 	const named = /project (\S+) is not registered/.exec(message)?.[1];
 	const alias = /alias (\S+) is not registered/.exec(message)?.[1]?.replace(/^local:\/\//, "").replace(/\/+$/, "").split("/").pop();
@@ -233,12 +235,6 @@ export function namedTasks(tasks: Task[], text: string): Task[] {
 	return named.filter(t => !named.some(other => other !== t && other.content.length > t.content.length && other.content.toLowerCase().includes(t.content.toLowerCase())));
 }
 
-// The one open task a text names, if exactly one.
-export function namedTask(tasks: Task[], text: string): Task | undefined {
-	const named = namedTasks(tasks, text);
-	return named.length === 1 ? named[0] : undefined;
-}
-
 // Everything a delegation prompt names: plan tasks, and qualified refs that are
 // no plan item (the plan parent itself is no work target).
 export function namedTargets(tasks: Task[], text: string, parent?: string): { tasks: Task[]; tickets: string[] } {
@@ -387,6 +383,7 @@ export function ticketAutocomplete(current: TicketAutocompleteProvider, source: 
 
 export function createKataCore(host: CoreHost, options: CoreOptions) {
 	const namespace = options.namespace;
+	const heldByDelegate = (metadata: any) => options.delegateKeys.some(key => !!metadata?.[key]);
 	const STATE_ENTRY = `io.kata.${namespace}.parent`;
 	const SNAPSHOT_ENTRY = `io.kata.${namespace}.state`;
 	const WIDGET = `${namespace}-kata`;
@@ -479,7 +476,7 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 	async function owned(ref: string, cwd: string, mayClaim: boolean | "check" = false, allowClosed = false, revision?: number): Promise<any> {
 		let issue = JSON.parse(await kata(["show", ref, "--json"], cwd)).issue;
 		if (revision !== undefined && issue.revision !== revision) throw new Error(`Kata issue ${ref} changed since the task was selected; no work metadata was written.`);
-		if (main(currentCtx) && issue.metadata?.[`${namespace}.subagent_id`]) throw new Error(`Kata issue ${ref} belongs to a delegate; no work metadata was written.`);
+		if (main(currentCtx) && heldByDelegate(issue.metadata)) throw new Error(`Kata issue ${ref} belongs to a delegate; no work metadata was written.`);
 		const currentActor = await actor(cwd, ref);
 		const teammate = sessionTeammate ?? process.env.KATA_TEAMMATE ?? "";
 		if (issue?.status !== "open" && !(allowClosed && issue?.status === "closed")) throw new Error(`Kata issue ${ref} is closed or unavailable; no work metadata was written.`);
@@ -499,7 +496,7 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 		}
 		const unclaimed = mayClaim === "check" && !issue.owner;
 		if ((issue.status !== "open" && !(allowClosed && issue.status === "closed")) || (!unclaimed && (issue.owner !== currentActor || (issue.metadata?.teammate || "") !== teammate)) ||
-			(main(currentCtx) && issue.metadata?.[`${namespace}.subagent_id`])) {
+			(main(currentCtx) && heldByDelegate(issue.metadata))) {
 			throw new Error(`Kata issue ${ref} is not owned by actor ${currentActor} and teammate ${teammate || "(none)"}; no work metadata was written.`);
 		}
 		if (!Number.isInteger(issue.revision) || issue.revision < 0) throw new Error(`Kata issue ${ref} has no valid metadata revision; no work metadata was written.`);
@@ -548,7 +545,7 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 					content: c.title,
 					phase: meta["todo.phase"],
 					revision: c.revision,
-					delegated: !!meta[`${namespace}.subagent_id`] && (meta.teammate || "") !== (sessionTeammate ?? process.env.KATA_TEAMMATE ?? ""),
+					delegated: heldByDelegate(meta) && (meta.teammate || "") !== (sessionTeammate ?? process.env.KATA_TEAMMATE ?? ""),
 					review: (c.labels ?? []).some((l: any) => (typeof l === "string" ? l : l?.label) === "needs-review"),
 					status,
 					blocker: status === "blocked" ? meta["work.attention_msg"] : undefined,

@@ -49,7 +49,7 @@ With `KATA_INBOX_USER` set, every turn starts a `kata inbox --context` read (the
 
 ## Ticket references in the prompt
 
-In an interactive session, typing `#` and part of a ticket id or title word offers matching open Kata issues next to omp's own `#` items (prompt actions, GitHub refs). `#bc` offers every ticket whose short id starts with `bc` or whose title has a word starting with it. Each entry shows the short id and title. Accepting one inserts the qualified ref with a trailing space, for example `kata-plugin#bc6m `.
+In an interactive session, typing `#` and part of a ticket id or title word offers matching open Kata issues next to omp's own `#` items (prompt actions, GitHub refs). `#bc` offers every ticket whose short id starts with `bc` or whose title has a word starting with it. Each entry shows the short id and title. Accepting one inserts the qualified ref with a trailing space, for example `kata-plugin#bc7q `.
 
 - A digits-only token (`#3164`) stays GitHub's and offers no Kata tickets. An all-digit Kata id is reachable as `#<project>#1234`.
 - `#<project>#<token>` searches that project. Otherwise the folder's bound project is searched, then `KATA_DEFAULT_PROJECT`.
