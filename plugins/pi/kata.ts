@@ -245,7 +245,7 @@ export default async function piKata(pi: ExtensionAPI) {
 			if (core.cache.inbox) sections.kata_inbox = core.cache.inbox;
 		}
 		if (delegate) sections.kata_binding = delegateContext(executable, delegate.id, delegate.ref, delegate.teammate, delegate.binding);
-		if (core.plan.parent) sections.kata_todo = `The todo tool is backed by Kata. Current plan:\n${render(core.plan)}`;
+		if (core.plan.parent || core.plan.tasks.some(t => t.ticket)) sections.kata_todo = `The todo tool is backed by Kata. Current plan:\n${render(core.plan)}`;
 		else delete sections.kata_todo;
 	});
 

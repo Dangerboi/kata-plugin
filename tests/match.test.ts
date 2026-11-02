@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { matchDelegation, namedTargets, namedTasks, QUALIFIED_REF, qualifiedRefs, taskTokens, type Status, type Task } from "../core/kata-core";
+import { itemTicket, matchDelegation, namedTargets, namedTasks, QUALIFIED_REF, qualifiedRefs, taskTokens, type Status, type Task } from "../core/kata-core";
 
 const task = (ref: string, content: string, status: Status = "pending", extra: Partial<Task> = {}): Task => ({ ref, content, phase: "Tasks", status, ...extra });
 const pick = (tasks: Task[], text: string, unavailable: string[] = [], single = true) => matchDelegation(tasks, text, { unavailable: new Set(unavailable), single })?.ref;
@@ -158,4 +158,11 @@ test("matches are always available open tasks", () => {
     expect(chosen.delegated).toBe(false);
     expect(unavailable).not.toContain(ref);
   }
+});
+
+test("an item names a ticket only with a qualified ref prefix and a colon", () => {
+  expect(itemTicket("kata-plugin#bc6m: write the real-omp smoke script")).toEqual({ ref: "kata-plugin#bc6m", action: "write the real-omp smoke script" });
+  expect(itemTicket("  other.proj#ce3w:   fetch inbox\neach turn")).toEqual({ ref: "other.proj#ce3w", action: "fetch inbox\neach turn" });
+  for (const text of ["bc6m: write the script", "write the script for kata-plugin#bc6m", "see kata-plugin#bc6m: write", "kata-plugin#bc6m write the script",
+    "kata-plugin#bc6m:", "kata-plugin#bc6m:write", "kata-plugin#bcl6: write", "update CHANGELOG", "#bc6m: write"]) expect(itemTicket(text)).toBeUndefined();
 });

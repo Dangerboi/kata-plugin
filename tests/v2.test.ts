@@ -968,3 +968,235 @@ test("a request sent mid-session reaches the inbox section by the next turn and 
   await turn();
   expect(await turn()).not.toContain("midsession-ping-7731");
 });
+
+// ---------------------------------------------------------- items naming tickets
+const total = async () => (await kata(["list", "--status", "all", "--limit", "0", "--json"])).issues.length;
+const ofSession = async (sid: string) => (await kata(["list", "--status", "all", "--meta", `omp.session_id=${sid}`, "--json"])).issues;
+const commentsOf = async (ref: string): Promise<string[]> => ((await show(ref)).comments ?? []).map((c: any) => c.body);
+const closesOf = async (short: string) => (await kata(["audit", "closes", "--json"])).rows.filter((r: any) => r.issue === short);
+const namingPlan = (a: string, b: string) => [
+  { phase: "Smoke test", items: [`v2test#${a}: write the script`, `v2test#${a}: bump the version`] },
+  { phase: "Inbox", items: [`v2test#${b}: fetch the inbox`] },
+];
+
+test("a plan whose items name tickets creates no issue and no automatic parent", async () => {
+  const app = host(); await app.event("session_start");
+  const [a, b] = [await issue("Ticket A"), await issue("Ticket B")];
+  const before = await total();
+  const result = await app.call({ op: "init", list: namingPlan(a, b) });
+  expect(result.isError).toBeUndefined();
+  expect(await total()).toBe(before);
+  expect(await ofSession(app.sid)).toHaveLength(0);
+  expect(result.details.kata.parent).toBeUndefined();
+  const text = result.content[0].text;
+  expect(text).toContain(`[/] v2test#${a}: write the script (v2test#${a})`);
+  expect(text).toContain(`[ ] v2test#${b}: fetch the inbox (v2test#${b})`);
+  const started = (await show(a)).issue;
+  expect(started.owner).toBe("v2-builder");
+  expect(started.metadata["todo.status"]).toBe("in_progress");
+  expect(started.metadata["todo.phase"]).toBeUndefined();
+  expect((await show(b)).issue.owner).toBeUndefined();
+  expect(app.widgets.at(-1)![1]![0]).toContain(`v2test#${a}: write the script`);
+});
+
+test("an item without a ref in a plan of tickets creates exactly that issue and the automatic parent", async () => {
+  const app = host(); await app.event("session_start");
+  const [a, b] = [await issue("Ticket A"), await issue("Ticket B")];
+  await app.call({ op: "init", list: namingPlan(a, b) });
+  const before = await total();
+  const appended = await app.call({ op: "append", items: ["update CHANGELOG"], phase: "Inbox" });
+  expect(appended.isError).toBeUndefined();
+  expect(await total()).toBe(before + 2);
+  const [parent, ...rest] = [await ofSession(app.sid)].flatMap(list => list.sort((x: any, y: any) => x.id - y.id));
+  expect(rest).toHaveLength(0);
+  const ref = appended.details.kata.parent;
+  expect((await show(ref)).children.map((c: any) => c.title)).toEqual(["update CHANGELOG"]);
+  expect(parent.metadata["omp.auto_parent"]).toBe(true);
+  expect((await show(a)).issue.metadata["omp.session_id"]).toBeUndefined();
+  expect(appended.content[0].text).toContain("update CHANGELOG");
+});
+
+test("with an init ref, items without a ref become children of it and named items stay on their tickets", async () => {
+  const [parent, a] = [await issue("Umbrella"), await issue("Ticket A")];
+  const app = host(); await app.event("session_start");
+  const before = await total();
+  const result = await app.call({ op: "init", ref: parent, items: [`v2test#${a}: write the script`, "update the docs"] });
+  expect(result.isError).toBeUndefined();
+  expect(await total()).toBe(before + 1);
+  expect((await show(`v2test#${parent}`)).children.map((c: any) => c.title)).toEqual(["update the docs"]);
+  expect((await show(a)).issue.metadata["todo.phase"]).toBeUndefined();
+});
+
+test("finishing every item of a ticket closes it once with the last item's evidence, earlier items leave comments", async () => {
+  const app = host(); await app.event("session_start");
+  const a = await issue("Ticket A");
+  await app.call({ op: "init", items: [`v2test#${a}: write the script`, `v2test#${a}: bump the version`] });
+  const first = await app.call({ op: "done", task: `v2test#${a}: write the script`, message: `${message} (first part)`, evidence: ["test:first item check"] });
+  expect(first.isError).toBeUndefined();
+  expect((await show(a)).issue.status).toBe("open");
+  let comments = await commentsOf(a);
+  expect(comments).toHaveLength(1);
+  expect(comments[0]).toContain("write the script");
+  expect(comments[0]).toContain("(first part)");
+  expect(comments[0]).toContain("test:first item check");
+  expect(first.content[0].text).toContain(`[/] v2test#${a}: bump the version`);
+  const last = await app.call({ op: "done", task: `v2test#${a}: bump the version`, message: `${message} (second part)`, evidence: ["test:second item check"] });
+  expect(last.isError).toBeUndefined();
+  expect((await show(a)).issue.status).toBe("closed");
+  comments = await commentsOf(a);
+  expect(comments).toHaveLength(2);
+  expect(comments[1]).toContain("test:second item check");
+  const rows = await closesOf(a);
+  expect(rows).toHaveLength(1);
+  const event = (await kata(["events", "--after", String(rows[0].event_id - 1), "--limit", "1", "--json"])).events[0];
+  expect(event.payload.evidence).toEqual([{ type: "test", command: "second item check" }]);
+  expect(last.content[0].text).toContain("2/2 done");
+});
+
+test("an unresolvable or closed ref is an error that creates nothing; a bare id names no ticket", async () => {
+  const app = host(); await app.event("session_start");
+  const before = await total();
+  const ghost = await app.call({ op: "init", items: ["Plain item first", "v2test#zzzz: ghost work"] });
+  expect(ghost.isError).toBe(true);
+  expect(ghost.content[0].text).toContain("v2test#zzzz");
+  expect(await total()).toBe(before);
+  expect(await ofSession(app.sid)).toHaveLength(0);
+  const closed = await issue("Closed work"); await kata(["close", closed, "--done", "--message", message, "--test", "closed-item-fixture", "--json"]);
+  const done = await app.call({ op: "init", items: [`v2test#${closed}: more work`] });
+  expect(done.isError).toBe(true);
+  expect(done.content[0].text).toMatch(/already closed/i);
+  expect(await total()).toBe(before + 1); // only the ticket this test closed
+  const open = await issue("Open work");
+  const bare = await app.call({ op: "init", items: [`${open}: bare id is only text`] });
+  expect(bare.isError).toBeUndefined();
+  expect((await show(open)).issue.owner).toBeUndefined();
+  expect((await ofSession(app.sid))).toHaveLength(1);
+});
+
+test("drop and rm of an item that names a ticket only comment and leave it open", async () => {
+  const app = host(); await app.event("session_start");
+  const a = await issue("Ticket A");
+  await app.call({ op: "init", items: [`v2test#${a}: first step`, `v2test#${a}: second step`] });
+  const dropped = await app.call({ op: "drop", task: `v2test#${a}: first step`, message: "The first step is no longer needed here." });
+  expect(dropped.isError).toBeUndefined();
+  expect(dropped.content[0].text).toContain(`[~] v2test#${a}: first step`);
+  const removed = await app.call({ op: "rm", task: `v2test#${a}: second step`, message: "The second step moved elsewhere." });
+  expect(removed.isError).toBeUndefined();
+  const shown = (await show(a)).issue;
+  expect(shown.status).toBe("open");
+  expect(shown.closed_reason).toBeFalsy();
+  const comments = await commentsOf(a);
+  expect(comments).toHaveLength(2);
+  expect(comments[0]).toContain("no longer needed");
+  expect(comments[1]).toContain("moved elsewhere");
+  expect(await closesOf(a)).toHaveLength(0);
+});
+
+test("a ticket another writer owns or that closed meanwhile is an error, never a fallback or a reopen", async () => {
+  const app = host(); await app.event("session_start");
+  const foreign = await issue("Foreign work"); await kata(["claim", foreign, "--as", "someone-else", "--json"]);
+  const before = await total();
+  const refused = await app.call({ op: "init", items: [`v2test#${foreign}: take it over`] });
+  expect(refused.isError).toBe(true);
+  expect(refused.content[0].text).toMatch(/someone-else|not owned/);
+  expect(await total()).toBe(before);
+  expect((await show(foreign)).issue.owner).toBe("someone-else");
+  const a = await issue("Ticket A");
+  await app.call({ op: "init", items: [`v2test#${a}: first step`, `v2test#${a}: second step`] });
+  await kata(["close", a, "--done", "--message", message, "--test", "closed-meanwhile", "--json"]);
+  const restart = await app.call({ op: "start", task: `v2test#${a}: second step` });
+  expect(restart.isError).toBe(true);
+  expect(restart.content[0].text).toMatch(/already closed/i);
+  expect((await app.call({ op: "done", task: `v2test#${a}: first step`, message, evidence })).isError).toBeUndefined();
+  expect((await show(a)).issue.status).toBe("closed");
+  expect(app.calls.some(c => c[0] === "reopen")).toBe(false);
+  expect(await commentsOf(a)).toHaveLength(0);
+});
+
+test("a ticket with open children stays open when its last item is done, with a comment saying why", async () => {
+  const app = host(); await app.event("session_start");
+  const umbrella = await issue("Umbrella");
+  await kata(["create", "Child work", "--parent", umbrella, "--force-new", "--json"]);
+  await app.call({ op: "init", items: [`v2test#${umbrella}: finish the umbrella`] });
+  const done = await app.call({ op: "done", message, evidence });
+  expect(done.isError).toBeUndefined();
+  expect(done.content[0].text).toContain(`[x] v2test#${umbrella}: finish the umbrella`);
+  expect((await show(umbrella)).issue.status).toBe("open");
+  const comments = await commentsOf(umbrella);
+  expect(comments).toHaveLength(2);
+  expect(comments[0]).toContain("test:bun test fixture");
+  expect(comments[1]).toMatch(/1 open child/);
+  expect(await closesOf(umbrella)).toHaveLength(0);
+});
+
+test("a done replayed after the close failed leaves one comment and closes once", async () => {
+  let outage = true;
+  const app = host({ before: (args: string[]) => args[0] === "close" && outage ? down() : undefined }); await app.event("session_start");
+  const a = await issue("Ticket A");
+  await app.call({ op: "init", items: [`v2test#${a}: only step`] });
+  const failed = await app.call({ op: "done", message, evidence });
+  expect(failed.isError).toBe(true);
+  expect(await commentsOf(a)).toHaveLength(1);
+  outage = false;
+  const replayed = await app.call({ op: "done", task: `v2test#${a}: only step`, message, evidence });
+  expect(replayed.isError).toBeUndefined();
+  expect(await commentsOf(a)).toHaveLength(1);
+  expect((await show(a)).issue.status).toBe("closed");
+  expect(await closesOf(a)).toHaveLength(1);
+});
+
+test("the item-to-ticket record survives a resumed session", async () => {
+  const first = host(); await first.event("session_start");
+  const a = await issue("Ticket A");
+  await first.call({ op: "init", items: [`v2test#${a}: first step`, `v2test#${a}: second step`] });
+  await first.call({ op: "done", task: `v2test#${a}: first step`, message, evidence });
+  const resumed = host({ sid: first.sid, entries: first.entries }); await resumed.event("session_start");
+  const view = (await resumed.call({ op: "view" })).content[0].text;
+  expect(view).toContain(`[x] v2test#${a}: first step (v2test#${a})`);
+  expect(view).toContain(`v2test#${a}: second step (v2test#${a})`);
+  expect((await resumed.call({ op: "done", task: `v2test#${a}: second step`, message, evidence })).isError).toBeUndefined();
+  expect((await show(a)).issue.status).toBe("closed");
+  expect(await commentsOf(a)).toHaveLength(2);
+});
+
+test("a task delegated to an item that names a ticket works that ticket and creates no issue", async () => {
+  const app = host(); await app.event("session_start");
+  const a = await issue("Ticket A");
+  await app.call({ op: "init", items: [`v2test#${a}: write the widget parser`] });
+  const before = await total();
+  await app.event("tool_call", { toolName: "task", toolCallId: "named-item", input: { name: "Parser", task: "Write the widget parser and report back." } });
+  await app.event("before_subagent_spawn", { agent: "task" });
+  app.emit("task:subagent:lifecycle", { id: "named-item", status: "started", sessionFile: `${scratch}/named-item.jsonl`, parentToolCallId: "named-item", index: 0 });
+  await app.call({ op: "view" });
+  expect((await show(a)).issue.metadata["omp.subagent_id"]).toBe("named-item");
+  expect(await total()).toBe(before);
+  expect(await ofSession(app.sid)).toHaveLength(1); // the delegated ticket itself
+  const refused = await app.call({ op: "done", task: `v2test#${a}: write the widget parser`, message, evidence });
+  expect(refused.isError).toBe(true);
+  expect(refused.content[0].text).toMatch(/delegated/i);
+});
+
+test("an item follows its ticket when a delegate closes it: shown completed, no reminder, done is no error", async () => {
+  const app = host(); await app.event("session_start");
+  const a = await issue("Ticket A");
+  await app.call({ op: "init", items: [`v2test#${a}: write the gadget parser`, `v2test#${a}: document the gadget parser`] });
+  await app.event("tool_call", { toolName: "task", toolCallId: "follow", input: { name: "Parser", task: `Finish v2test#${a} and close it.` } });
+  app.emit("task:subagent:lifecycle", { id: "follow", status: "started", sessionFile: `${scratch}/follow.jsonl`, parentToolCallId: "follow", index: 0 });
+  await app.call({ op: "view" });
+  await kata(["close", a, "--done", "--message", message, "--test", "delegate-closed-it", "--json"]);
+  const view = (await app.call({ op: "view" })).content[0].text;
+  expect(view).toContain(`[x] v2test#${a}: write the gadget parser`);
+  expect(view).toContain(`[x] v2test#${a}: document the gadget parser`);
+  expect(await app.event("session_stop", { messages: [] })).toBeUndefined();
+  const again = await app.call({ op: "done", task: `v2test#${a}: write the gadget parser`, message, evidence });
+  expect(again.isError).toBeUndefined();
+  expect(await commentsOf(a)).toHaveLength(0);
+});
+
+test("an item follows a wontfix close of its ticket as abandoned", async () => {
+  const app = host(); await app.event("session_start");
+  const a = await issue("Ticket A");
+  await app.call({ op: "init", items: [`v2test#${a}: only step`] });
+  await kata(["close", a, "--wontfix", "--message", "Closed by someone else because this work is no longer wanted by anyone here.", "--json"]);
+  expect((await app.call({ op: "view" })).content[0].text).toContain(`[~] v2test#${a}: only step`);
+});

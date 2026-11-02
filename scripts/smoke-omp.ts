@@ -122,6 +122,8 @@ async function run(scenario: Scenario) {
 	try {
 		spawnSync("git", ["init", "-q", "."], { cwd: work });
 		kata(env, work, ["init", "--project", PROJECT]);
+		const vars = scenario.setup?.(title => JSON.parse(kata(env, work, ["create", title, "--force-new", "--json"])).issue.short_id) ?? {};
+		env.KATA_SMOKE_VARS = JSON.stringify(vars);
 		if (live) copyUserConfig(agentDir);
 		const args = ["--no-extensions", "--no-skills", "--no-rules", "--no-context-files", "--no-lsp", "--no-title", "--no-session",
 			"-e", path.join(root, "plugins/oh-my-pi/kata.ts")];
@@ -140,7 +142,7 @@ async function run(scenario: Scenario) {
 		}
 		report("omp exited cleanly", code === 0, `exit ${code}\n${output.trim().split("\n").slice(-20).join("\n")}`);
 		if (scenario.check) {
-			try { checks.push(...await scenario.check(store(env, work, records))); }
+			try { checks.push(...await scenario.check(store(env, work, records), vars)); }
 			catch (error) { checks.push({ name: "store readable", ok: false, detail: String(error) }); }
 		}
 		for (const check of checks) report(check.name, check.ok, check.detail);

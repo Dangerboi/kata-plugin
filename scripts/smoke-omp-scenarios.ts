@@ -48,12 +48,15 @@ export type Scenario = {
 	env?: Record<string, string>;
 	/** Scripted turns keyed by a marker that appears in the agent's first user message. */
 	scripts: Record<string, Turn[]>;
+	/** Creates tickets before omp starts; the returned short ids reach the scripts as KATA_SMOKE_VARS (JSON) and `check`. */
+	setup?(create: (title: string) => string): Record<string, string>;
 	/** Assertions run through `kata show --json` after omp has exited. */
-	check?(store: Store): Promise<Check[]>;
+	check?(store: Store, vars: Record<string, string>): Promise<Check[]>;
 };
 
 const MAIN = "[smoke:main]";
 const SUB = "[smoke:sub]";
+const vars = (): Record<string, string> => JSON.parse(process.env.KATA_SMOKE_VARS ?? "{}");
 const lastRef = (ctx: TurnContext, pattern: RegExp) => ctx.texts.join("\n").match(pattern)?.[0];
 
 const evidence = "test:bun smoke scenario ran";
@@ -127,5 +130,62 @@ export const SCENARIOS: Scenario[] = [{
 		await session.prompt("one more turn");
 		checks.push({ name: "the cleared request stays gone", ok: !seen() });
 		return checks;
+	},
+}, {
+	name: "tickets",
+	prompt: `${MAIN} Work the existing tickets through the todo plan, then stop.`,
+	livePrompt: "Two Kata tickets named in the project omp-smoke already exist (search with kata search). Make a todo plan whose items each start with the ticket's qualified ref (project#id: action), two items for the first ticket. Do not create new tickets for them. Finish the items with evidence test:echo ok and a 40+ character message. Change no files.",
+	setup: create => ({ a: create("Ticket alpha"), b: create("Ticket beta"), c: create("Ticket gamma") }),
+	scripts: {
+		[MAIN]: [
+			() => {
+				const { a, b } = vars();
+				return [{ tool: "todo", args: { op: "init", list: [
+					{ phase: "Alpha", items: [`omp-smoke#${a}: write the parser`, `omp-smoke#${a}: bump the docs`] },
+					{ phase: "Beta", items: [`omp-smoke#${b}: fetch the inbox data`] },
+				] } }];
+			},
+			() => [{ tool: "todo", args: { op: "done", task: `omp-smoke#${vars().a}: write the parser`, message, evidence: ["test:bun smoke scenario first"] } }],
+			() => [{ tool: "todo", args: { op: "done", task: `omp-smoke#${vars().a}: bump the docs`, message, evidence: ["test:bun smoke scenario second"] } }],
+			() => [{ tool: "todo", args: { op: "append", items: ["omp-smoke#zzzz: ghost work"], phase: "Beta" } }],
+			() => [{ tool: "todo", args: { op: "drop", task: `omp-smoke#${vars().b}: fetch the inbox data`, message: "The inbox fetch moved to another plan." } }],
+			() => [{ tool: "todo", args: { op: "append", items: [`omp-smoke#${vars().c}: write the widget parser`], phase: "Gamma" } }],
+			[{ tool: "task", args: { name: "WidgetParser", agent: "task", task: `${SUB} Write the widget parser and close its ticket.`, solutionSpace: "one fix: nothing to change, just close the ticket" } }],
+			[{ tool: "todo", args: { op: "append", items: ["update CHANGELOG"], phase: "Gamma" } }],
+			[{ tool: "todo", args: { op: "done", task: "update CHANGELOG", message, evidence: [evidence] } }],
+			["The tickets are worked."],
+			["The delegate has reported back."],
+			["Nothing else to do."],
+			["Nothing else to do."],
+			["Nothing else to do."],
+		],
+		[SUB]: [
+			ctx => {
+				const ref = lastRef({ ...ctx, texts: [ctx.system] }, /Your Kata issue is ([\w#.-]+)/)?.replace("Your Kata issue is ", "");
+				if (!ref) return ["No Kata binding in system prompt."];
+				return [{ tool: "bash", args: { command: `kata close ${ref} --done --message '${message}' --evidence '${evidence}'` } }];
+			},
+			["Widget parser done."],
+		],
+	},
+	async check(store, { a, b, c }) {
+		const issues = await store.issues();
+		const byId = (id: string) => issues.find(i => i.ref === id);
+		const [alpha, beta, gamma] = [byId(a), byId(b), byId(c)];
+		const events = (i?: Issue, type?: string) => i?.events.filter(e => e.type === type) ?? [];
+		const comments = (i?: Issue) => i?.events.filter(e => /comment/.test(e.type)) ?? [];
+		const closed = events(alpha, "issue.closed");
+		const parents = issues.filter(i => i.metadata["omp.auto_parent"] === true);
+		const changelog = issues.find(i => i.title === "update CHANGELOG");
+		return [
+			{ name: "items naming tickets create no issue; only the plain item and its parent are new", ok: issues.length === 5 && parents.length === 1 && !!changelog, detail: issues.map(i => i.title).join(", ") },
+			{ name: "the plain item is a child of the automatic parent", ok: !!changelog?.metadata["todo.phase"] && parents.length === 1, detail: JSON.stringify(changelog?.metadata) },
+			{ name: "named tickets never join a plan (no todo.phase)", ok: [alpha, beta, gamma].every(i => !i?.metadata["todo.phase"]), detail: JSON.stringify([alpha, beta, gamma].map(i => i?.metadata)) },
+			{ name: "finishing every item closes the ticket once with the last item's evidence", ok: alpha?.status === "closed" && closed.length === 1 && JSON.stringify(closed[0].payload.evidence) === JSON.stringify([{ type: "test", command: "bun smoke scenario second" }]), detail: JSON.stringify(closed) },
+			{ name: "each finished item left a comment", ok: comments(alpha).length === 2, detail: `${comments(alpha).length} comments` },
+			{ name: "drop comments and leaves the ticket open", ok: beta?.status === "open" && comments(beta).length === 1 && events(beta, "issue.closed").length === 0, detail: `${beta?.status} ${comments(beta).length} comments` },
+			{ name: "an unresolvable ref created nothing", ok: !issues.some(i => /ghost/.test(i.title)) },
+			{ name: "a delegate bound the ticket its item names and closed it", ok: !!gamma?.metadata["omp.subagent_id"] && gamma.status === "closed" && !issues.some(i => i.title.startsWith("Subagent")), detail: `${gamma?.status} ${JSON.stringify(gamma?.metadata)}` },
+		];
 	},
 }];

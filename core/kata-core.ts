@@ -35,7 +35,7 @@ export interface CoreOptions {
 }
 
 export type Status = "pending" | "in_progress" | "completed" | "abandoned" | "blocked";
-export type Task = { ref: string; content: string; phase: string; status: Status; blocker?: string; delegated?: boolean; review?: boolean; revision?: number; proof?: { message?: string; evidence?: string[] } };
+export type Task = { ref: string; content: string; phase: string; status: Status; ticket?: string; at?: number; blocker?: string; delegated?: boolean; review?: boolean; revision?: number; proof?: { message?: string; evidence?: string[] } };
 export type Binding = { parent: string; workspace: string; sessionId?: string; auto?: boolean; label?: string };
 export type Plan = Partial<Binding> & { tasks: Task[]; local?: boolean; error?: string };
 export type Change = { message?: string; evidence?: string[]; reason?: string; many?: boolean; remove?: boolean };
@@ -91,10 +91,11 @@ External waits (user/agent/service): block with a reason; it suppresses the stop
 NEVER call todo alone: init with first work; done/start with next action.
 
 Kata specifics:
-- Each task is a Kata child issue of one parent issue. On init pass \`ref\` with the Kata issue this plan serves (search first: kata search "<terms>" --agent); an explicit KATA_REF or worker binding must match it. Without a ref, use that binding, the session's existing parent, or a new parent titled by \`message\`.
-- done closes the issue. Kata requires \`evidence\` (commit:<sha>, test:<cmd>, pr:<url>, reviewed-paths:<path>) and a \`message\` of 40+ characters saying what changed and how it was verified. Unverified work: block it instead.
+- An item that works an existing ticket starts with its qualified ref: \`<project>#<short_id>: <action>\` (for example \`kata-plugin#bc6m: write the smoke script\`). It creates no issue: start claims the ticket and marks it in progress, done comments on it, and the last item of a ticket to be done closes it with that item's evidence (a ticket with open children stays open and gets a comment), drop/rm only comment and never close it. A ref that does not resolve, or a closed ticket, is an error. Only that prefix names a ticket; a bare id is text. A plan whose items all name tickets creates no parent issue.
+- Every other task is a Kata child issue of one parent issue. On init pass \`ref\` with the Kata issue this plan serves (search first: kata search "<terms>" --agent); an explicit KATA_REF or worker binding must match it. Without a ref, use that binding, the session's existing parent, or a new parent titled by \`message\`.
+- done closes the issue (an item naming a ticket: see above). Kata requires \`evidence\` (commit:<sha>, test:<cmd>, pr:<url>, reviewed-paths:<path>) and a \`message\` of 40+ characters saying what changed and how it was verified. Unverified work: block it instead.
 - drop/rm take the reason in \`message\`.
-- drop and rm close as wontfix (Kata never deletes). Automatic session parents close from their children’s Kata-recorded evidence once all work has settled. Explicit/claimed parents remain yours to close. Folders with no Kata project use KATA_DEFAULT_PROJECT (labeled with the repo) or register their inferred project; the plan is session-local only while Kata is unreachable and replays when it returns.`;
+- drop and rm close those tasks as wontfix (Kata never deletes). Automatic session parents close from their children’s Kata-recorded evidence once all work has settled. Explicit/claimed parents remain yours to close. Folders with no Kata project use KATA_DEFAULT_PROJECT (labeled with the repo) or register their inferred project; the plan is session-local only while Kata is unreachable and replays when it returns.`;
 
 export function digest(...parts: string[]): string {
 	return createHash("sha256").update(parts.join("\u0000")).digest("hex").slice(0, 24);
@@ -219,6 +220,13 @@ export function qualifiedRefs(text: string): string[] {
 	return [...new Set([...text.matchAll(new RegExp(QUALIFIED_REF, "g"))].map(match => match[0]))];
 }
 
+// The ticket a todo item names: a strict `<project>#<short_id>: <action>` prefix.
+// A bare short id, a ref inside the text, or a prefix with no action is no name.
+export function itemTicket(content: string): { ref: string; action: string } | undefined {
+	const match = new RegExp(`^(${QUALIFIED_REF}):\\s+(\\S[\\s\\S]*)$`).exec(content.trim());
+	return match ? { ref: match[1], action: match[2] } : undefined;
+}
+
 // The open tasks a text names: title (case-insensitive, whole words; a one- or
 // two-word title only quoted or as the whole text), qualified ref, or short id
 // after a marker, since a bare id can be an ordinary word ("test"). A title
@@ -297,13 +305,13 @@ export function phasesOf(tasks: Task[]): { name: string; tasks: Task[] }[] {
 
 export function render(plan: Plan): string {
 	if (plan.error) return `Kata state unavailable${plan.parent ? ` for ${plan.parent}` : ""}: ${plan.error}. Use todo op=view to refresh.`;
-	if (!plan.parent && !plan.local) return "No todo plan. Use todo op=init.";
+	if (!plan.parent && !plan.local && plan.tasks.length === 0) return "No todo plan. Use todo op=init.";
 	if (plan.tasks.length === 0) return `Kata parent ${plan.parent}: no tasks.`;
 	const done = plan.tasks.filter(t => t.status === "completed").length;
-	const lines = [`${plan.local ? "Session-local plan (Kata is unreachable; it replays into Kata when Kata returns)" : `Kata parent ${plan.parent}`}: ${done}/${plan.tasks.length} done`];
+	const lines = [`${plan.local ? "Session-local plan (Kata is unreachable; it replays into Kata when Kata returns)" : plan.parent ? `Kata parent ${plan.parent}` : "Kata tickets (no parent issue)"}: ${done}/${plan.tasks.length} done`];
 	for (const phase of phasesOf(plan.tasks)) {
 		lines.push(`${phase.name}:`);
-		for (const t of phase.tasks) lines.push(`  ${MARK[t.status]} ${t.content} (${t.ref})${t.blocker ? ` — blocked: ${t.blocker}` : ""}`);
+		for (const t of phase.tasks) lines.push(`  ${MARK[t.status]} ${t.content} (${t.ticket ?? t.ref})${t.blocker ? ` — blocked: ${t.blocker}` : ""}`);
 	}
 	return lines.join("\n");
 }
@@ -411,10 +419,19 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 	let retryTimer: ReturnType<typeof setTimeout> | undefined;
 	let retryTimerCtx: any;
 	let lastSnapshot: string | undefined;
+	// Items that name an existing ticket. They live in the session's snapshot, not
+	// in Kata: the ticket can sit under any parent or project, and several items
+	// may name one ticket.
+	let named: Task[] = [];
+	let stamp = 0;
+	const nextStamp = () => (stamp = Math.max(Date.now(), stamp + 1));
+	// The plan's tasks: Kata children (or the local plan) merged with named items by creation time.
+	const withNamed = (base: Task[]) => named.length ? [...base.filter(t => !t.ticket), ...named].sort((a, b) => (a.at || 0) - (b.at || 0)) : base;
 	function persist() {
 		if (!currentId || !main(currentCtx)) return;
 		const data = { version: 1, sessionId: currentId,
-			plan: structuredClone(plan), autoParents: [...autoParents.values()], retries: [...retries.entries()] };
+			plan: structuredClone({ ...plan, tasks: plan.tasks.filter(t => !t.ticket) }), autoParents: [...autoParents.values()], retries: [...retries.entries()],
+			...(named.length ? { named: structuredClone(named) } : {}) };
 		const encoded = JSON.stringify(data);
 		if (encoded === lastSnapshot) return;
 		host.appendEntry(SNAPSHOT_ENTRY, data);
@@ -545,6 +562,7 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 					content: c.title,
 					phase: meta["todo.phase"],
 					revision: c.revision,
+					at: Date.parse(c.created_at),
 					delegated: heldByDelegate(meta) && (meta.teammate || "") !== (sessionTeammate ?? process.env.KATA_TEAMMATE ?? ""),
 					review: (c.labels ?? []).some((l: any) => (typeof l === "string" ? l : l?.label) === "needs-review"),
 					status,
@@ -553,12 +571,26 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 			});
 	}
 
+	// An item follows its ticket: closed by anyone (a delegate, the user) it is completed,
+	// or abandoned when closed as wontfix. A ticket that cannot be read keeps its item as is.
+	async function followTickets(cwd: string) {
+		const open = named.filter(t => OPEN.has(t.status));
+		for (const ticket of new Set(open.map(t => t.ticket!))) {
+			try {
+				const shown = JSON.parse(await kata(["show", ticket, "--json"], cwd)).issue;
+				if (shown.status !== "closed") continue;
+				for (const task of open) if (task.ticket === ticket) { task.status = shown.closed_reason === "wontfix" ? "abandoned" : "completed"; task.blocker = undefined; }
+			} catch (error) { debug(error); }
+		}
+	}
+
 	async function load(cwd: string): Promise<any[]> {
-		if (plan.local) { delete plan.error; return []; }
-		if (!plan.parent) { plan.tasks = []; return []; }
+		if (plan.local) { delete plan.error; plan.tasks = withNamed(plan.tasks); return []; }
+		if (!plan.parent) { if (named.length) { delete plan.error; await followTickets(cwd); } plan.tasks = withNamed([]); return []; }
 		try {
 			const children = await childrenOf(plan.parent, cwd);
-			plan.tasks = tasksOf(children, plan.parent);
+			await followTickets(cwd);
+			plan.tasks = withNamed(tasksOf(children, plan.parent));
 			delete plan.error;
 			return children;
 		} catch (error) {
@@ -572,14 +604,14 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 		const ui = ctx?.ui;
 		if (!ui?.setWidget) return;
 		if (plan.error) { ui.setWidget(WIDGET, [render(plan)]); return; }
-		if (!plan.parent || plan.tasks.length === 0) {
+		if ((!plan.parent && !named.length) || plan.tasks.length === 0) {
 			ui.setWidget(WIDGET, undefined);
 			return;
 		}
 		const done = plan.tasks.filter(t => t.status === "completed").length;
 		const active = plan.tasks.find(t => t.status === "in_progress");
 		const blocked = plan.tasks.filter(t => t.status === "blocked").length;
-		const line = `Kata ${plan.parent} · ${done}/${plan.tasks.length} done${blocked ? ` · ${blocked} blocked` : ""}${active ? ` · ▶ ${active.content}` : ""}`;
+		const line = `Kata ${plan.parent ?? "tickets"} · ${done}/${plan.tasks.length} done${blocked ? ` · ${blocked} blocked` : ""}${active ? ` · ▶ ${active.content}` : ""}`;
 		ui.setWidget(WIDGET, [line]);
 	}
 
@@ -623,14 +655,14 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 	// Kata is back: create the parent and tasks the local plan accumulated.
 	async function replayLocal(ctx: any) {
 		if (!plan.local || !await probe(ctx.cwd)) return;
-		const local = plan.tasks;
+		const local = plan.tasks.filter(t => !t.ticket);
 		// Nothing was planned offline (a delegation only needed a parent): create nothing.
 		if (!local.length) { delete plan.local; return; }
 		plan = { tasks: [] };
 		try {
 			const phases = [...new Set(local.map(t => t.phase))].map(phase => ({ phase }));
 			await ensureParent({ list: phases }, ctx);
-			if (plan.local) { plan = { tasks: local, local: true }; return; } // Kata went away again
+			if (plan.local) { plan = { tasks: withNamed(local), local: true }; return; } // Kata went away again
 			const cwd = plan.workspace!;
 			for (const t of local) await create(t.phase, t.content, cwd);
 			await load(cwd);
@@ -648,7 +680,7 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 			await advance(cwd).catch(debug);
 		} catch (error) {
 			// Whatever Kata took stays; the unreplayed plan is retried (creates are idempotent).
-			plan = { tasks: local, local: true };
+			plan = { tasks: withNamed(local), local: true };
 			scheduleRetry();
 			throw error;
 		}
@@ -688,7 +720,7 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 		currentId = id;
 		lastSnapshot = undefined;
 		currentCtx = ctx;
-		plan = { tasks: [] };
+		plan = { tasks: [] }; named = [];
 		scope = "unknown"; refusal = ""; outage = "";
 		retries.clear(); autoParents.clear();
 		clearRetryTimer();
@@ -701,6 +733,9 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 			for (const [ref, pending] of snapshot.retries ?? []) retries.set(ref, pending);
 			if (retries.size) scheduleRetry();
 			if (snapshot.plan?.local && !explicit) plan = structuredClone(snapshot.plan);
+			named = structuredClone(snapshot.named ?? []);
+			stamp = Math.max(0, ...named.map(t => t.at || 0));
+			plan.tasks = withNamed(plan.tasks);
 		}
 		let stored: any = snapshot?.plan?.parent ? snapshot.plan : undefined;
 		for (const entry of ctx.sessionManager?.getBranch?.() ?? []) {
@@ -731,7 +766,7 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 		scope = "bound";
 		if (!binding.auto) autoParents.delete(binding.parent);
 		if (plan.parent === binding.parent && plan.workspace === binding.workspace && plan.auto === binding.auto && plan.label === binding.label) return;
-		plan = { ...binding, tasks: plan.parent === binding.parent ? plan.tasks : [] };
+		plan = { ...binding, tasks: withNamed(plan.parent === binding.parent ? plan.tasks : []) };
 		if (binding.auto) autoParents.set(binding.parent, binding);
 		host.appendEntry(STATE_ENTRY, binding);
 	}
@@ -790,9 +825,33 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 		}
 	}
 
+	// The attention and status writes for a task that starts, returns to pending, or blocks.
+	async function mark(ref: string, task: Task, from: Status, to: "in_progress" | "pending" | "blocked", change: Change, cwd: string, decision: any): Promise<any> {
+		switch (to) {
+			case "in_progress":
+				decision = await work(ref, "work.attention", "ok", cwd, decision);
+				if (from === "blocked") decision = await work(ref, "work.attention_msg", undefined, cwd, decision);
+				return work(ref, "todo.status", "in_progress", cwd, decision);
+			case "pending":
+				if (from === "blocked") {
+					decision = await work(ref, "work.attention", "ok", cwd, decision);
+					decision = await work(ref, "work.attention_msg", undefined, cwd, decision);
+				}
+				return work(ref, "todo.status", "pending", cwd, decision);
+			case "blocked": {
+				const reason = change.reason || "Blocked in the todo plan.";
+				decision = await work(ref, "work.attention", "stuck", cwd, decision);
+				decision = await work(ref, "work.attention_msg", reason, cwd, decision);
+				task.blocker = reason;
+				return work(ref, "todo.status", "blocked", cwd, decision);
+			}
+		}
+	}
+
 	async function transition(task: Task, to: Status, change: Change, cwd: string, validated?: any): Promise<void> {
 		const from = task.status;
 		if (from === to && to !== "blocked") return;
+		if (task.ticket) return transitionNamed(task, to, change, cwd);
 		const ref = task.ref;
 		if (task.delegated || host.isDelegated?.(ref)) {
 			throw new Error(`Kata task ${ref} is delegated. Its subagent must manage and close it; use view to refresh its state.`);
@@ -802,9 +861,7 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 			if (to === "completed" || to === "abandoned") task.proof = { message: change.message, evidence: change.evidence };
 			return;
 		}
-		if (to === "completed" && (!change.evidence?.length || (change.message || "").replace(/\s+/g, " ").trim().length < 40)) {
-			throw new Error(`Kata needs evidence and a 40+ character message to close ${ref} ("${task.content}") as done: pass evidence (commit:<sha>, test:<cmd>, pr:<url>, reviewed-paths:<path>) and a message saying what changed and how it was verified. If it is not verified, block it instead.`);
-		}
+		if (to === "completed") requireProof(task, ref, change);
 		let decision = validated ?? await owned(ref, cwd, to === "completed" || to === "abandoned" ? "check" : true, !OPEN.has(from) && to === "in_progress", task.revision);
 		if (!OPEN.has(from) && to === "in_progress") {
 			if (decision.status !== "closed") throw new Error(`Kata task ${ref} changed before restart.`);
@@ -816,25 +873,10 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 
 		switch (to) {
 			case "in_progress":
-				decision = await work(ref, "work.attention", "ok", cwd, decision);
-				if (from === "blocked") decision = await work(ref, "work.attention_msg", undefined, cwd, decision);
-				decision = await work(ref, "todo.status", "in_progress", cwd, decision);
-				break;
 			case "pending":
-				if (from === "blocked") {
-					decision = await work(ref, "work.attention", "ok", cwd, decision);
-					decision = await work(ref, "work.attention_msg", undefined, cwd, decision);
-				}
-				decision = await work(ref, "todo.status", "pending", cwd, decision);
+			case "blocked":
+				decision = await mark(ref, task, from, to, change, cwd, decision);
 				break;
-			case "blocked": {
-				const reason = change.reason || "Blocked in the todo plan.";
-				decision = await work(ref, "work.attention", "stuck", cwd, decision);
-				decision = await work(ref, "work.attention_msg", reason, cwd, decision);
-				decision = await work(ref, "todo.status", "blocked", cwd, decision);
-				task.blocker = reason;
-				break;
-			}
 			case "completed": {
 				const message = change.message ? `${change.message} (task: ${task.content}; ${task.ref})` : "";
 
@@ -859,6 +901,88 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 		if (to !== "blocked") task.blocker = undefined;
 	}
 
+	function requireProof(task: Task, ref: string, change: Change): void {
+		if (!change.evidence?.length || (change.message || "").replace(/\s+/g, " ").trim().length < 40) {
+			throw new Error(`Kata needs evidence and a 40+ character message to close ${ref} ("${task.content}") as done: pass evidence (commit:<sha>, test:<cmd>, pr:<url>, reviewed-paths:<path>) and a message saying what changed and how it was verified. If it is not verified, block it instead.`);
+		}
+	}
+
+	// ------------------------------------------------- items naming a ticket
+
+	// Kata deduplicates by this key, so a replay never comments twice for one item.
+	const noteKey = (task: Task, verb: string) => `${namespace}-item:${digest(currentId ?? "", task.ticket!, task.phase, task.content)}:${verb}`;
+	const note = (task: Task, verb: string, body: string, cwd: string) => kata(["comment", task.ticket!, "--idempotency-key", noteKey(task, verb), "--body", body], cwd);
+
+	// An item works its ticket: start claims it, done comments and the last done item closes it,
+	// drop only comments. A closed ticket is never reopened and never replaced by a new issue.
+	async function transitionNamed(task: Task, to: Status, change: Change, cwd: string): Promise<void> {
+		const from = task.status, ticket = task.ticket!;
+		if (host.isDelegated?.(ticket)) throw new Error(`Kata ticket ${ticket} is delegated. Its subagent must manage and close it; use view to refresh its state.`);
+		if (to === "completed") requireProof(task, ticket, change);
+		if (to === "abandoned") {
+			await note(task, "drop", `Dropped from the todo plan: "${task.content}". Reason: ${change.message || change.reason || "no longer needed"}. The ticket stays open.`, cwd);
+		} else {
+			const shown = JSON.parse(await kata(["show", ticket, "--json"], cwd)).issue;
+			if (shown.status !== "open") {
+				if (to !== "pending") throw new Error(`Kata ticket ${ticket} ("${task.content}") is already closed; the plugin never reopens a ticket. Reopen it yourself if the work continues.`);
+			} else if (to !== "completed") {
+				await mark(ticket, task, from, to as "in_progress" | "pending" | "blocked", change, cwd, await owned(ticket, cwd, true));
+			} else {
+				const decision = await owned(ticket, cwd, "check");
+				await note(task, "done", `Todo item done: "${task.content}"\n${change.message}\nEvidence: ${change.evidence!.join(", ")}`, cwd);
+				if (!named.some(other => other !== task && other.ticket === ticket && OPEN.has(other.status))) await closeTicket(task, decision, change, cwd);
+			}
+		}
+		task.status = to;
+		if (to !== "blocked") task.blocker = undefined;
+	}
+
+	function addNamed(phase: string, content: string, ticket: string) {
+		named.push({ ref: `item:${digest(phase, content)}`, content, phase, status: "pending", ticket, at: nextStamp() });
+	}
+
+	// Resolve and check every ticket the new items name before anything is created:
+	// an unresolvable, closed, or foreign-owned ticket fails the whole call.
+	// Maps `phase\0content` to the ticket's canonical ref.
+	async function resolveNamed(items: { phase: string; content: string }[], cwd: string, isNew: (item: { phase: string; content: string }) => boolean): Promise<Map<string, string>> {
+		const tickets = new Map<string, string>(), checked = new Map<string, string>();
+		for (const item of items) {
+			const ref = itemTicket(item.content)?.ref;
+			if (!ref || !isNew(item)) continue;
+			let ticket = checked.get(ref);
+			if (!ticket) {
+				let shown: any;
+				try { shown = JSON.parse(await kata(["show", ref, "--json"], cwd)).issue; }
+				catch (error) { throw new Error(`Todo item "${item.content}" names ${ref}, which Kata cannot resolve: ${(error as Error).message}. Nothing was created.`); }
+				if (shown.status !== "open") throw new Error(`Todo item "${item.content}" names ${ref}, which is already closed; the plugin never reopens a ticket. Nothing was created.`);
+				ticket = `${ref.split("#")[0]}#${shown.short_id}`;
+				try { await owned(ticket, cwd, "check"); }
+				catch (error) { throw new Error(`Todo item "${item.content}" cannot work ${ticket}: ${(error as Error).message} Nothing was created.`); }
+				checked.set(ref, ticket);
+			}
+			tickets.set(`${item.phase}\u0000${item.content}`, ticket);
+		}
+		return tickets;
+	}
+
+	// The last item of a ticket is done: close it with that item's evidence. Kata
+	// refuses a ticket with open children; that stays open and says why.
+	async function closeTicket(task: Task, decision: any, change: Change, cwd: string) {
+		const ticket = task.ticket!;
+		const args = ["close", ticket, "--done", "--if-match", String(decision.revision), "--idempotency-key", noteKey(task, "close"), "--message", `${change.message} (item: ${task.content}; ${ticket})`];
+		for (const e of change.evidence!) args.push("--evidence", e);
+		try { await kata(args, cwd); }
+		catch (error) {
+			if (!isKataCode(error, "parent_has_open_children")) throw error;
+			const open = ((JSON.parse(await kata(["show", ticket, "--json"], cwd)).children ?? []) as any[]).filter(c => c.status !== "closed").length;
+			await note(task, "blocked", `Every todo item for ${ticket} is done, but ${open} open ${open === 1 ? "child blocks" : "children block"} closing it, so it stays open. Close ${open === 1 ? "it" : "them"} first.`, cwd);
+			return;
+		}
+		if (decision.metadata?.["todo.status"] !== undefined) {
+			await owned(ticket, cwd, "check", true).then(closed => work(ticket, "todo.status", "completed", cwd, closed)).catch(debug);
+		}
+	}
+
 	// Kata wants 60+ characters for wontfix; the task and plan context supply
 	// that around the caller's reason.
 	function wontfix(verb: string, task: Task, change: Change): string {
@@ -867,7 +991,7 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 	}
 
 	// A delegated task is the subagent's; it never occupies the lead's slot.
-	const leads = (t: Task) => !t.delegated && !host.isDelegated?.(t.ref);
+	const leads = (t: Task) => !t.delegated && !host.isDelegated?.(t.ticket ?? t.ref);
 
 	// A delegate finished without closing its issue: ask the lead to review it.
 	// A plan task returns to the lead (pending, the lead's teammate) only while
@@ -888,6 +1012,12 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 	}
 
 	async function remove(task: Task, change: Change, cwd: string): Promise<void> {
+		if (task.ticket) {
+			if (OPEN.has(task.status)) await note(task, "rm", `Removed from the todo plan: "${task.content}". Reason: ${change.message || change.reason || "no longer needed"}. The ticket stays open.`, cwd);
+			named = named.filter(t => t !== task);
+			plan.tasks = plan.tasks.filter(t => t !== task);
+			return;
+		}
 		if (plan.local) { plan.tasks = plan.tasks.filter(t => t !== task); return; }
 		if (OPEN.has(task.status)) {
 			await transition(task, "abandoned", { ...change, remove: true }, cwd);
@@ -1119,6 +1249,7 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 			if (desired.length === 0) throw new Error("init needs list (phases with items) or items.");
 			if (desired.some(d => !d.content.trim() || !d.phase.trim())) throw new Error("Task and phase names must not be blank.");
 			const wanted = new Set(desired.map(d => `${d.phase}\u0000${d.content}`));
+			const resolved = await resolveNamed(desired, plan.workspace || ctx.cwd, d => !named.some(t => t.phase === d.phase && t.content === d.content));
 			const explicit = assignedRef ?? options.explicitRef?.() ?? process.env.KATA_REF;
 			const target = explicit || params.ref || plan.parent;
 			if (target) {
@@ -1132,7 +1263,7 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 				if (next) affected.add(next);
 				for (const task of affected) await owned(task.ref, workspace, "check", true, task.revision);
 			}
-			await ensureParent(params, ctx);
+			if (target || desired.some(d => !itemTicket(d.content))) await ensureParent(params, ctx);
 			cwd = plan.workspace || ctx.cwd;
 			await load(cwd);
 			for (const task of plan.tasks) if (wanted.has(`${task.phase}\u0000${task.content}`) && retries.get(task.ref)?.change.remove) retries.delete(task.ref);
@@ -1141,7 +1272,9 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 			}
 			const have = new Set(plan.tasks.map(t => `${t.phase}\u0000${t.content}`));
 			for (const d of desired) if (!have.has(`${d.phase}\u0000${d.content}`)) {
-				if (plan.local) plan.tasks.push({ ...d, ref: `local-${digest(d.phase, d.content)}`, status: "pending" });
+				const ticket = resolved.get(`${d.phase}\u0000${d.content}`);
+				if (ticket) addNamed(d.phase, d.content, ticket);
+				else if (plan.local) plan.tasks.push({ ...d, ref: `local-${digest(d.phase, d.content)}`, status: "pending", at: nextStamp() });
 				else await create(d.phase, d.content, plan.workspace!);
 				have.add(`${d.phase}\u0000${d.content}`);
 			}
@@ -1149,14 +1282,20 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 			await advance(cwd);
 			return render(plan);
 		}
-		if (!plan.parent && !plan.local) throw new Error("No todo plan yet. Call todo op=init first.");
-		const children = await load(cwd);
+		if (!plan.parent && !plan.local && !named.length) throw new Error("No todo plan yet. Call todo op=init first.");
+		let children = await load(cwd);
 		switch (op) {
 			case "append": {
 				const items: string[] = params.items?.length ? params.items : params.task ? [params.task] : [];
 				if (items.length === 0) throw new Error("append needs items.");
 				if (items.some(content => !content.trim()) || (params.phase !== undefined && !params.phase.trim())) throw new Error("Task and phase names must not be blank.");
 				const phase = params.phase || plan.tasks[plan.tasks.length - 1]?.phase || "Tasks";
+				const resolved = await resolveNamed(items.map(content => ({ phase, content })), cwd, d => !named.some(t => t.phase === d.phase && t.content === d.content && OPEN.has(t.status)));
+				if (items.some(content => !itemTicket(content)) && !plan.parent && !plan.local) {
+					await ensureParent({ list: [{ phase }], message: params.message }, ctx);
+					cwd = plan.workspace || cwd;
+					children = await load(cwd);
+				}
 				if (!plan.local) {
 					for (const child of children) {
 						const ref = child.qualified_id || `${plan.parent!.split("#")[0]}#${child.short_id}`;
@@ -1168,10 +1307,15 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 				}
 				await reopenParent();
 				for (const content of items) {
-					if (plan.local) {
+					const ticket = resolved.get(`${phase}\u0000${content}`);
+					if (ticket) {
+						// A finished or dropped item comes back as a fresh one.
+						named = named.filter(t => t.phase !== phase || t.content !== content || OPEN.has(t.status));
+						if (!named.some(t => t.phase === phase && t.content === content)) addNamed(phase, content, ticket);
+					} else if (plan.local) {
 						const existing = plan.tasks.filter(t => t.content === content && t.phase === phase);
 						if (existing.length > 1) throw new Error(`Ambiguous local task "${content}"; no task was appended.`);
-						if (!existing.length) plan.tasks.push({ content, phase, ref: `local-${digest(phase, content)}`, status: "pending" });
+						if (!existing.length) plan.tasks.push({ content, phase, ref: `local-${digest(phase, content)}`, status: "pending", at: nextStamp() });
 					} else {
 						await create(phase, content, cwd);
 						for (const task of plan.tasks.filter(t => t.content === content && t.phase === phase)) if (retries.get(task.ref)?.change.remove) retries.delete(task.ref);
@@ -1183,9 +1327,9 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 			case "start": {
 				const [task] = await resolve(params.task, undefined, "none");
 				if (task.status === "blocked") throw new Error(`"${task.content}" is blocked; unblock it first.`);
-				const decision = plan.local ? undefined : await owned(task.ref, cwd, true, !OPEN.has(task.status), task.revision);
+				const decision = plan.local || task.ticket ? undefined : await owned(task.ref, cwd, true, !OPEN.has(task.status), task.revision);
 				if (decision) task.revision = decision.revision;
-				if (!OPEN.has(task.status)) await reopenParent();
+				if (!OPEN.has(task.status) && !task.ticket) await reopenParent();
 				for (const other of plan.tasks) if (other !== task && other.status === "in_progress" && leads(other) && !retries.has(other.ref)) await transition(other, "pending", {}, cwd);
 				await transition(task, "in_progress", change, cwd, decision);
 				retries.delete(task.ref);
@@ -1242,10 +1386,10 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 				return { content: [{ type: "text" as const, text }], details: details(params.op) };
 			} catch (err) {
 				// A failed initial binding has no authoritative plan to render yet.
-				if (!bound || !plan.parent && !plan.local) plan.error = (err as Error).message;
+				if (!bound || !plan.parent && !plan.local && !named.length) plan.error = (err as Error).message;
 				// Kata may have applied part of a batch. A failed reload marks the
 				// cached tasks unavailable instead of presenting them as current.
-				if (plan.parent) await load(plan.workspace || ctx.cwd).catch(debug);
+				if (plan.parent || named.length) await load(plan.workspace || ctx.cwd).catch(debug);
 				return {
 					content: [{ type: "text" as const, text: `${(err as Error).message}\n\n${render(plan)}` }],
 					details: details(params.op),
@@ -1324,8 +1468,8 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 		progressed = false;
 		return [
 				"<system-reminder>",
-				`Open Kata todo tasks under ${plan.parent} (reminder ${reminders}/${MAX_REMINDERS}):`,
-				...open.map(t => `- ${t.content} (${t.ref}, ${t.status})`),
+				`Open Kata todo tasks${plan.parent ? ` under ${plan.parent}` : ""} (reminder ${reminders}/${MAX_REMINDERS}):`,
+				...open.map(t => `- ${t.content} (${t.ticket ?? t.ref}, ${t.status})`),
 				"Continue the work, or update the plan: done with evidence, block with a reason when waiting on someone, or drop with a reason.",
 				"If the user asked you to stop or pause, do not continue: block the remaining tasks with that reason and stop.",
 				"</system-reminder>",

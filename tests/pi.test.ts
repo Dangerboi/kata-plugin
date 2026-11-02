@@ -570,3 +570,26 @@ test("Pi child recovers an automatic parent from a replay create envelope", asyn
   expect(prompt.systemPromptOptions.sections.kata_binding).toContain(record.ref);
   leaveChild();
 });
+
+test("pi items that name a ticket work and log on it without creating an issue or a parent", async () => {
+  const app = await host(); await app.event("session_start", { reason: "startup" });
+  const ticket = (await kata(["create", "Existing pi work", "--force-new", "--json"])).issue.short_id;
+  const before = (await kata(["list", "--status", "all", "--limit", "0", "--json"])).issues.length;
+  const started = await app.call({ op: "init", items: [`pitest#${ticket}: write the first part`, `pitest#${ticket}: write the second part`] });
+  expect(started.isError).toBeUndefined();
+  expect(started.details.kata.parent).toBeUndefined();
+  expect((await kata(["list", "--status", "all", "--limit", "0", "--json"])).issues).toHaveLength(before);
+  expect((await show(ticket)).issue.owner).toBe("pi-builder");
+  expect((await show(ticket)).issue.metadata["todo.status"]).toBe("in_progress");
+  expect((await app.call({ op: "done", task: `pitest#${ticket}: write the first part`, message, evidence })).isError).toBeUndefined();
+  expect((await show(ticket)).issue.status).toBe("open");
+  const last = await app.call({ op: "done", task: `pitest#${ticket}: write the second part`, message, evidence: ["test:bun test pi last item"] });
+  expect(last.isError).toBeUndefined();
+  const closed = await show(ticket);
+  expect(closed.issue.status).toBe("closed");
+  expect(closed.comments).toHaveLength(2);
+  const rows = (await kata(["audit", "closes", "--json"])).rows.filter((r: any) => r.issue === ticket);
+  expect(rows).toHaveLength(1);
+  expect((await kata(["events", "--after", String(rows[0].event_id - 1), "--limit", "1", "--json"])).events[0].payload.evidence).toEqual([{ type: "test", command: "bun test pi last item" }]);
+  expect((await kata(["list", "--status", "all", "--limit", "0", "--json"])).issues).toHaveLength(before);
+});

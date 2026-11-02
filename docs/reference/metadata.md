@@ -10,6 +10,7 @@ These keys describe observed execution and plan state. `work.*` belongs to the c
 | `pi.subagent_id` | Child Pi session identity and task reservation. |
 | `omp.subagent_id`, `omp.parent_agent_id`, `omp.status` | OMP delegation identity and outcome. |
 | `todo.phase`, `todo.status`, `todo.removed` | Phase and plan state: pending, in_progress, blocked, completed, or abandoned. `todo.removed` is a separate boolean. |
+| (none) | An item naming a ticket (`<project>#<short_id>: <action>`) writes only `todo.status`, `work.attention` and `work.attention_msg` on that ticket, never `todo.phase`. The item-to-ticket record is kept in the session snapshot, not in Kata. |
 | `work.attention`, `work.attention_msg`, `work.attention_session` | Guarded attention state where the adapter owns that transition. |
 
 Labels `omp-session` and `pi-session` identify session parents. `needs-review` marks unverified work or rejected automatic closure. The automatic marker must be boolean `true`, not the string `"true"`.
