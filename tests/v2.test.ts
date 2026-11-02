@@ -1101,6 +1101,47 @@ test("drop and rm of an item that names a ticket only comment and leave it open"
   expect(await closesOf(a)).toHaveLength(0);
 });
 
+test("an item that stops working a ticket resets its work state", async () => {
+  const app = host(); await app.event("session_start");
+  const a = await issue("Ticket A");
+  await app.call({ op: "init", items: [`v2test#${a}: only step`] });
+  expect((await show(a)).issue.metadata["todo.status"]).toBe("in_progress");
+  await app.call({ op: "drop", task: `v2test#${a}: only step`, message: "No longer needed for this ticket." });
+  const dropped = (await show(a)).issue;
+  expect(dropped.status).toBe("open");
+  expect(dropped.metadata["todo.status"]).toBe("pending");
+  expect(dropped.metadata["work.attention"]).toBe("ok");
+  expect(dropped.metadata["work.attention_msg"]).toBeUndefined();
+
+  const b = await issue("Ticket B");
+  await app.call({ op: "init", items: [`v2test#${b}: first step`, `v2test#${b}: second step`] });
+  await app.call({ op: "block", task: `v2test#${b}: first step`, reason: "Waiting on a vendor reply" });
+  const done = await app.call({ op: "done", task: `v2test#${b}: first step`, message, evidence });
+  expect(done.isError).toBeUndefined();
+  const after = (await show(b)).issue;
+  expect(after.status).toBe("open");
+  expect(after.metadata["work.attention"]).toBe("ok");
+  expect(after.metadata["work.attention_msg"]).toBeUndefined();
+});
+
+test("an item finished, appended again and finished again comments and closes a second time", async () => {
+  const app = host(); await app.event("session_start");
+  const a = await issue("Ticket A");
+  const item = `v2test#${a}: repeat step`;
+  await app.call({ op: "init", items: [item] });
+  await app.call({ op: "done", task: item, message, evidence });
+  expect((await show(a)).issue.status).toBe("closed");
+  await kata(["reopen", a, "--json"]);
+  const again = await app.call({ op: "append", items: [item] });
+  expect(again.isError).toBeUndefined();
+  const second = await app.call({ op: "done", task: item, message, evidence });
+  if (second.isError) throw new Error(second.content[0].text);
+  expect(second.isError).toBeUndefined();
+  expect((await show(a)).issue.status).toBe("closed");
+  expect(await commentsOf(a)).toHaveLength(2);
+  expect(await closesOf(a)).toHaveLength(2);
+});
+
 test("a ticket another writer owns or that closed meanwhile is an error, never a fallback or a reopen", async () => {
   const app = host(); await app.event("session_start");
   const foreign = await issue("Foreign work"); await kata(["claim", foreign, "--as", "someone-else", "--json"]);

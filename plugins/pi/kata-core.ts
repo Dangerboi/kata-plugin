@@ -91,7 +91,7 @@ External waits (user/agent/service): block with a reason; it suppresses the stop
 NEVER call todo alone: init with first work; done/start with next action.
 
 Kata specifics:
-- An item that works an existing ticket starts with its qualified ref: \`<project>#<short_id>: <action>\` (for example \`kata-plugin#bc6m: write the smoke script\`). It creates no issue: start claims the ticket and marks it in progress, done comments on it, and the last item of a ticket to be done closes it with that item's evidence (a ticket with open children stays open and gets a comment), drop/rm only comment and never close it. A ref that does not resolve, or a closed ticket, is an error. Only that prefix names a ticket; a bare id is text. A plan whose items all name tickets creates no parent issue.
+- An item that works an existing ticket starts with its qualified ref: \`<project>#<short_id>: <action>\` (for example \`myproj#a1b2: write the smoke script\`). It creates no issue: start claims the ticket and marks it in progress, done comments on it, and the last item of a ticket to be done closes it with that item's evidence (a ticket with open children stays open and gets a comment), drop/rm only comment and never close it. A ref that does not resolve, or a closed ticket, is an error. Only that prefix names a ticket; a bare id is text. A plan whose items all name tickets creates no parent issue.
 - Every other task is a Kata child issue of one parent issue. On init pass \`ref\` with the Kata issue this plan serves (search first: kata search "<terms>" --agent); an explicit KATA_REF or worker binding must match it. Without a ref, use that binding, the session's existing parent, or a new parent titled by \`message\`.
 - done closes the issue (an item naming a ticket: see above). Kata requires \`evidence\` (commit:<sha>, test:<cmd>, pr:<url>, reviewed-paths:<path>) and a \`message\` of 40+ characters saying what changed and how it was verified. Unverified work: block it instead.
 - drop/rm take the reason in \`message\`.
@@ -228,6 +228,9 @@ export function itemTicket(content: string): { ref: string; action: string } | u
 	const match = new RegExp(`^(${QUALIFIED_REF}):\\s+(\\S[\\s\\S]*)$`).exec(content.trim());
 	return match ? { ref: match[1], action: match[2] } : undefined;
 }
+
+// Items that name no ticket become children of a parent issue; a plan of only named items needs none.
+const needsParent = (contents: string[]) => contents.some(content => !itemTicket(content));
 
 // The open tasks a text names: title (case-insensitive, whole words; a one- or
 // two-word title only quoted or as the whole text), qualified ref, or short id
@@ -846,7 +849,7 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 		switch (to) {
 			case "in_progress":
 				decision = await work(ref, "work.attention", "ok", cwd, decision);
-				if (from === "blocked") decision = await work(ref, "work.attention_msg", undefined, cwd, decision);
+				decision = await work(ref, "work.attention_msg", undefined, cwd, decision);
 				return work(ref, "todo.status", "in_progress", cwd, decision);
 			case "pending":
 				if (from === "blocked") {
@@ -926,8 +929,21 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 	// ------------------------------------------------- items naming a ticket
 
 	// Kata deduplicates by this key, so a replay never comments twice for one item.
-	const noteKey = (task: Task, verb: string) => `${namespace}-item:${digest(currentId ?? "", task.ticket!, task.phase, task.content)}:${verb}`;
+	const noteKey = (task: Task, verb: string) => `${namespace}-item:${digest(currentId ?? "", task.ticket!, task.phase, task.content, String(task.at ?? 0))}:${verb}`;
 	const note = (task: Task, verb: string, body: string, cwd: string) => kata(["comment", task.ticket!, "--idempotency-key", noteKey(task, verb), "--body", body], cwd);
+
+	// A ticket whose last working item left in_progress/blocked goes back to pending and ok.
+	// An unowned-by-us or closed ticket is left alone.
+	async function settleTicket(task: Task, cwd: string): Promise<void> {
+		const ticket = task.ticket!;
+		if (named.some(other => other !== task && other.ticket === ticket && (other.status === "in_progress" || other.status === "blocked"))) return;
+		let decision: any;
+		try { decision = await owned(ticket, cwd, "check"); }
+		catch (error) { debug(error); return; }
+		decision = await work(ticket, "work.attention", "ok", cwd, decision);
+		decision = await work(ticket, "work.attention_msg", undefined, cwd, decision);
+		await work(ticket, "todo.status", "pending", cwd, decision);
+	}
 
 	// An item works its ticket: start claims it, done comments and the last done item closes it,
 	// drop only comments. A closed ticket is never reopened and never replaced by a new issue.
@@ -937,6 +953,7 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 		if (to === "completed") requireProof(task, ticket, change);
 		if (to === "abandoned") {
 			await note(task, "drop", `Dropped from the todo plan: "${task.content}". Reason: ${change.message || change.reason || "no longer needed"}. The ticket stays open.`, cwd);
+			if (from === "in_progress" || from === "blocked") { task.status = to; task.blocker = undefined; await settleTicket(task, cwd); }
 		} else {
 			const shown = JSON.parse(await kata(["show", ticket, "--json"], cwd)).issue;
 			if (shown.status !== "open") {
@@ -947,6 +964,7 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 				const decision = await owned(ticket, cwd, "check");
 				await note(task, "done", `Todo item done: "${task.content}"\n${change.message}\nEvidence: ${change.evidence!.join(", ")}`, cwd);
 				if (!named.some(other => other !== task && other.ticket === ticket && OPEN.has(other.status))) await closeTicket(task, decision, change, cwd);
+				else if (from === "in_progress" || from === "blocked") { task.status = to; await settleTicket(task, cwd); }
 			}
 		}
 		task.status = to;
@@ -1029,9 +1047,11 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 
 	async function remove(task: Task, change: Change, cwd: string): Promise<void> {
 		if (task.ticket) {
+			const working = task.status === "in_progress" || task.status === "blocked";
 			if (OPEN.has(task.status)) await note(task, "rm", `Removed from the todo plan: "${task.content}". Reason: ${change.message || change.reason || "no longer needed"}. The ticket stays open.`, cwd);
 			named = named.filter(t => t !== task);
 			plan.tasks = plan.tasks.filter(t => t !== task);
+			if (working) await settleTicket(task, cwd);
 			return;
 		}
 		if (plan.local) { plan.tasks = plan.tasks.filter(t => t !== task); return; }
@@ -1279,7 +1299,7 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 				if (next) affected.add(next);
 				for (const task of affected) await owned(task.ref, workspace, "check", true, task.revision);
 			}
-			if (target || desired.some(d => !itemTicket(d.content))) await ensureParent(params, ctx);
+			if (target || needsParent(desired.map(d => d.content))) await ensureParent(params, ctx);
 			cwd = plan.workspace || ctx.cwd;
 			await load(cwd);
 			for (const task of plan.tasks) if (wanted.has(`${task.phase}\u0000${task.content}`) && retries.get(task.ref)?.change.remove) retries.delete(task.ref);
@@ -1307,7 +1327,7 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 				if (items.some(content => !content.trim()) || (params.phase !== undefined && !params.phase.trim())) throw new Error("Task and phase names must not be blank.");
 				const phase = params.phase || plan.tasks[plan.tasks.length - 1]?.phase || "Tasks";
 				const resolved = await resolveNamed(items.map(content => ({ phase, content })), cwd, d => !named.some(t => t.phase === d.phase && t.content === d.content && OPEN.has(t.status)));
-				if (items.some(content => !itemTicket(content)) && !plan.parent && !plan.local) {
+				if (needsParent(items) && !plan.parent && !plan.local) {
 					await ensureParent({ list: [{ phase }], message: params.message }, ctx);
 					cwd = plan.workspace || cwd;
 					children = await load(cwd);
