@@ -4,18 +4,15 @@ These keys describe observed execution and plan state. `work.*` belongs to the c
 
 | Keys | Purpose |
 | --- | --- |
-| `claude.auto_parent`, `omp.auto_parent`, `pi.auto_parent` | Typed boolean granting automatic-parent authority. Explicit bindings revoke that authority locally. |
-| `claude.session_id`, `omp.session_id`, `pi.session_id` | Session identity for recovery and idempotency. |
-| `claude.workspace`, `omp.workspace`, `pi.workspace` | Pinned original workspace. |
-| `claude.tool_use_id`, `claude.agent_type`, `claude.teammate`, `claude.agent_id` | Delegated Agent attribution and native join. |
-| `claude.workflow_run_id`, `claude.task_id`, `claude.workflow_name`, `claude.workflow_remote` | Local/remote workflow run identity. |
-| `claude.binding_note` | Why a named issue was not bound (missing, closed, busy, ambiguous) on the fallback child or session parent. |
-| `claude.status` | Observed running, completed, failed, killed, denied, or session-ended state; a pending denied close can use `denied-close-pending`. |
+| `omp.auto_parent`, `pi.auto_parent` | Typed boolean granting automatic-parent authority. Explicit bindings revoke that authority locally. |
+| `omp.session_id`, `pi.session_id` | Session identity for recovery and idempotency. |
+| `omp.workspace`, `pi.workspace` | Pinned original workspace. |
 | `pi.subagent_id` | Child Pi session identity and task reservation. |
 | `omp.subagent_id`, `omp.parent_agent_id`, `omp.status` | OMP delegation identity and outcome. |
 | `todo.phase`, `todo.status`, `todo.removed` | Phase and plan state: pending, in_progress, blocked, completed, or abandoned. `todo.removed` is a separate boolean. |
+| (none) | An item naming a ticket (`<project>#<short_id>: <action>`) writes only `todo.status`, `work.attention` and `work.attention_msg` on that ticket, never `todo.phase`. The item-to-ticket record is kept in the session snapshot, not in Kata. |
 | `work.attention`, `work.attention_msg`, `work.attention_session` | Guarded attention state where the adapter owns that transition. |
 
-Labels `claude-session`, `omp-session`, and `pi-session` identify session parents. `needs-review` marks unverified work or rejected automatic closure. The automatic marker must be boolean `true`, not the string `"true"`.
+Labels `omp-session` and `pi-session` identify session parents. `needs-review` marks unverified work or rejected automatic closure. The automatic marker must be boolean `true`, not the string `"true"`.
 
 A status report is not a close. Kata issue status and accepted close-event evidence determine completion. Qualified refs and original project/workspace routing are retained separately from display text.

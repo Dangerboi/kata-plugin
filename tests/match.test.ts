@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { matchDelegation, namedTask, taskTokens, type Status, type Task } from "../core/kata-core";
+import { itemTicket, matchDelegation, namedTargets, namedTasks, qualifiedRefs, taskTokens, type Status, type Task } from "../core/kata-core";
 
 const task = (ref: string, content: string, status: Status = "pending", extra: Partial<Task> = {}): Task => ({ ref, content, phase: "Tasks", status, ...extra });
 const pick = (tasks: Task[], text: string, unavailable: string[] = [], single = true) => matchDelegation(tasks, text, { unavailable: new Set(unavailable), single })?.ref;
@@ -53,7 +53,7 @@ test("a short title inside a longer one does not count as naming it", () => {
 
 test("a named task that is taken binds nothing else", () => {
   const plan = [task("x#aa11", "Write widget tests", "in_progress", { delegated: true }), task("x#bb22", "Write widget test docs")];
-  expect(namedTask(plan, 'Complete "Write widget tests"')?.ref).toBe("x#aa11");
+  expect(namedTasks(plan, 'Complete "Write widget tests"').map(t => t.ref)).toEqual(["x#aa11"]);
   expect(pick(plan, 'Complete "Write widget tests"')).toBeUndefined();
   expect(pick(plan, "continue task aa11 and write the widget test docs")).toBeUndefined();
   expect(pick([task("y#cc33", "Write gadget tests"), task("y#dd44", "Write gadget test docs")], 'Complete "Write gadget tests"', ["y#cc33"])).toBeUndefined();
@@ -61,10 +61,50 @@ test("a named task that is taken binds nothing else", () => {
 
 test("a short id only counts as a whole word after a marker", () => {
   const plan = [task("m#resh", "Implement cache"), task("m#erjg", "Write cache tests")];
-  expect(namedTask(plan, "refresh the cache")).toBeUndefined();
-  expect(namedTask(plan, "see other#erjg first")).toBeUndefined();
-  expect(namedTask(plan, "this is kata issue erjg")?.ref).toBe("m#erjg");
-  expect(namedTask(plan, "work on #erjg")?.ref).toBe("m#erjg");
+  expect(namedTasks(plan, "refresh the cache")).toEqual([]);
+  expect(namedTasks(plan, "see other#erjg first")).toEqual([]);
+  expect(namedTasks(plan, "this is kata issue erjg").map(t => t.ref)).toEqual(["m#erjg"]);
+  expect(namedTasks(plan, "work on #erjg").map(t => t.ref)).toEqual(["m#erjg"]);
+});
+
+test("qualified refs are found as whole tokens, distinct and in order", () => {
+  expect(qualifiedRefs("see kata-plugin#bc7q, then (v2.test#ce9x). Again kata-plugin#bc7q!")).toEqual(["kata-plugin#bc7q", "v2.test#ce9x"]);
+  expect(qualifiedRefs("kata-plugin#bc7q: write the script")).toEqual(["kata-plugin#bc7q"]);
+});
+
+test("only a project name with a valid short id is a qualified ref", () => {
+  expect(qualifiedRefs("bc7q and #bc7q and kata#abc kata#abcu kata#ABCD")).toEqual([]);
+  expect(qualifiedRefs("kata#abcde1x extra")).toEqual(["kata#abcde1x"]);
+  expect(qualifiedRefs(`kata#${"a".repeat(27)}`)).toEqual([]);
+  expect(qualifiedRefs("kata#bc7q-2 and kata#bc7qX")).toEqual([]);
+});
+
+test("qualifiedRefs counts only refs of the given registered projects", () => {
+  const projects = new Set(["kata-plugin", "other.proj"]);
+  expect(qualifiedRefs("Fix README.md#tasks and CHANGELOG.md#added", projects)).toEqual([]);
+  expect(qualifiedRefs("see kata-plugin#bc7q and README.md#tasks and other.proj#ce9x", projects)).toEqual(["kata-plugin#bc7q", "other.proj#ce9x"]);
+});
+
+test("an explicit ref wins over a better word overlap", () => {
+  const plan = [task("w#aa11", "Write widget tests"), task("w#bb22", "Write widget docs")];
+  expect(pick(plan, "Write the widget tests (w#bb22 covers it)")).toBe("w#bb22");
+  expect(pick(plan, "Please write the widget tests for the parser: w#bb22.")).toBe("w#bb22");
+});
+
+test("a text naming several plan tasks binds none, whatever the overlap", () => {
+  const plan = [task("w#aa11", "Write widget tests"), task("w#bb22", "Write widget docs"), task("w#cc33", "Write widget tests for parser edge cases")];
+  expect(pick(plan, "Write widget tests for w#bb22 and w#aa11")).toBeUndefined();
+  expect(pick(plan, "Write widget tests and then Write widget docs", [], false)).toBeUndefined();
+  expect(pick(plan, 'Do "Write widget tests" and "Write widget docs"')).toBeUndefined();
+});
+
+test("tickets outside the plan are named targets, and the plan parent is not", () => {
+  const plan = [task("w#aa11", "Write widget tests")];
+  const all = new Set(["w", "other"]);
+  expect(namedTargets(plan, "work on other#zz99 now", all, "w#pa4e")).toEqual({ tasks: [], tickets: ["other#zz99"] });
+  expect(namedTargets(plan, "w#aa11 and other#zz99", all, "w#pa4e")).toMatchObject({ tickets: ["other#zz99"], tasks: [{ ref: "w#aa11" }] });
+  expect(namedTargets(plan, "inside w#pa4e do w#aa11", all, "w#pa4e")).toMatchObject({ tickets: [], tasks: [{ ref: "w#aa11" }] });
+  expect(namedTargets(plan, "Reply with exactly: OK", all).tickets).toEqual([]);
 });
 
 // The 2026-10-20 third run: a short spec that also says "then run python3 -m
@@ -118,4 +158,11 @@ test("matches are always available open tasks", () => {
     expect(chosen.delegated).toBe(false);
     expect(unavailable).not.toContain(ref);
   }
+});
+
+test("an item names a ticket only with a qualified ref prefix and a colon", () => {
+  expect(itemTicket("kata-plugin#bc7q: write the smoke script")).toEqual({ ref: "kata-plugin#bc7q", action: "write the smoke script" });
+  expect(itemTicket("  other.proj#ce9x:   fetch inbox\neach turn")).toEqual({ ref: "other.proj#ce9x", action: "fetch inbox\neach turn" });
+  for (const text of ["bc7q: write the script", "write the script for kata-plugin#bc7q", "see kata-plugin#bc7q: write", "kata-plugin#bc7q write the script",
+    "kata-plugin#bc7q:", "kata-plugin#bc7q:write", "kata-plugin#abl6: write", "update CHANGELOG", "#bc7q: write"]) expect(itemTicket(text)).toBeUndefined();
 });

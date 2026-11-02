@@ -5,6 +5,7 @@ import path from "node:path";
 import { Value } from "typebox/value";
 import { assertIsolated } from "./isolation";
 import { isolatedKata } from "./kata-fixture";
+import { daemonUnavailable, siblingThrottle } from "./kata-errors";
 import piKata, { launchesPi } from "../plugins/pi/kata";
 assertIsolated();
 const binary = process.env.KATA_TEST_EXECUTABLE!;
@@ -22,7 +23,7 @@ async function kata(args: string[], workspace = cwd): Promise<any> {
 }
 const show = (ref: string) => kata(["show", ref, "--json"]);
 let sequence = 0;
-const down = () => ({ code: 1, stdout: "", stderr: "dial tcp: connection refused" });
+const down = daemonUnavailable;
 const evidence = ["test:bun test pi fixture"];
 const message = "Implemented the stock pi fixture and verified it with the isolated integration suite.";
 const nativeKey = Symbol.for("kata.pi.native.v1");
@@ -164,7 +165,7 @@ test("pi uses structured prompt sections, preserves other extensions, and caches
   expect(sections.kata_contract).toBe(contract);
   await app.event("before_agent_start", prompt);
   expect(app.calls.filter(a => a[0] === "agent-contract-hook")).toHaveLength(1);
-  expect(app.calls.filter(a => a[0] === "inbox")).toHaveLength(1);
+  expect(app.calls.filter(a => a[0] === "inbox")).toHaveLength(3);
 });
 
 for (const [scope, workspace, enabled, expected] of [
@@ -336,7 +337,7 @@ test("pi local plans and queued closes survive a fresh extension instance", asyn
   const restored = await host({cwd:outside, before: down, sid:local.sid, entries:JSON.parse(JSON.stringify(local.entries))});
   await restored.event("session_start", {reason:"resume"});
   expect((await restored.call({op:"view"})).content[0].text).toContain("Wait through restart");
-  const app = await host({before:(a:string[])=>a[0]==="close"?{code:1,stdout:"",stderr:"sibling close throttle"}:undefined});
+  const app = await host({before:(a:string[])=>a[0]==="close"?siblingThrottle():undefined});
   const ref = await app.init(["Durable pi close"]); await app.call({op:"done", message, evidence});
   const entries=JSON.parse(JSON.stringify(app.entries)), now=Date.now;
   Date.now=()=>now()+61_000;
@@ -400,6 +401,19 @@ async function childOf(parent: any, options: any = {}) {
 }
 function leaveChild() { for (const key of ["KATA_TEAMMATE", "KATA_INBOX_USER", "KATA_PI_PARENT"]) delete process.env[key]; }
 const piPlan = ["Implement word_count and top_words", "Delegate: subagent writes unittest suite in tests/ for both functions", "Run python3 -m unittest"];
+
+test("a pi main session leaves a plan task held by an omp delegate alone", async () => {
+  const parent = await host(); await parent.event("session_start", { reason: "startup" });
+  const ref = await parent.init(["Remaining lead work", "Held by omp delegate"]);
+  const held = (await show(ref)).children.find((c: any) => c.title === "Held by omp delegate");
+  await kata(["meta", "set", held.short_id, "omp.subagent_id", "omp-worker", "--json"]);
+  await kata(["meta", "set", held.short_id, "teammate", "omp-worker-abc123", "--json"]);
+  const started = await parent.call({ op: "start", task: "Held by omp delegate" });
+  expect(started.isError).toBe(true);
+  expect(JSON.stringify(started)).toContain("belongs to a delegate");
+  const after = (await show(`pitest#${held.short_id}`)).issue;
+  expect(after.metadata["todo.status"]).not.toBe("in_progress");
+});
 
 test("a child binds the plan task its prompt describes, not the lead's active task", async () => {
   const parent = await host(); await parent.event("session_start", { reason: "startup" });
@@ -555,4 +569,66 @@ test("Pi child recovers an automatic parent from a replay create envelope", asyn
   expect((await show(record.binding.parent)).issue.metadata["pi.auto_parent"]).toBe(true);
   expect(prompt.systemPromptOptions.sections.kata_binding).toContain(record.ref);
   leaveChild();
+});
+
+test("pi items that name a ticket work and log on it without creating an issue or a parent", async () => {
+  const app = await host(); await app.event("session_start", { reason: "startup" });
+  const ticket = (await kata(["create", "Existing pi work", "--force-new", "--json"])).issue.short_id;
+  const before = (await kata(["list", "--status", "all", "--limit", "0", "--json"])).issues.length;
+  const started = await app.call({ op: "init", items: [`pitest#${ticket}: write the first part`, `pitest#${ticket}: write the second part`] });
+  expect(started.isError).toBeUndefined();
+  expect(started.details.kata.parent).toBeUndefined();
+  expect((await kata(["list", "--status", "all", "--limit", "0", "--json"])).issues).toHaveLength(before);
+  expect((await show(ticket)).issue.owner).toBe("pi-builder");
+  expect((await show(ticket)).issue.metadata["todo.status"]).toBe("in_progress");
+  expect((await app.call({ op: "done", task: `pitest#${ticket}: write the first part`, message, evidence })).isError).toBeUndefined();
+  expect((await show(ticket)).issue.status).toBe("open");
+  const last = await app.call({ op: "done", task: `pitest#${ticket}: write the second part`, message, evidence: ["test:bun test pi last item"] });
+  expect(last.isError).toBeUndefined();
+  const closed = await show(ticket);
+  expect(closed.issue.status).toBe("closed");
+  expect(closed.comments).toHaveLength(2);
+  const rows = (await kata(["audit", "closes", "--json"])).rows.filter((r: any) => r.issue === ticket);
+  expect(rows).toHaveLength(1);
+  expect((await kata(["events", "--after", String(rows[0].event_id - 1), "--limit", "1", "--json"])).events[0].payload.evidence).toEqual([{ type: "test", command: "bun test pi last item" }]);
+  expect((await kata(["list", "--status", "all", "--limit", "0", "--json"])).issues).toHaveLength(before);
+});
+
+test("pi closes a claimed ticket named by an item once its plan children close", async () => {
+  const app = await host(); await app.event("session_start", { reason: "startup" });
+  const ticket = (await kata(["create", "Claimed pi ticket", "--force-new", "--json"])).issue.short_id;
+  await kata(["claim", ticket, "--json"]);
+  await app.event("tool_result", { toolName: "bash", input: { command: `kata claim pitest#${ticket}` }, isError: false, details: {} });
+  const started = await app.call({ op: "init", items: [`pitest#${ticket}: write the greeting`, "Add the ignore file"] });
+  expect(started.isError, started.content[0].text).toBeUndefined();
+  expect(started.details.kata.parent).toBe(`pitest#${ticket}`);
+  await app.call({ op: "done", task: `pitest#${ticket}: write the greeting`, message, evidence: ["test:pi ticket item"] });
+  expect((await show(ticket)).issue.status).toBe("open");
+  expect((await app.call({ op: "done", task: "Add the ignore file", message, evidence })).isError).toBeUndefined();
+  const closed = await show(ticket);
+  expect(closed.issue.status).toBe("closed");
+  expect(closed.comments.filter((c: any) => /open child/.test(c.body))).toHaveLength(1);
+  const rows = (await kata(["audit", "closes", "--json"])).rows.filter((r: any) => r.issue === ticket);
+  expect(rows).toHaveLength(1);
+  expect((await kata(["events", "--after", String(rows[0].event_id - 1), "--limit", "1", "--json"])).events[0].payload.evidence).toEqual([{ type: "test", command: "pi ticket item" }]);
+});
+
+test("pi init without replace goes through when the new list keeps every open task", async () => {
+  const app = await host(); const parent = await app.init(["Open pi task"]);
+  const result = await app.call({ op: "init", items: ["Open pi task", "Added pi task"] });
+  expect(result.isError, result.content[0].text).toBeUndefined();
+  expect((await show(parent)).children.map((c: any) => c.title).sort()).toEqual(["Added pi task", "Open pi task"]);
+});
+
+test("pi accepts replace on todo init and refuses without it while tasks are open", async () => {
+  const app = await host(); const parent = await app.init(["Open pi task", "Other pi task"]);
+  expect(Value.Check(app.tool.parameters, { op: "init", items: ["Next pi task"], replace: true })).toBe(true);
+  const refused = await app.call({ op: "init", items: ["Next pi task"] });
+  expect(refused.isError).toBe(true);
+  expect(refused.content[0].text).toContain("Open pi task");
+  expect((await show(parent)).children.map((c: any) => c.title).sort()).toEqual(["Open pi task", "Other pi task"]);
+  const replaced = await app.call({ op: "init", items: ["Next pi task"], replace: true });
+  expect(replaced.isError).toBeUndefined();
+  const old = (await show(parent)).children.find((c: any) => c.title === "Open pi task");
+  expect(old.closed_reason).toBe("wontfix");
 });

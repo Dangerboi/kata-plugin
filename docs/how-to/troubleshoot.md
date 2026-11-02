@@ -10,8 +10,7 @@
 | Close refused | Inspect the actual Kata error, evidence, owner, teammate, and current children. Do not force a completed display state. |
 | Parent stays open | Check all current children, pending/running delegates, lead settlement, and `needs-review`. Explicit parents stay open by design. |
 | Duplicate todo tool | Disable OMP's native todo or remove another pi todo extension. |
-| No visible error | Hooks are deliberately quiet. Enable Claude debug logging, `KATA_OMP_DEBUG`, or `KATA_PI_DEBUG`. |
-| Claude typecheck lacks declarations | Load the plugin in an isolated live session first; Claude generates version-specific `.claude-plugin/types/`. |
+| No visible error | Hooks are deliberately quiet. Enable `KATA_OMP_DEBUG`, or `KATA_PI_DEBUG`. |
 | Git install cannot find pi subdirectory | Install the repository root shim or clone and install the local `plugins/pi` directory. |
 | Pi child changed lead attention | The native attention adapter does not distinguish child processes. Avoid inheriting the lead's `KATA_REF`. |
 
@@ -21,4 +20,4 @@ An update can fail when Skillshare stores a local plugin source with `~` but the
 
 ## Unavailable Kata
 
-Foreground hooks return within a short budget and retain retryable work. Ordinary todo CLI calls allow up to 120 seconds. Claude persists queued effects; main-session todo close retries persist in saved session entries. An outage should leave work open. Correct the route or executable and resume; do not point a test at a normal store to bypass isolation.
+Foreground hooks return within a short budget and retain retryable work. Ordinary todo CLI calls allow up to 120 seconds. Main-session todo close retries persist in saved session entries. An outage should leave work open. Correct the route or executable and resume; do not point a test at a normal store to bypass isolation.

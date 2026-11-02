@@ -1,6 +1,6 @@
 import path from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { createdParentRef, createKataCore, DESCRIPTION, kataCommands, matchDelegation, quote, render, teammateFor, delegateCommand, delegateContext, type Binding, type Task } from "./kata-core";
+import { createdParentRef, createKataCore, DESCRIPTION, kataCommands, matchDelegation, quote, render, teammateFor, delegateCommand, delegateContext, ticketAutocomplete, type Binding, type Task } from "./kata-core";
 
 // Match the native adapter's capability/scope selection, including a project
 // root boundary. Recheck at prompt time: either factory can load first.
@@ -72,6 +72,8 @@ export default async function piKata(pi: ExtensionAPI) {
 	let delegate: { id: string; ref: string; teammate: string; binding: Binding; restore?: Restore; fresh?: boolean } | undefined;
 	let toolCalls = 0;
 	const { Type } = await import("typebox");
+	const EXECUTABLE_VARS = ["KATA_PI_EXECUTABLE", "KATA_OMP_EXECUTABLE"];
+	const DELEGATE_KEYS = ["pi.subagent_id", "omp.subagent_id"];
 	const executable = process.env.KATA_PI_EXECUTABLE || process.env.KATA_OMP_EXECUTABLE || "kata";
 	const core = createKataCore({
 		exec: (...args) => pi.exec(...args),
@@ -79,7 +81,7 @@ export default async function piKata(pi: ExtensionAPI) {
 		getSessionName: () => pi.getSessionName(),
 		allowUI: ctx => ctx.hasUI === true,
 		isMain: () => !inherited,
-	}, { namespace: "pi", executable, explicitRef: () => inherited ? undefined : explicit, debugFile: process.env.KATA_PI_DEBUG || process.env.KATA_OMP_DEBUG });
+	}, { namespace: "pi", executable, executableVars: EXECUTABLE_VARS, delegateKeys: DELEGATE_KEYS, explicitRef: () => inherited ? undefined : explicit, debugFile: process.env.KATA_PI_DEBUG || process.env.KATA_OMP_DEBUG });
 
 	function exportParent(ctx: ExtensionContext) {
 		process.env.KATA_PI_PARENT = JSON.stringify({ pid: process.pid, sessionId: ctx.sessionManager.getSessionId(),
@@ -135,7 +137,7 @@ export default async function piKata(pi: ExtensionAPI) {
 		const refOf = (c: any) => c.qualified_id || `${binding.parent.split("#")[0]}#${c.short_id}`;
 		const actor = await core.actor(binding.workspace, binding.parent), lead = inherited.teammate;
 		// Another delegate's issue, or one another writer owns, is never a candidate.
-		const foreign = (c: any) => !!(c.metadata?.["pi.subagent_id"] || c.metadata?.["omp.subagent_id"]) ||
+		const foreign = (c: any) => DELEGATE_KEYS.some(key => !!c.metadata?.[key]) ||
 			(!!c.owner && (c.owner !== actor || ![lead, teammate].includes(c.metadata?.teammate || "")));
 		const tasks: Task[] = children.map((c: any) => ({ ref: refOf(c), content: c.title, phase: c.metadata?.["todo.phase"] ?? "",
 			status: ["in_progress", "blocked"].includes(c.metadata?.["todo.status"]) ? c.metadata["todo.status"] : "pending", delegated: foreign(c) }));
@@ -187,6 +189,7 @@ export default async function piKata(pi: ExtensionAPI) {
 			items: Type.Optional(Type.Array(Type.String(), { description: "tasks for flat init or append" })),
 			reason: Type.Optional(Type.String({ description: "blocker note for block" })),
 			ref: Type.Optional(Type.String({ description: "existing Kata issue this plan serves (init)" })),
+			replace: Type.Optional(Type.Boolean({ description: "init: replace a plan that still has open tasks (they close as wontfix); without it init refuses" })),
 			message: Type.Optional(Type.String({ description: "done: changes and verification (40+ characters); drop/rm: reason; init without ref: title for the automatic parent" })),
 			evidence: Type.Optional(Type.Array(Type.String(), { description: "required for done: commit:<sha>, test:<cmd>, pr:<url>, reviewed-paths:<path>" })),
 		}),
@@ -218,10 +221,10 @@ export default async function piKata(pi: ExtensionAPI) {
 		let command = event.input.command;
 		if (inherited) {
 			if (!delegate) return { block: true, reason: "Kata child binding is unavailable; retry after parent startup." };
-			try { command = delegateCommand(command, executable, delegate.teammate, delegate.binding); }
+			try { command = delegateCommand(command, executable, EXECUTABLE_VARS, delegate.teammate, delegate.binding); }
 			catch (error) { return { block: true, reason: String(error) }; }
 		}
-		for (const invocation of kataCommands(command, executable).reverse()) {
+		for (const invocation of kataCommands(command, executable, EXECUTABLE_VARS).reverse()) {
 			if (invocation.executable.value !== "kata" || executable === "kata") continue;
 			command = command.slice(0, invocation.executable.start) + quote(executable) + command.slice(invocation.executable.end);
 		}
@@ -243,7 +246,7 @@ export default async function piKata(pi: ExtensionAPI) {
 			if (core.cache.inbox) sections.kata_inbox = core.cache.inbox;
 		}
 		if (delegate) sections.kata_binding = delegateContext(executable, delegate.id, delegate.ref, delegate.teammate, delegate.binding);
-		if (core.plan.parent) sections.kata_todo = `The todo tool is backed by Kata. Current plan:\n${render(core.plan)}`;
+		if (core.plan.parent || core.plan.tasks.some(t => t.ticket)) sections.kata_todo = `The todo tool is backed by Kata. Current plan:\n${render(core.plan)}`;
 		else delete sections.kata_todo;
 	});
 
@@ -262,6 +265,7 @@ export default async function piKata(pi: ExtensionAPI) {
 		if (!inherited) exportParent(ctx);
 		core.resetReminders();
 	}));
+	const typeahead = new WeakSet<object>();
 	pi.on("session_start", async (_event, ctx) => {
 		const saved = (ctx.sessionManager.getBranch() as any[]).filter(e => e.type === "custom" && e.customType === "io.kata.pi.delegate" && e.data?.id === ctx.sessionManager.getSessionId()).at(-1)?.data;
 		if (saved?.parentMarker && (!explicit || inherited)) {
@@ -278,6 +282,12 @@ export default async function piKata(pi: ExtensionAPI) {
 			const switched = same || (!!model && await pi.setModel(model).catch(error => { core.debug(error); return false; }));
 			// The parent's thinking level only fits the parent's model.
 			if (switched && inherit.thinking && inherited.thinking) pi.setThinkingLevel(inherited.thinking as any);
+		}
+		// Only the interactive main session has an editor; session_start fires again per session.
+		if (!inherited && ctx.hasUI && ctx.ui.addAutocompleteProvider && !typeahead.has(ctx.ui)) {
+			typeahead.add(ctx.ui);
+			core.currentCtx = ctx;
+			ctx.ui.addAutocompleteProvider(current => ticketAutocomplete(current, core.tickets, { defaultProject: process.env.KATA_DEFAULT_PROJECT?.trim() || undefined }));
 		}
 		isolateChildAttention(ctx, inherited ? undefined : explicit);
 		return bind(ctx);
