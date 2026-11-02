@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { matchDelegation, namedTask, taskTokens, type Status, type Task } from "../core/kata-core";
+import { matchDelegation, namedTargets, namedTask, QUALIFIED_REF, qualifiedRefs, taskTokens, type Status, type Task } from "../core/kata-core";
 
 const task = (ref: string, content: string, status: Status = "pending", extra: Partial<Task> = {}): Task => ({ ref, content, phase: "Tasks", status, ...extra });
 const pick = (tasks: Task[], text: string, unavailable: string[] = [], single = true) => matchDelegation(tasks, text, { unavailable: new Set(unavailable), single })?.ref;
@@ -65,6 +65,46 @@ test("a short id only counts as a whole word after a marker", () => {
   expect(namedTask(plan, "see other#erjg first")).toBeUndefined();
   expect(namedTask(plan, "this is kata issue erjg")?.ref).toBe("m#erjg");
   expect(namedTask(plan, "work on #erjg")?.ref).toBe("m#erjg");
+});
+
+test("qualified refs are found as whole tokens, distinct and in order", () => {
+  expect(qualifiedRefs("see kata-plugin#bc6m, then (v2.test#ce3w). Again kata-plugin#bc6m!")).toEqual(["kata-plugin#bc6m", "v2.test#ce3w"]);
+  expect(qualifiedRefs("kata-plugin#bc6m: write the script")).toEqual(["kata-plugin#bc6m"]);
+});
+
+test("only a project name with a valid short id is a qualified ref", () => {
+  expect(qualifiedRefs("bc6m and #bc6m and kata#abc kata#abcu kata#ABCD")).toEqual([]);
+  expect(qualifiedRefs("kata#abcde1x extra")).toEqual(["kata#abcde1x"]);
+  expect(qualifiedRefs(`kata#${"a".repeat(27)}`)).toEqual([]);
+  expect(qualifiedRefs("kata#bc6m-2 and kata#bc6mX")).toEqual([]);
+});
+
+test("the ref grammar parses a strict prefix", () => {
+  const prefix = new RegExp(`^${QUALIFIED_REF}`);
+  expect(prefix.exec("kata-plugin#bc6m: write the script")?.[0]).toBe("kata-plugin#bc6m");
+  expect(prefix.exec("do kata-plugin#bc6m: write the script")).toBeNull();
+  expect(prefix.exec("bc6m: write the script")).toBeNull();
+});
+
+test("an explicit ref wins over a better word overlap", () => {
+  const plan = [task("w#aa11", "Write widget tests"), task("w#bb22", "Write widget docs")];
+  expect(pick(plan, "Write the widget tests (w#bb22 covers it)")).toBe("w#bb22");
+  expect(pick(plan, "Please write the widget tests for the parser: w#bb22.")).toBe("w#bb22");
+});
+
+test("a text naming several plan tasks binds none, whatever the overlap", () => {
+  const plan = [task("w#aa11", "Write widget tests"), task("w#bb22", "Write widget docs"), task("w#cc33", "Write widget tests for parser edge cases")];
+  expect(pick(plan, "Write widget tests for w#bb22 and w#aa11")).toBeUndefined();
+  expect(pick(plan, "Write widget tests and then Write widget docs", [], false)).toBeUndefined();
+  expect(pick(plan, 'Do "Write widget tests" and "Write widget docs"')).toBeUndefined();
+});
+
+test("tickets outside the plan are named targets, and the plan parent is not", () => {
+  const plan = [task("w#aa11", "Write widget tests")];
+  expect(namedTargets(plan, "work on other#zz99 now", "w#pa4e")).toEqual({ tasks: [], tickets: ["other#zz99"] });
+  expect(namedTargets(plan, "w#aa11 and other#zz99", "w#pa4e")).toMatchObject({ tickets: ["other#zz99"], tasks: [{ ref: "w#aa11" }] });
+  expect(namedTargets(plan, "inside w#pa4e do w#aa11", "w#pa4e")).toMatchObject({ tickets: [], tasks: [{ ref: "w#aa11" }] });
+  expect(namedTargets(plan, "Reply with exactly: OK").tickets).toEqual([]);
 });
 
 // The 2026-10-20 third run: a short spec that also says "then run python3 -m

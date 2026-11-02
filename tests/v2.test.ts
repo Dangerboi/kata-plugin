@@ -494,6 +494,84 @@ test("a delegated plan task cannot be assigned to a second subagent", async () =
   expect(await app.event("tool_call", { toolName: "task", toolCallId: "second-worker", input })).toMatchObject({ block: true });
 });
 
+test("a task prompt naming a plan item by ref binds it over a better word overlap", async () => {
+  const app = host(); await app.event("session_start");
+  const ref = await app.init(["Implement widget", "Write widget tests"]);
+  const children0 = (await show(ref)).children;
+  const target = children0.find((c: any) => c.title === "Implement widget"), other = children0.find((c: any) => c.title === "Write widget tests");
+  await app.event("tool_call", { toolName: "task", toolCallId: "ref-wins", input: { name: "WriteTests", task: `Write the widget tests; the work is v2test#${target.short_id}.` } });
+  app.emit("task:subagent:lifecycle", { id: "ref-wins", status: "started", sessionFile: `${scratch}/ref-wins.jsonl`, parentToolCallId: "ref-wins", index: 0 });
+  await app.call({ op: "view" });
+  const children = (await show(ref)).children;
+  expect(children).toHaveLength(2);
+  expect(children.find((c: any) => c.short_id === target.short_id).metadata["omp.subagent_id"]).toBe("ref-wins");
+  expect(children.find((c: any) => c.short_id === other.short_id).metadata["omp.subagent_id"]).toBeUndefined();
+});
+
+test("a task prompt naming a plan item by short id binds it without a new issue", async () => {
+  const app = host(); await app.event("session_start");
+  const ref = await app.init(["Implement widget"]);
+  const named = (await show(ref)).children[0];
+  await app.event("tool_call", { toolName: "task", toolCallId: "short-id", input: { task: `read issue ${named.short_id} and write the tests` } });
+  app.emit("task:subagent:lifecycle", { id: "short-id", status: "started", sessionFile: `${scratch}/short-id.jsonl`, parentToolCallId: "short-id", index: 0 });
+  await app.call({ op: "view" });
+  const children = (await show(ref)).children;
+  expect(children).toHaveLength(1);
+  expect(children[0].metadata["omp.subagent_id"]).toBe("short-id");
+});
+
+test("a plan item another writer owns is never bound by a task naming it", async () => {
+  const app = host(); await app.event("session_start");
+  const ref = await app.init(["Implement widget", "Write foreign tests"]);
+  const foreign = (await show(ref)).children.find((c: any) => c.title === "Write foreign tests");
+  await kata(["claim", foreign.short_id, "--as", "someone-else", "--json"]);
+  await app.event("tool_call", { toolName: "task", toolCallId: "foreign", input: { task: `Work on v2test#${foreign.short_id}` } });
+  app.emit("task:subagent:lifecycle", { id: "foreign", status: "started", sessionFile: `${scratch}/foreign.jsonl`, parentToolCallId: "foreign", index: 0 });
+  await app.call({ op: "view" });
+  const after = (await show(`v2test#${foreign.short_id}`)).issue;
+  expect(after.owner).toBe("someone-else");
+  expect(after.metadata["omp.subagent_id"]).toBeUndefined();
+});
+
+for (const planned of [true, false]) test(`a task prompt naming a ticket outside the plan binds it${planned ? "" : " in a session with no plan"} and creates no issue`, async () => {
+  const app = host(); await app.event("session_start");
+  const parent = planned ? await app.init(["Implement widget"]) : undefined;
+  const ticket = await issue("Existing work");
+  await app.event("tool_call", { toolName: "task", toolCallId: `ticket-${planned}`, input: { name: "Anything", task: `Finish v2test#${ticket}: make the change and close it.` } });
+  app.emit("task:subagent:lifecycle", { id: `ticket-${planned}`, status: "started", sessionFile: `${scratch}/ticket-${planned}.jsonl`, parentToolCallId: `ticket-${planned}`, index: 0 });
+  await app.call({ op: "view" });
+  const bound = (await show(`v2test#${ticket}`)).issue;
+  expect(bound.metadata["omp.subagent_id"]).toBe(`ticket-${planned}`);
+  expect(bound.owner).toBe("v2-builder");
+  const owned = (await kata(["list", "--status", "all", "--meta", `omp.session_id=${app.sid}`, "--json"])).issues;
+  expect(owned.filter((i: any) => i.title.startsWith("Subagent"))).toHaveLength(0);
+  if (parent) expect((await show(parent)).children).toHaveLength(1);
+  else expect(owned.filter((i: any) => i.short_id !== ticket)).toHaveLength(0);
+});
+
+test("a task prompt naming several tickets or plan items is blocked", async () => {
+  const app = host(); await app.event("session_start");
+  const ref = await app.init(["Implement widget", "Write gadget docs"]);
+  const [a, b] = [await issue("Ticket A"), await issue("Ticket B")];
+  const plan = (await show(ref)).children.map((c: any) => `v2test#${c.short_id}`);
+  const blocked = async (text: string, id: string) => expect(await app.event("tool_call", { toolName: "task", toolCallId: id, input: { task: text } })).toMatchObject({ block: true, reason: expect.stringMatching(/one ticket per task/i) });
+  await blocked(`Do v2test#${a} and v2test#${b}`, "two-tickets");
+  await blocked(`Do v2test#${a} then ${plan[0]}`, "ticket-and-item");
+  await blocked(`Do ${plan[0]} and ${plan[1]}`, "two-items");
+  await blocked('Do "Implement widget" and "Write gadget docs"', "two-titles");
+  expect(await app.event("tool_call", { toolName: "task", toolCallId: "one-ticket", input: { task: `Do v2test#${a} only` } })).toBeUndefined();
+});
+
+test("a task prompt naming an unusable ticket is blocked", async () => {
+  const app = host(); await app.event("session_start"); await app.init(["Implement widget"]);
+  const blocked = async (text: string, id: string) => expect(await app.event("tool_call", { toolName: "task", toolCallId: id, input: { task: text } })).toMatchObject({ block: true });
+  await blocked("Do v2test#zzzz now", "unresolvable");
+  const closed = await issue("Closed work"); await kata(["close", closed, "--done", "--message", message, "--test", "closed-fixture", "--json"]);
+  await blocked(`Do v2test#${closed} now`, "closed");
+  const foreign = await issue("Foreign work"); await kata(["claim", foreign, "--as", "someone-else", "--json"]);
+  await blocked(`Do v2test#${foreign} now`, "foreign");
+});
+
 test("local plan and blockers survive extension recreation through session entries", async () => {
   const app = host({ cwd: outside, before: down }); await app.event("session_start");
   await app.init(["Durable local first", "Durable local second"]);

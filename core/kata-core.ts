@@ -205,27 +205,52 @@ export function taskTokens(text: string): string[] {
 }
 
 const escape = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-// The open task a text names: its title (case-insensitive, whole words; a one-
-// or two-word title only quoted or as the whole text), its qualified ref, or its
-// short id after a marker, since a bare id can be an ordinary word ("test"). A
-// title inside a longer named title yields to the longer one.
-export function namedTask(tasks: Task[], text: string): Task | undefined {
+// Kata's qualified ref `<project>#<short_id>`. A short_id is 4 to 26 lowercase
+// Crockford base32 characters (no i, l, o, u); a project name is one token of
+// word characters, dots and dashes (Kata allows more, but a token that can be
+// told apart in prose needs no spaces). The source is anchored by lookarounds
+// only, so `new RegExp(`^${QUALIFIED_REF}`)` parses a strict prefix and
+// `new RegExp(QUALIFIED_REF, "g")` scans text for whole-token refs.
+export const QUALIFIED_REF = "(?<![\\w./#-])[A-Za-z0-9_][\\w.-]*#[0-9a-hjkmnp-tv-z]{4,26}(?![\\w-])";
+// Distinct qualified refs in order of appearance.
+export function qualifiedRefs(text: string): string[] {
+	return [...new Set([...text.matchAll(new RegExp(QUALIFIED_REF, "g"))].map(match => match[0]))];
+}
+
+// The open tasks a text names: title (case-insensitive, whole words; a one- or
+// two-word title only quoted or as the whole text), qualified ref, or short id
+// after a marker, since a bare id can be an ordinary word ("test"). A title
+// inside a longer named title yields to the longer one.
+export function namedTasks(tasks: Task[], text: string): Task[] {
 	const titled = (title: string) => {
 		const phrase = escape(title.trim());
 		if (text.trim().toLowerCase() === title.trim().toLowerCase()) return true;
 		if (new RegExp(`["'\`\u201c\u2018]\\s*${phrase}\\s*["'\`\u201d\u2019]`, "i").test(text)) return true;
 		return title.trim().split(/\s+/).length >= 3 && new RegExp(`(?<![\\w])${phrase}(?![\\w])`, "i").test(text);
 	};
-	const named = tasks.filter(t => OPEN.has(t.status) && (titled(t.content) || text.includes(t.ref) ||
+	const named = tasks.filter(t => OPEN.has(t.status) && (titled(t.content) || new RegExp(`(?<![\\w./#-])${escape(t.ref)}(?![\\w-])`).test(text) ||
 		new RegExp(`(?:\\b(?:issue|kata|ref|task)\\b\\s*[:=]?\\s*|(?<![\\w.-])#)${escape(t.ref.split("#").pop()!)}(?![\\w-])`, "i").test(text)));
-	const longest = named.sort((a, b) => b.content.length - a.content.length)[0];
-	if (longest && named.every(t => t === longest || longest.content.toLowerCase().includes(t.content.toLowerCase()))) return longest;
+	return named.filter(t => !named.some(other => other !== t && other.content.length > t.content.length && other.content.toLowerCase().includes(t.content.toLowerCase())));
+}
+
+// The one open task a text names, if exactly one.
+export function namedTask(tasks: Task[], text: string): Task | undefined {
+	const named = namedTasks(tasks, text);
+	return named.length === 1 ? named[0] : undefined;
+}
+
+// Everything a delegation prompt names: plan tasks, and qualified refs that are
+// no plan item (the plan parent itself is no work target).
+export function namedTargets(tasks: Task[], text: string, parent?: string): { tasks: Task[]; tickets: string[] } {
+	const known = new Set(tasks.map(t => t.ref));
+	return { tasks: namedTasks(tasks, text), tickets: qualifiedRefs(text).filter(ref => !known.has(ref) && ref !== parent) };
 }
 
 export type MatchOptions = { unavailable?: ReadonlySet<string>; single?: boolean; label?: string };
 // Pick the plan task a delegation serves. A named task wins, and a named task
-// that is taken binds nothing else. Then a clear weighted token overlap with
-// the short label (omp's task name) wins; then, for a single delegation, the one
+// that is taken binds nothing else; so does a text naming several tasks, which
+// is ambiguous however well one of them overlaps. Then a clear weighted token
+// overlap with the short label (omp's task name) wins; then, for a single delegation, the one
 // open task the lead marked for delegation ("... (delegated to subagent)") if it
 // shares a word with the spawn; then a clear overlap with the full text. Overlap
 // counts the task's leading word twice. The lead's active task scores
@@ -233,8 +258,9 @@ export type MatchOptions = { unavailable?: ReadonlySet<string>; single?: boolean
 export function matchDelegation(tasks: Task[], text: string, { unavailable = new Set(), single = true, label = "" }: MatchOptions = {}): Task | undefined {
 	const available = (t: Task) => OPEN.has(t.status) && t.status !== "blocked" && !t.delegated && !unavailable.has(t.ref);
 	const full = label ? `${label}\n${text}` : text;
-	const named = namedTask(tasks, full);
-	if (named) return available(named) ? named : undefined;
+	const named = namedTasks(tasks, full);
+	if (named.length > 1) return undefined;
+	if (named[0]) return available(named[0]) ? named[0] : undefined;
 	const candidates = tasks.filter(available);
 	const open = tasks.filter(t => OPEN.has(t.status)).map(t => taskTokens(t.content));
 	const df = (token: string) => open.filter(tokens => tokens.includes(token)).length;

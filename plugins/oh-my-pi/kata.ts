@@ -17,7 +17,7 @@
 // The plan is session-local only while Kata is unreachable, then it replays.
 
 import path from "node:path";
-import { createKataCore, DESCRIPTION, sessionKey, render, matchDelegation, namedTask,
+import { createKataCore, DESCRIPTION, sessionKey, render, matchDelegation, namedTargets,
 	kataCommands as parseKataCommands, teammateFor, delegateCommand, delegateContext, type Binding } from "./kata-core";
 
 const EXECUTABLE = process.env.KATA_OMP_EXECUTABLE || "kata";
@@ -26,7 +26,7 @@ export const kataCommands = (command: string) => parseKataCommands(command, EXEC
 
 type Delegate = {
 	id: string; teammate: string; sessionFile?: string; parentAgentId?: string;
-	state: string; planRef?: string; label?: string; text?: string; single?: boolean; ref?: string; binding?: Binding; ready?: Promise<void>; prepareError?: string; reported?: string;
+	state: string; planRef?: string; ticket?: boolean; label?: string; text?: string; single?: boolean; ref?: string; binding?: Binding; ready?: Promise<void>; prepareError?: string; reported?: string;
 	coordinator: Coordinator;
 };
 type Coordinator = {
@@ -44,7 +44,7 @@ export default function ompKata(pi: any) {
 	let attentionSession: { id: string; cwd: string; ref?: string } | undefined;
 	let coordinator: Coordinator | undefined;
 	// Spawn text per task tool call; refs once a plan existed when it was seen.
-	const assignments = new Map<string, { labels: string[]; texts: string[]; refs?: (string | undefined)[] }>();
+	const assignments = new Map<string, { labels: string[]; texts: string[]; refs?: (string | undefined)[]; tickets?: Set<string> }>();
 	const core = createKataCore({
 		exec: (...args) => pi.exec(...args),
 		appendEntry: (...args) => pi.appendEntry(...args),
@@ -115,9 +115,12 @@ export default function ompKata(pi: any) {
 		coordinator = {
 			id, records: new Map(),
 			prepare: record => serial(async () => {
-				await ensureParent({}, ctx);
-				if (!core.plan.parent || core.plan.local) return;
-				const binding: Binding = { parent: core.plan.parent, workspace: core.plan.workspace!, sessionId: id, auto: core.plan.auto, label: core.plan.label };
+				// A ticket the prompt named is worked as it is, with or without a plan.
+				if (!record.ticket) await ensureParent({}, ctx);
+				if (!record.ticket && (!core.plan.parent || core.plan.local)) return;
+				const binding: Binding = record.ticket
+					? { parent: record.planRef!, workspace: core.plan.workspace || ctx.cwd, sessionId: id }
+					: { parent: core.plan.parent!, workspace: core.plan.workspace!, sessionId: id, auto: core.plan.auto, label: core.plan.label };
 				record.binding = binding;
 				// todo init and task often share one batch, so the plan may not have
 				// existed when the task call was seen. Match against it now.
@@ -216,8 +219,9 @@ export default function ompKata(pi: any) {
 				const assignment = main(core.currentCtx) ? assignments.get(event.parentToolCallId) : undefined;
 				const text = [assignment?.texts[event.index ?? 0], event.description].filter(Boolean).join("\n");
 				const planRef = assignment?.refs?.[event.index ?? 0];
+				const ticket = !!planRef && !!assignment?.tickets?.has(planRef);
 				if (assignment?.refs) assignment.refs[event.index ?? 0] = undefined; // the record holds it now
-				record = { id: event.id, planRef, label: assignment?.labels[event.index ?? 0], text, single: (assignment?.texts.length ?? 1) === 1, teammate: teammateFor(event.id, owner.id), parentAgentId: core.currentCtx.agent?.id, sessionFile: event.sessionFile, state: "started", coordinator: owner };
+				record = { id: event.id, planRef, ticket, label: assignment?.labels[event.index ?? 0], text, single: (assignment?.texts.length ?? 1) === 1, teammate: teammateFor(event.id, owner.id), parentAgentId: core.currentCtx.agent?.id, sessionFile: event.sessionFile, state: "started", coordinator: owner };
 				owner.records.set(event.id, record);
 			}
 			record.state = "started";
@@ -241,19 +245,32 @@ export default function ompKata(pi: any) {
 			// omp's short task name is the clearest signal; the task text is the fallback.
 			const labels = items.map(item => typeof item?.name === "string" ? item.name : "");
 			const texts = items.map(item => [item?.task, item?.description].filter(value => typeof value === "string").join("\n"));
-			const assignment: { labels: string[]; texts: string[]; refs?: (string | undefined)[] } = { labels, texts };
+			const assignment: { labels: string[]; texts: string[]; refs?: (string | undefined)[]; tickets?: Set<string> } = { labels, texts };
 			assignments.set(event.toolCallId, assignment);
 			return serial(async () => {
-				if (!core.plan.parent || core.plan.local) return;
-				await load(core.plan.workspace!);
+				const planned = !!core.plan.parent && !core.plan.local;
+				if (planned) await load(core.plan.workspace!);
+				const tasks = planned ? core.plan.tasks : [];
+				const workspace = core.plan.workspace || ctx.cwd;
 				const taken = reserved();
-				assignment.refs = texts.map((text, index) => {
-					const named = namedTask(core.plan.tasks, `${labels[index]}\n${text}`);
-					if (named && (taken.has(named.ref) || named.delegated)) throw new Error(`Plan task ${named.ref} is already delegated.`);
-					const selected = matchDelegation(core.plan.tasks, text, { unavailable: taken, single: texts.length === 1, label: labels[index] });
+				const refs: (string | undefined)[] = [], tickets = new Set<string>();
+				for (const [index, text] of texts.entries()) {
+					const { tasks: named, tickets: others } = namedTargets(tasks, `${labels[index]}\n${text}`, core.plan.parent);
+					if (named.length + others.length > 1) throw new Error(`Task ${index + 1} names more than one ticket or plan item (${[...named.map(t => t.ref), ...others].join(", ")}). Name one ticket per task and split the work across tasks.`);
+					if (others[0]) {
+						const ticket = others[0];
+						if (taken.has(ticket)) throw new Error(`Ticket ${ticket} is already delegated.`);
+						try { await owned(ticket, workspace, "check"); }
+						catch (error) { throw new Error(`Task ${index + 1} names ${ticket}, which cannot be delegated: ${error instanceof Error ? error.message : error}`); }
+						taken.add(ticket); tickets.add(ticket); refs.push(ticket);
+						continue;
+					}
+					if (named[0] && (taken.has(named[0].ref) || named[0].delegated)) throw new Error(`Plan task ${named[0].ref} is already delegated.`);
+					const selected = planned ? matchDelegation(tasks, text, { unavailable: taken, single: texts.length === 1, label: labels[index] }) : undefined;
 					if (selected) taken.add(selected.ref);
-					return selected?.ref;
-				});
+					refs.push(selected?.ref);
+				}
+				assignment.refs = refs; assignment.tickets = tickets;
 			}).catch(error => { assignments.delete(event.toolCallId); return { block: true, reason: String(error) }; });
 		}
 		if (ctx.agent?.kind !== "sub" || event.toolName !== "bash" || typeof event.input?.command !== "string") return;
