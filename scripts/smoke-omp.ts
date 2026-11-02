@@ -1,14 +1,16 @@
 // Smoke test: load the portable omp plugin into a real, headless omp against a
 // real Kata daemon, and check what lands in a throwaway Kata store.
 //
-//   bun run smoke:omp [--scenario <name>] [--live] [--verbose]
+//   bun run smoke:omp [--scenario <name>] [--verbose]
+//   bun run smoke:omp --live --model <provider/model> [--scenario <name>]
 //
 // Default runs use a scripted model provider (scripts/smoke-omp-provider.ts), so
-// no credentials or network are needed. --live uses the model you have
-// configured instead. Both run omp with PI_CODING_AGENT_DIR and KATA_HOME on the
-// child process only; your ~/.omp and live Kata store are never written.
+// no credentials or network are needed. --live uses a real model instead, through
+// one of your API-key logins. Both run omp with PI_CODING_AGENT_DIR and KATA_HOME
+// on the child process only; your ~/.omp and live Kata store are never written.
+import { Database } from "bun:sqlite";
 import { spawn, spawnSync } from "node:child_process";
-import { copyFileSync, existsSync, mkdirSync, readFileSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { SCENARIOS, type Check, type Issue, type Request, type Scenario, type Session, type Store } from "./smoke-omp-scenarios";
@@ -18,6 +20,8 @@ const argv = process.argv.slice(2);
 const live = argv.includes("--live");
 const verbose = argv.includes("--verbose");
 const picked = argv.includes("--scenario") ? argv[argv.indexOf("--scenario") + 1] : undefined;
+const liveModel = argv.includes("--model") ? argv[argv.indexOf("--model") + 1] : undefined;
+if (live && !liveModel) { console.error("--live needs --model <provider/model> for a provider you log into with an API key (OAuth logins are never copied)."); process.exit(2); }
 const scenarios = picked ? SCENARIOS.filter(s => s.name === picked) : SCENARIOS;
 if (!scenarios.length) { console.error(`Unknown scenario ${picked}. Known: ${SCENARIOS.map(s => s.name).join(", ")}`); process.exit(2); }
 
@@ -56,13 +60,20 @@ function store(env: NodeJS.ProcessEnv, cwd: string, records: string): Store {
 	};
 }
 
-// --live reads the user's omp credentials and model config by copying files; the
-// originals are opened read-only and never written.
+// --live borrows the user's API-key logins and nothing else (the model comes from
+// --model). OAuth logins are left out: refreshing a copy rotates the refresh token
+// and can log the user's own omp out. The original database is opened read-only.
 function copyUserConfig(agentDir: string) {
-	const home = path.join(process.env.PI_CODING_AGENT_DIR ?? path.join(os.homedir(), ".omp", "agent"));
-	for (const name of ["config.yml", "agent.db", "agent.db-wal"]) {
-		if (existsSync(path.join(home, name))) copyFileSync(path.join(home, name), path.join(agentDir, name));
-	}
+	const home = process.env.PI_CODING_AGENT_DIR ?? path.join(os.homedir(), ".omp", "agent");
+	if (!existsSync(path.join(home, "agent.db"))) return;
+	const target = path.join(agentDir, "agent.db");
+	const source = new Database(path.join(home, "agent.db"), { readonly: true });
+	try { source.run("VACUUM INTO ?", [target]); } finally { source.close(); }
+	const copy = new Database(target);
+	try {
+		copy.run("DELETE FROM auth_credentials WHERE credential_type != 'api_key'");
+		for (const table of ["auth_credential_blocks", "auth_credential_refresh_leases", "auth_credential_block_mirror_guard"]) copy.run(`DELETE FROM ${table} WHERE credential_id NOT IN (SELECT id FROM auth_credentials)`);
+	} finally { copy.close(); }
 }
 
 // Runs omp as a long-lived RPC process and hands the scenario a Session.
@@ -135,11 +146,11 @@ async function run(scenario: Scenario) {
 		if (live) copyUserConfig(agentDir);
 		const args = ["--no-extensions", "--no-skills", "--no-rules", "--no-context-files", "--no-lsp", "--no-title", ...(scenario.persist ? [] : ["--no-session"]),
 			"-e", path.join(root, "plugins/oh-my-pi/kata.ts")];
-		if (!live) args.push("-e", path.join(root, "scripts/smoke-omp-provider.ts"), "--model", "kata-smoke/scripted");
+		args.push(...(live ? ["--model", liveModel!] : ["-e", path.join(root, "scripts/smoke-omp-provider.ts"), "--model", "kata-smoke/scripted"]));
 		let code: number | null, output: string, checks: Check[] = [];
 		if (scenario.drive) ({ code, output, checks } = await drive(scenario, args, env, work, records));
 		else {
-			const child = spawn("omp", ["-p", "--wait-async", ...(verbose ? ["--mode", "json"] : []), ...args, live ? scenario.livePrompt! : scenario.prompt!], { env, cwd: work, stdio: ["ignore", "pipe", "pipe"] });
+			const child = spawn("omp", ["-p", "--wait-async", ...(verbose ? ["--mode", "json"] : []), ...args, live ? scenario.livePrompt!(vars) : scenario.prompt!], { env, cwd: work, stdio: ["ignore", "pipe", "pipe"] });
 			output = "";
 			child.stdout.on("data", d => output += d);
 			child.stderr.on("data", d => output += d);

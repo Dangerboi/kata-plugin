@@ -42,8 +42,8 @@ export type Scenario = {
 	name: string;
 	/** One-shot scenarios: user prompt for the main agent; it must contain the main script's marker. */
 	prompt?: string;
-	/** Prompt for --live, where the user's real model has to do the same work unscripted. Scenarios without one are scripted-only. */
-	livePrompt?: string;
+	/** Prompt for --live, where a real model has to do the same work unscripted (given the setup's ticket ids). Scenarios without one are scripted-only. */
+	livePrompt?: (vars: Record<string, string>) => string;
 	/** Interactive scenarios: drive one long-lived omp session (RPC) prompt by prompt. Runs before `check`. */
 	drive?(session: Session): Promise<Check[]>;
 	/** Keeps the session file on disk (omp's `--no-session` is dropped); RPC `fork` needs one. */
@@ -70,7 +70,7 @@ const message = "Verified the smoke scenario by running it end to end against a 
 export const SCENARIOS: Scenario[] = [{
 	name: "default",
 	prompt: `${MAIN} Plan the parser work, delegate the first item, close the second, then stop.`,
-	livePrompt: "Use the todo tool to plan two items, 'Implement parser module' and 'Write parser tests'. Delegate 'Implement parser module' to a task subagent (name it ImplementParser) and tell it to close its Kata issue with evidence test:echo ok. Then mark 'Write parser tests' done through the todo tool with evidence test:echo ok and a 40+ character message. Change no files. Stop when both are closed.",
+	livePrompt: () => `Use the todo tool to plan two items, 'Implement parser module' and 'Write parser tests'. Delegate 'Implement parser module' to a task subagent (name it ImplementParser) and tell it to close its Kata issue with evidence ${evidence} and a 40+ character message. Then mark 'Write parser tests' done through the todo tool with evidence ${evidence} and a 40+ character message. Change no files. Stop when both are closed.`,
 	scripts: {
 		[MAIN]: [
 			[{ tool: "todo", args: { op: "init", list: [{ phase: "Parser", items: ["Implement parser module", "Write parser tests"] }], message: "Smoke parser session" } }],
@@ -159,7 +159,15 @@ export const SCENARIOS: Scenario[] = [{
 }, {
 	name: "tickets",
 	prompt: `${MAIN} Work the existing tickets through the todo plan, then stop.`,
-	livePrompt: "Two Kata tickets named in the project omp-smoke already exist (search with kata search). Make a todo plan whose items each start with the ticket's qualified ref (project#id: action), two items for the first ticket. Do not create new tickets for them. Finish the items with evidence test:echo ok and a 40+ character message. Change no files.",
+	livePrompt: ({ a, b, c }) => [
+		`Kata tickets omp-smoke#${a}, omp-smoke#${b} and omp-smoke#${c} already exist. Change no files; use the todo tool and one task subagent, in this order:`,
+		`1. init a plan with phase Alpha items 'omp-smoke#${a}: write the parser' and 'omp-smoke#${a}: bump the docs', and phase Beta item 'omp-smoke#${b}: fetch the inbox data'.`,
+		`2. Mark 'omp-smoke#${a}: write the parser' done with evidence test:bun smoke scenario first, then 'omp-smoke#${a}: bump the docs' done with evidence test:bun smoke scenario second, each with a 40+ character message.`,
+		`3. Append 'omp-smoke#zzzz: ghost work' to phase Beta. It is expected to fail; do not retry it.`,
+		`4. Drop 'omp-smoke#${b}: fetch the inbox data' with a reason.`,
+		`5. Append 'omp-smoke#${c}: write the widget parser' to phase Gamma and delegate exactly that item to a task subagent named WidgetParser, telling it to close its Kata issue with evidence ${evidence} and a 40+ character message.`,
+		`6. Append 'update CHANGELOG' to phase Gamma and mark it done with evidence ${evidence} and a 40+ character message.`,
+	].join("\n"),
 	setup: create => ({ a: create("Ticket alpha"), b: create("Ticket beta"), c: create("Ticket gamma") }),
 	scripts: {
 		[MAIN]: [
