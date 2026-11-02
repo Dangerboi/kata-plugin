@@ -364,7 +364,7 @@ test("a delegate's first prompt waits for a slow binding instead of dropping it"
 
 test("explicitly adopting the auto issue revokes and persists automatic close authority", async () => {
   const app = host(); const parent = await app.init(["Explicitly retained task"]);
-  await app.call({ op: "init", ref: parent, items: ["Explicitly retained task"] });
+  await app.call({ op: "init", ref: parent, items: ["Explicitly retained task"], replace: true });
   expect(app.entries.filter(e => e.customType === "io.kata.omp.parent").at(-1).data.auto).toBe(false);
   await app.call({ op: "done", message, evidence });
   expect((await show(parent)).issue.status).toBe("open");
@@ -1249,4 +1249,55 @@ test("an item follows a wontfix close of its ticket as abandoned", async () => {
   await app.call({ op: "init", items: [`v2test#${a}: only step`] });
   await kata(["close", a, "--wontfix", "--message", "Closed by someone else because this work is no longer wanted by anyone here.", "--json"]);
   expect((await app.call({ op: "view" })).content[0].text).toContain(`[~] v2test#${a}: only step`);
+});
+
+const kataWrites = (calls: string[][]) => calls.filter(a => !["show", "list", "search", "whoami"].includes(a[0]));
+
+test("init without replace refuses a plan with open tasks and writes nothing to Kata", async () => {
+  const app = host(); const parent = await app.init(["Started task", "Waiting task", "Pending task"]);
+  await app.call({ op: "start", task: "Started task" });
+  await app.call({ op: "block", task: "Waiting task", reason: "needs a decision" });
+  const before = await show(parent);
+  const mark = app.calls.length;
+  const result = await app.call({ op: "init", items: ["Brand new task"] });
+  expect(result.isError).toBe(true);
+  const text = result.content[0].text;
+  for (const title of ["Started task", "Waiting task", "Pending task"]) expect(text).toContain(title);
+  expect(text).toContain("replace: true");
+  expect(kataWrites(app.calls.slice(mark))).toEqual([]);
+  expect(await show(parent)).toEqual(before);
+});
+
+test("init without replace refuses open ticket-named items and writes nothing to Kata", async () => {
+  const ticket = `v2test#${await issue("Named work")}`;
+  const app = host();
+  await app.call({ op: "init", items: [`${ticket}: do the named work`] });
+  const before = await show(ticket);
+  const mark = app.calls.length;
+  const result = await app.call({ op: "init", items: ["Something else"] });
+  expect(result.isError).toBe(true);
+  expect(result.content[0].text).toContain(`${ticket}: do the named work`);
+  expect(kataWrites(app.calls.slice(mark))).toEqual([]);
+  expect(await show(ticket)).toEqual(before);
+});
+
+test("init with replace closes the open tasks missing from the new list", async () => {
+  const app = host(); const parent = await app.init(["Old task", "Kept task"]);
+  const result = await app.call({ op: "init", items: ["Kept task", "New task"], replace: true });
+  expect(result.isError).toBeUndefined();
+  const children = (await show(parent)).children;
+  const old = children.find((c: any) => c.title === "Old task");
+  expect(old.status).toBe("closed"); expect(old.closed_reason).toBe("wontfix");
+  expect(children.find((c: any) => c.title === "Kept task").status).toBe("open");
+  expect(children.find((c: any) => c.title === "New task").status).toBe("open");
+});
+
+test("init needs no replace once every task of the plan is closed", async () => {
+  const ref = `v2test#${await issue()}`;
+  const app = host();
+  await app.call({ op: "init", ref, items: ["Only task"] });
+  await app.call({ op: "done", task: "Only task", message, evidence });
+  const result = await app.call({ op: "init", ref, items: ["Follow-up task"] });
+  expect(result.isError).toBeUndefined();
+  expect((await show(ref)).children.find((c: any) => c.title === "Follow-up task").status).toBe("open");
 });

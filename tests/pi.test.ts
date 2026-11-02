@@ -593,3 +593,16 @@ test("pi items that name a ticket work and log on it without creating an issue o
   expect((await kata(["events", "--after", String(rows[0].event_id - 1), "--limit", "1", "--json"])).events[0].payload.evidence).toEqual([{ type: "test", command: "bun test pi last item" }]);
   expect((await kata(["list", "--status", "all", "--limit", "0", "--json"])).issues).toHaveLength(before);
 });
+
+test("pi accepts replace on todo init and refuses without it while tasks are open", async () => {
+  const app = await host(); const parent = await app.init(["Open pi task", "Other pi task"]);
+  expect(Value.Check(app.tool.parameters, { op: "init", items: ["Next pi task"], replace: true })).toBe(true);
+  const refused = await app.call({ op: "init", items: ["Next pi task"] });
+  expect(refused.isError).toBe(true);
+  expect(refused.content[0].text).toContain("Open pi task");
+  expect((await show(parent)).children.map((c: any) => c.title).sort()).toEqual(["Open pi task", "Other pi task"]);
+  const replaced = await app.call({ op: "init", items: ["Next pi task"], replace: true });
+  expect(replaced.isError).toBeUndefined();
+  const old = (await show(parent)).children.find((c: any) => c.title === "Open pi task");
+  expect(old.closed_reason).toBe("wontfix");
+});

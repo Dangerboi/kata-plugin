@@ -95,6 +95,7 @@ Kata specifics:
 - An item that works an existing ticket starts with its qualified ref: \`<project>#<short_id>: <action>\` (for example \`myproj#a1b2: write the smoke script\`). It creates no issue: start claims the ticket and marks it in progress, done comments on it, and the last item of a ticket to be done closes it with that item's evidence (a ticket with open children stays open and gets a comment), drop/rm only comment and never close it. A ref that does not resolve, or a closed ticket, is an error. Only that prefix names a ticket; a bare id is text. A plan whose items all name tickets creates no parent issue.
 - Every other task is a Kata child issue of one parent issue. On init pass \`ref\` with the Kata issue this plan serves (search first: kata search "<terms>" --agent); an explicit KATA_REF or worker binding must match it. Without a ref, use that binding, the session's existing parent, or a new parent titled by \`message\`.
 - done closes the issue (an item naming a ticket: see above). Kata requires \`evidence\` (commit:<sha>, test:<cmd>, pr:<url>, reviewed-paths:<path>) and a \`message\` of 40+ characters saying what changed and how it was verified. Unverified work: block it instead.
+- init on a plan with open tasks changes nothing and returns an error listing them; pass \`replace: true\` only to deliberately replace that plan (its open tasks close as wontfix).
 - drop/rm take the reason in \`message\`.
 - drop and rm close those tasks as wontfix (Kata never deletes). Automatic session parents close from their children’s Kata-recorded evidence once all work has settled. Explicit/claimed parents remain yours to close. Folders with no Kata project use KATA_DEFAULT_PROJECT (labeled with the repo) or register their inferred project; the plan is session-local only while Kata is unreachable and replays when it returns.`;
 
@@ -1263,6 +1264,14 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 
 	// ---------------------------------------------------------------------- ops
 
+	// init replaces the plan, closing every task missing from the new list; open tasks need an explicit replace.
+	function refuseOpen(params: any, tasks: Task[]): void {
+		if (params.replace === true) return;
+		const open = tasks.filter(t => OPEN.has(t.status));
+		if (!open.length) return;
+		throw new Error(`The todo plan has open tasks, so init changed nothing:\n${open.map(t => `- ${MARK[t.status]} ${t.content}`).join("\n")}\nTo replace them, call init again with replace: true.`);
+	}
+
 	async function apply(params: any, ctx: any): Promise<string> {
 		if (!bound || currentId !== ctx.sessionManager?.getSessionId?.()) await bind(ctx, options.explicitRef?.() ?? process.env.KATA_REF ?? params.ref ?? (!bound ? requestedRef : undefined), params.op === "view");
 		currentCtx = ctx;
@@ -1294,12 +1303,14 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 				const parent = target === plan.parent ? target : await pin(target, workspace);
 				if (explicit && params.ref && parent !== await pin(params.ref, workspace)) throw new Error(`Kata init ref ${params.ref} conflicts with the explicit binding ${explicit}; neither plan was replaced.`);
 				const tasks = tasksOf(await childrenOf(parent, workspace), parent);
+				refuseOpen(params, [...tasks, ...named]);
 				const kept = tasks.filter(t => wanted.has(`${t.phase}\u0000${t.content}`));
 				const affected = new Set(tasks.filter(t => !kept.includes(t)));
 				const next = nextTask(kept);
 				if (next) affected.add(next);
 				for (const task of affected) await owned(task.ref, workspace, "check", true, task.revision);
 			}
+			if (!target) refuseOpen(params, plan.tasks);
 			if (target || needsParent(desired.map(d => d.content))) await ensureParent(params, ctx);
 			cwd = plan.workspace || ctx.cwd;
 			await load(cwd);

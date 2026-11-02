@@ -82,6 +82,7 @@ export default function ompKata(pi: any) {
 			items: z.array(z.string()).optional().describe("tasks for flat init or append"),
 			reason: z.string().optional().describe("blocker note for block"),
 			ref: z.string().optional().describe("existing Kata issue this plan serves (init)"),
+			replace: z.boolean().optional().describe("init: replace a plan that still has open tasks (they close as wontfix); without it init refuses"),
 			message: z.string().optional().describe("done: what changed and how it was verified (40+ chars); drop/rm: reason; init without ref: title for the new Kata parent"),
 			evidence: z.array(z.string()).optional().describe("required for done: commit:<sha>, test:<cmd>, pr:<url>, reviewed-paths:<path>"),
 		}),

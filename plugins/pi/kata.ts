@@ -189,6 +189,7 @@ export default async function piKata(pi: ExtensionAPI) {
 			items: Type.Optional(Type.Array(Type.String(), { description: "tasks for flat init or append" })),
 			reason: Type.Optional(Type.String({ description: "blocker note for block" })),
 			ref: Type.Optional(Type.String({ description: "existing Kata issue this plan serves (init)" })),
+			replace: Type.Optional(Type.Boolean({ description: "init: replace a plan that still has open tasks (they close as wontfix); without it init refuses" })),
 			message: Type.Optional(Type.String({ description: "done: changes and verification (40+ characters); drop/rm: reason; init without ref: title for the automatic parent" })),
 			evidence: Type.Optional(Type.Array(Type.String(), { description: "required for done: commit:<sha>, test:<cmd>, pr:<url>, reviewed-paths:<path>" })),
 		}),

@@ -124,7 +124,7 @@ test("a session that never plans leaves no issue and no project; the first call 
   expect(await projects()).not.toContain("lazyrepo");
   await app.call({ op: "init", items: ["One"] });
   await app.call({ op: "append", items: ["Two"] });
-  await app.call({ op: "init", items: ["One", "Two", "Three"] });
+  await app.call({ op: "init", items: ["One", "Two", "Three"], replace: true });
   const all = await issues("lazyrepo");
   expect(all.filter((i: any) => i.metadata?.["omp.auto_parent"] === true)).toHaveLength(1);
   expect(all).toHaveLength(4);
