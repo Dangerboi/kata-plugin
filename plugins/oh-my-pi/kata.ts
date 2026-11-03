@@ -1,14 +1,14 @@
 // Generated from root kata.ts by bun run build:plugins.
-// omp-kata: Kata replaces oh-my-pi's todo tracker.
+// omp-kata: Kata stores oh-my-pi's todo plan; omp renders and reminds.
 //
 // Installing the plugin is the whole setup: omp lets an extension re-register a
 // built-in tool by name, so this `todo` replaces the native one. Results keep the
-// plan under details.kata (not details.phases), so omp's native todo tracker has
-// nothing to remind or render. `todo.enabled: false` still works. This extension owns:
+// Kata state under details.kata and also expose details.phases for omp's native
+// todo renderer, HUD and reminders. `todo.enabled: false` still works. This extension owns:
 //   - the `todo` tool (same ops as omp's: init, start, done, drop, rm, block,
 //     unblock, append, view), with every task stored as a Kata child issue;
 //   - `/todo`, intercepted on input before omp's built-in command;
-//   - a progress widget and a stop reminder while tasks remain open;
+//   - a Kata progress widget (stop reminders belong only to omp);
 //   - cached Kata contracts, guarded main-session attention, and delegate identity.
 //
 // Plan items are children carrying `todo.phase`; other children participate in
@@ -17,12 +17,57 @@
 // The plan is session-local only while Kata is unreachable, then it replays.
 
 import path from "node:path";
-import { createKataCore, DESCRIPTION, sessionKey, render, matchDelegation, namedTargets,
+import { createKataCore, DESCRIPTION, sessionKey, render, phasesOf, matchDelegation, namedTargets,
 	kataCommands as parseKataCommands, teammateFor, ticketAutocomplete, delegateCommand, delegateContext, type Binding, type Task } from "./kata-core";
 
 const EXECUTABLE = process.env.KATA_OMP_EXECUTABLE || "kata";
 const EXECUTABLE_VARS = ["KATA_OMP_EXECUTABLE"];
 export const kataCommands = (command: string) => parseKataCommands(command, EXECUTABLE, EXECUTABLE_VARS);
+
+// omp://tools/todo.md: TodoPhase is { name, tasks: [{ content, status }] }.
+// Native statuses use completed/in_progress/abandoned, not UI labels such as
+// done/current/dropped. Keep Kata's blocker notes in details.kata; expose waits
+// as pending for hosts whose native schema has no blocked status.
+export function nativePhases(phases: { name: string; tasks: Pick<Task, "content" | "status">[] }[]) {
+	return phases.map(phase => ({
+		name: phase.name,
+		tasks: phase.tasks.map(task => ({ content: task.content, status: task.status === "blocked" ? "pending" as const : task.status })),
+	}));
+}
+
+// Kata permits repeated text in different phases; native init requires globally
+// unique text. Only its cache gets ref-qualified labels for those items. Calls
+// using a label from a native reminder resolve back to the original Kata item.
+export function nativeCache(tasks: Task[]) {
+	const counts = new Map<string, number>();
+	for (const task of tasks) counts.set(task.content, (counts.get(task.content) ?? 0) + 1);
+	const used = new Set(tasks.map(t => t.content)), aliases = new Map<string, string>();
+	const projected = tasks.map(task => {
+		if (counts.get(task.content) === 1) return task;
+		let content = `${task.content} [${task.ref}]`;
+		while (used.has(content)) content += " ·";
+		used.add(content);
+		aliases.set(content, task.ref);
+		return { ...task, content };
+	});
+	return { phases: nativePhases(phasesOf(projected)), aliases };
+}
+
+// Newer omp hosts keep a separate native session cache. Calling the original
+// implementation updates that cache without another tool result or Kata write.
+// Native normalization chooses the first pending item when none is active.
+export async function syncNativePhases(phases: ReturnType<typeof nativePhases>, invoke: (params: any) => Promise<any>) {
+	const call = async (params: any) => {
+		const result = await invoke(params);
+		if (result.isError) throw new Error(result.content?.[0]?.text || "Native todo sync failed");
+	};
+	await call({ op: "init", list: phases.filter(p => p.tasks.length).map(p => ({ phase: p.name, items: p.tasks.map(t => t.content) })) });
+	for (const task of phases.flatMap(p => p.tasks)) {
+		if (task.status === "completed" || task.status === "abandoned") await call({ op: task.status === "completed" ? "done" : "drop", task: task.content });
+	}
+	const active = phases.flatMap(p => p.tasks).find(t => t.status === "in_progress");
+	if (active) await call({ op: "start", task: active.content });
+}
 
 type Delegate = {
 	id: string; teammate: string; sessionFile?: string; parentAgentId?: string;
@@ -44,7 +89,23 @@ const delegatesBySession = new Map<string, Delegate>();
 
 export default function ompKata(pi: any) {
 	const z = pi.zod;
+	let nativeRenderer = pi.pi?.todoToolRenderer;
+	let rendererLoading: Promise<void> | undefined;
+	async function loadNativeRenderer() {
+		return rendererLoading ??= (async () => {
+			if (!nativeRenderer && pi.pi) {
+				try {
+					// Supplied by omp's extension loader, not a runtime dependency.
+					// @ts-expect-error omp resolves its bundled host package at runtime.
+					nativeRenderer = (await import("@oh-my-pi/pi-tui/tools/todo")).todoToolRenderer;
+				} catch (error) { debug(error); }
+			}
+		})();
+	}
+	const fallbackText = (text: string) => pi.pi?.Text ? new pi.pi.Text(text, 0, 0) : undefined;
 	const main = (ctx: any) => ctx?.agent?.kind === "main";
+	const scope = (ctx: any) => `${ctx?.sessionManager?.getSessionId?.() ?? ""}\u0000${ctx?.agent?.id ?? ""}`;
+	let nativeBridge: { scope: string; invoke: (params: any) => Promise<any>; aliases: Map<string, string>; snapshot?: string } | undefined;
 	let attentionSession: { id: string; cwd: string; ref?: string } | undefined;
 	let coordinator: Coordinator | undefined;
 	// Spawn text per task tool call; refs once a plan existed when it was seen.
@@ -76,11 +137,49 @@ export default function ompKata(pi: any) {
 	const untrackedTan = (ctx: any) => ctx?.agent?.kind === "sub" && /^Tan-/.test(ctx.agent.id ?? "") && !self(ctx);
 	const { serial, bounded, debug, kata, actor, owned, load, bind, ensureParent, reconcile } = core;
 	const warm = (ctx: any) => core.warm(ctx, self(ctx)?.binding?.workspace || ctx.cwd);
+	async function mirrorNative(ctx: any) {
+		if (!nativeBridge || nativeBridge.scope !== scope(ctx) || core.plan.error) return;
+		const cache = nativeCache(core.plan.tasks);
+		const snapshot = JSON.stringify(cache.phases);
+		if (nativeBridge.snapshot === snapshot) return;
+		try {
+			await syncNativePhases(cache.phases, nativeBridge.invoke);
+			nativeBridge.aliases = cache.aliases;
+			nativeBridge.snapshot = snapshot;
+		} catch (error) {
+			// Kata already committed; native bookkeeping cannot hide its snapshot.
+			debug(error);
+			ctx.ui?.notify?.(`Todo state was kept, but omp's native tracker could not refresh: ${error instanceof Error ? error.message : String(error)}`, "warning");
+		}
+	}
+	async function refreshNative(ctx: any) {
+		if (!nativeBridge || nativeBridge.scope !== scope(ctx)) return;
+		await load(core.plan.workspace || ctx.cwd);
+		await mirrorNative(ctx);
+	}
+	let nativeRefresh: Promise<void> | undefined;
+	async function backgroundNative(ctx: any) {
+		if (!nativeBridge || nativeBridge.scope !== scope(ctx)) return;
+		// bounded releases the hook, not its work. Coalesce slow reads so a
+		// burst of tools cannot queue many 120-second reads ahead of todo.
+		nativeRefresh ??= serial(() => refreshNative(ctx)).finally(() => { nativeRefresh = undefined; });
+		await bounded(nativeRefresh);
+	}
+	function invalidateNative(ctx: any) {
+		if (nativeBridge?.scope !== scope(ctx)) nativeBridge = undefined;
+		else if (nativeBridge) delete nativeBridge.snapshot;
+	}
 	pi.registerTool({
 		name: "todo",
 		label: "Todo (kata カタ)",
 		description: DESCRIPTION,
 		approval: "read",
+		concurrency: "exclusive",
+		mergeCallAndResult: true,
+		renderCall: (...args: any[]) => nativeRenderer ? nativeRenderer.renderCall(...args) : fallbackText("Todo (Kata)"),
+		renderResult: (...args: any[]) => nativeRenderer ? nativeRenderer.renderResult(...args) : fallbackText(args[0].content?.map((c: any) => c.text ?? "").join("\n") ?? ""),
+		describeCall: (...args: any[]) => nativeRenderer?.describeCall?.(...args),
+		describeResult: (...args: any[]) => nativeRenderer?.describeResult?.(...args),
 		parameters: z.object({
 			op: z.enum(["init", "start", "done", "rm", "drop", "block", "unblock", "append", "view"]),
 			list: z.array(z.object({ phase: z.string(), items: z.array(z.string()).min(1) })).optional().describe("phases for init"),
@@ -95,7 +194,20 @@ export default function ompKata(pi: any) {
 		}),
 		async execute(_id: string, params: any, signal: AbortSignal | undefined, onUpdate: any, ctx: any) {
 			if (untrackedTan(ctx) && typeof ctx.invokeTool === "function") return ctx.invokeTool(params, { signal, onUpdate });
-			return core.execute(params, ctx);
+			const targetsTask = ["start", "done", "drop", "rm", "block", "unblock"].includes(params.op);
+			const alias = targetsTask && nativeBridge?.scope === scope(ctx) ? nativeBridge.aliases.get(params.task) : undefined;
+			const result = await core.execute(alias ? { ...params, task: alias } : params, ctx);
+			const phases = "phases" in result.details.kata ? result.details.kata.phases : [];
+			const native = nativePhases(phases);
+			if (!result.isError && typeof ctx.invokeTool === "function") {
+				// Keep a session-scoped original-tool bridge for /todo and stop-time
+				// refreshes. Do not retain the completed call's signal or UI updates.
+				nativeBridge = { scope: scope(ctx), aliases: nativeBridge?.scope === scope(ctx) ? nativeBridge.aliases : new Map(),
+					snapshot: nativeBridge?.scope === scope(ctx) ? nativeBridge.snapshot : undefined,
+					invoke: args => ctx.invokeTool(args, { signal: new AbortController().signal, onUpdate() {} }) };
+				await serial(() => mirrorNative(ctx));
+			}
+			return { ...result, details: { ...result.details, phases: native } };
 		},
 	});
 
@@ -103,11 +215,12 @@ export default function ompKata(pi: any) {
 	pi.on("input", async (event: any, ctx: any) => {
 		if (!main(ctx)) return;
 		const match = /^\/todo(?:\s+([\s\S]*))?$/.exec(event.text.trim());
-		if (!match) {
-			if (event.source === "interactive" && !event.text.trim().startsWith("/")) core.resetReminders();
-			return;
-		}
-		ctx.ui?.notify?.(await core.command(match[1] || "", ctx), "info");
+		if (!match) return;
+		const command = match[1] || "";
+		const parts = /^(start|done|drop|rm|unblock)\s+([\s\S]+)$/.exec(command.trim());
+		const alias = nativeBridge?.scope === scope(ctx) && parts ? nativeBridge.aliases.get(parts[2]) : undefined;
+		ctx.ui?.notify?.(await core.command(alias ? `${parts![1]} ${alias}` : command, ctx), "info");
+		await serial(() => mirrorNative(ctx));
 		return { handled: true };
 	});
 	// --------------------------------------------------------------- delegates
@@ -170,7 +283,7 @@ export default function ompKata(pi: any) {
 					record.ref = `${binding.parent.split("#")[0]}#${out.issue.short_id}`;
 				}
 			}),
-			settle: record => serial(async () => { await settleRecord(record); await reconcile(); }),
+			settle: record => serial(async () => { await settleRecord(record); await reconcile(); await refreshNative(core.currentCtx); }),
 		};
 		return coordinator;
 	}
@@ -315,16 +428,18 @@ export default function ompKata(pi: any) {
 		catch (error) { return { block: true, reason: String(error) }; }
 	});
 
-	pi.on("tool_result", (event: any, ctx: any) => {
+	pi.on("tool_result", async (event: any, ctx: any) => {
 		// Started delegates hold their own tasks; a denied or partial spawn releases
 		// the rest. The text stays for a delegate whose start is reported late.
 		const assignment = event.toolName === "task" ? assignments.get(event.toolCallId) : undefined;
 		if (assignment) { assignment.refs = undefined; assignment.waiting = undefined; }
-		return core.observeToolResult(event, ctx);
+		const result = await core.observeToolResult(event, ctx);
+		if (event.toolName !== "todo" && !event.isError) await backgroundNative(ctx);
+		return result;
 	});
-	pi.on("session_stop", async (event: any, ctx: any) => {
-		const additionalContext = await core.remind(event.messages ?? [], ctx);
-		if (additionalContext) return { continue: true, additionalContext };
+	// Keep stop-time persistence retries; only omp may request continuation.
+	pi.on("session_stop", async (_event: any, ctx: any) => {
+		if (main(ctx)) await bounded(serial(async () => { await load(core.plan.workspace || ctx.cwd); await core.drainRetries(); await mirrorNative(ctx); }));
 	});
 
 	async function prepareIfTracked(ctx: any) { const record = self(ctx); if (record) await prepare(record); }
@@ -335,6 +450,8 @@ export default function ompKata(pi: any) {
 		await bounded(Promise.all([
 			main(ctx) && core.currentId !== ctx.sessionManager?.getSessionId?.() ? serial(() => bind(ctx)) : undefined,
 			(async () => { if (!main(ctx)) await prepareIfTracked(ctx); await warm(ctx); })(),
+			// A switch hook runs before native history restoration; repair here.
+			serial(() => mirrorNative(ctx)),
 		]), main(ctx) ? 250 : 3000); // a delegate cannot learn its issue later
 		const base = (Array.isArray(event.systemPrompt) ? event.systemPrompt : [event.systemPrompt || ""]).filter((s: string) => !/^<kata_(contract|todo|inbox|binding)>/.test(s));
 		const sections: string[] = [];
@@ -377,7 +494,8 @@ export default function ompKata(pi: any) {
 		ctx.ui.addAutocompleteProvider((current: any) => ticketAutocomplete(current, core.tickets, { defaultProject: process.env.KATA_DEFAULT_PROJECT?.trim() || undefined }));
 	}
 
-	async function begin(ctx: any) {
+	async function begin(ctx: any, mirror = true) {
+		invalidateNative(ctx);
 		if (!main(ctx)) { core.currentCtx = ctx; void prepareIfTracked(ctx).then(() => warm(ctx)).catch(debug); return; }
 		offerTickets(ctx);
 		const explicit = process.env.KATA_REF;
@@ -386,6 +504,7 @@ export default function ompKata(pi: any) {
 		void warm(ctx);
 		await bounded(serial(async () => {
 			await bind(ctx, explicit);
+			if (mirror) await mirrorNative(ctx);
 			core.resetReminders();
 			if (!id || previous?.id === id) return;
 			if (previous) await attention("end", previous);
@@ -394,11 +513,18 @@ export default function ompKata(pi: any) {
 		}));
 	}
 
-	pi.on("session_start", (_event: any, ctx: any) => begin(ctx));
-	pi.on("session_switch", (_event: any, ctx: any) => begin(ctx));
-	pi.on("session_branch", (_event: any, ctx: any) => main(ctx) ? bounded(serial(() => bind(ctx))) : undefined);
-	pi.on("session_tree", (_event: any, ctx: any) => main(ctx) ? bounded(serial(() => bind(ctx))) : undefined);
+	pi.on("session_start", async (_event: any, ctx: any) => { await loadNativeRenderer(); return begin(ctx); });
+	pi.on("session_switch", async (_event: any, ctx: any) => { await loadNativeRenderer(); return begin(ctx, false); });
+	const rehydrateNative = (ctx: any, rebind: boolean) => main(ctx) ? bounded(serial(async () => {
+		invalidateNative(ctx);
+		if (rebind) await bind(ctx); else await load(core.plan.workspace || ctx.cwd);
+		await mirrorNative(ctx);
+	})) : undefined;
+	pi.on("session_branch", (_event: any, ctx: any) => rehydrateNative(ctx, true));
+	pi.on("session_tree", (_event: any, ctx: any) => rehydrateNative(ctx, true));
+	pi.on("session_compact", (_event: any, ctx: any) => rehydrateNative(ctx, false));
 	pi.on("session_shutdown", async (_event: any, ctx: any) => {
+		nativeBridge = undefined;
 		if (!main(ctx)) return;
 		const session = attentionSession;
 		attentionSession = undefined;
