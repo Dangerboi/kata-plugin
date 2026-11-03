@@ -35,4 +35,4 @@ The root manifest supports `pi install git:github.com/Dangerboi/kata-plugin`. Pi
 
 For one run: `pi --no-extensions -e /path/to/kata-plugin/plugins/pi/kata.ts`. Remove any other todo extension first. Keep each plugin directory intact: its adjacent `kata-core.ts` is required. Do not overwrite the native adapter at the user extension path `kata.ts`.
 
-The omp marketplace identifies the plugin as `kata@kata-plugin`. The npm package names `kata-omp` and `kata-pi` identify the portable packages. The root pi shim does not make the OMP package a pi extension.
+The omp marketplace identifies the plugin as `kata@kata-plugin`. The same catalog lists `kata-pi` (source `plugins/pi`) so tools that read the catalog, such as Skillshare, can install the pi build from the Git URL; it is for pi, and under omp its entry exits without loading. The npm package names `kata-omp` and `kata-pi` identify the portable packages. The root pi shim does not make the OMP package a pi extension.

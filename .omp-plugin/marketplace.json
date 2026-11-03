@@ -8,6 +8,11 @@
       "name": "kata",
       "description": "Kata work tracking for oh-my-pi",
       "source": "./plugins/oh-my-pi"
+    },
+    {
+      "name": "kata-pi",
+      "description": "Kata work tracking for pi",
+      "source": "./plugins/pi"
     }
   ],
   "metadata": {
