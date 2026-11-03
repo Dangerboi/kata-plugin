@@ -1,10 +1,10 @@
 # Kata Plugin
 
-Kata work tracking for oh-my-pi and pi. Delegated work and todo plans become Kata issues with attributed ownership and evidence for completion. Kata validates each close; automatic session parents close after their children finish.
+Kata work tracking for oh-my-pi and pi. Todo plans, and the delegations that work their items or name a ticket, become Kata issues with attributed ownership and evidence for completion. Kata validates each close; automatic session parents close after their children finish.
 
 | Plugin | Tracks |
 | --- | --- |
-| [oh-my-pi](docs/reference/oh-my-pi.md) | Todo plans and task subagents |
+| [oh-my-pi](docs/reference/oh-my-pi.md) | Todo plans and the task subagents that work them |
 | [pi](docs/reference/pi.md) | Todo plans and child Pi processes |
 
 Oh-my-pi:

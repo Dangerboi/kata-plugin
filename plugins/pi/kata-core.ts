@@ -192,6 +192,12 @@ export function delegateContext(executable: string, id: string, ref: string, tea
 	return `You are subagent ${id}. Your Kata issue is ${ref}; your teammate is ${teammate}. Keep the existing actor and use this issue instead of inherited KATA_REF. Track attention on your own issue. When verified, YOU must run: ${command} close ${quote(ref)} --done --message '<describe this task and its verification in at least 40 characters>' --evidence '<typed evidence for your actual verification>'. If unfinished, leave it open and explain what remains.`;
 }
 
+// A delegate that matched no plan item and named no ticket has no issue. Its
+// binding says so instead of sending it to one: the lead tracks the work.
+export function untrackedDelegateContext(id: string): string {
+	return `You are subagent ${id}. The lead session tracks this work and you have no Kata issue. Do not create, claim, close, comment on or edit Kata issues, including one named by an inherited KATA_REF. Reading Kata is fine. Report your results in your reply.`;
+}
+
 const STOPWORDS = new Set(["a", "an", "and", "are", "as", "at", "be", "by", "do", "for", "from", "in", "into", "is", "it", "its", "of", "on", "or", "per", "the", "then", "this", "that", "to", "with", "you", "your", "above", "below", "all", "any", "please", "task", "plan", "subagent", "agent", "current", "complete", "finish"]);
 // Lowercase words with camelCase split and simple suffixes stripped; snake_case
 // identifiers stay whole because they usually name the code under change.
@@ -671,7 +677,7 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 	async function replayLocal(ctx: any) {
 		if (!plan.local || !await probe(ctx.cwd)) return;
 		const local = plan.tasks.filter(t => !t.ticket);
-		// Nothing was planned offline (a delegation only needed a parent): create nothing.
+		// Nothing was planned offline: create nothing.
 		if (!local.length) { delete plan.local; return; }
 		plan = { tasks: [] };
 		try {
