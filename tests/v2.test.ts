@@ -163,10 +163,9 @@ test("external closes reconcile an auto parent, including non-todo children", as
   await app.call({ op: "view" }); expect((await show(ref)).issue.status).toBe("closed");
 });
 
-test("spawn creates a teammate child; subagent gets verbatim contract and closes itself", async () => {
+test("a delegate bound to an existing plan item gets a teammate, the verbatim contract and closes it itself", async () => {
   const parent = host(); await parent.event("session_start"); const ref = await parent.init(["Await delegated work", "Keep leading while delegated"]);
   const sessionFile = `${scratch}/delegate-one.jsonl`;
-  await parent.event("before_subagent_spawn", { agent: "task", invocationKind: "task" });
   parent.emit("task:subagent:lifecycle", { id: "Build.Widget", agent: "task", status: "started", sessionFile, description: "Await delegated work" });
   const child = host({ agent: { kind: "sub", id: "Build.Widget", parentId: parent.ctx.agent.id }, sessionFile });
   await child.event("session_start");
@@ -361,6 +360,7 @@ test("a delegate's first prompt waits for a slow binding instead of dropping it"
   await child.event("session_start");
   const result = await child.event("before_agent_start", { systemPrompt: ["base"] });
   expect(result.systemPrompt.join("\n")).toContain("<kata_binding>");
+  expect(result.systemPrompt.join("\n")).toContain("Your Kata issue is");
 });
 
 test("explicitly adopting the auto issue revokes and persists automatic close authority", async () => {
@@ -416,7 +416,6 @@ for (const entry of ["lazy", "titled"]) test(`${entry} failed claim resumes the 
   const app = host({ before: (a: string[]) => a[0] === "claim" && rejectClaim ? { code: 1, stderr: "temporary claim failure", stdout: "" } : undefined });
   await app.event("session_start");
   await app.call({ op: "init", items: ["Recovered task"], ...(entry === "titled" ? { message: "A titled plan parent" } : {}) });
-  await app.call({ op: "view" }); // drain the bounded spawn hook
   const list = (await kata(["list", "--status", "all", "--meta", `omp.session_id=${app.sid}`, "--json"])).issues;
   const parents = list.filter((i: any) => !i.metadata?.["todo.phase"]);
   expect(parents).toHaveLength(1);
@@ -634,7 +633,6 @@ test("an unrelated delegation never takes the lead's active task and creates not
   const app = host(); await app.event("session_start");
   const ref = await app.init(["Implement widget", "Write widget tests"]);
   await app.event("tool_call", { toolName: "task", toolCallId: "probe", input: { agent: "scout", task: "Reply with exactly: SUBAGENT-OK" } });
-  await app.event("before_subagent_spawn", { agent: "scout" });
   const sessionFile = `${scratch}/probe-agent.jsonl`;
   app.emit("task:subagent:lifecycle", { id: "probe-agent", status: "started", sessionFile, parentToolCallId: "probe", index: 0 });
   await app.call({ op: "view" });
@@ -698,6 +696,31 @@ test("an untracked delegate's system prompt has the note, not an issue binding",
   expect(prompt).toContain("inherited KATA_REF");
   expect(prompt).not.toContain("Your Kata issue is");
   expect(prompt).not.toContain("close '");
+});
+
+test("a spawn in a session with no plan creates nothing", async () => {
+  const app = host(); await app.event("session_start");
+  const before = await total();
+  await app.event("tool_call", { toolName: "task", toolCallId: "no-plan", input: { agent: "scout", task: "Survey the repository layout" } });
+  app.emit("task:subagent:lifecycle", { id: "no-plan", status: "started", sessionFile: `${scratch}/no-plan.jsonl`, parentToolCallId: "no-plan", index: 0 });
+  await app.call({ op: "view" });
+  expect(await sessionParents(app.sid)).toEqual([]);
+  expect(await total()).toBe(before);
+});
+
+test("while the plan is local, a delegate matching a local item is not untracked", async () => {
+  const lead = host({ cwd: outside, before: down }); await lead.event("session_start");
+  await lead.init(["Draft the local notes", "Review the local notes"]);
+  const sessionFile = `${scratch}/local-match.jsonl`;
+  lead.emit("task:subagent:lifecycle", { id: "local-match", status: "started", sessionFile, description: "Draft the local notes" });
+  await lead.call({ op: "view" });
+  const worker = host({ cwd: outside, sessionFile, agent: { kind: "sub", id: "local-match", parentId: lead.ctx.agent.id } });
+  let native = 0;
+  const result = await worker.call({ op: "view" }, { ...worker.ctx, invokeTool: async () => { native++; return { content: [], details: {} }; } });
+  expect(native).toBe(0);
+  expect(result.isError).toBe(true);
+  expect(result.content[0].text).toContain("worker binding");
+  expect(result.content[0].text).not.toContain("matched no plan item");
 });
 
 test("a finished delegate that leaves its plan task open hands it back for review", async () => {
@@ -1362,7 +1385,6 @@ test("a task delegated to an item that names a ticket works that ticket and crea
   await app.call({ op: "init", items: [`v2test#${a}: write the widget parser`] });
   const before = await total();
   await app.event("tool_call", { toolName: "task", toolCallId: "named-item", input: { name: "Parser", task: "Write the widget parser and report back." } });
-  await app.event("before_subagent_spawn", { agent: "task" });
   app.emit("task:subagent:lifecycle", { id: "named-item", status: "started", sessionFile: `${scratch}/named-item.jsonl`, parentToolCallId: "named-item", index: 0 });
   await app.call({ op: "view" });
   expect((await show(a)).issue.metadata["omp.subagent_id"]).toBe("named-item");
@@ -1533,7 +1555,7 @@ for (const form of ["id", "file"] as const) test(`a fork (parentSession as ${for
   expect(view.details.kata.parent).toBe(parent);
   expect(view.content[0].text).toContain("Shared alpha");
   expect((await next.call({ op: "append", items: ["Fork gamma"] })).isError).toBeUndefined();
-  await next.event("before_subagent_spawn", { agent: "task" }); await next.call({ op: "view" });
+  await next.call({ op: "view" });
   expect(await sessionParents(next.sid)).toEqual([]);
   expect((await show(parent)).children.map((c: any) => c.title).sort()).toEqual(["Fork gamma", "Shared alpha", "Shared beta"]);
 });

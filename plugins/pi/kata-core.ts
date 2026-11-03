@@ -677,7 +677,7 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 	async function replayLocal(ctx: any) {
 		if (!plan.local || !await probe(ctx.cwd)) return;
 		const local = plan.tasks.filter(t => !t.ticket);
-		// Nothing was planned offline (a delegation only needed a parent): create nothing.
+		// Nothing was planned offline: create nothing.
 		if (!local.length) { delete plan.local; return; }
 		plan = { tasks: [] };
 		try {

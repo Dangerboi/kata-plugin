@@ -57,7 +57,6 @@ export default function ompKata(pi: any) {
 			if (main(ctx)) return;
 			const record = self(ctx);
 			if (!record) throw new Error("Kata worker binding unavailable; the coordinator must assign this session an issue before using todo.");
-			await prepare(record);
 			if (!record.ref || !record.binding) throw new Error(`Kata worker binding failed: ${record.prepareError || "no issue was assigned"}`);
 			return { ref: record.ref, workspace: record.binding.workspace, teammate: record.teammate };
 		},
@@ -131,25 +130,24 @@ export default function ompKata(pi: any) {
 			id, records: new Map(),
 			prepare: record => serial(async () => {
 				// todo init and task often share one batch, so the plan may not have
-				// existed when the task call was seen. An item that names a ticket binds
-				// that ticket, and needs no parent.
-				if (!record.ticket && !record.planRef && (record.text || record.label)?.trim()) {
+				// existed when the task call was seen. Only a plan item or a named ticket
+				// gets an issue; any other spawn gets none.
+				const text = (record.text || record.label)?.trim();
+				if (!record.ticket && !record.planRef && text) {
 					await load(core.plan.workspace || ctx.cwd);
 					const item = matchDelegation(core.plan.tasks, record.text ?? "", { unavailable: reserved(record), single: record.single, label: record.label });
 					if (item?.ticket) { record.planRef = item.ticket; record.ticket = true; }
-				}
-				// Only a plan item or a named ticket gets an issue; any other spawn gets none.
-				if (!record.ticket && !record.planRef && (!core.plan.parent || core.plan.local || !(record.text || record.label)?.trim())) { record.untracked = true; return; }
-				const binding: Binding = record.ticket
-					? { parent: record.planRef!, workspace: core.plan.workspace || ctx.cwd, sessionId: id }
-					: { parent: core.plan.parent!, workspace: core.plan.workspace!, sessionId: id, auto: core.plan.auto, label: core.plan.label };
-				// Match what the plan holds now.
-				if (!record.planRef && (record.text || record.label)?.trim()) {
-					await load(binding.workspace);
-					const match = matchDelegation(core.plan.tasks, record.text ?? "", { unavailable: reserved(record), single: record.single, label: record.label });
-					record.planRef = match?.ticket ?? match?.ref;
+					else if (item) {
+						// An offline plan cannot bind yet: stay undecided so a later todo call binds the replayed item.
+						if (core.plan.local) return;
+						record.planRef = item.ref;
+					}
 				}
 				if (!record.planRef) { record.untracked = true; return; }
+				if (!record.ticket && (!core.plan.parent || core.plan.local)) return;
+				const binding: Binding = record.ticket
+					? { parent: record.planRef, workspace: core.plan.workspace || ctx.cwd, sessionId: id }
+					: { parent: core.plan.parent!, workspace: core.plan.workspace!, sessionId: id, auto: core.plan.auto, label: core.plan.label };
 				record.binding = binding;
 				const ref = record.planRef;
 				let issue = JSON.parse(await kata(["show", ref, "--json"], binding.workspace)).issue;
@@ -216,11 +214,6 @@ export default function ompKata(pi: any) {
 		}).finally(() => { record.ready = undefined; });
 		return record.ready;
 	}
-
-	pi.on("before_subagent_spawn", async (_event: any, ctx: any) => {
-		core.currentCtx = ctx;
-		root(ctx);
-	});
 
 	pi.events?.on("task:subagent:lifecycle", (event: any) => {
 		if (!core.currentCtx || !event?.id) return;
