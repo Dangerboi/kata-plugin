@@ -1457,7 +1457,7 @@ test("a delegate spawned under a Tan- name keeps its record and the Kata path", 
   const worker = host({ sessionFile, agent: { kind: "sub", id: "Tan-named", parentId: lead.ctx.agent.id } });
   let native = 0;
   const result = await worker.call({ op: "init", items: ["Delegated step"] }, { ...worker.ctx, invokeTool: async () => { native++; return { content: [], details: {} }; } });
-  expect(native).toBe(0);
+  expect(native).toBe(2); // mirror init + active item into the native session cache
   expect(result.details.kata.parent).toMatch(/^v2test#/);
 });
 

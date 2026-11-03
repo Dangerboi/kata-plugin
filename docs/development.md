@@ -1,3 +1,7 @@
+---
+last_edited: 2026-11-03
+---
+
 # Development
 
 **Run every test and live experiment with an explicit throwaway `KATA_HOME`. Never point experiments at a normal store or a real project.** The root test runner creates a marked temporary root, clears inherited remote/issue routing, and passes isolated stores to the suites. Real-Kata fixtures stop their own daemons.
@@ -42,6 +46,8 @@ bun run smoke:omp --live --model openrouter/<model>   # same checks with a real 
 ```
 
 The `inbox` scenario drives one long-lived `omp --mode rpc` session prompt by prompt. Between prompts it runs `kata notify` against the throwaway store, then checks the system prompts the scripted provider recorded: the request must appear as `<kata_inbox>` within two turns (a read slower than the hook's budget lands on the next turn) and disappear within two turns of clearing it. It is scripted-only and skipped by `--live`.
+
+`native-todo` uses RPC to run `init`, `start`, and `done`, deliberately stopping with open work between `start` and `done`. It checks the real result snapshots, exactly one native `todo_reminder`, absence of the plugin's old reminder, Kata child phase/completion metadata, and `/todo` interception. `native-todo-disabled` uses an isolated `todo.enabled: false` overlay to verify the Kata tool still works without native reminders. `native-todo-slash` verifies repeated task text across phases, native-label task targeting, and slash completion without a stale reminder in an active session. These scenarios use RPC because omp 18.16.0 disables stop-time reminders in print mode.
 
 Scenarios are data in `scripts/smoke-omp-scenarios.ts`: scripted turns per agent (a turn may be a function of the conversation so far) plus assertions over the store. Add one by appending an entry to `SCENARIOS`; a scenario that only scripts turns and checks the store needs no driver or provider changes, but one that needs a new RPC command or a persisted session (like `fork`) also extends the driver.
 

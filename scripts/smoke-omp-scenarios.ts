@@ -48,6 +48,8 @@ export type Scenario = {
 	drive?(session: Session): Promise<Check[]>;
 	/** Keeps the session file on disk (omp's `--no-session` is dropped); RPC `fork` needs one. */
 	persist?: boolean;
+	/** Isolated omp config overlay (YAML); never changes the user's settings. */
+	config?: string;
 	/** Environment for the omp child. */
 	env?: Record<string, string>;
 	/** Scripted turns keyed by a marker that appears in the agent's first user message. */
@@ -56,6 +58,8 @@ export type Scenario = {
 	setup?(create: (title: string) => string): Record<string, string>;
 	/** Assertions run through `kata show --json` after omp has exited. */
 	check?(store: Store, vars: Record<string, string>): Promise<Check[]>;
+	/** Assertions over the real omp JSON event stream. */
+	checkOutput?(output: string): Check[];
 };
 
 const MAIN = "[smoke:main]";
@@ -67,7 +71,81 @@ const evidence = "test:bun smoke scenario ran";
 const recorded = { type: "test", command: "bun smoke scenario ran" }; // how Kata stores it
 const message = "Verified the smoke scenario by running it end to end against a real omp and a real Kata daemon.";
 
-export const SCENARIOS: Scenario[] = [{
+export const SCENARIOS: Scenario[] = [true, false].map(enabled => ({
+	name: enabled ? "native-todo" : "native-todo-disabled",
+	prompt: `${MAIN} Exercise the native todo renderer and reminder handoff.`,
+	config: `todo:\n  enabled: ${enabled}\n  reminders: true\n  remindersMax: 3\n`,
+	async drive(session: Session) {
+		await session.prompt(`${MAIN} Exercise the native todo renderer and reminder handoff.`);
+		const calls = session.requests().length;
+		await session.prompt("/todo");
+		return [{ name: "/todo is intercepted without another model call", ok: session.requests().length === calls }];
+	},
+	scripts: {
+		[MAIN]: [
+			[{ tool: "todo", args: { op: "init", list: [{ phase: "Native rendering", items: ["First check", "Second check"] }] } }],
+			[{ tool: "todo", args: { op: "start", task: "Second check" } }],
+			// Deliberately stop with open work: only omp may request continuation.
+			["The renderer check has reached its stop boundary."],
+			[{ tool: "todo", args: { op: "done", task: "First check", message, evidence: [evidence] } }],
+			[{ tool: "todo", args: { op: "done", task: "Second check", message, evidence: [evidence] } }],
+			["Both checks are complete."],
+		],
+	},
+	checkOutput(output: string) {
+		const frames = output.split("\n").flatMap(line => { try { return [JSON.parse(line)]; } catch { return []; } });
+		const results = frames.filter(f => f.type === "tool_execution_end" && f.toolName === "todo").map(f => f.result);
+		const reminders = frames.filter(f => f.type === "todo_reminder");
+		const tasks = results.at(-1)?.details?.phases?.flatMap((p: any) => p.tasks) ?? [];
+		return [
+			{ name: "native phases accompany every Kata result", ok: results.length === (enabled ? 4 : 2) && results.every(r => r.details?.phases?.[0]?.name === "Native rendering" && r.details?.kata?.parent), detail: JSON.stringify(results.map(r => r.details)) },
+			{ name: "start reaches the native snapshot", ok: results[1]?.details?.phases?.[0]?.tasks?.[1]?.status === "in_progress" },
+			{ name: enabled ? "one native reminder source continues unfinished work" : "todo.enabled false disables native reminders but keeps the Kata tool", ok: reminders.length === (enabled ? 1 : 0) && !output.includes("Open Kata todo tasks"), detail: JSON.stringify(reminders) },
+			{ name: enabled ? "done reaches the native snapshot" : "disabled tracker leaves unfinished work intact", ok: tasks.length === 2 && tasks.every((t: any) => t.status === (enabled ? "completed" : t.content === "Second check" ? "in_progress" : "pending")) },
+		];
+	},
+	async check(store: Store) {
+		const children = (await store.issues()).filter(i => i.metadata["todo.phase"]);
+		return [{ name: "Kata children retain phase and completion state", ok: children.length === 2 && children.every(i => i.metadata["todo.phase"] === "Native rendering" && i.status === (enabled ? "closed" : "open")) }];
+	},
+} satisfies Scenario));
+
+SCENARIOS.push({
+	name: "native-todo-slash",
+	async drive(session) {
+		await session.prompt(`${MAIN} Exercise repeated task text and native labels.`);
+		const calls = session.requests().length;
+		await session.prompt("/todo done");
+		const intercepted = session.requests().length === calls;
+		await session.prompt("Verify that the plan is complete.");
+		return [{ name: "/todo done is intercepted without another model call", ok: intercepted }];
+	},
+	scripts: {
+		[MAIN]: [
+			[{ tool: "todo", args: { op: "init", list: [{ phase: "Build", items: ["Run tests"] }, { phase: "Review", items: ["Run tests"] }] } }],
+			ctx => {
+				const ref = lastRef(ctx, /omp-smoke#[a-z0-9]+(?=\))/);
+				return [{ tool: "todo", args: { op: "done", task: `Run tests [${ref}]`, message, evidence: [evidence] } }];
+			},
+			["Can you review the remaining check?"],
+			["Both checks are complete."],
+		],
+	},
+	checkOutput(output) {
+		const frames = output.split("\n").flatMap(line => { try { return [JSON.parse(line)]; } catch { return []; } });
+		const results = frames.filter(f => f.type === "tool_execution_end" && f.toolName === "todo").map(f => f.result);
+		return [
+			{ name: "repeated text remains unchanged in native result phases", ok: results[0]?.details?.phases?.length === 2 && results[0].details.phases.every((p: any) => p.tasks[0]?.content === "Run tests") },
+			{ name: "a native cache label completes the correct Kata item", ok: results[1]?.details?.phases?.[0]?.tasks?.[0]?.status === "completed" && results[1]?.details?.phases?.[1]?.tasks?.[0]?.status === "in_progress" && !results[1]?.isError },
+			{ name: "native cache accepts repeated text across Kata phases", ok: !output.includes("native tracker could not refresh") },
+			{ name: "/todo done clears native reminders before the next turn", ok: !frames.some(f => f.type === "todo_reminder") },
+		];
+	},
+	async check(store) {
+		const children = (await store.issues()).filter(i => i.metadata["todo.phase"]);
+		return [{ name: "both repeated-title children close under their original phases", ok: children.length === 2 && children.every(i => i.title === "Run tests" && i.status === "closed") && new Set(children.map(i => i.metadata["todo.phase"])).size === 2 }];
+	},
+}, {
 	name: "default",
 	prompt: `${MAIN} Plan the parser work, delegate the first item, close the second, then stop.`,
 	livePrompt: () => `Use the todo tool to plan two items, 'Implement parser module' and 'Write parser tests'. Delegate 'Implement parser module' to a task subagent (name it ImplementParser) and tell it to close its Kata issue with evidence ${evidence} and a 40+ character message. Then mark 'Write parser tests' done through the todo tool with evidence ${evidence} and a 40+ character message. Change no files. Stop when both are closed.`,
@@ -253,4 +331,4 @@ export const SCENARIOS: Scenario[] = [{
 			{ name: "the refused close left exactly one blocking comment", ok: blocking.length === 1, detail: `${blocking.length} comments` },
 		];
 	},
-}];
+});

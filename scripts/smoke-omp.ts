@@ -10,7 +10,7 @@
 // on the child process only; your ~/.omp and live Kata store are never written.
 import { Database } from "bun:sqlite";
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { SCENARIOS, type Check, type Issue, type Request, type Scenario, type Session, type Store } from "./smoke-omp-scenarios";
@@ -147,10 +147,15 @@ async function run(scenario: Scenario) {
 		const args = ["--no-extensions", "--no-skills", "--no-rules", "--no-context-files", "--no-lsp", "--no-title", ...(scenario.persist ? [] : ["--no-session"]),
 			"-e", path.join(root, "plugins/oh-my-pi/kata.ts")];
 		args.push(...(live ? ["--model", liveModel!] : ["-e", path.join(root, "scripts/smoke-omp-provider.ts"), "--model", "kata-smoke/scripted"]));
+		if (scenario.config) {
+			const config = path.join(dir, "config.yml");
+			writeFileSync(config, scenario.config);
+			args.push("--config", config);
+		}
 		let code: number | null, output: string, checks: Check[] = [];
 		if (scenario.drive) ({ code, output, checks } = await drive(scenario, args, env, work, records));
 		else {
-			const child = spawn("omp", ["-p", "--wait-async", ...(verbose ? ["--mode", "json"] : []), ...args, live ? scenario.livePrompt!(vars) : scenario.prompt!], { env, cwd: work, stdio: ["ignore", "pipe", "pipe"] });
+			const child = spawn("omp", ["-p", "--wait-async", ...(verbose || scenario.checkOutput ? ["--mode", "json"] : []), ...args, live ? scenario.livePrompt!(vars) : scenario.prompt!], { env, cwd: work, stdio: ["ignore", "pipe", "pipe"] });
 			output = "";
 			child.stdout.on("data", d => output += d);
 			child.stderr.on("data", d => output += d);
@@ -160,6 +165,7 @@ async function run(scenario: Scenario) {
 			if (verbose) console.log(output);
 		}
 		report("omp exited cleanly", code === 0, `exit ${code}\n${output.trim().split("\n").slice(-20).join("\n")}`);
+		if (scenario.checkOutput) checks.push(...scenario.checkOutput(output));
 		if (scenario.check) {
 			try { checks.push(...await scenario.check(store(env, work, records), vars)); }
 			catch (error) { checks.push({ name: "store readable", ok: false, detail: String(error) }); }

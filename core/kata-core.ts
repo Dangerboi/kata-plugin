@@ -90,7 +90,7 @@ const itemKey = (item: { phase: string; content: string }) => `${item.phase}\u00
 export const DESCRIPTION = `Track multi-step work as a todo list stored in Kata. Tasks are identified by verbatim content (or Kata ref), NEVER generated IDs. Unique, stable task/phase names; lost text: view, NEVER guess.
 Before work, init for 3+ steps, requested task sets, or new instructions. MUST list EVERY user item separately; NEVER omit or remember leftovers.
 After each change: with no active task the earliest pending starts (phase order). Blocked NEVER starts automatically; unblock returns pending. Mark done immediately; follow phase order.
-External waits (user/agent/service): block with a reason; it suppresses the stop reminder and starts the next pending task.
+External waits (user/agent/service): block with a reason; it records the wait and starts the next pending task.
 NEVER call todo alone: init with first work; done/start with next action.
 
 Kata specifics:
@@ -1464,8 +1464,8 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 	function details(op: string) {
 		return {
 			op,
-			// Not a top-level `phases`: omp's native todo tracker reads that key from
-			// any result named `todo` and would add its own reminders, nudges and HUD.
+			// Shared Kata state. The OMP adapter also projects this into the native
+			// details.phases contract; pi keeps its own renderer and stop reminder.
 			kata: {
 				parent: plan.parent,
 				phases: phasesOf(plan.error ? [] : plan.tasks).map(p => ({

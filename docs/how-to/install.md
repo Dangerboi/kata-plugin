@@ -1,3 +1,7 @@
+---
+last_edited: 2026-11-03
+---
+
 # Install
 
 Install Kata 0.19 or later. Oh-my-pi and pi need no Kata project in the folder: a folder without a Kata project uses `KATA_DEFAULT_PROJECT` or its inferred project (see the [oh-my-pi reference](../reference/oh-my-pi.md)). These plugins use `agent-contract-hook`, revision guards, typed evidence, `audit closes`, and `events`.
@@ -9,7 +13,7 @@ omp plugin marketplace add /path/to/kata-plugin
 omp plugin install kata@kata-plugin
 ```
 
-Restart omp. There is no `todo.enabled` step: the plugin's `todo` replaces the built-in one, and omp's own todo reminders, nudges and HUD have nothing to track. A `todo.enabled: false` you set earlier keeps working.
+Restart omp. The plugin's `todo` replaces the built-in tool and stores tasks in Kata, while omp's native todo UI and reminders consume its results. A `todo.enabled: false` you set earlier keeps the Kata tool working but disables native reminders; set it to `true` if you want omp to remind you about unfinished tasks. The plugin adds no stop reminder of its own. `todo.reminders` and `todo.remindersMax` control omp's reminders.
 
 Optional: send the plans of repos that have no Kata project to one Kata project, labeled with the repo name, by exporting it where omp runs:
 

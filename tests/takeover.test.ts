@@ -39,6 +39,7 @@ function host(options: any = {}) {
   const schema: any = new Proxy(() => schema, { get: () => schema });
   const ctx: any = {
     cwd: options.cwd, agent: { kind: "main", id: `main-${sid}` },
+    invokeTool: options.invokeTool,
     sessionManager: { getSessionId: () => sid, getSessionFile: () => `${scratch}/${sid}.jsonl`, getBranch: () => entries },
     getAsyncJobSnapshot: () => ({ running: [], recent: [] }),
     ui: { notify: (...args: any[]) => notices.push(args), setWidget: (...args: any[]) => widgets.push(args) },
@@ -130,12 +131,84 @@ test("a session that never plans leaves no issue and no project; the first call 
   expect(all).toHaveLength(4);
 });
 
-test("todo results leave omp's native todo tracker nothing to track", async () => {
+test("todo results feed omp's native tracker alongside Kata persistence", async () => {
   const app = host({ cwd: repo("nativerepo") });
   for (const result of [await app.call({ op: "init", items: ["A native check"] }), await app.call({ op: "view" })]) {
-    expect(result.details.phases).toBeUndefined();
+    expect(result.details.phases).toEqual([{ name: "Tasks", tasks: [{ content: "A native check", status: "in_progress" }] }]);
     expect(result.details.kata.phases[0].tasks[0].content).toBe("A native check");
+    const shown = await kata(["show", result.details.kata.parent, "--json"]);
+    expect(shown.children[0].metadata["todo.phase"]).toBe("Tasks");
   }
+  expect(await app.event("session_stop", { messages: [{ role: "assistant", content: "Finished." }] })).toBeUndefined();
+});
+
+test("a native cache refusal cannot hide a committed Kata plan or its native result snapshot", async () => {
+  const app = host({ cwd: repo("native-refusal"), invokeTool: async () => ({ isError: true, content: [{ text: "Native rejected snapshot" }] }) });
+  const result = await app.call({ op: "init", items: ["Persist despite host refusal"] });
+  expect(result.isError).toBeUndefined();
+  expect(result.details.phases[0].tasks[0].content).toBe("Persist despite host refusal");
+  expect((await kata(["show", result.details.kata.parent, "--json"])).children).toHaveLength(1);
+  expect(app.notices).toContainEqual([expect.stringContaining("Native rejected snapshot"), "warning"]);
+});
+
+test("native aliases never rewrite append text or slash blocker reasons", async () => {
+  const app = host({ cwd: repo("native-literals"), invokeTool: async () => ({}) });
+  const result = await app.call({ op: "init", list: [{ phase: "Build", items: ["Run tests"] }, { phase: "Review", items: ["Run tests"] }] });
+  const parent = result.details.kata.parent;
+  const children = (await kata(["show", parent, "--json"])).children;
+  const aliases = children.map((c: any) => `Run tests [${parent.split("#")[0]}#${c.short_id}]`);
+  expect((await app.call({ op: "append", task: aliases[0] })).isError).toBeUndefined();
+  await app.event("input", { text: `/todo append ${aliases[1]}`, source: "interactive" });
+  await app.event("input", { text: `/todo block ${aliases[0]}`, source: "interactive" });
+  const shown = (await kata(["show", parent, "--json"])).children;
+  expect(shown.map((c: any) => c.title)).toEqual(expect.arrayContaining(aliases));
+  expect(shown.some((c: any) => c.metadata["work.attention_msg"] === aliases[0])).toBe(true);
+});
+
+test("external closes refresh the native cache while unchanged tools and views leave it alone", async () => {
+  const calls: any[] = [];
+  const app = host({ cwd: repo("native-refresh"), invokeTool: async (params: any) => { calls.push(params); return {}; } });
+  const result = await app.call({ op: "init", items: ["External completion"] });
+  const parent = result.details.kata.parent;
+  const child = (await kata(["show", parent, "--json"])).children[0];
+  const event = { toolName: "bash", input: { command: "echo fixture" }, isError: false, details: { exitCode: 0 } };
+  const initial = calls.length;
+  for (let i = 0; i < 3; i++) await app.event("tool_result", event);
+  await app.call({ op: "view" });
+  expect(calls).toHaveLength(initial);
+  await kata(["close", `${parent.split("#")[0]}#${child.short_id}`, "--done", "--message", message, "--evidence", evidence[0], "--json"]);
+  await app.event("tool_result", event);
+  await app.call({ op: "view" }); // await any bounded refresh still queued
+  expect(calls.slice(initial)).toEqual([
+    { op: "init", list: [{ phase: "Tasks", items: ["External completion"] }] },
+    { op: "done", task: "External completion" },
+  ]);
+  for (const name of ["session_tree", "session_compact"]) {
+    const before = calls.length;
+    await app.event(name);
+    await app.call({ op: "view" });
+    expect(calls.length - before).toBe(2); // repair native state restored from old history
+  }
+  const beforeSwitch = calls.length;
+  await app.event("session_switch");
+  expect(calls).toHaveLength(beforeSwitch); // host restores native history after this hook
+  await app.call({ op: "view" });
+  expect(calls.length - beforeSwitch).toBe(2);
+});
+
+test("slow background native refreshes coalesce ahead of explicit todo operations", async () => {
+  let parent: string, slow = false, reads = 0;
+  const gate = Promise.withResolvers<void>();
+  const app = host({ cwd: repo("native-coalesce"), invokeTool: async () => ({}), before: async (args: string[]) => {
+    if (slow && args[0] === "show" && args[1] === parent) { reads++; await gate.promise; }
+  } });
+  parent = (await app.call({ op: "init", items: ["Keep the queue bounded"] })).details.kata.parent;
+  slow = true;
+  try {
+    await Promise.all(Array.from({ length: 10 }, () => app.event("tool_result", { toolName: "bash", input: { command: "echo fixture" }, isError: false })));
+    expect(reads).toBe(1);
+  } finally { slow = false; gate.resolve(); }
+  expect((await app.call({ op: "view" })).isError).toBeUndefined();
 });
 
 test("an unreachable Kata keeps a visible session-local plan and replays it when Kata returns", async () => {
@@ -147,6 +220,9 @@ test("an unreachable Kata keeps a visible session-local plan and replays it when
   expect(first.isError).toBeUndefined();
   expect(first.content[0].text).toContain("Session-local");
   expect(first.content[0].text).toContain("Kata is unreachable");
+  expect(first.details.phases).toEqual([{ name: "Tasks", tasks: [
+    { content: "Written offline", status: "in_progress" }, { content: "Also offline", status: "pending" },
+  ] }]);
   await app.call({ op: "done", task: "Written offline", message, evidence });
   await app.call({ op: "view" });
   expect(app.notices.filter(n => n[1] === "warning")).toHaveLength(1);
@@ -161,6 +237,9 @@ test("an unreachable Kata keeps a visible session-local plan and replays it when
   const done = shown.children.find((c: any) => c.title === "Written offline");
   expect(done.status).toBe("closed");
   expect(back.content[0].text).toContain("1/2 done");
+  expect(back.details.phases).toEqual([{ name: "Tasks", tasks: [
+    { content: "Written offline", status: "completed" }, { content: "Also offline", status: "in_progress" },
+  ] }]);
   expect(app.notices.filter(n => n[1] === "warning")).toHaveLength(1);
 });
 
