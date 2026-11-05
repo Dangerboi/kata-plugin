@@ -19,6 +19,7 @@ import { execFile, spawn } from "node:child_process";
 import { closeSync, openSync, readSync } from "node:fs";
 import { createInterface } from "node:readline";
 import { createKataCore, DESCRIPTION, sessionKey, kataCommands as parseKataCommands, teammateFor, ticketAutocomplete, delegateCommand } from "./core/kata-core";
+import { FINAL } from "./core/delegates";
 import type { DelegateEvent, DelegateRecord, DelegateStore, Reservation } from "./core/delegates";
 import type { InboxStream } from "./core/inbox";
 
@@ -37,7 +38,6 @@ type Assignment = { labels: string[]; texts: string[]; reserved?: (Reservation |
 // Delegates that own them. A delegate's session file is the correlation key: agent names alone can collide across simultaneous sessions.
 const recordsBySession = new Map<string, DelegateRecord>();
 const leads = new Map<string, DelegateEvents>();
-const SETTLED = new Set(["handed-back", "settled", "untracked"]);
 
 
 // Runs Kata directly with the transcript identity in its environment. Like pi.exec, a non-zero exit or
@@ -125,7 +125,7 @@ export default function ompKata(pi: any) {
 			if (job.type !== "task" || !["completed", "failed", "aborted", "cancelled"].includes(job.status)) continue;
 			const record = records.find(r => r.id === job.id || r.id === job.agentId);
 			if (!record || record.exited || running.some(r => r.id === job.id || r.agentId === record.id)) continue;
-			await core.delegates.apply({ type: "exited", id: record.id, outcome: job.status === "cancelled" ? "aborted" : job.status });
+			void core.delegates.apply({ type: "exited", id: record.id, outcome: job.status === "cancelled" ? "aborted" : job.status });
 		}
 	}
 	// A handler's entry: remember the context and bring delegate state up to date.
@@ -188,7 +188,7 @@ export default function ompKata(pi: any) {
 		if (!lead?.delegates) return;
 		if (event.status === "started") {
 			if (assignmentsLead !== lead.id) { assignments.clear(); assignmentsLead = lead.id; } // a previous session's spawns
-			for (const [key, record] of recordsBySession) if (record.leadSessionId !== lead.id && SETTLED.has(record.state)) recordsBySession.delete(key);
+			for (const [key, record] of recordsBySession) if (record.leadSessionId !== lead.id && record.exited && FINAL.has(record.state)) recordsBySession.delete(key);
 			const index = event.index ?? 0;
 			const assignment = main(ctx) ? assignments.get(event.parentToolCallId) : undefined;
 			const reserved = assignment?.reserved?.[index];

@@ -106,7 +106,7 @@ export type DelegateOutcome = "completed" | "failed" | "aborted" | "ended";
 // errored; retried on the delegate's next use. untracked: matched nothing, the lead tracks its work. handed-back: exited with
 // its issue open, which went back to the lead for review. settled: exited, its issue closed or restored.
 export type DelegateState = "started" | "assigned" | "failed" | "untracked" | "handed-back" | "settled";
-const FINAL: ReadonlySet<DelegateState> = new Set(["handed-back", "settled", "untracked"]);
+export const FINAL: ReadonlySet<DelegateState> = new Set(["handed-back", "settled", "untracked"]);
 
 // The issue's state before the assignment wrote anything; rollback puts it back.
 export type Restore = { claimed: boolean; meta: Record<string, unknown> };
