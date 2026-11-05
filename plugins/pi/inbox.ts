@@ -146,9 +146,13 @@ export async function projectHead(run: (args: string[]) => Promise<string>, from
 	for (;;) {
 		const page = JSON.parse(await run(["events", "--json", "--after", String(after), "--limit", String(HEAD_PAGE)]));
 		if (!Array.isArray(page?.events) || typeof page.next_after_id !== "number") throw new Error("kata events returned no page");
-		if (page.events.length < HEAD_PAGE) return page.next_after_id;
-		if (page.next_after_id <= after) throw new Error("kata events page did not advance");
-		after = page.next_after_id;
+		// A cursor older than a purge gets no events, only the purge marker as the id to continue from.
+		if (page.events.length >= HEAD_PAGE || page.reset_required === true) {
+			if (page.next_after_id <= after) throw new Error("kata events page did not advance");
+			after = page.next_after_id;
+			continue;
+		}
+		return page.next_after_id;
 	}
 }
 
@@ -224,7 +228,7 @@ export function createInboxFollower(deps: InboxFollowerDeps): InboxFollower {
 		if (seededOnce || gen !== generation || readTimer !== undefined) return;
 		const delay = readBackoff;
 		readBackoff = Math.min(readBackoff * 2, MAX_BACKOFF_MS);
-		readTimer = deps.setTimer(() => { readTimer = undefined; if (gen === generation) void readInbox(); }, delay);
+		readTimer = deps.setTimer(() => { readTimer = undefined; if (gen === generation && !seededOnce) void readInbox(); }, delay);
 	}
 
 	// `quiet` re-reads only update the section; a coalesced loud request (a reset) keeps the next pass loud.
