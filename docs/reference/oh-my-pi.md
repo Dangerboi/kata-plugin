@@ -10,7 +10,7 @@ Session start exports `KATA_TRANSCRIPT_AGENT=omp` and `KATA_TRANSCRIPT_SESSION_I
 | `KATA_REF` | Explicit main parent and main session-attention target. |
 | `KATA_DEFAULT_PROJECT` | Existing Kata project that collects the plans of folders without a project. Issues carry a label naming the repo. omp gives extensions no per-plugin settings, so this variable is the only switch. |
 | `KATA_AUTHOR`, `KATA_TEAMMATE` | Existing actor and optional main teammate. |
-| `KATA_INBOX_USER` | Inbox recipient override. |
+| `KATA_INBOX_USER` | The session's inbox address, `<actor>/<name>`. A bare `<actor>` is a person's own inbox: the session reads none and says so once. |
 | `KATA_OMP_DEBUG` | Optional append-only diagnostic log. |
 
 The todo tool supports `init`, `append`, `start`, `block`, `unblock`, `done`, `drop`, `rm`, `view`. `/todo` supports `start`, `done`, `drop`, `rm`, `append`, `block`, and `unblock`; with no subcommand it shows the plan. Phases and task refs are retained in Kata. Local plans and queued close retries persist in custom session entries and resume with a saved session. Explicit `/todo done` records the user's completion attestation as external evidence. Removed items are retired, never deleted.

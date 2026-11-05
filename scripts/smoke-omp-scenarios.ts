@@ -122,7 +122,7 @@ export const SCENARIOS: Scenario[] = [{
 	},
 }, {
 	name: "inbox",
-	env: { KATA_INBOX_USER: "smoke-user" },
+	env: { KATA_INBOX_USER: "smoke-user/lead" },
 	scripts: { [MAIN]: Array.from({ length: 12 }, () => ["noted"]) },
 	async drive(session) {
 		const MARK = "smoke-inbox-marker";
@@ -137,10 +137,10 @@ export const SCENARIOS: Scenario[] = [{
 		const checks: Check[] = [];
 		await session.prompt(`${MAIN} start`);
 		checks.push({ name: "no inbox section before any notify", ok: !seen() });
-		session.kata(["notify", target, "--to", "smoke-user", "--message", MARK]);
+		session.kata(["notify", target, "--to", "smoke-user/lead", "--message", MARK]);
 		const shown = await within(2, true);
 		checks.push({ name: "notify sent mid-session reaches the system prompt within two turns", ok: shown > 0, detail: "never appeared" });
-		session.kata(["notify", target, "--to", "smoke-user", "--clear"]);
+		session.kata(["notify", target, "--to", "smoke-user/lead", "--clear"]);
 		const cleared = await within(2, false);
 		checks.push({ name: "clearing the request removes the section within two turns", ok: cleared > 0, detail: "still present" });
 		await session.prompt("one more turn");

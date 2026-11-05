@@ -432,7 +432,7 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 	let currentCtx: any;
 	let reminders = 0;
 	let progressed = true;
-	let cache: { id?: string; contract?: string; inbox?: string; pending?: Promise<void>; inboxPending?: Promise<void> } = {};
+	let cache: { id?: string; contract?: string; inbox?: string; pending?: Promise<void>; inboxPending?: Promise<void>; personInbox?: boolean } = {};
 	const autoParents = new Map<string, Binding>();
 	let registered: { id?: string; list: Promise<{ id: number; name: string }[]> } | undefined;
 	const retries = new Map<string, { task: Task; to: Status; change: Change; cwd: string; at: number }>();
@@ -1653,7 +1653,14 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 			})().catch(debug).finally(() => { entry.pending = undefined; });
 		}
 		const user = process.env.KATA_INBOX_USER;
-		if (user && !entry.inboxPending) {
+		// A bare actor is a person's own inbox (requests written for them, read by kata inbox and tern-kata's
+		// Attention Page), never instructions for this session. Only <actor>/<teammate> is a session inbox.
+		if (user && !user.includes("/")) {
+			if (!entry.personInbox) {
+				entry.personInbox = true;
+				if (main(ctx) && host.allowUI?.(ctx) !== false) ctx?.ui?.notify?.(`KATA_INBOX_USER=${user} is a person's inbox, so this session reads none. Use ${user}/<name> for a session inbox.`, "warning");
+			}
+		} else if (user && !entry.inboxPending) {
 			// Empty output means no requests; a failed read keeps the last inbox.
 			entry.inboxPending = kata(["inbox", "--context", "--for", user], cwd)
 				.then(out => { entry.inbox = out?.trim(); }, debug)
