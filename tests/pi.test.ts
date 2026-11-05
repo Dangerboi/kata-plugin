@@ -153,7 +153,7 @@ test("pi plans close from real Kata evidence with a typed pi parent exactly once
 });
 
 test("pi uses structured prompt sections, preserves other extensions, and caches fallback context", async () => {
-  process.env.KATA_INBOX_USER = "pi-builder";
+  process.env.KATA_INBOX_USER = "pi-builder/lead";
   const app = await host(); await app.event("session_start", { reason: "startup" }); const ref = await app.init();
   await app.event("before_agent_start", { systemPromptOptions: { sections: {} } });
   await app.contextReady;

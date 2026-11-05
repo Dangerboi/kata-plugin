@@ -210,7 +210,7 @@ test("successful standalone main claim preserves a populated auto parent relatio
 });
 
 test("contract is cached verbatim, inbox read every turn, slow hooks bounded and failures quiet", async () => {
-  process.env.KATA_INBOX_USER = "v2-builder";
+  process.env.KATA_INBOX_USER = "v2-builder/lead";
   const app = host(); await app.event("session_start"); await app.contractReady;
   const first = await app.event("before_agent_start", { systemPrompt: ["base"] });
   const second = await app.event("before_agent_start", { systemPrompt: ["base"] });
@@ -1167,19 +1167,32 @@ test("a revive before_agent_start makes no Kata calls while a prompt still injec
 });
 
 test("a request sent mid-session reaches the inbox section by the next turn and clearing removes it", async () => {
-  process.env.KATA_INBOX_USER = "v2-midsession";
+  process.env.KATA_INBOX_USER = "v2-builder/midsession";
   const app = host(); await app.event("session_start"); await app.contractReady;
   const ref = await issue();
   const turn = async () => (await app.event("before_agent_start", { systemPrompt: ["base"] })).systemPrompt.join("\n");
   expect(await turn()).not.toContain("<kata_inbox>");
-  await kata(["notify", ref, "--to", "v2-midsession", "--message", "midsession-ping-7731", "--json"]);
+  await kata(["notify", ref, "--to", "v2-builder/midsession", "--message", "midsession-ping-7731", "--json"]);
   await turn();
   const delivered = await turn();
   expect(delivered).toContain("<kata_inbox>");
   expect(delivered).toContain("midsession-ping-7731");
-  await kata(["notify", ref, "--to", "v2-midsession", "--clear", "--json"]);
+  await kata(["notify", ref, "--to", "v2-builder/midsession", "--clear", "--json"]);
   await turn();
   expect(await turn()).not.toContain("midsession-ping-7731");
+});
+
+test("a bare actor in KATA_INBOX_USER is a person's inbox: the session reads none and says so once", async () => {
+  process.env.KATA_INBOX_USER = "v2-builder";
+  const app = host(); await app.event("session_start"); await app.contractReady;
+  const ref = await issue();
+  await kata(["notify", ref, "--to", "v2-builder", "--message", "person-only-request-5521", "--json"]);
+  const turn = async () => (await app.event("before_agent_start", { systemPrompt: ["base"] })).systemPrompt.join("\n");
+  for (let i = 0; i < 3; i++) expect(await turn()).not.toContain("person-only-request-5521");
+  expect(app.calls.filter(a => a[0] === "inbox")).toEqual([]);
+  expect(app.notices).toHaveLength(1);
+  expect(app.notices[0][0]).toContain("v2-builder/<name>");
+  await kata(["notify", ref, "--to", "v2-builder", "--clear", "--json"]);
 });
 
 // ---------------------------------------------------------- items naming tickets
