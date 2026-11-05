@@ -27,8 +27,7 @@ export interface CoreHost {
 	getSessionName?(): string | undefined;
 	isMain?(ctx: any): boolean;
 	allowUI?(ctx: any): boolean;
-	// The core serves one session for the process's life (a pi child), so an assigned delegate may bind it. A shared core (omp) stays bound to the lead.
-	// Where delegate records live. Default: in memory, found by the delegate's session id.
+	// Where delegate records live, found by the delegate's session id.
 	delegateStore: DelegateStore;
 	// Present: the main session follows its session inbox live (the host spawns the event stream and delivers each request as an aside).
 	// Absent: the inbox is read once per turn.
@@ -88,7 +87,7 @@ export class KataError extends Error {
 	get unusable() { return Boolean(this.info.notRun || this.info.killed || this.info.code === "daemon_unavailable" || this.info.exit === 7); }
 }
 export const isUnusable = (error: unknown) => error instanceof KataError && error.unusable;
-export const isKataCode = (error: unknown, code: string) => error instanceof KataError && error.code === code;
+const isKataCode = (error: unknown, code: string) => error instanceof KataError && error.code === code;
 
 // The workspace name Kata would infer, read from the project_not_initialized
 // error's structured data: the project it names, else its alias ("local://" and
@@ -1135,11 +1134,15 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 		);
 	}
 
+	const planParentSources = (params: any, ctx: any) => ({
+		cwd: ctx.cwd, assigned: { ref: assignedRef, workspace: plan.workspace }, explicit: configuredRef(), initRef: params.ref,
+		stored: plan.parent ? { parent: plan.parent, workspace: plan.workspace } : undefined,
+	});
+
 	async function ensureParent(params: any, ctx: any): Promise<string | undefined> {
 		let down = false;
 		const choice = await decidePlanParent({
-			cwd: ctx.cwd, assigned: { ref: assignedRef, workspace: plan.workspace }, explicit: configuredRef(), initRef: params.ref,
-			stored: plan.parent ? { parent: plan.parent, workspace: plan.workspace } : undefined,
+			...planParentSources(params, ctx),
 			// A Pi child may establish the session parent before the lead uses todo.
 			session: async () => {
 				if (!await probe(ctx.cwd)) { down = true; return; }
@@ -1260,10 +1263,7 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 			if (desired.some(d => !d.content.trim() || !d.phase.trim())) throw new Error("Task and phase names must not be blank.");
 			const wanted = new Set(desired.map(itemKey));
 			const resolved = await resolveNamed(desired, plan.workspace, d => !named.some(t => t.phase === d.phase && t.content === d.content));
-			const choice = await decidePlanParent({
-				cwd: ctx.cwd, assigned: { ref: assignedRef, workspace: plan.workspace }, explicit: configuredRef(), initRef: params.ref,
-				stored: plan.parent ? { parent: plan.parent, workspace: plan.workspace } : undefined,
-			});
+			const choice = await decidePlanParent(planParentSources(params, ctx));
 			const target = choice.parent;
 			if (target) {
 				const workspace = choice.workspace;
@@ -1616,7 +1616,7 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 
 	const sid = (ctx: any): string | undefined => ctx?.sessionManager?.getSessionId?.();
 	const lead = (): Lead => ({ parent: plan.parent, workspace: plan.workspace, label: plan.label });
-	// The session coordinator stays attached to the main context: a sub identity can reach a main-session handler (omp's advisor).
+	// The lead stays attached to the main context: a sub identity can reach a main-session handler (omp's advisor).
 	const see = (ctx: any) => { if (main(ctx) || !currentCtx || !main(currentCtx)) currentCtx = ctx; };
 	const rebind = async (ctx: any): Promise<Lead> => {
 		see(ctx);

@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync } from "node:fs";
 import path from "node:path";
 import { assertIsolated } from "./isolation";
 import { adoptIsolatedKata, isolatedKata } from "./kata-fixture";
-import ompKata from "../kata";
+import { ompHost } from "./omp-host";
 assertIsolated();
 
 // What the omp adapter wires around the session inbox module: when it follows live, the aside it delivers
@@ -28,25 +28,12 @@ const until = async (condition: () => boolean, ms = 8000) => { const end = Date.
 const settle = (ms = 700) => new Promise(resolve => setTimeout(resolve, ms));
 
 function host(options: { agent?: object } = {}) {
-	const sid = `live-${++sequence}`;
-	const handlers = new Map<string, any>(), sent: any[][] = [], calls: string[][] = [];
-	const schema: any = new Proxy(() => schema, { get: () => schema });
-	const ctx: any = {
-		cwd,
-		agent: options.agent ?? { kind: "main", id: `main-${sid}` },
-		sessionManager: { getSessionId: () => sid, getSessionFile: () => `${scratch}/${sid}.jsonl`, getBranch: () => [], getHeader: () => undefined },
-		getAsyncJobSnapshot: () => ({ running: [], recent: [] }),
-		ui: { notify() {}, setWidget() {} },
-	};
-	ompKata({ zod: schema, registerTool() {}, appendEntry() {}, on: (name: string, callback: any) => handlers.set(name, callback), events: { on() {} },
-		sendUserMessage: (...args: any[]) => { sent.push(args); },
-		async exec(_file: string, args: string[], opts: any) { calls.push(args); return run(args, opts.cwd, opts.timeout); } });
-	const event = async (name: string, data: any = {}) => {
-		try { return await handlers.get(name)?.(data, ctx); }
-		finally { delete process.env.KATA_TRANSCRIPT_AGENT; delete process.env.KATA_TRANSCRIPT_SESSION_ID; }
-	};
-	const section = async () => ((await event("before_agent_start", { systemPrompt: ["base"] }))?.systemPrompt ?? []).join("\n");
-	return { sent, calls, event, section };
+	const sid = `live-${++sequence}`, sent: any[][] = [];
+	const app = ompHost({ run: (args, opts) => run(args, opts.cwd, opts.timeout), cwd, sid, sessionFile: `${scratch}/${sid}.jsonl`, agent: options.agent,
+		sendUserMessage: (...args) => { sent.push(args); },
+		afterEvent: () => { delete process.env.KATA_TRANSCRIPT_AGENT; delete process.env.KATA_TRANSCRIPT_SESSION_ID; } });
+	const section = async () => ((await app.event("before_agent_start", { systemPrompt: ["base"] }))?.systemPrompt ?? []).join("\n");
+	return { sent, calls: app.calls, event: app.event, section };
 }
 
 let restore: (() => void) | undefined;
