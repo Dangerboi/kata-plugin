@@ -126,7 +126,6 @@ export interface DelegateRecord {
 	parent?: string;
 	workspace?: string;
 	parentLabel?: string;
-	observesTools: boolean;
 	state: DelegateState;
 	planRef?: string;
 	ticket?: boolean;
@@ -143,7 +142,7 @@ export type Reservation = { ref?: string; ticket?: boolean };
 
 export type DelegateEvent =
 	| { type: "started"; id: string; sessionId: string; leadSessionId: string; leadTeammate: string; teammate: string; text: string; label?: string; single: boolean;
-		observesTools: boolean; parentAgentId?: string; parent?: string; workspace?: string; parentLabel?: string; reserved?: Reservation; untracked?: boolean }
+		parentAgentId?: string; parent?: string; workspace?: string; parentLabel?: string; reserved?: Reservation; untracked?: boolean }
 	// The delegate ran a tool: blocks rollback at exit.
 	| { type: "ranTool"; id: string }
 	// Its next prompt or todo call: retries a failed assignment.
@@ -176,7 +175,7 @@ export interface DelegatesEnv {
 	plan(): Plan;
 	load(cwd: string): Promise<unknown>;
 	projectNames(cwd: string): Promise<ReadonlySet<string>>;
-	reconcile(): Promise<void>;
+	drain(): Promise<void>;
 	cwd(): string;
 	debug(error: unknown): void;
 }
@@ -268,8 +267,9 @@ export function createDelegates(env: DelegatesEnv): Delegates {
 		});
 	}
 
+	const ompKeys = ns === "omp" ? ["omp.parent_agent_id", "omp.status"] : [];
 	function capture(issue: any): Restore {
-		const keys = ["teammate", "todo.status", "work.attention", keySubagent, keySession, ...(ns === "omp" ? ["omp.parent_agent_id", "omp.status"] : [])];
+		const keys = ["teammate", "todo.status", "work.attention", keySubagent, keySession, ...ompKeys];
 		return { claimed: !issue.owner, meta: Object.fromEntries(keys.map(key => [key, issue.metadata?.[key]])) };
 	}
 
@@ -335,7 +335,7 @@ export function createDelegates(env: DelegatesEnv): Delegates {
 		}
 		if (restore.claimed && issue.owner) await env.kata(["unassign", ref], cwd);
 		// The subagent id goes last: a partial rollback leaves the task marked delegated.
-		for (const key of [keySession, ...(ns === "omp" ? ["omp.parent_agent_id", "omp.status"] : []), keySubagent]) await env.kata(set(key), cwd);
+		for (const key of [keySession, ...ompKeys, keySubagent]) await env.kata(set(key), cwd);
 	}
 
 	// A plan task returns to the lead (pending, the lead's teammate) only while it still carries the delegate's teammate;
@@ -362,7 +362,7 @@ export function createDelegates(env: DelegatesEnv): Delegates {
 		const cwd = r.binding.workspace;
 		const issue = JSON.parse(await env.kata(["show", ref, "--json"], cwd)).issue;
 		if (issue.status === "closed") { r.state = "settled"; env.store.put(r); return; }
-		if (r.state === "assigned" && r.observesTools && !r.ranTool) {
+		if (r.state === "assigned" && !r.ranTool) {
 			await rollback(r, issue);
 			r.state = "settled"; env.store.put(r);
 			return;
@@ -421,7 +421,7 @@ export function createDelegates(env: DelegatesEnv): Delegates {
 			const r = note(event);
 			if (!r || event.type === "ranTool") return Promise.resolve();
 			return env.serial(async () => {
-				if (event.type === "exited") await env.reconcile();
+				if (event.type === "exited") await env.drain();
 				else if (!r.exited && (r.state === "started" || r.state === "failed")) await assign(r);
 			}).catch(env.debug);
 		},

@@ -201,7 +201,7 @@ export default function ompKata(pi: any) {
 				type: "started", id: event.id, sessionId: event.sessionFile ? sessionKey(event.sessionFile, ctx.cwd) : `${lead.id}:${event.id}`,
 				leadSessionId: lead.id, leadTeammate: process.env.KATA_TEAMMATE || "", teammate: teammateFor(event.id, lead.id),
 				text: [assignment?.texts[index], event.description].filter(Boolean).join("\n"), label: assignment?.labels[index],
-				single: (assignment?.texts.length ?? 1) === 1, observesTools: true, parentAgentId: ctx.agent?.id, reserved,
+				single: (assignment?.texts.length ?? 1) === 1, parentAgentId: ctx.agent?.id, reserved,
 			});
 		} else if (["completed", "failed", "aborted"].includes(event.status)) {
 			void lead.delegates.apply({ type: "exited", id: event.id, outcome: event.status });

@@ -439,6 +439,19 @@ test("a pi main session leaves a plan task held by an omp delegate alone", async
   expect(after.metadata["todo.status"]).not.toBe("in_progress");
 });
 
+test("a grandchild of an untracked child gets its own teammate", async () => {
+  const parent = await host(); await parent.event("session_start", { reason: "startup" });
+  await parent.init(piPlan);
+  const untracked = await childOf(parent);
+  await untracked.event("before_agent_start", { prompt: "Unrelated chores nobody planned", systemPromptOptions: { sections: {} } });
+  const teammate = process.env.KATA_TEAMMATE;
+  expect(teammate).toBeTruthy();
+  const grandchild = await childOf(untracked);
+  await grandchild.event("before_agent_start", { prompt: "Unrelated chores nobody planned", systemPromptOptions: { sections: {} } });
+  expect(process.env.KATA_TEAMMATE).not.toBe(teammate);
+  leaveChild();
+});
+
 test("a child binds the plan task its prompt describes, not the lead's active task", async () => {
   const parent = await host(); await parent.event("session_start", { reason: "startup" });
   const ref = await parent.init(piPlan);
