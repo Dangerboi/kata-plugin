@@ -5,6 +5,18 @@ import { appendFileSync, realpathSync } from "node:fs";
 // Canonical shared source. scripts/vendor-core.ts copies this file into each
 // self-contained plugin; host adapters own their event/schema/identity APIs.
 
+/** The most bytes of one request message the agent is shown. */
+export const INBOX_MESSAGE_LIMIT = 1024;
+export type Capped = { text: string; truncated: boolean };
+/** `value` as text, cut to `limit` bytes on a character boundary with a trailing ellipsis. */
+export function capText(value: unknown, limit: number): Capped {
+	const text = String(value ?? ""), bytes = Buffer.from(text);
+	if (bytes.length <= limit) return { text, truncated: false };
+	let end = limit - 3;
+	while (end > 0 && (bytes[end]! & 0xc0) === 0x80) end--;
+	return { text: `${bytes.subarray(0, end).toString()}…`, truncated: true };
+}
+
 export function createdParentRef(out: any): string {
 	const event = out.event ?? out.original_event;
 	if (!out.issue?.short_id || !event?.project_name) throw new Error("kata create returned no parent identity");
@@ -1645,15 +1657,11 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 	// follows `kata inbox --context`: one header, one line per request with JSON-quoted values, field
 	// and total byte caps, and a trailing omitted/truncated note. Kata's quoting and control-character
 	// handling differ slightly, so the text is not byte-identical.
-	const INBOX_BUDGET = 8 * 1024, INBOX_LIMITS = { ref: 256, title: 256, from: 128, message: 1024, teammate: 64 };
-	type Capped = { text: string; truncated: boolean };
+	const INBOX_BUDGET = 8 * 1024, INBOX_LIMITS = { ref: 256, title: 256, from: 128, message: INBOX_MESSAGE_LIMIT, teammate: 64 };
 	// One quoted field, cut to `limit` bytes on a character boundary.
 	function capField(value: unknown, limit: number): Capped {
-		const text = String(value ?? ""), bytes = Buffer.from(text);
-		if (bytes.length <= limit) return { text: JSON.stringify(text), truncated: false };
-		let end = limit - 3;
-		while (end > 0 && (bytes[end]! & 0xc0) === 0x80) end--;
-		return { text: JSON.stringify(`${bytes.subarray(0, end).toString()}…`), truncated: true };
+		const c = capText(value, limit);
+		return { text: JSON.stringify(c.text), truncated: c.truncated };
 	}
 	function trustedInbox(requests: unknown, mine: string, recipient: string): { requests: any[]; text: string } {
 		const kept = (Array.isArray(requests) ? requests : []).filter(r => r && typeof r.from === "string" && r.from === mine && typeof r.ref === "string" && typeof r.message === "string");
