@@ -234,3 +234,17 @@ test("a spawn naming a ticket outside the plan is reserved as that ticket and as
   expect((await show(ref)).issue.metadata["omp.subagent_id"]).toBe("lambda");
   expect(await a.delegate("lambda").assignment()).toContain(ref);
 });
+
+test("a delegate refused an issue another delegate holds leaves it with its holder when it exits", async () => {
+  const a = lead(); const parent = await a.plan(["Build the mu widget", "Lead step"]);
+  const task = await taskOf(parent, "Build the mu widget"), ref = `delegates-test#${task.short_id}`;
+  const [reserved] = await a.delegates.check([{ text: "Build the mu widget" }]);
+  await a.delegates.apply(a.started("mu-holder", "Build the mu widget"));
+  await a.delegates.apply(a.started("mu-late", "Build the mu widget", { reserved }));
+  expect(await a.delegate("mu-late").assignment()).toBeUndefined();
+  await a.delegates.apply({ type: "exited", id: "mu-late", outcome: "failed" });
+  const view = await show(ref);
+  expect(labels(view)).not.toContain("needs-review");
+  expect(view.issue.metadata).toMatchObject({ teammate: "mate-mu-holder", "omp.subagent_id": "mu-holder", "omp.status": "running" });
+  expect(JSON.stringify(view)).not.toContain("mu-late");
+});

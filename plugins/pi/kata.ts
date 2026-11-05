@@ -98,6 +98,10 @@ export default async function piKata(pi: ExtensionAPI) {
 
 	// Where the lead's plan lives, as the latest core call reported it.
 	let lead: Lead = { workspace: path.resolve(process.cwd()) };
+	// The lead moved: the main session exports where its plan lives now.
+	function follow(next: Lead, ctx: ExtensionContext) {
+		if (!inherited) { lead = next; exportParent(ctx); }
+	}
 	function exportParent(ctx: ExtensionContext) {
 		if (inherited && !current?.ref) { process.env.KATA_PI_PARENT = JSON.stringify({ ...inherited, via: process.env.KATA_TEAMMATE }); return; }
 		process.env.KATA_PI_PARENT = JSON.stringify({ pid: process.pid, sessionId: ctx.sessionManager.getSessionId(),
@@ -155,7 +159,7 @@ export default async function piKata(pi: ExtensionAPI) {
 		const bash = event.toolName === "bash" && typeof event.input.command === "string";
 		// A bash command that launches pi may start a child that needs the lead's parent.
 		const next = await core.tools.call(ctx, { startsChild: !inherited && bash && launchesPi(event.input.command as string) });
-		if (!inherited) { lead = next; exportParent(ctx); }
+		follow(next, ctx);
 		if (!bash) return;
 		let command = event.input.command as string;
 		if (inherited) {
@@ -212,7 +216,9 @@ export default async function piKata(pi: ExtensionAPI) {
 			process.env.KATA_TEAMMATE = saved.teammate;
 			delete process.env.KATA_REF;
 		}
-		if (inherited && !inherited.ref && !await core.delegates.reachable(inherited.workspace)) inherited = undefined;
+		isolateChildAttention(ctx, inherited ? undefined : explicit);
+		let next = await core.session.start(ctx, { child: inherited && !inherited.ref ? inherited.workspace : undefined });
+		if (!next) { inherited = undefined; next = await core.session.start(ctx) as Lead; } // Kata does not answer from the child's workspace
 		if (inherited?.provider && inherited.model) {
 			const inherit = inheritsModel(process.argv);
 			const model = inherit.model ? ctx.modelRegistry?.find(inherited.provider, inherited.model) : undefined;
@@ -226,13 +232,10 @@ export default async function piKata(pi: ExtensionAPI) {
 			typeahead.add(ctx.ui);
 			ctx.ui.addAutocompleteProvider(current => ticketAutocomplete(current, core.tickets, { defaultProject: process.env.KATA_DEFAULT_PROJECT?.trim() || undefined }));
 		}
-		isolateChildAttention(ctx, inherited ? undefined : explicit);
-		const next = await core.session.start(ctx);
-		if (!inherited) { lead = next; exportParent(ctx); }
+		follow(next, ctx);
 	}); // startup/reload/new/resume/fork
 	pi.on("session_tree", async (_event, ctx) => {
-		const next = await core.session.tree(ctx);
-		if (!inherited) { lead = next; exportParent(ctx); }
+		follow(await core.session.tree(ctx), ctx);
 	});
 	// A child's shutdown is its last act; give its own issue cleanup time to finish.
 	// A reload continues the same session, so it is not an ending.

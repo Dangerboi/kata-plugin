@@ -52,7 +52,9 @@ export type Lead = { parent?: string; workspace: string; label?: string };
 // What a prompt gets from the core, as text: the host formats each section for its prompt.
 export type PromptSections = { contract?: string; inbox?: string; todo?: string; assignment?: string };
 // A pi child's view of the session that started it.
-export type ChildParent = { sessionId: string; ref?: string; workspace: string; label?: string; teammate: string; via?: string };
+export type ChildParent = { sessionId: string; ref?: string; workspace: string; label?: string; teammate: string;
+	// The teammate of the child that re-exported the lead's marker.
+	via?: string };
 const CHILD_TEAMMATE = /^[a-z0-9][a-z0-9._-]{0,63}$/;
 
 export type Status = "pending" | "in_progress" | "completed" | "abandoned" | "blocked";
@@ -1623,7 +1625,8 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 		if (main(ctx)) await bounded(serial(() => bind(ctx)));
 		return lead();
 	};
-	const prefetch = (ctx: any) => { if (options.prefetch) void warm(ctx, delegates.assignment(ctx)?.workspace || ctx.cwd, !(main(ctx) && liveInbox !== undefined)); };
+	const warmFor = (ctx: any) => warm(ctx, delegates.assignment(ctx)?.workspace || ctx.cwd, !(main(ctx) && liveInbox !== undefined));
+	const prefetch = (ctx: any) => { if (options.prefetch) void warmFor(ctx); };
 
 	// A pi child joins the session that started it: its identity, its parent (found or created in the lead's name) and its assignment.
 	// Fills in `parent.ref` and `parent.label`, and sets KATA_TEAMMATE and KATA_INBOX_USER for every later Kata call, bash included.
@@ -1633,7 +1636,7 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 			process.env.KATA_TEAMMATE = known.teammate;
 			process.env.KATA_INBOX_USER = `${await actor(known.binding?.workspace ?? parent.workspace, known.ref ?? parent.ref)}/${known.teammate}`;
 			await delegates.apply({ type: "nextUse", id: known.id });
-			await bounded(serial(() => bind(ctx)), 3000);
+			if (currentId !== sid(ctx)) await bounded(serial(() => bind(ctx)), 3000);
 			return;
 		}
 		const id = sid(ctx);
@@ -1676,15 +1679,17 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 		catch (error) { debug(error); untracked = true; }
 		await delegates.apply({ type: "started", id, sessionId: id, leadSessionId: parent.sessionId, leadTeammate: parent.teammate, teammate, text: prompt, single: true,
 			parent: binding.parent, workspace: binding.workspace, parentLabel: binding.label, reserved, untracked });
-		await bounded(serial(() => bind(ctx)), 3000); // a delegate cannot learn its issue later
+		if (currentId !== sid(ctx)) await bounded(serial(() => bind(ctx)), 3000); // a delegate cannot learn its issue later
 	}
 
 	return {
 		session: {
 			// The session began or switched: bind the plan, follow the inbox live when the host can, start attention.
 			// `after` is host work (a delegate's assignment retry) the first context read waits for.
-			async start(ctx: any, begin: { after?: Promise<unknown> } = {}): Promise<Lead> {
+			// `child`: the workspace of a pi child still to join its parent; when Kata does not answer there, nothing starts and the result is undefined: the host runs the session as a main session and starts it again.
+			async start(ctx: any, begin: { after?: Promise<unknown>; child?: string } = {}): Promise<Lead | undefined> {
 				if (!main(ctx)) {
+					if (begin.child !== undefined && !await probe(begin.child)) return undefined;
 					currentCtx = ctx;
 					void Promise.resolve(begin.after).then(() => prefetch(ctx)).catch(debug);
 					return lead();
@@ -1739,7 +1744,7 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 				const context = prompt.context !== false;
 				await bounded(Promise.all([
 					main(ctx) && currentId !== sid(ctx) ? serial(() => bind(ctx)) : undefined,
-					(async () => { await prompt.after; if (context) await warm(ctx, delegates.assignment(ctx)?.workspace || ctx.cwd, !(main(ctx) && liveInbox !== undefined)); })(),
+					(async () => { await prompt.after; if (context) await warmFor(ctx); })(),
 				]), main(ctx) ? 250 : 3000); // a delegate cannot learn its issue later
 				const sections: PromptSections = {};
 				if (context) {
@@ -1781,8 +1786,6 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 			// Refuses a spawn that cannot be delegated; otherwise says what each is matched to. `held`: refs other spawns of the same call reserved.
 			check: (spawns: Spawn[], held?: Iterable<string>) => delegates.check(spawns, held),
 			join,
-			// Whether Kata answers from this workspace (a child that cannot reach it runs as a main session).
-			reachable: (workspace: string) => probe(workspace),
 		},
 		// Open tickets for `#` autocomplete in the editor of the current session.
 		tickets,
