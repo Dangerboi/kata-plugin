@@ -1,6 +1,6 @@
 import path from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { createdParentRef, createKataCore, DESCRIPTION, isKataCode, kataCommands, matchDelegation, quote, render, teammateFor, delegateCommand, delegateContext, ticketAutocomplete, type Binding, type Task } from "./kata-core";
+import { createdParentRef, createKataCore, DESCRIPTION, isKataCode, kataCommands, matchDelegation, quote, render, SHUTDOWN_BOUND_MS, teammateFor, delegateCommand, delegateContext, ticketAutocomplete, type Binding, type Task } from "./kata-core";
 
 // Match the native adapter's capability/scope selection, including a project
 // root boundary. Recheck at prompt time: either factory can load first.
@@ -332,6 +332,6 @@ export default async function piKata(pi: ExtensionAPI) {
 			await core.work(ref, "work.attention_msg", "Pi child ended without closing its issue; review its report and verification.", workspace, issue);
 			await core.handBack(ref, workspace, { id: delegate.id, teammate: delegate.teammate, lead: inherited?.teammate || "", state: "ended", planTask: !!restore });
 		}
-	}), delegate ? 3000 : 250);
+	}), delegate ? 3000 : SHUTDOWN_BOUND_MS);
 	});
 }

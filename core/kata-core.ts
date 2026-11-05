@@ -102,6 +102,9 @@ const MARK: Record<Status, string> = { pending: "[ ]", in_progress: "[/]", compl
 // A plan item's identity: init keeps, refuses and closes by this same key.
 const itemKey = (item: { phase: string; content: string }) => `${item.phase}\u0000${item.content}`;
 
+// How long a main session's shutdown waits for Kata before the host may exit: closing an automatic parent takes six or more spawns, and an exit mid-way leaves the parent open.
+export const SHUTDOWN_BOUND_MS = 10_000;
+
 export const DESCRIPTION = `Track multi-step work as a todo list stored in Kata. Tasks are identified by verbatim content (or Kata ref), NEVER generated IDs. Unique, stable task/phase names; lost text: view, NEVER guess.
 Before work, init for 3+ steps, requested task sets, or new instructions. MUST list EVERY user item separately; NEVER omit or remember leftovers.
 After each change: with no active task the earliest pending starts (phase order). Blocked NEVER starts automatically; unblock returns pending. Mark done immediately; follow phase order.
@@ -452,6 +455,10 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 	let progressed = true;
 	let cache: { id?: string; contract?: string; inbox?: string; actor?: Promise<string>; pending?: Promise<void>; inboxPending?: Promise<void>; personInbox?: boolean } = {};
 	const autoParents = new Map<string, Binding>();
+	// An automatic parent whose children left no close evidence stays open and flagged needs-review; the verdict holds until its revision or children change.
+	class NoEvidence extends Error {}
+	const flagged = new Map<string, string>();
+	const verdictKey = (view: any, revision = view.issue.revision) => `${revision}|${view.children.map((c: any) => `${c.uid}:${c.revision}`).sort().join(",")}`;
 	let registered: { id?: string; list: Promise<{ id: number; name: string }[]> } | undefined;
 	const retries = new Map<string, { task: Task; to: Status; change: Change; cwd: string; at: number }>();
 	// A named ticket whose close Kata refused for open children: retried once they close.
@@ -1356,12 +1363,13 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 		await closePending();
 		for (const binding of autoParents.values()) {
 			const { parent, workspace } = binding;
-			let decision: any;
+			let decision: any, initial: any;
 			try {
 				if (delegatedRunning()) return;
-				const initial = JSON.parse(await kata(["show", parent, "--json"], workspace));
+				initial = JSON.parse(await kata(["show", parent, "--json"], workspace));
 				if (initial.issue.status === "closed" || initial.issue.metadata?.[`${namespace}.auto_parent`] !== true || initial.issue.metadata?.[`${namespace}.session_id`] !== binding.sessionId) continue;
 				if (!initial.children?.length || initial.children.some((c: any) => c.status !== "closed")) continue;
+				if (flagged.get(parent) === verdictKey(initial)) continue;
 				decision = await owned(parent, workspace, false, false, initial.issue.revision);
 				const closedTimes = initial.children.filter((c: any) => c.closed_reason !== "wontfix").map((c: any) => Date.parse(c.closed_at));
 				if (closedTimes.some((time: number) => !Number.isFinite(time))) throw new Error("Kata child close time unavailable");
@@ -1388,15 +1396,20 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 					evidence.push(...event.payload.evidence);
 				}
 				const proof = proofArgs(evidence);
-				if (!proof.length) throw new Error("Kata child close evidence union is empty");
+				if (!proof.length) throw new NoEvidence("Kata child close evidence union is empty");
 				const final = JSON.parse(await kata(["show", parent, "--json"], workspace));
 				if (final.issue.status === "closed" || delegatedRunning()) continue;
 				if (final.issue.revision !== initial.issue.revision || final.children?.length !== initial.children.length || final.children.some((c: any) => c.status !== "closed" || !initial.children.some((old: any) => old.uid === c.uid && old.revision === c.revision))) continue;
 				await kata(["close", parent, "--done", "--if-match", String(final.issue.revision), "--idempotency-key", `${namespace}-parent-close:${parent}:${final.issue.revision}`, "--message", `${namespace.toUpperCase()} session ${binding.sessionId}: all ${final.children.length} child issues are closed in Kata and delegated work has settled. Evidence is the union of their current Kata-recorded close events.`, ...proof], workspace);
 			} catch (error) {
 				debug(error);
-				if (isKataCode(error, "sibling_throttle")) scheduleRetry();
-				try { const live = await owned(parent, workspace); if (!decision || live.revision === decision.revision) await kata(["label", "add", parent, "needs-review"], workspace); } catch (error) { debug(error); }
+				if (isKataCode(error, "sibling_throttle")) { scheduleRetry(); continue; }
+				try {
+					const live = await owned(parent, workspace);
+					if (decision && live.revision !== decision.revision) continue;
+					await kata(["label", "add", parent, "needs-review"], workspace);
+					if (error instanceof NoEvidence) flagged.set(parent, verdictKey(initial, JSON.parse(await kata(["show", parent, "--json"], workspace)).issue.revision));
+				} catch (error) { debug(error); }
 			}
 		}
 	}
