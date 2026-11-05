@@ -18,6 +18,7 @@
 - An automatic parent flagged `needs-review` because its children left no close evidence is no longer audited and labelled again on every turn; it is checked again when its revision or its children change.
 - A close of an automatic parent that Kata throttles is retried without labelling the parent `needs-review`.
 - Session shutdown waits up to 10 s (was 250 ms) for the automatic parent to close, so a slow Kata no longer leaves it open when omp or pi exits.
+- A close that keeps failing for a reason other than Kata's sibling throttle is retried on up to three settlement passes, then dropped and labelled `needs-review` with a comment naming Kata's error code, instead of being retried for the rest of the session.
 - In a plan of only ticket items, a `todo` target shaped like an issue id that names no issue reports Kata's error instead of a Node `TypeError`.
 - Development: run the suite against the installed Kata with `KATA_TEST_EXECUTABLE="$(readlink -f "$(command -v kata)")" bun run test`. Error fixtures are re-captured from Kata 0.21.0. The default `smoke:omp` scenario turns transcripts on and checks that the plugin's close and a delegate's close record omp sessions.
 
