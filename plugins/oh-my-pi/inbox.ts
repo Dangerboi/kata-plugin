@@ -69,6 +69,13 @@ export function trustedInbox(requests: unknown, mine: string, recipient: string)
 // A request as Kata stores it in the slot `notify.<base64url(address)>` of one issue.
 type Slot = { from: string; message: string; re?: string; kind?: string; broadcast?: boolean };
 export type InboxStream = { lines: AsyncIterable<string>; exited: Promise<unknown>; kill(): void };
+/** What a host gives the core to follow a session inbox live: the event stream child, and where a delivered request goes. */
+export type LiveInbox = {
+	/** `kata events --tail` for the workspace from `cursor`. */
+	spawn(cwd: string, cursor: number | undefined): InboxStream;
+	/** Hands one request to the session as an aside. */
+	deliver(text: string): void | Promise<unknown>;
+};
 type SlotState = { eventId?: number; identity: string | null; slot?: Slot; title?: string; ref: string; streamed: number; seeded: boolean };
 type StreamEvent = { type: "reset"; after: number } | { type: "reread" } | { type: "slot"; key: string; ref: string; eventId: number; to: Slot | null };
 export type InboxFollower = { start(): void; stop(): void };

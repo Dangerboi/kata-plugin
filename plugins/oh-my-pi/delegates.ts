@@ -163,9 +163,6 @@ export interface DelegateStore {
 	of(ctx: any): DelegateRecord | undefined;
 }
 
-// A host's view of delegates it can only see from outside: those whose end it saw but never got an event for.
-export type DelegateObservation = { exited: { id: string; outcome: DelegateOutcome }[]; busy: boolean };
-
 export type Who = { teammate: string; delegate?: boolean };
 
 export interface DelegatesEnv {
@@ -201,8 +198,8 @@ export interface Delegates {
 	holds(ref: string): boolean;
 	// Started and not exited, tracked or not.
 	running(): boolean;
-	// Settles every exited delegate not yet settled (after recording the exits the host observed). Runs inside the serial queue.
-	settle(exits?: DelegateObservation["exited"]): Promise<void>;
+	// Settles every exited delegate not yet settled. Runs inside the serial queue.
+	settle(): Promise<void>;
 }
 
 export function createDelegates(env: DelegatesEnv): Delegates {
@@ -380,11 +377,7 @@ export function createDelegates(env: DelegatesEnv): Delegates {
 		r.state = "handed-back"; env.store.put(r);
 	}
 
-	async function settle(exits: DelegateObservation["exited"] = []) {
-		for (const { id, outcome } of exits) {
-			const r = env.store.get(id);
-			if (r && !r.exited) { r.exited = outcome; env.store.put(r); }
-		}
+	async function settle() {
 		for (const r of unfinished()) {
 			if (!r.exited) continue;
 			try { await settleOne(r); } catch (error) { env.debug(error); }

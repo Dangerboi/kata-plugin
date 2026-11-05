@@ -2,8 +2,8 @@ import { createHash } from "node:crypto";
 import path from "node:path";
 import { appendFileSync, realpathSync } from "node:fs";
 import { decidePlanParent, explicitParent, isExplicitParent, namesPlanParent } from "./plan-parent";
-import { trustedInbox } from "./inbox";
-import { createDelegates, heldByDelegate as heldBy, type DelegateAssignment, type DelegateObservation, type DelegateRecord, type DelegateStore, type Who } from "./delegates";
+import { createInboxFollower, knownProjectHead, trustedInbox, type InboxFollower, type LiveInbox } from "./inbox";
+import { createDelegates, heldByDelegate as heldBy, type DelegateAssignment, type DelegateOutcome, type DelegateRecord, type DelegateStore, type Reservation, type Spawn, type Who } from "./delegates";
 import { createSettlement, MAX_FAILURES, openChildren, type CloseRequest } from "./settlement";
 
 // Canonical shared source. scripts/vendor-core.ts copies this file into each
@@ -20,21 +20,18 @@ export function qualifiedRef(issue: { qualified_id?: string; short_id: string },
 	return issue.qualified_id || `${parent.split("#")[0]}#${issue.short_id}`;
 }
 
-export type TranscriptSession = { agent: string; id: string };
-
 export interface CoreHost {
-	exec(file: string, args: string[], options: { cwd: string; timeout: number; transcript?: TranscriptSession | null }): Promise<{ code: number; stdout: string; stderr?: string; killed?: boolean }>;
+	// `ctx` is the context of the event the call serves, for a host that spawns differently per agent (omp's transcript identity).
+	exec(file: string, args: string[], options: { cwd: string; timeout: number; ctx?: any }): Promise<{ code: number; stdout: string; stderr?: string; killed?: boolean }>;
 	appendEntry(type: string, data: unknown): void;
 	getSessionName?(): string | undefined;
 	isMain?(ctx: any): boolean;
 	allowUI?(ctx: any): boolean;
-	// The transcript session a call made for this caller records. Undefined: the host's own; null: none.
-	transcript?(ctx: any): TranscriptSession | null | undefined;
 	// Where delegate records live. Default: in memory, found by the delegate's session id.
 	delegateStore?: DelegateStore;
-	// Delegates the host saw end or still sees running without a lifecycle event for them (omp's async-job snapshot).
-	// Read at the start of every reconcile, synchronously.
-	observe?(): DelegateObservation | undefined;
+	// Present: the main session follows its session inbox live (the host spawns the event stream and delivers each request as an aside).
+	// Absent: the inbox is read once per turn.
+	liveInbox?: LiveInbox;
 }
 export interface CoreOptions {
 	namespace: string;
@@ -43,7 +40,19 @@ export interface CoreOptions {
 	executableVars: readonly string[];
 	debugFile?: string;
 	explicitRef?(): string | undefined;
+	// The harness name Kata's `agent-hook attention-native` is told when the main session starts and ends (the omp adapter has none of its own; pi's is closest). Absent: no attention hook.
+	attentionHarness?: string;
+	// Start the contract and inbox reads at session start, not at the first prompt (a host whose context another extension may supply waits for the prompt).
+	prefetch?: boolean;
 }
+
+// Where the session's plan lives: the host hands it to child processes it starts.
+export type Lead = { parent?: string; workspace: string; label?: string };
+// What a prompt gets from the core, as text: the host formats each section for its prompt.
+export type PromptSections = { contract?: string; inbox?: string; todo?: string; assignment?: string };
+// A pi child's view of the session that started it.
+export type ChildParent = { sessionId: string; ref?: string; workspace: string; label?: string; teammate: string };
+const CHILD_TEAMMATE = /^[a-z0-9][a-z0-9._-]{0,63}$/;
 
 export type Status = "pending" | "in_progress" | "completed" | "abandoned" | "blocked";
 export type Task = { ref: string; content: string; phase: string; status: Status; ticket?: string; at?: number; blocker?: string; delegated?: boolean; review?: boolean; revision?: number; proof?: { message?: string; evidence?: string[] } };
@@ -378,7 +387,7 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 			return () => clearTimeout(handle);
 		},
 		due: () => { void serial(drain).catch(debug); },
-		delegatesRunning: () => jobsBusy || delegates.running(),
+		delegatesRunning: () => delegates.running(),
 		itemsOpen: ticket => named.some(t => t.ticket === ticket && OPEN.has(t.status)),
 		performTask, performTicket: (ticket, request) => owned(ticket, request.cwd, "check").then(decision => closeWith(ticket, decision, request)),
 		flag: flagDropped, debug,
@@ -394,12 +403,11 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 	const nextStamp = () => (stamp = Math.max(Date.now(), stamp + 1));
 	// The plan's tasks: Kata children (or the local plan) merged with named items by creation time.
 	const withNamed = (base: Task[]) => named.length ? [...base.filter(t => !t.ticket), ...named].sort((a, b) => (a.at || 0) - (b.at || 0)) : base;
-	let jobsBusy = false;
 	const memoryRecords = new Map<string, DelegateRecord>();
+	const store: DelegateStore = host.delegateStore ?? { records: () => [...memoryRecords.values()], get: id => memoryRecords.get(id), put: record => { memoryRecords.set(record.id, record); },
+		of: ctx => { const id = ctx?.sessionManager?.getSessionId?.(); return [...memoryRecords.values()].find(record => record.sessionId === id); } };
 	const delegates = createDelegates({
-		namespace,
-		store: host.delegateStore ?? { records: () => [...memoryRecords.values()], get: id => memoryRecords.get(id), put: record => { memoryRecords.set(record.id, record); },
-			of: ctx => { const id = ctx?.sessionManager?.getSessionId?.(); return [...memoryRecords.values()].find(record => record.sessionId === id); } },
+		namespace, store,
 		kata: (args, cwd) => kata(args, cwd), actor: (cwd, ref) => actor(cwd, ref), owned, work, serial, plan: () => plan,
 		load: cwd => load(cwd), projectNames: cwd => projectNames(cwd), reconcile: () => drain(), cwd: () => path.resolve(currentCtx?.cwd ?? process.cwd()), debug,
 	});
@@ -430,8 +438,7 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 		const end = args.indexOf("--");
 		args = [...args.slice(0, end < 0 ? args.length : end), ...flags, ...(end < 0 ? [] : args.slice(end))];
 		let result: Awaited<ReturnType<CoreHost["exec"]>>;
-		const transcript = host.transcript?.(currentCtx);
-		try { result = await host.exec(options.executable, args, transcript === undefined ? { cwd, timeout } : { cwd, timeout, transcript }); }
+		try { result = await host.exec(options.executable, args, { cwd, timeout, ctx: currentCtx }); }
 		catch (error) {
 			if ((error as { code?: unknown })?.code !== "ENOENT") throw error;
 			throw new KataError(`kata ${args[0]} could not run: ${(error as Error).message}`, { exit: -1, notRun: true });
@@ -1213,11 +1220,9 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 		await kata(["comment", ref, "--body", `The plugin gave up closing ${ref} after ${MAX_FAILURES} failed attempts (Kata error code: ${code ?? "none, not a Kata error"}): ${(error as Error)?.message ?? error}. Review it and close it yourself.`], cwd);
 	}
 
-	// The one settlement pass: delegates the host saw end settle first, then the session's offline plan replays, then closes Kata deferred and the automatic parent.
+	// The one settlement pass: exited delegates settle first, then the session's offline plan replays, then closes Kata deferred and the automatic parent.
 	async function drain() {
-		const seen = host.observe?.();
-		jobsBusy = !!seen?.busy;
-		await delegates.settle(seen?.exited);
+		await delegates.settle();
 		if (plan.local && currentCtx) await replayLocal(currentCtx).catch(debug);
 		await settlement.drain();
 		if (plan.local) settlement.schedule();
@@ -1381,7 +1386,7 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 			// Not a top-level `phases`: omp's native todo tracker reads that key from
 			// any result named `todo` and would add its own reminders, nudges and HUD.
 			kata: {
-				parent: plan.parent,
+				parent: plan.parent, workspace: plan.workspace, label: plan.label,
 				phases: phasesOf(plan.error ? [] : plan.tasks).map(p => ({
 					name: p.name,
 					tasks: p.tasks.map(t => (t.blocker ? { content: t.content, status: t.status, blocker: t.blocker } : { content: t.content, status: t.status })),
@@ -1563,16 +1568,223 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 		return list.pending!.then(() => list.at ? list.tickets : Promise.reject(list.error));
 	}
 
+	// ------------------------------------------------------------ live inbox
+
+	// While the follower runs, `liveInbox` is the main session's `<kata_inbox>` text and the per-turn read is skipped for it.
+	let liveInbox: string | undefined, follower: InboxFollower | undefined;
+	function stopFollower() {
+		follower?.stop();
+		follower = undefined;
+		liveInbox = undefined;
+	}
+
+	// Requests are delivered as an aside: an idle session starts a turn on them, a working one takes them at its
+	// next step boundary without losing its tool batch. The sender is a relayed agent request, not the person.
+	function startFollower(ctx: any, address: string) {
+		const cwd = path.resolve(ctx.cwd), live = host.liveInbox!;
+		follower = createInboxFollower({
+			address,
+			actor: () => inboxActor(cwd),
+			read: async () => JSON.parse(await kata(["inbox", "--for", address, "--json"], cwd)),
+			spawn: cursor => live.spawn(cwd, cursor),
+			deliver: text => { try { Promise.resolve(live.deliver(text)).catch(debug); } catch (error) { debug(error); } },
+			publish: text => { liveInbox = text; },
+			head: () => knownProjectHead(cwd, args => kata(args, cwd)),
+			now: () => performance.now(),
+			setTimer: (fn, ms) => { const handle = setTimeout(fn, ms); handle.unref(); return handle; },
+			clearTimer: handle => clearTimeout(handle as ReturnType<typeof setTimeout>),
+			debug,
+		});
+		follower.start();
+	}
+
+	// --------------------------------------------------------------- attention
+
+	// Kata owns session attention semantics; the harness name only selects payload parsing and the session token.
+	let attentionSession: { id: string; cwd: string; ref?: string } | undefined;
+	async function attention(mode: "start" | "end", session: { id: string; cwd: string; ref?: string }) {
+		const ref = session.ref;
+		if (!ref || !options.attentionHarness) return;
+		try {
+			// The native hook guards revisions, not the actor or teammate.
+			await owned(ref, session.cwd);
+			await kata(["agent-hook", "attention-native", options.attentionHarness, mode, "--session", session.id, "--host-pid", String(process.pid), "--ref", ref], session.cwd, mode === "start" ? 3000 : 1500);
+		} catch (err) {
+			debug(`Kata attention skipped: ${(err as Error).message}`);
+		}
+	}
+
+	// -------------------------------------------------------------- the host
+
+	const sid = (ctx: any): string | undefined => ctx?.sessionManager?.getSessionId?.();
+	const lead = (): Lead => ({ parent: plan.parent, workspace: plan.workspace, label: plan.label });
+	// The session coordinator stays attached to the main context: a sub identity can reach a main-session handler (omp's advisor).
+	const see = (ctx: any) => { if (main(ctx) || !currentCtx || !main(currentCtx)) currentCtx = ctx; };
+	const rebind = async (ctx: any): Promise<Lead> => {
+		see(ctx);
+		if (main(ctx)) await bounded(serial(() => bind(ctx)));
+		return lead();
+	};
+	const prefetch = (ctx: any) => { if (options.prefetch) void warm(ctx, delegates.assignment(ctx)?.workspace || ctx.cwd, !(main(ctx) && liveInbox !== undefined)); };
+
+	// A pi child joins the session that started it: its identity, its parent (found or created in the lead's name) and its assignment.
+	// Fills in `parent.ref` and `parent.label`, and sets KATA_TEAMMATE and KATA_INBOX_USER for every later Kata call, bash included.
+	async function join(ctx: any, parent: ChildParent, prompt: string): Promise<void> {
+		const known = store.of(ctx);
+		if (known) {
+			process.env.KATA_TEAMMATE = known.teammate;
+			process.env.KATA_INBOX_USER = `${await actor(known.binding?.workspace ?? parent.workspace, known.ref ?? parent.ref)}/${known.teammate}`;
+			await delegates.apply({ type: "nextUse", id: known.id });
+			return;
+		}
+		const id = sid(ctx);
+		if (!id) throw new Error("Pi child needs a real session identity before tracking work.");
+		if (!parent.ref) {
+			const workspace = parent.workspace;
+			await serial(async () => { await probe(workspace); }); // after any bind in flight
+			const project = candidate(workspace).project;
+			let found: any[] = [];
+			try { found = JSON.parse(await kata(["list", "--status", "all", ...(project ? ["--project", project] : []), "--meta", `${namespace}.session_id=${parent.sessionId}`, "--label", `${namespace}-session`, "--limit", "2", "--json"], workspace)).issues ?? []; }
+			catch (error) { if (!project || !isKataCode(error, "project_not_initialized")) throw error; } // the project is not registered yet: no earlier parent
+			const existing = found.find((issue: any) => issue.metadata?.[`${namespace}.auto_parent`] === true);
+			if (existing) parent.ref = existing.qualified_id;
+			else {
+				// A session-start extension can spawn before the lead uses todo.
+				// Establish only parent identity; the child never writes lead work.*.
+				const where = await destination(workspace);
+				parent.label ??= where.label;
+				const out = JSON.parse(await kata(["create", "Todo plan: tasks", ...(where.project ? ["--project", where.project] : []), ...(where.label ? ["--label", where.label] : []), "--body", `Todo plan from ${namespace} session ${parent.sessionId}.`,
+					"--teammate", parent.teammate,
+					"--meta", `${namespace}.session_id=${parent.sessionId}`, "--meta", `${namespace}.workspace=${workspace}`, "--label", `${namespace}-session`,
+					"--idempotency-key", `${namespace}-session:${parent.sessionId}`, "--force-new", "--json"], workspace));
+				parent.ref = createdParentRef(out);
+				if (!out.issue.owner) await kata(["claim", parent.ref!, "--if-unowned", "--teammate", parent.teammate], workspace);
+				await kata(["meta", "set", parent.ref!, `${namespace}.auto_parent`, "true", "--json-value"], workspace);
+			}
+		}
+		if (!parent.ref) throw new Error("Pi child parent identity is unavailable.");
+		// The lead may have moved the parent since it exported its marker: the child's issue goes where the parent lives now.
+		const binding: Binding = { parent: await pin(parent.ref, parent.workspace), workspace: parent.workspace, sessionId: parent.sessionId, auto: false, label: parent.label };
+		// Keep a teammate the lead chose for this child; otherwise derive a distinct one.
+		const chosen = process.env.KATA_TEAMMATE || "";
+		const teammate = chosen && chosen !== parent.teammate && CHILD_TEAMMATE.test(chosen) ? chosen : teammateFor(`${parent.teammate || namespace}:${parent.sessionId}:${id}`);
+		process.env.KATA_TEAMMATE = teammate;
+		process.env.KATA_INBOX_USER = `${await actor(binding.workspace, binding.parent)}/${teammate}`;
+		const scope = { parent: binding.parent, workspace: binding.workspace, label: binding.label, leadTeammate: parent.teammate, teammate };
+		// A prompt the assignment rules refuse (two tickets, a taken task) tracks nothing.
+		let reserved: Reservation | undefined, untracked = false;
+		try { reserved = (await delegates.check([{ text: prompt }], [], scope))[0]; }
+		catch (error) { debug(error); untracked = true; }
+		await delegates.apply({ type: "started", id, sessionId: id, leadSessionId: parent.sessionId, leadTeammate: parent.teammate, teammate, text: prompt, single: true, observesTools: true,
+			parent: binding.parent, workspace: binding.workspace, parentLabel: binding.label, reserved, untracked });
+	}
+
 	return {
-		get plan() { return plan; },
-		get currentId() { return currentId; },
-		get currentCtx() { return currentCtx; },
-		set currentCtx(ctx: any) { currentCtx = ctx; },
-		get cache() { return cache; },
-		stateEntry: STATE_ENTRY,
-		resetReminders() { reminders = 0; },
-		debug, bounded, serial, kata, projectNames, pin, actor, owned, work, load, refresh, probe, bind, delegates,
-		ensureParent, destination, candidate, adopt, drain, apply, execute, command,
-		observeToolResult, remind, warm, tickets, inboxActor,
+		session: {
+			// The session began or switched: bind the plan, follow the inbox live when the host can, start attention.
+			// `after` is host work (a delegate's assignment retry) the first context read waits for.
+			async start(ctx: any, begin: { after?: Promise<unknown> } = {}): Promise<Lead> {
+				if (!main(ctx)) {
+					currentCtx = ctx;
+					void Promise.resolve(begin.after).then(() => prefetch(ctx)).catch(debug);
+					return lead();
+				}
+				see(ctx);
+				const explicit = configuredRef(), previous = attentionSession, id = sid(ctx);
+				stopFollower();
+				const user = process.env.KATA_INBOX_USER;
+				const live = !!host.liveInbox && !!user && isSessionAddress(user);
+				if (live) liveInbox = "";
+				prefetch(ctx);
+				if (live) startFollower(ctx, user!);
+				await bounded(serial(async () => {
+					await bind(ctx, explicit);
+					reminders = 0;
+					if (!options.attentionHarness || !id || previous?.id === id) return;
+					if (previous) await attention("end", previous);
+					attentionSession = { id, cwd: plan.workspace || path.resolve(ctx.cwd), ref: explicit && plan.parent };
+					await attention("start", attentionSession);
+				}));
+				return lead();
+			},
+			branch: rebind,
+			tree: rebind,
+			// The user typed a new prompt: stop reminders count again from zero.
+			input() { reminders = 0; },
+			// The agent wants to stop: the reminder text while tasks remain open.
+			stop(ctx: any, messages: any[]): Promise<string | undefined> {
+				see(ctx);
+				return remind(messages, ctx);
+			},
+			// A delegate that ends with its session passes `delegate`; `ended` makes this call report its exit.
+			async shutdown(ctx: any, closing: { delegate?: { id: string; ended: boolean } } = {}): Promise<void> {
+				see(ctx);
+				if (!main(ctx) && !closing.delegate) return;
+				stopFollower();
+				const session = attentionSession;
+				attentionSession = undefined;
+				// After the drain: the automatic parent's close still records this session.
+				await bounded((async () => {
+					await serial(async () => {
+						await load(plan.workspace || ctx.cwd).catch(debug);
+						await drain();
+						if (session) await attention("end", session);
+					});
+					if (closing.delegate?.ended) await delegates.apply({ type: "exited", id: closing.delegate.id, outcome: "ended" });
+				})(), closing.delegate ? 3000 : SHUTDOWN_BOUND_MS);
+			},
+			// What the next prompt carries. `context: false` leaves the contract and inbox to another extension.
+			async beforePrompt(ctx: any, prompt: { after?: Promise<unknown>; context?: boolean } = {}): Promise<{ sections: PromptSections; lead: Lead }> {
+				see(ctx);
+				const context = prompt.context !== false;
+				await bounded(Promise.all([
+					main(ctx) && currentId !== sid(ctx) ? serial(() => bind(ctx)) : undefined,
+					(async () => { await prompt.after; if (context) await warm(ctx, delegates.assignment(ctx)?.workspace || ctx.cwd, !(main(ctx) && liveInbox !== undefined)); })(),
+				]), main(ctx) ? 250 : 3000); // a delegate cannot learn its issue later
+				const sections: PromptSections = {};
+				if (context) {
+					if (cache.contract) sections.contract = cache.contract;
+					const inbox = main(ctx) && liveInbox !== undefined ? liveInbox : cache.inbox;
+					if (inbox) sections.inbox = inbox;
+				}
+				const record = !main(ctx) ? store.of(ctx) : undefined;
+				const assigned = record ? delegates.assignment(ctx) : undefined;
+				if (record && assigned) sections.assignment = delegateContext(options.executable, record.id, assigned.ref, assigned.teammate, assigned.binding);
+				else if (record?.state === "untracked") sections.assignment = untrackedDelegateContext(record.id);
+				if (plan.parent || plan.tasks.some(t => t.ticket)) sections.todo = `The todo tool is backed by Kata. Current plan:\n${render(plan)}`;
+				return { sections, lead: lead() };
+			},
+		},
+		tools: {
+			// A tool is about to run. `startsChild`: it may start an agent that inherits this session's plan parent, so the parent is established first.
+			async call(ctx: any, call: { startsChild?: boolean } = {}): Promise<Lead> {
+				see(ctx);
+				if (call.startsChild && main(ctx)) await serial(async () => { await ensureParent({}, ctx); });
+				return lead();
+			},
+			// A tool finished: a `kata claim` the agent ran adopts its issue as the plan parent.
+			async result(ctx: any, event: { toolName: string; isError?: boolean; input?: any; details?: any }): Promise<Lead> {
+				see(ctx);
+				await observeToolResult(event, ctx);
+				return lead();
+			},
+		},
+		todo: {
+			apply: (ctx: any, op: string, params: any) => execute({ ...params, op }, ctx),
+			// Replaces the plan with these phases; the tasks they leave out close as wontfix.
+			replace: (ctx: any, phases: { name: string; tasks: { content: string }[] }[]) =>
+				execute({ op: "init", replace: true, list: phases.map(phase => ({ phase: phase.name, items: phase.tasks.map(task => task.content) })) }, ctx),
+			command: (ctx: any, args: string) => command(args, ctx),
+		},
+		delegates: {
+			apply: delegates.apply,
+			// Refuses a spawn that cannot be delegated; otherwise says what each is matched to. `held`: refs other spawns of the same call reserved.
+			check: (spawns: Spawn[], held?: Iterable<string>) => delegates.check(spawns, held),
+			join,
+			// Whether Kata answers from this workspace (a child that cannot reach it runs as a main session).
+			reachable: (workspace: string) => probe(workspace),
+		},
+		// Open tickets for `#` autocomplete in the editor of the current session.
+		tickets,
 	};
 }

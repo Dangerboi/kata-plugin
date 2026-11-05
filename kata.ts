@@ -18,11 +18,12 @@
 import { execFile, spawn } from "node:child_process";
 import { closeSync, openSync, readSync } from "node:fs";
 import { createInterface } from "node:readline";
-import path from "node:path";
-import { createKataCore, DESCRIPTION, SHUTDOWN_BOUND_MS, sessionKey, render, isSessionAddress,
-	kataCommands as parseKataCommands, teammateFor, ticketAutocomplete, delegateCommand, delegateContext, untrackedDelegateContext } from "./core/kata-core";
-import type { DelegateOutcome, DelegateRecord, Delegates, DelegateStore, Reservation } from "./core/delegates";
-import { createInboxFollower, knownProjectHead, type InboxFollower, type InboxStream } from "./core/inbox";
+import { createKataCore, DESCRIPTION, sessionKey, kataCommands as parseKataCommands, teammateFor, ticketAutocomplete, delegateCommand } from "./core/kata-core";
+import type { DelegateEvent, DelegateRecord, DelegateStore, Reservation } from "./core/delegates";
+import type { InboxStream } from "./core/inbox";
+
+// What the lead's Delegates takes from an adapter other than the lead itself: a delegate's next use runs in the lead's queue.
+type DelegateEvents = { apply(event: DelegateEvent): Promise<void> };
 
 const EXECUTABLE = process.env.KATA_OMP_EXECUTABLE || "kata";
 const EXECUTABLE_VARS = ["KATA_OMP_EXECUTABLE"];
@@ -35,7 +36,7 @@ type Assignment = { labels: string[]; texts: string[]; reserved?: (Reservation |
 // OMP rebinds extension factories in the same module graph, so every instance shares the delegate records and the lead
 // Delegates that own them. A delegate's session file is the correlation key: agent names alone can collide across simultaneous sessions.
 const recordsBySession = new Map<string, DelegateRecord>();
-const leads = new Map<string, Delegates>();
+const leads = new Map<string, DelegateEvents>();
 const SETTLED = new Set(["handed-back", "settled", "untracked"]);
 
 
@@ -71,11 +72,14 @@ function spawnEvents(cwd: string, cursor: number | undefined): InboxStream {
 export default function ompKata(pi: any) {
 	const z = pi.zod;
 	const main = (ctx: any) => ctx?.agent?.kind === "main";
-	let attentionSession: { id: string; cwd: string; ref?: string } | undefined;
+	const sessionId = (ctx: any): string | undefined => ctx?.sessionManager?.getSessionId?.();
+	// The context of the latest event: the lifecycle bus carries none. A sub identity that reaches a main-session handler (omp's advisor) never replaces the main one.
+	let seen: any;
+	const see = (ctx: any) => { if (main(ctx) || !seen || !main(seen)) seen = ctx; };
 	// The lead session the assignments below belong to.
 	let assignmentsLead: string | undefined;
 	const assignments = new Map<string, Assignment>();
-	const leadSession = () => { const ctx = core.currentCtx; return ctx && main(ctx) ? ctx.sessionManager?.getSessionId?.() as string | undefined : undefined; };
+	const leadSession = () => seen && main(seen) ? sessionId(seen) : undefined;
 	const store: DelegateStore = {
 		records: () => [...recordsBySession.values()].filter(record => record.leadSessionId === leadSession()),
 		get: id => store.records().find(record => record.id === id),
@@ -90,40 +94,43 @@ export default function ompKata(pi: any) {
 		// omp's exec spawns with the environment it captured at startup and ignores an env option, so
 		// a close that must carry the transcript identity is spawned here, without a shell or an env program.
 		// A delegate runs in the lead's process: its closes carry its own session, never the lead's.
-		exec: (file, args, { transcript, ...options }) => {
+		exec: (file, args, { ctx, ...options }) => {
+			const transcript = !ctx || main(ctx) ? undefined : childSession(store.of(ctx)?.sessionId) ?? null;
 			const pair = transcript === undefined ? { agent: process.env.KATA_TRANSCRIPT_AGENT, id: process.env.KATA_TRANSCRIPT_SESSION_ID } : transcript ?? undefined;
 			return pair?.agent && pair.id && args[0] === "close" ? execWithTranscript(file, args, options, pair.agent, pair.id) : pi.exec(file, args, options);
 		},
-		transcript: ctx => !ctx || main(ctx) ? undefined : childSession(store.of(ctx)?.sessionId) ?? null,
 		appendEntry: (...args) => pi.appendEntry(...args),
 		getSessionName: () => pi.getSessionName?.(),
 		isMain: main,
 		delegateStore: store,
-		// Delegates whose end the lifecycle events missed: the async-job snapshot says they finished.
-		observe() {
-			const snapshot = core.currentCtx?.getAsyncJobSnapshot?.();
-			if (!snapshot) return;
-			const running: any[] = snapshot.running ?? [], records = store.records();
-			const exited: { id: string; outcome: DelegateOutcome }[] = [];
-			for (const job of snapshot.recent ?? []) {
-				if (job.type !== "task" || !["completed", "failed", "aborted", "cancelled"].includes(job.status)) continue;
-				const record = records.find(r => r.id === job.id || r.id === job.agentId);
-				if (!record || running.some(r => r.id === job.id || r.agentId === record.id)) continue;
-				exited.push({ id: record.id, outcome: job.status === "cancelled" ? "aborted" : job.status });
-			}
-			return { exited, busy: running.some(job => job.type === "task") };
+		// Live delivery needs the aside delivery, and no opt-out (tern-kata delivers for the agents it starts).
+		get liveInbox() {
+			if (process.env.KATA_OMP_LIVE_INBOX === "0" || typeof pi.sendUserMessage !== "function") return undefined;
+			return { spawn: spawnEvents, deliver: text => pi.sendUserMessage(text, { deliverAs: "aside", attribution: "agent" }) };
 		},
-	}, { namespace: "omp", executable: EXECUTABLE, executableVars: EXECUTABLE_VARS, debugFile: process.env.KATA_OMP_DEBUG });
+	}, { namespace: "omp", executable: EXECUTABLE, executableVars: EXECUTABLE_VARS, debugFile: process.env.KATA_OMP_DEBUG, attentionHarness: "pi", prefetch: true });
 	// /tan runs a side conversation in a sub session whose agent id omp mints as
 	// `Tan-<snowflake>`; task spawns get ids from the task name or a generated name,
 	// never that prefix. The id is known at the very first todo call, unlike a
 	// delegate's lifecycle record, so it cannot misroute a delegate that is still
 	// being registered. A record, if present, always wins.
 	const untrackedTan = (ctx: any) => ctx?.agent?.kind === "sub" && /^Tan-/.test(ctx.agent.id ?? "") && !store.of(ctx);
-	const { serial, bounded, debug, kata, owned, bind, drain } = core;
-	// While the follower runs, `liveInbox` is the main session's `<kata_inbox>` text and the per-turn inbox read is skipped for it.
-	let liveInbox: string | undefined, follower: InboxFollower | undefined;
-	const warm = (ctx: any) => core.warm(ctx, core.delegates.assignment(ctx)?.workspace || ctx.cwd, !(main(ctx) && liveInbox !== undefined));
+
+	// Delegates whose end the lifecycle events missed: the async-job snapshot says they finished. Read in memory before every session or tool event.
+	async function syncJobs(ctx: any) {
+		const snapshot = ctx?.getAsyncJobSnapshot?.();
+		if (!snapshot) return;
+		const running: any[] = snapshot.running ?? [], records = store.records();
+		for (const job of snapshot.recent ?? []) {
+			if (job.type !== "task" || !["completed", "failed", "aborted", "cancelled"].includes(job.status)) continue;
+			const record = records.find(r => r.id === job.id || r.id === job.agentId);
+			if (!record || record.exited || running.some(r => r.id === job.id || r.agentId === record.id)) continue;
+			await core.delegates.apply({ type: "exited", id: record.id, outcome: job.status === "cancelled" ? "aborted" : job.status });
+		}
+	}
+	// A handler's entry: remember the context and bring delegate state up to date.
+	const enter = async (ctx: any) => { see(ctx); await syncJobs(ctx); };
+
 	pi.registerTool({
 		name: "todo",
 		label: "Todo (kata カタ)",
@@ -142,10 +149,11 @@ export default function ompKata(pi: any) {
 			evidence: z.array(z.string()).optional().describe("required for done: commit:<sha>, test:<cmd>, pr:<url>, reviewed-paths:<path>"),
 		}),
 		async execute(_id: string, params: any, signal: AbortSignal | undefined, onUpdate: any, ctx: any) {
+			await enter(ctx);
 			const record = !main(ctx) ? store.of(ctx) : undefined;
 			if (record) await nextUse(record);
 			if ((untrackedTan(ctx) || record?.state === "untracked") && typeof ctx.invokeTool === "function") return ctx.invokeTool(params, { signal, onUpdate });
-			return core.execute(params, ctx);
+			return core.todo.apply(ctx, params.op, params);
 		},
 	});
 
@@ -154,10 +162,10 @@ export default function ompKata(pi: any) {
 		if (!main(ctx)) return;
 		const match = /^\/todo(?:\s+([\s\S]*))?$/.exec(event.text.trim());
 		if (!match) {
-			if (event.source === "interactive" && !event.text.trim().startsWith("/")) core.resetReminders();
+			if (event.source === "interactive" && !event.text.trim().startsWith("/")) core.session.input();
 			return;
 		}
-		ctx.ui?.notify?.(await core.command(match[1] || "", ctx), "info");
+		ctx.ui?.notify?.(await core.todo.command(ctx, match[1] || ""), "info");
 		return { handled: true };
 	});
 	// --------------------------------------------------------------- delegates
@@ -167,11 +175,11 @@ export default function ompKata(pi: any) {
 	const nextUseOf = (ctx: any) => { const record = store.of(ctx); return record ? nextUse(record) : undefined; };
 
 	pi.events?.on("task:subagent:lifecycle", (event: any) => {
-		const ctx = core.currentCtx;
+		const ctx = seen;
 		if (!ctx || !event?.id) return;
-		let lead: { id: string; delegates?: Delegates } | undefined;
+		let lead: { id: string; delegates?: DelegateEvents } | undefined;
 		if (main(ctx)) {
-			const id = ctx.sessionManager?.getSessionId?.();
+			const id = sessionId(ctx);
 			if (id) { leads.set(id, core.delegates); lead = { id, delegates: core.delegates }; }
 		} else {
 			const owner = store.of(ctx);
@@ -200,11 +208,9 @@ export default function ompKata(pi: any) {
 		}
 	});
 
-
 	pi.on("tool_call", async (event: any, ctx: any) => {
-		// OMP's advisor can call this main-session handler with a sub identity.
-		// Keep the session coordinator attached to the actual main context.
-		if (main(ctx) || !core.currentCtx || !main(core.currentCtx)) core.currentCtx = ctx;
+		await enter(ctx);
+		await core.tools.call(ctx);
 		const record = ctx.agent?.kind === "sub" ? store.of(ctx) : undefined;
 		if (record) void leads.get(record.leadSessionId)?.apply({ type: "ranTool", id: record.id });
 		if (main(ctx) && event.toolName === "task" && event.toolCallId) {
@@ -250,7 +256,8 @@ export default function ompKata(pi: any) {
 		return { agent: "omp", id: childSessions.get(file)! };
 	}
 
-	pi.on("tool_result", (event: any, ctx: any) => {
+	pi.on("tool_result", async (event: any, ctx: any) => {
+		await enter(ctx);
 		// Started delegates hold their own tasks; a denied or partial spawn releases the rest. The text stays for a delegate
 		// whose start is reported late, until every spawn has started (a call that failed spawned nothing).
 		const assignment = event.toolName === "task" ? assignments.get(event.toolCallId) : undefined;
@@ -258,56 +265,30 @@ export default function ompKata(pi: any) {
 			assignment.reserved = undefined;
 			if (event.isError || assignment.started.size >= assignment.texts.length) assignments.delete(event.toolCallId);
 		}
-		return core.observeToolResult(event, ctx);
+		await core.tools.result(ctx, event);
 	});
 	pi.on("session_stop", async (event: any, ctx: any) => {
-		const additionalContext = await core.remind(event.messages ?? [], ctx);
+		await enter(ctx);
+		const additionalContext = await core.session.stop(ctx, event.messages ?? []);
 		if (additionalContext) return { continue: true, additionalContext };
 	});
-
-
 
 	pi.on("before_agent_start", async (event: any, ctx: any) => {
 		// omp discards the result of a revive and nothing needs the work.
 		if (event.reason === "revive") return;
-		await bounded(Promise.all([
-			main(ctx) && core.currentId !== ctx.sessionManager?.getSessionId?.() ? serial(() => bind(ctx)) : undefined,
-			(async () => { if (!main(ctx)) await nextUseOf(ctx); await warm(ctx); })(),
-		]), main(ctx) ? 250 : 3000); // a delegate cannot learn its issue later
+		await enter(ctx);
+		const { sections } = await core.session.beforePrompt(ctx, { after: !main(ctx) ? nextUseOf(ctx) : undefined });
 		const base = (Array.isArray(event.systemPrompt) ? event.systemPrompt : [event.systemPrompt || ""]).filter((s: string) => !/^<kata_(contract|todo|inbox|binding)>/.test(s));
-		const sections: string[] = [];
+		const out: string[] = [];
+		const tag = (name: string, text: string) => out.push(`<kata_${name}>\n${text}\n</kata_${name}>`);
 		// Something else (an earlier injection, another installer) may already carry the contract.
-		const contract = core.cache.contract;
-		if (contract && !base.some((s: string) => s.includes(contract.slice(0, 80)))) sections.push(`<kata_contract>\n${contract}\n</kata_contract>`);
-		const delegate = !main(ctx) ? store.of(ctx) : undefined;
-		const assigned = delegate && core.delegates.assignment(ctx);
-		if (assigned) {
-			sections.push(`<kata_binding>\n${delegateContext(EXECUTABLE, ctx.agent.id, assigned.ref, assigned.teammate, assigned.binding)}\n</kata_binding>`);
-		} else if (delegate?.state === "untracked") {
-			sections.push(`<kata_binding>\n${untrackedDelegateContext(ctx.agent.id)}\n</kata_binding>`);
-		}
-		const inbox = main(ctx) && liveInbox !== undefined ? liveInbox : core.cache.inbox;
-		if (inbox) sections.push(`<kata_inbox>\n${inbox}\n</kata_inbox>`);
-		if (main(ctx) && (core.plan.parent || core.plan.tasks.some(t => t.ticket))) sections.push(`<kata_todo>\nThe todo tool is backed by Kata. Current plan:\n${render(core.plan)}\n</kata_todo>`);
-		if (!sections.length) return;
-		return { systemPrompt: [...base, sections.join("\n\n")] };
+		if (sections.contract && !base.some((s: string) => s.includes(sections.contract!.slice(0, 80)))) tag("contract", sections.contract);
+		if (sections.assignment) tag("binding", sections.assignment);
+		if (sections.inbox) tag("inbox", sections.inbox);
+		if (main(ctx) && sections.todo) tag("todo", sections.todo);
+		if (!out.length) return;
+		return { systemPrompt: [...base, out.join("\n\n")] };
 	});
-
-	// --------------------------------------------------------------- attention
-
-	// Kata owns session attention semantics. It has no omp harness yet; pi is the
-	// closest, and the name only selects payload parsing and the session token.
-	async function attention(mode: "start" | "end", session: { id: string; cwd: string; ref?: string }) {
-		const ref = session.ref;
-		if (!ref) return;
-		try {
-			// The native hook guards revisions, not the actor or teammate.
-			await owned(ref, session.cwd);
-			await kata(["agent-hook", "attention-native", "pi", mode, "--session", session.id, "--host-pid", String(process.pid), "--ref", ref], session.cwd, mode === "start" ? 3000 : 1500);
-		} catch (err) {
-			debug(`Kata attention skipped: ${(err as Error).message}`);
-		}
-	}
 
 	// One provider per editor: omp rebuilds its stack from every registered factory,
 	// and begin runs again on every session switch.
@@ -315,72 +296,26 @@ export default function ompKata(pi: any) {
 	function offerTickets(ctx: any) {
 		if (!ctx.ui?.addAutocompleteProvider || typeahead.has(ctx.ui)) return;
 		typeahead.add(ctx.ui);
-		core.currentCtx = ctx;
 		ctx.ui.addAutocompleteProvider((current: any) => ticketAutocomplete(current, core.tickets, { defaultProject: process.env.KATA_DEFAULT_PROJECT?.trim() || undefined }));
 	}
 
-	function stopFollower() {
-		follower?.stop();
-		follower = undefined;
-		liveInbox = undefined;
-	}
-
-	// Requests are delivered as an aside: an idle session starts a turn on them, a working one takes them at its
-	// next step boundary without losing its tool batch. The sender is a relayed agent request, not the person.
-	function startFollower(ctx: any, address: string) {
-		const cwd = path.resolve(ctx.cwd);
-		follower = createInboxFollower({
-			address,
-			actor: () => core.inboxActor(cwd),
-			read: async () => JSON.parse(await kata(["inbox", "--for", address, "--json"], cwd)),
-			spawn: cursor => spawnEvents(cwd, cursor),
-			deliver: text => { try { Promise.resolve(pi.sendUserMessage(text, { deliverAs: "aside", attribution: "agent" })).catch(debug); } catch (error) { debug(error); } },
-			publish: text => { liveInbox = text; },
-			head: () => knownProjectHead(cwd, args => kata(args, cwd)),
-			now: () => performance.now(),
-			setTimer: (fn, ms) => { const handle = setTimeout(fn, ms); handle.unref(); return handle; },
-			clearTimer: handle => clearTimeout(handle as ReturnType<typeof setTimeout>),
-			debug,
-		});
-		follower.start();
-	}
-
 	async function begin(ctx: any) {
-		if (!main(ctx)) { core.currentCtx = ctx; void Promise.resolve(nextUseOf(ctx)).then(() => warm(ctx)).catch(debug); return; }
+		await enter(ctx);
+		if (!main(ctx)) { await core.session.start(ctx, { after: nextUseOf(ctx) }); return; }
 		offerTickets(ctx);
-		const explicit = process.env.KATA_REF;
-		const previous = attentionSession;
-		const id = ctx.sessionManager?.getSessionId?.();
+		const id = sessionId(ctx);
 		// Inherited by bash-tool and plugin closes so Kata records this omp session.
 		if (id) { process.env.KATA_TRANSCRIPT_AGENT = "omp"; process.env.KATA_TRANSCRIPT_SESSION_ID = id; }
-		stopFollower();
-		// Live delivery is omp-only: it needs a session inbox address, the aside delivery, and no opt-out (tern-kata delivers for the agents it starts).
-		const user = process.env.KATA_INBOX_USER;
-		const live = !!user && isSessionAddress(user) && process.env.KATA_OMP_LIVE_INBOX !== "0" && typeof pi.sendUserMessage === "function";
-		if (live) liveInbox = "";
-		void warm(ctx);
-		if (live) startFollower(ctx, user!);
-		await bounded(serial(async () => {
-			await bind(ctx, explicit);
-			core.resetReminders();
-			if (!id || previous?.id === id) return;
-			if (previous) await attention("end", previous);
-			attentionSession = { id, cwd: core.plan.workspace || path.resolve(ctx.cwd), ref: explicit && core.plan.parent };
-			await attention("start", attentionSession);
-		}));
+		await core.session.start(ctx);
 	}
 
 	pi.on("session_start", (_event: any, ctx: any) => begin(ctx));
 	pi.on("session_switch", (_event: any, ctx: any) => begin(ctx));
-	pi.on("session_branch", (_event: any, ctx: any) => main(ctx) ? bounded(serial(() => bind(ctx))) : undefined);
-	pi.on("session_tree", (_event: any, ctx: any) => main(ctx) ? bounded(serial(() => bind(ctx))) : undefined);
+	pi.on("session_branch", async (_event: any, ctx: any) => { await enter(ctx); await core.session.branch(ctx); });
+	pi.on("session_tree", async (_event: any, ctx: any) => { await enter(ctx); await core.session.tree(ctx); });
 	// The transcript pair is left for the next session_start to overwrite: clearing after a slow cleanup could delete the pair of an instance omp already started in this process.
 	pi.on("session_shutdown", async (_event: any, ctx: any) => {
-		if (!main(ctx)) return;
-		stopFollower();
-		const session = attentionSession;
-		attentionSession = undefined;
-		// After the drain: the automatic parent's close still records this session.
-		await bounded(serial(async () => { await drain(); if (session) await attention("end", session); }), SHUTDOWN_BOUND_MS);
+		await enter(ctx);
+		await core.session.shutdown(ctx);
 	});
 }

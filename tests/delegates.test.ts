@@ -2,12 +2,12 @@ import { afterAll, beforeAll, beforeEach, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync } from "node:fs";
 import path from "node:path";
 import { createKataCore } from "../core/kata-core";
-import type { DelegateEvent } from "../core/delegates";
+import type { DelegateEvent, DelegateRecord, DelegateStore } from "../core/delegates";
 import { assertIsolated } from "./isolation";
 import { isolatedKata } from "./kata-fixture";
 assertIsolated();
 
-// The delegates module through its own interface, against real Kata in a throwaway store.
+// The delegate lifecycle through the core's delegate events, against real Kata in a throwaway store.
 const binary = process.env.KATA_TEST_EXECUTABLE!;
 const root = mkdtempSync(path.join(process.env.KATA_TEST_ROOT!, "delegates-"));
 const cwd = path.join(root, "workspace");
@@ -21,23 +21,44 @@ const labels = (view: any) => (view.labels ?? []).map((l: any) => l.label);
 const LEAD = "lead-mate";
 let seq = 0, failing: ((args: string[]) => boolean) | undefined;
 
+// A lead session and its delegates: each is an agent with its own core, as in omp, sharing the one delegate store.
 function lead() {
   const entries: any[] = [], id = `delegates-lead-${++seq}`;
-  const ctx = { cwd, agent: { kind: "main", id: "lead" }, sessionManager: { getSessionId: () => id, getBranch: () => entries } };
-  const core = createKataCore({
+  const records = new Map<string, DelegateRecord>();
+  const store: DelegateStore = { records: () => [...records.values()], get: key => records.get(key), put: record => { records.set(record.id, record); },
+    of: ctx => [...records.values()].find(record => record.sessionId === ctx.sessionManager.getSessionId()) };
+  const agent = () => createKataCore({
     appendEntry: (customType, data) => entries.push({ type: "custom", customType, data }),
     exec: async (_file, args, opts) => failing?.(args) ? { code: 1, stdout: "", stderr: "delegation service permission denied" } : run(args, opts.cwd),
+    isMain: ctx => ctx.agent?.kind === "main",
+    delegateStore: store,
   }, { namespace: "omp", executable: binary, executableVars: ["KATA_OMP_EXECUTABLE"] });
+  const core = agent();
+  const ctx = { cwd, agent: { kind: "main", id: "lead" }, sessionManager: { getSessionId: () => id, getBranch: () => entries } };
   const plan = async (items: string[]) => {
-    const result = await core.execute({ op: "init", items }, ctx);
+    const result = await core.todo.apply(ctx, "init", { items });
     if (result.isError) throw new Error(result.content[0].text);
-    return core.plan.parent!;
+    return result.details.kata.parent as string;
   };
-  const delegate = (name: string) => ({ cwd, agent: { kind: "sub", id: name }, sessionManager: { getSessionId: () => name } });
+  const view = () => core.todo.apply(ctx, "view", {});
+  const delegate = (name: string) => {
+    const own = agent(), delegateCtx = { cwd, agent: { kind: "sub", id: name }, sessionManager: { getSessionId: () => name } };
+    return {
+      // What the delegate's next prompt tells it about its issue; undefined when it has none.
+      assignment: async () => (await own.session.beforePrompt(delegateCtx, { context: false })).sections.assignment,
+      // The message its todo call gives a delegate with no issue.
+      unassigned: async () => (await own.todo.apply(delegateCtx, "view", {})).content[0].text as string,
+    };
+  };
   const started = (name: string, text: string, extra: Partial<Extract<DelegateEvent, { type: "started" }>> = {}): DelegateEvent => ({
     type: "started", id: name, sessionId: name, leadSessionId: id, leadTeammate: LEAD, teammate: `mate-${name}`, text, single: true, observesTools: true, ...extra,
   });
-  return { core, ctx, id, plan, delegate, started, delegates: core.delegates };
+  // Whether the lead may still work an issue: a delegated task refuses the lead's start.
+  const delegated = async (title: string) => {
+    const result = await core.todo.apply(ctx, "start", { task: title });
+    return !!result.isError && /delegate/.test(result.content[0].text);
+  };
+  return { core, ctx, id, plan, view, delegate, started, delegated, delegates: core.delegates };
 }
 
 beforeAll(async () => { expect((await run(["init", "--project", "delegates-test"])).code).toBe(0); });
@@ -54,21 +75,20 @@ test("a started delegate matching a plan task is assigned it: claim, teammate, d
   const meta = (await show(`delegates-test#${task.short_id}`)).issue;
   expect(meta.owner).toBe("lead-actor");
   expect(meta.metadata).toMatchObject({ teammate: "mate-alpha", "omp.subagent_id": "alpha", "omp.session_id": a.id, "omp.parent_agent_id": "main", "omp.status": "running", "todo.status": "in_progress", "work.attention": "ok" });
-  expect(a.delegates.assignment(delegate)).toMatchObject({ ref: `delegates-test#${task.short_id}`, teammate: "mate-alpha" });
-  expect(a.delegates.holds(`delegates-test#${task.short_id}`)).toBe(true);
-  expect(a.delegates.running()).toBe(true);
+  const assignment = await delegate.assignment();
+  expect(assignment).toContain(`delegates-test#${task.short_id}`);
+  expect(assignment).toContain("mate-alpha");
+  expect(await a.delegated("Build the alpha widget")).toBe(true);
 });
 
-test("a delegate that matches nothing is untracked: running, holding no issue, with an explanation instead of an assignment", async () => {
+test("a delegate that matches nothing is untracked: holding no issue, with an explanation instead of an assignment", async () => {
   const a = lead(); const parent = await a.plan(["Build the beta widget"]);
   const before = await show(parent);
   const delegate = a.delegate("beta-scout");
   await a.delegates.apply(a.started("beta-scout", "Survey the unrelated build system"));
-  expect(a.delegates.assignment(delegate)).toBeUndefined();
-  expect(a.delegates.unassigned(delegate)).toContain("no Kata issue");
-  expect(a.delegates.running()).toBe(true);
+  expect(await delegate.assignment()).toContain("no Kata issue");
+  expect(await delegate.unassigned()).toContain("no Kata issue");
   await a.delegates.apply({ type: "exited", id: "beta-scout", outcome: "completed" });
-  expect(a.delegates.running()).toBe(false);
   expect((await show(parent)).children).toEqual(before.children);
 });
 
@@ -84,8 +104,7 @@ test("a delegate that ran a tool and exits with its issue open hands it back: co
   expect(view.issue.metadata).toMatchObject({ teammate: LEAD, "todo.status": "pending", "work.attention": "needs-human", "omp.status": "completed" });
   expect(view.issue.metadata["omp.subagent_id"]).toBeUndefined();
   expect(JSON.stringify(view)).toContain("completed without closing its Kata issue");
-  expect(a.delegates.holds(ref)).toBe(false);
-  expect(a.delegates.running()).toBe(false);
+  expect(await a.delegated("Build the gamma widget")).toBe(false);
 });
 
 test("a delegate that exits having run no tool has its assignment rolled back, with no needs-review", async () => {
@@ -100,7 +119,7 @@ test("a delegate that exits having run no tool has its assignment rolled back, w
   expect(view.issue.owner).toBe(before.issue.owner);
   for (const key of ["omp.subagent_id", "omp.session_id", "omp.status", "omp.parent_agent_id"]) expect(view.issue.metadata[key]).toBeUndefined();
   for (const key of ["teammate", "work.attention", "todo.status"]) expect(view.issue.metadata[key]).toEqual(before.issue.metadata[key]);
-  expect(a.delegates.holds(ref)).toBe(false);
+  expect(await a.delegated("Build the delta widget")).toBe(false);
 });
 
 test("a delegate that observes no tools is handed back at exit, never rolled back", async () => {
@@ -117,13 +136,12 @@ test("a failed assignment is a named state; the delegate's next use retries it",
   const delegate = a.delegate("zeta");
   failing = args => args[0] === "meta" && args[3] === "omp.subagent_id";
   await a.delegates.apply(a.started("zeta", "Build the zeta widget"));
-  expect(a.delegates.assignment(delegate)).toBeUndefined();
-  expect(a.delegates.unassigned(delegate)).toContain("delegation service permission denied");
-  expect(a.delegates.running()).toBe(true);
-  expect(a.delegates.holds(ref)).toBe(true);
+  expect(await delegate.assignment()).toBeUndefined();
+  expect(await delegate.unassigned()).toContain("delegation service permission denied");
+  expect(await a.delegated("Build the zeta widget")).toBe(true);
   failing = undefined;
   await a.delegates.apply({ type: "nextUse", id: "zeta" });
-  expect(a.delegates.assignment(delegate)).toMatchObject({ ref });
+  expect(await delegate.assignment()).toContain(ref);
   expect((await show(ref)).issue.metadata["omp.subagent_id"]).toBe("zeta");
 });
 
@@ -133,13 +151,13 @@ test("a delegate whose assignment failed is handed back when it exits, even with
   failing = args => args[0] === "meta" && args[3] === "omp.subagent_id";
   await a.delegates.apply(a.started("eta", "Build the eta widget"));
   await a.delegates.apply({ type: "exited", id: "eta", outcome: "completed" });
-  // The hand back cannot finish while the write keeps failing; it runs again on the next settle.
+  // The hand back cannot finish while the write keeps failing; it runs again on the next settlement.
   failing = undefined;
-  await a.delegates.settle();
+  await a.view();
   const view = await show(ref);
   expect(labels(view)).toContain("needs-review");
   expect(view.issue.metadata.teammate).toBe(LEAD);
-  expect(a.delegates.holds(ref)).toBe(false);
+  expect(await a.delegated("Build the eta widget")).toBe(false);
 });
 
 test("a delegate that exits with its issue closed leaves it closed and releases it", async () => {
@@ -151,7 +169,18 @@ test("a delegate that exits with its issue closed leaves it closed and releases 
   const view = await show(ref);
   expect(view.issue.status).toBe("closed");
   expect(labels(view)).not.toContain("needs-review");
-  expect(a.delegates.holds(ref)).toBe(false);
+});
+
+test("an automatic parent stays open while a delegate runs, and closes once it has exited", async () => {
+  const a = lead(); const parent = await a.plan(["Build the nu widget"]);
+  const task = await taskOf(parent, "Build the nu widget"), ref = `delegates-test#${task.short_id}`;
+  await a.delegates.apply(a.started("nu", "Build the nu widget"));
+  await kata(["close", ref, "--done", "--message", "Closed by the delegate itself with verified behaviour.", "--test", "delegates fixture", "--teammate", "mate-nu", "--json"]);
+  await a.view();
+  expect((await show(parent)).issue.status).toBe("open");
+  await a.delegates.apply({ type: "exited", id: "nu", outcome: "completed" });
+  await a.view();
+  expect((await show(parent)).issue.status).toBe("closed");
 });
 
 test("check refuses a task naming two plan items, an already delegated task, and an unclaimable ticket", async () => {
@@ -173,15 +202,5 @@ test("a spawn naming a ticket outside the plan is reserved as that ticket and as
   expect(reserved).toEqual({ ref, ticket: true });
   await a.delegates.apply(a.started("lambda", `Work ${ref}`, { reserved }));
   expect((await show(ref)).issue.metadata["omp.subagent_id"]).toBe("lambda");
-  expect(a.delegates.assignment(a.delegate("lambda"))?.ref).toBe(ref);
-});
-
-test("an exit the host observed without an event settles the delegate", async () => {
-  const a = lead(); const parent = await a.plan(["Build the mu widget"]);
-  const task = await taskOf(parent, "Build the mu widget"), ref = `delegates-test#${task.short_id}`;
-  await a.delegates.apply(a.started("mu", "Build the mu widget"));
-  await a.delegates.apply({ type: "ranTool", id: "mu" });
-  await a.delegates.settle([{ id: "mu", outcome: "failed" }]);
-  expect(a.delegates.running()).toBe(false);
-  expect(labels(await show(ref))).toContain("needs-review");
+  expect(await a.delegate("lambda").assignment()).toContain(ref);
 });
