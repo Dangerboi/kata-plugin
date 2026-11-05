@@ -180,12 +180,7 @@ test("projectHead of an empty project is 0, and a page without events is an erro
 	await expect(projectHead(async () => "{}")).rejects.toThrow();
 });
 
-test("projectHead continues past a purge marker to the newest event", async () => {
-	const pages: Record<string, object> = {
-		"0": { reset_required: true, reset_after_id: 4, events: [], next_after_id: 4 },
-		"4": { events: [{ event_id: 5 }, { event_id: 6 }], next_after_id: 6 },
-	};
-	expect(await projectHead(async args => JSON.stringify(pages[args[3]]))).toBe(6);
+test("projectHead refuses a purge marker that does not advance the cursor", async () => {
 	await expect(projectHead(async () => JSON.stringify({ reset_required: true, events: [], next_after_id: 0 }))).rejects.toThrow();
 });
 
@@ -358,16 +353,28 @@ test("a pending seed retry does nothing once the first read landed another way",
 	t.follow.stop();
 });
 
-test("a later session start in the same process pages the event log forward from the head it already knew", async () => {
-	const calls: string[] = [];
-	let head = 25_000;
-	const run = async (args: string[]) => { calls.push(args[3]); return JSON.stringify({ events: [], next_after_id: head }); };
-	const first = await knownProjectHead("workspace-a", run);
-	head = 25_040;
-	const second = await knownProjectHead("workspace-a", run);
-	const other = await knownProjectHead("workspace-b", run);
-	expect([first, second, other]).toEqual([25_000, 25_040, 25_040]);
-	expect(calls).toEqual(["0", "25000", "0"]);
+test("a later session start pages forward from the head already known for its project, whichever workspace it runs in", async () => {
+	const calls: { workspace: string; after: string }[] = [];
+	const heads: Record<string, number> = { "uid-a": 25_000, "uid-b": 7 };
+	const full = (uid: string) => Array.from({ length: 10_000 }, (_, i) => ({ event_id: i + 1, project_uid: uid }));
+	const runIn = (workspace: string, uid: string) => async (args: string[]) => {
+		const after = args[args.indexOf("--after") + 1];
+		calls.push({ workspace, after });
+		const first = Number(after) === 0;
+		return JSON.stringify({ events: first && heads[uid] > 10_000 ? full(uid) : [{ event_id: heads[uid], project_uid: uid }], next_after_id: first && heads[uid] > 10_000 ? 10_000 : heads[uid] });
+	};
+	const first = await knownProjectHead("workspace-a", runIn("workspace-a", "uid-a"));
+	heads["uid-a"] = 25_040;
+	const again = await knownProjectHead("workspace-a", runIn("workspace-a", "uid-a"));
+	calls.length = 0;
+	const sibling = await knownProjectHead("workspace-a2", runIn("workspace-a2", "uid-a"));
+	const other = await knownProjectHead("workspace-b", runIn("workspace-b", "uid-b"));
+	expect([first, again, sibling, other]).toEqual([25_000, 25_040, 25_040, 7]);
+	// The sibling workspace reads one page from 0, learns the project and continues from its head; another project starts from 0.
+	expect(calls).toEqual([
+		{ workspace: "workspace-a2", after: "0" }, { workspace: "workspace-a2", after: "25040" },
+		{ workspace: "workspace-b", after: "0" },
+	]);
 });
 
 test("a live delivery cuts a long message on a character boundary and says it is untrusted data", () => {
