@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync } from "node:fs";
 import path from "node:path";
 import { assertIsolated } from "./isolation";
 import { adoptIsolatedKata, isolatedKata } from "./kata-fixture";
-import ompKata, { createInboxFollower, deliveryText, parseStreamLine, projectHead, slotKey, type InboxFollowerDeps } from "../kata";
+import ompKata, { createInboxFollower, deliveryText, parseStreamLine, projectHead, knownProjectHead, slotKey, type InboxFollowerDeps } from "../kata";
 assertIsolated();
 
 // ------------------------------------------------------------------ follower, no Kata
@@ -490,4 +490,16 @@ test("a failed first inbox read is retried while the stream stays open, and the 
 	expect(t.delivered).toEqual([]);
 	expect(t.streams).toHaveLength(1);
 	t.follow.stop();
+});
+
+test("a later session start in the same process pages the event log forward from the head it already knew", async () => {
+	const calls: string[] = [];
+	let head = 25_000;
+	const run = async (args: string[]) => { calls.push(args[3]); return JSON.stringify({ events: [], next_after_id: head }); };
+	const first = await knownProjectHead("workspace-a", run);
+	head = 25_040;
+	const second = await knownProjectHead("workspace-a", run);
+	const other = await knownProjectHead("workspace-b", run);
+	expect([first, second, other]).toEqual([25_000, 25_040, 25_040]);
+	expect(calls).toEqual(["0", "25000", "0"]);
 });

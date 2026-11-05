@@ -132,9 +132,9 @@ export function deliveryText(ref: string, address: string, slot: Slot): string {
 
 const HEAD_PAGE = 10_000;
 
-/** The id of the newest event of the project, by paging `kata events --after`: one call per 10000 events. */
-export async function projectHead(run: (args: string[]) => Promise<string>): Promise<number> {
-	let after = 0;
+/** The id of the newest event of the project, by paging `kata events --after` from `from`: one call per 10000 events. */
+export async function projectHead(run: (args: string[]) => Promise<string>, from = 0): Promise<number> {
+	let after = from;
 	for (;;) {
 		const page = JSON.parse(await run(["events", "--json", "--after", String(after), "--limit", String(HEAD_PAGE)]));
 		if (!Array.isArray(page?.events) || typeof page.next_after_id !== "number") throw new Error("kata events returned no page");
@@ -142,6 +142,17 @@ export async function projectHead(run: (args: string[]) => Promise<string>): Pro
 		if (page.next_after_id <= after) throw new Error("kata events page did not advance");
 		after = page.next_after_id;
 	}
+}
+
+// Kata has no head-only query, so each session start pages forward from the head this process last saw for the workspace.
+const knownHeads = new Map<string, number>();
+
+/** `projectHead` for a workspace, remembered for the process so a later session start does not page the whole log again. */
+export async function knownProjectHead(workspace: string, run: (args: string[]) => Promise<string>): Promise<number> {
+	const key = `${process.env.KATA_HOME ?? ""}\0${workspace}`;
+	const head = await projectHead(run, knownHeads.get(key) ?? 0);
+	knownHeads.set(key, head);
+	return head;
 }
 
 /**
@@ -665,7 +676,7 @@ export default function ompKata(pi: any) {
 			deliver: text => { try { Promise.resolve(pi.sendUserMessage(text, { deliverAs: "aside", attribution: "agent" })).catch(debug); } catch (error) { debug(error); } },
 			publish: text => { liveInbox = text; },
 			trusted: core.trustedInbox,
-			head: () => projectHead(args => kata(args, cwd)),
+			head: () => knownProjectHead(cwd, args => kata(args, cwd)),
 			setTimer: (fn, ms) => { const handle = setTimeout(fn, ms); handle.unref(); return handle; },
 			clearTimer: handle => clearTimeout(handle as ReturnType<typeof setTimeout>),
 			debug,
