@@ -423,7 +423,7 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 	let currentId: string | undefined;
 	let bound = false;
 	let assignedRef: string | undefined;
-	let movedFrom: string | undefined; // the ref the plan's parent was rehomed from
+	const aliases = new Set<string>(); // refs the plan's parent was rehomed from: they still name it
 	let requestedRef: string | undefined;
 	let sessionTeammate: string | undefined;
 	let boundAgent: string | undefined;
@@ -590,7 +590,7 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 		autoParents.delete(old);
 		if (marker) autoParents.set(current, { ...marker, parent: current });
 		plan.parent = current;
-		movedFrom = old;
+		aliases.add(old);
 		host.appendEntry(STATE_ENTRY, { parent: current, workspace: plan.workspace, sessionId: plan.sessionId, auto: plan.auto, label: plan.label });
 	}
 
@@ -752,8 +752,11 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 		return projectList(cwd).then(list => new Set(list.map(p => p.name)), error => { debug(error); return new Set<string>(); });
 	}
 
-	async function projectName(id: number, cwd: string): Promise<string> {
-		const project = (await projectList(cwd)).find(p => p.id === id) ?? (await projectList(cwd, true)).find(p => p.id === id);
+	// `ref` is what Kata was asked: a project name the list lacks means the project was renamed since it was read.
+	async function projectName(id: number, cwd: string, ref?: string): Promise<string> {
+		const asked = ref?.includes("#") ? ref.split("#")[0] : undefined;
+		const stale = asked !== undefined && !(await projectList(cwd)).some(p => p.name === asked);
+		const project = (stale ? undefined : (await projectList(cwd)).find(p => p.id === id)) ?? (await projectList(cwd, true)).find(p => p.id === id);
 		if (!project) throw new Error("Kata issue project could not be pinned.");
 		return project.name;
 	}
@@ -762,7 +765,7 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 	// not the one the given ref names.
 	async function pin(ref: string, cwd: string): Promise<string> {
 		const shown = JSON.parse(await kata(["show", ref, "--json"], cwd));
-		return `${await projectName(shown.issue.project_id, cwd)}#${shown.issue.short_id}`;
+		return `${await projectName(shown.issue.project_id, cwd, ref)}#${shown.issue.short_id}`;
 	}
 
 	async function sessionBinding(ctx: any): Promise<Binding | undefined> {
@@ -797,7 +800,7 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 		currentId = id;
 		lastSnapshot = undefined;
 		currentCtx = ctx;
-		plan = { tasks: [] }; named = [];
+		plan = { tasks: [] }; named = []; aliases.clear();
 		scope = "unknown"; refusal = undefined; outage = "";
 		retries.clear(); autoParents.clear(); pendingCloses.clear();
 		clearRetryTimer();
@@ -856,7 +859,7 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 	function setParent(binding: Binding) {
 		scope = "bound";
 		if (!binding.auto) autoParents.delete(binding.parent);
-		if (plan.parent === binding.parent && plan.workspace === binding.workspace && plan.auto === binding.auto && plan.label === binding.label) return;
+		if (plan.parent !== binding.parent) aliases.clear();
 		plan = { ...binding, tasks: withNamed(plan.parent === binding.parent ? plan.tasks : []) };
 		if (binding.auto) autoParents.set(binding.parent, binding);
 		host.appendEntry(STATE_ENTRY, binding);
@@ -1061,7 +1064,7 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 				try { shown = JSON.parse(await kata(["show", ref, "--json"], cwd)).issue; }
 				catch (error) { throw new Error(`Todo item "${item.content}" names ${ref}, which Kata cannot resolve: ${(error as Error).message}. Nothing was created.`); }
 				if (shown.status !== "open") throw new Error(`Todo item "${item.content}" names ${ref}, which is already closed; the plugin never reopens a ticket. Nothing was created.`);
-				ticket = `${await projectName(shown.project_id, cwd)}#${shown.short_id}`;
+				ticket = `${await projectName(shown.project_id, cwd, ref)}#${shown.short_id}`;
 				try { await owned(ticket, cwd, "check"); }
 				catch (error) { throw new Error(`Todo item "${item.content}" cannot work ${ticket}: ${(error as Error).message} Nothing was created.`); }
 				checked.set(ref, ticket);
@@ -1187,9 +1190,10 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 		if (!plan.local && !plan.tasks.some(t => t.content === target) && /(?:^|#)[0-9a-hjkmnp-tv-z]{26}$/i.test(target)) target = await pin(target, plan.workspace!);
 		const exact = plan.tasks.filter(t => t.content === target || t.ref === target || t.ref.split("#")[1] === target);
 		if (exact.length === 1) return exact;
-		if (target.includes("#") && !exact.length) {
-			const short = target.split("#")[1];
-			const moved = plan.tasks.filter(t => t.ref.split("#")[1] === short);
+		if (target.includes("#") && !exact.length && !plan.local) {
+			// A short id is only unique per project: compare the ticket the ref names now, never its short id alone.
+			const pinned = await pin(target, plan.workspace!).catch(() => undefined);
+			const moved = plan.tasks.filter(t => t.ref === pinned);
 			if (moved.length === 1) return moved;
 		}
 		const needle = target.toLowerCase();
@@ -1203,8 +1207,7 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 	async function ensureParent(params: any, ctx: any): Promise<string | undefined> {
 		const explicit = assignedRef ?? options.explicitRef?.() ?? process.env.KATA_REF;
 		const target = explicit || params.ref;
-		const rehomed = movedFrom === target && plan.parent?.split("#").pop() === target?.split("#").pop();
-		if (target && ((!explicit && params.ref) || !plan.parent || (target.includes("#") ? plan.parent !== target && !rehomed : plan.parent.split("#").pop() !== target))) {
+		if (target && ((!explicit && params.ref) || !plan.parent || (target.includes("#") ? target !== plan.parent && !aliases.has(target) : plan.parent.split("#").pop() !== target))) {
 			requestedRef = target;
 			try { await adopt(target, ctx); }
 			catch (error) { bound = false; throw error; }
@@ -1403,8 +1406,7 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 			const target = explicit || params.ref || plan.parent;
 			if (target) {
 				const workspace = explicit || !params.ref ? plan.workspace || ctx.cwd : ctx.cwd;
-				const rehomed = movedFrom === target && plan.parent?.split("#").pop() === target.split("#").pop();
-				const parent = target === plan.parent ? target : rehomed ? plan.parent! : await pin(target, workspace);
+				const parent = target === plan.parent || aliases.has(target) ? plan.parent! : await pin(target, workspace);
 				if (explicit && params.ref && parent !== await pin(params.ref, workspace)) throw new Error(`Kata init ref ${params.ref} conflicts with the explicit binding ${explicit}; neither plan was replaced.`);
 				const tasks = tasksOf(await childrenOf(parent, workspace), parent);
 				refuseOpen(params.replace === true, [...tasks, ...named], wanted);

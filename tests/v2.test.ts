@@ -1731,13 +1731,43 @@ test("a moved explicit parent is not re-adopted by every later todo call", async
   expect(await followUp(true)).toBe(await followUp(false));
 });
 
-test("a project renamed mid-session is looked up again after the stale name fails", async () => {
+test("a parent moved twice is not re-adopted by later todo calls through the original ref", async () => {
+  const parent = `v2test#${await issue()}`; process.env.KATA_REF = parent;
+  const app = host(); await app.event("session_start"); await app.init(["First"]);
+  const short = parent.split("#")[1];
+  const shows = () => app.calls.filter(a => a[0] === "show" && a[1].endsWith(`#${short}`)).length;
+  const second = await otherProject(), third = await otherProject();
+  await kata(["move", parent, second, "--json"]);
+  await app.call({ op: "init", replace: true, items: ["Second"] });
+  await kata(["move", `${second}#${short}`, third, "--json"]);
+  await app.call({ op: "init", replace: true, items: ["Third"] });
+  expect((await app.call({ op: "view" })).details.kata.parent).toBe(`${third}#${short}`);
+  const before = shows();
+  expect((await app.call({ op: "init", replace: true, items: ["Fourth"] })).isError).toBeUndefined();
+  const perCall = shows() - before;
+  expect((await app.call({ op: "init", replace: true, items: ["Fifth"] })).isError).toBeUndefined();
+  expect(shows() - before).toBe(perCall * 2);
+});
+
+test("a ticket in another project is never taken for a plan item by its short id", async () => {
+  const app = host(); await app.event("session_start");
+  const foreign = await otherProject();
+  const ticket = (await kata(["create", "--project", foreign, "Foreign ticket", "--force-new", "--json"])).issue.short_id;
+  await app.init(["Plain item"]);
+  const result = await app.call({ op: "done", task: `${foreign}#${ticket}`, message, evidence });
+  expect(result.isError).toBe(true);
+  expect(result.content[0].text).toContain("No task");
+});
+
+test("a project renamed mid-session is found by the very next call using the new name", async () => {
   const app = host(); await app.event("session_start");
   const project = await otherProject(), renamed = `${project}x`;
   const first = (await kata(["create", "--project", project, "First in renamed", "--force-new", "--json"])).issue.short_id;
   const second = (await kata(["create", "--project", project, "Second in renamed", "--force-new", "--json"])).issue.short_id;
   await app.init(["Plain item"]);
   expect((await app.call({ op: "append", items: [`${project}#${first}: first`] })).isError).toBeUndefined();
+  // Drop the old-name item so no background refresh of it fails first and clears the cached project list.
+  expect((await app.call({ op: "drop", task: `${project}#${first}: first`, message: "Not needed." })).isError).toBeUndefined();
   await kata(["projects", "rename", project, renamed, "--json"]);
   const result = await app.call({ op: "append", items: [`${renamed}#${second}: second`] });
   expect(result.isError, result.content[0].text).toBeUndefined();
