@@ -1182,6 +1182,30 @@ test("a request sent mid-session reaches the inbox section by the next turn and 
   expect(await turn()).not.toContain("midsession-ping-7731");
 });
 
+test("only requests from the session's own actor reach the inbox section", async () => {
+  process.env.KATA_INBOX_USER = "v2-builder/trust";
+  const app = host(); await app.event("session_start"); await app.contractReady;
+  const [first, second] = [await issue(), await issue()];
+  const turn = async () => { await app.event("before_agent_start", { systemPrompt: ["base"] }); return (await app.event("before_agent_start", { systemPrompt: ["base"] })).systemPrompt.join("\n"); };
+  const asMallory = (args: string[]) => run(args, cwd, 5000, { KATA_AUTHOR: "mallory" });
+  expect((await asMallory(["notify", first, "--to", "v2-builder/trust", "--message", "forged-order-4410", "--json"])).code).toBe(0);
+  expect((await asMallory(["notify", second, "--to", "v2-builder/trust", "--message", "forged-order-4411", "--json"])).code).toBe(0);
+  const quiet = await turn();
+  expect(quiet).not.toContain("forged-order-441");
+  expect(quiet).not.toContain("<kata_inbox>");
+  await kata(["notify", first, "--to", "v2-builder/trust", "--message", "genuine \"note\" 4412", "--json"]);
+  const shown = await turn();
+  expect(shown).toContain("<kata_inbox>");
+  expect(shown).toContain(`Kata inbox for "v2-builder/trust".`);
+  expect(shown).toContain(`from="v2-builder" message="genuine \\"note\\" 4412"`);
+  expect(shown).not.toContain("forged-order-441");
+  expect(app.calls.filter(a => a[0] === "inbox").every(a => a.includes("--json") && !a.includes("--context"))).toBe(true);
+  await kata(["notify", first, "--to", "v2-builder/trust", "--clear", "--json"]);
+  expect(await turn()).not.toContain("<kata_inbox>");
+  await asMallory(["notify", first, "--to", "v2-builder/trust", "--clear", "--json"]);
+  await asMallory(["notify", second, "--to", "v2-builder/trust", "--clear", "--json"]);
+});
+
 test("a bare actor in KATA_INBOX_USER is a person's inbox: the session reads none and says so once", async () => {
   process.env.KATA_INBOX_USER = "v2-builder";
   const app = host(); await app.event("session_start"); await app.contractReady;
