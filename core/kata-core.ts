@@ -1198,7 +1198,7 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 		try { await kata(args, cwd); }
 		catch (error) {
 			if (!isKataCode(error, "sibling_throttle")) throw error;
-			const text = settlement.deferTaskClose(task, to, change, cwd);
+			const text = settlement.pendTaskClose(task, to, change, cwd);
 			persist();
 			throw new DeferredClose(text);
 		}
@@ -1219,7 +1219,7 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 		await kata(["comment", ref, "--body", `The plugin gave up closing ${ref} after ${MAX_FAILURES} failed attempts (Kata error code: ${code ?? "none, not a Kata error"}): ${(error as Error)?.message ?? error}. Review it and close it yourself.`], cwd);
 	}
 
-	// The one settlement pass: exited delegates settle first, then the session's offline plan replays, then closes Kata deferred and the automatic parent.
+	// The one settlement pass: exited delegates settle first, then the session's offline plan replays, then pending closes and the automatic parent.
 	async function drain() {
 		await delegates.settle();
 		if (plan.local && currentCtx) await replayLocal(currentCtx).catch(debug);

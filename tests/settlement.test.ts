@@ -78,7 +78,7 @@ function build(options: { fail?: (args: string[]) => Error | undefined; running?
 test("a throttled task close waits out the retry window, then runs once and leaves the snapshot", async () => {
   const child = await create("Throttled task");
   const s = build();
-  expect(s.settlement.deferTaskClose(await taskOf(child), "completed", change, cwd)).toContain("retry after 60 seconds");
+  expect(s.settlement.pendTaskClose(await taskOf(child), "completed", change, cwd)).toContain("retry after 60 seconds");
   expect(s.timers.size).toBe(1);
   expect(s.settlement.snapshot().retries.map(([ref]) => ref)).toEqual([child]);
   s.advance(RETRY_MS - 1);
@@ -91,11 +91,11 @@ test("a throttled task close waits out the retry window, then runs once and leav
   expect(s.settlement.snapshot().retries).toEqual([]);
 });
 
-test("the timer wakes the core, and a close that is throttled again is deferred anew, never failed", async () => {
+test("the timer wakes the core, and a close that is throttled again is pending anew, never failed", async () => {
   const child = await create("Rethrottled task");
   const s = build();
-  s.handlers.task = async pending => { s.performed.push(pending.task.ref); s.settlement.deferTaskClose(pending.task, pending.to, pending.change, pending.cwd); throw new Error("deferred again"); };
-  s.settlement.deferTaskClose(await taskOf(child), "completed", change, cwd);
+  s.handlers.task = async pending => { s.performed.push(pending.task.ref); s.settlement.pendTaskClose(pending.task, pending.to, pending.change, pending.cwd); throw new Error("deferred again"); };
+  s.settlement.pendTaskClose(await taskOf(child), "completed", change, cwd);
   s.fire();
   expect(s.dueCount()).toBe(1);
   for (let i = 0; i < MAX_FAILURES + 1; i++) { s.advance(RETRY_MS + 1); await s.settlement.drain(); }
@@ -105,10 +105,10 @@ test("the timer wakes the core, and a close that is throttled again is deferred 
   expect(s.settlement.snapshot().retries.map(([ref]) => ref)).toEqual([child]);
 });
 
-test("a deferred close that Kata no longer needs is dropped without running", async () => {
+test("a pending close that Kata no longer needs is dropped without running", async () => {
   const child = await create("Closed elsewhere");
   const s = build();
-  s.settlement.deferTaskClose(await taskOf(child), "completed", change, cwd);
+  s.settlement.pendTaskClose(await taskOf(child), "completed", change, cwd);
   await closeDone(child);
   s.advance(RETRY_MS + 1);
   await s.settlement.drain();
@@ -116,11 +116,11 @@ test("a deferred close that Kata no longer needs is dropped without running", as
   expect(s.settlement.snapshot().retries).toEqual([]);
 });
 
-test("cancelling a removal drops a deferred removal and leaves a deferred completion", async () => {
+test("cancelling a removal drops a pending removal and leaves a pending completion", async () => {
   const s = build();
   const fake = (ref: string) => ({ ref, content: "A task", phase: "Phase", status: "in_progress" as const, revision: 1 });
-  s.settlement.deferTaskClose(fake("a#aaaa"), "abandoned", { remove: true }, cwd);
-  s.settlement.deferTaskClose(fake("a#bbbb"), "completed", change, cwd);
+  s.settlement.pendTaskClose(fake("a#aaaa"), "abandoned", { remove: true }, cwd);
+  s.settlement.pendTaskClose(fake("a#bbbb"), "completed", change, cwd);
   s.settlement.cancelRemoval("a#aaaa");
   s.settlement.cancelRemoval("a#bbbb");
   expect([s.settlement.hasTaskClose("a#aaaa"), s.settlement.hasTaskClose("a#bbbb")]).toEqual([false, true]);
@@ -131,7 +131,7 @@ test("a close is never dropped for the drains Kata was unreachable, and complete
   let down = true;
   const outage = new KataError("daemon unavailable", { exit: 7, code: "daemon_unavailable" });
   const s = build({ fail: args => down && args[0] === "show" ? outage : undefined });
-  s.settlement.deferTaskClose(await taskOf(child), "completed", change, cwd);
+  s.settlement.pendTaskClose(await taskOf(child), "completed", change, cwd);
   for (let i = 0; i < MAX_FAILURES + 2; i++) { s.advance(RETRY_MS + 1); await s.settlement.drain(); }
   expect(s.flagged).toEqual([]);
   expect(s.settlement.snapshot().retries.map(([ref]) => ref)).toEqual([child]);
@@ -147,7 +147,7 @@ test("a pending close that fails for another reason is retried on three drains, 
   const s = build();
   const refusal = Object.assign(new Error("kata close failed"), { code: "validation" });
   s.handlers.task = async pending => { s.performed.push(pending.task.ref); throw refusal; };
-  s.settlement.deferTaskClose(await taskOf(child), "completed", change, cwd);
+  s.settlement.pendTaskClose(await taskOf(child), "completed", change, cwd);
   for (let i = 1; i < MAX_FAILURES; i++) {
     s.advance(RETRY_MS + 1);
     await s.settlement.drain();
@@ -219,7 +219,7 @@ test("a running delegate pauses only the automatic-parent audit", async () => {
   let running = true;
   const s = build({ running: () => running });
   s.settlement.addAutoParent({ parent, workspace: cwd, sessionId: SESSION, auto: true });
-  s.settlement.deferTaskClose(await taskOf(other), "completed", change, cwd);
+  s.settlement.pendTaskClose(await taskOf(other), "completed", change, cwd);
   s.advance(RETRY_MS + 1);
   await s.settlement.drain();
   expect(s.performed).toEqual([other]);
@@ -262,6 +262,25 @@ test("a parent flagged for missing evidence is audited again only when its revis
   expect(labelCalls()).toBe(3);
 });
 
+test("a parent flagged because its close was refused is audited again only when its revision or children change", async () => {
+  const parent = await create("Plan", { auto: true });
+  await closeDone(await create("Finished task", { parent }));
+  const refusal = Object.assign(new Error("kata close failed"), { code: "validation" });
+  const s = build({ fail: args => args[0] === "close" && args.includes(parent) ? refusal : undefined });
+  s.settlement.addAutoParent({ parent, workspace: cwd, sessionId: SESSION, auto: true });
+  const audits = () => s.calls.filter(args => args[0] === "audit" || args[0] === "label").length;
+  await s.settlement.drain();
+  expect(await labels(parent)).toContain("needs-review");
+  const after = audits();
+  expect(after).toBeGreaterThan(0);
+  await s.settlement.drain();
+  await s.settlement.drain();
+  expect(audits()).toBe(after);
+  await closeDone(await create("Later task", { parent }));
+  await s.settlement.drain();
+  expect(audits()).toBeGreaterThan(after);
+});
+
 test("restore clears the verdict memory, so a session start audits a flagged parent once more", async () => {
   const parent = await create("Plan", { auto: true });
   await closeWontfix(await create("Retired task", { parent }));
@@ -279,7 +298,7 @@ test("restore clears the verdict memory, so a session start audits a flagged par
 test("a snapshot restores the three kinds of close and re-arms the timer; restoring nothing clears them", async () => {
   const child = await create("Saved task"), ticket = await create("Saved umbrella"), parent = await create("Saved plan", { auto: true });
   const first = build();
-  first.settlement.deferTaskClose(await taskOf(child), "completed", change, cwd);
+  first.settlement.pendTaskClose(await taskOf(child), "completed", change, cwd);
   first.settlement.holdTicketClose(ticket, request, cwd);
   first.settlement.addAutoParent({ parent, workspace: cwd, sessionId: SESSION, auto: true });
   const saved = JSON.parse(JSON.stringify(first.settlement.snapshot()));
