@@ -304,12 +304,8 @@ export default async function piKata(pi: ExtensionAPI) {
 	// A child's shutdown is its last act; give its own issue cleanup time to finish.
 	// A reload continues the same session, so it is not an ending.
 	pi.on("session_shutdown", async (event, ctx) => {
-		// After the cleanup: its closes still record this session. Cleared when the queued work ends, not when the bound gives up.
-		const ended = async (work: () => Promise<void>) => {
-			try { await work(); }
-			finally { delete process.env.KATA_TRANSCRIPT_AGENT; delete process.env.KATA_TRANSCRIPT_SESSION_ID; }
-		};
-		await core.bounded(core.serial(() => ended(async () => {
+		// The transcript pair is not cleared here: pi fires this on the old instance for reload/new/resume/fork, then the new instance's session_start in the same process, and a slow cleanup would delete the new pair. session_start overwrites it and process exit ends the rest.
+		await core.bounded(core.serial(async () => {
 		await core.load(core.plan.workspace || ctx.cwd);
 		await core.drainRetries();
 		if (delegate && event?.reason !== "reload") {
@@ -336,6 +332,6 @@ export default async function piKata(pi: ExtensionAPI) {
 			await core.work(ref, "work.attention_msg", "Pi child ended without closing its issue; review its report and verification.", workspace, issue);
 			await core.handBack(ref, workspace, { id: delegate.id, teammate: delegate.teammate, lead: inherited?.teammate || "", state: "ended", planTask: !!restore });
 		}
-	})), delegate ? 3000 : 250);
+	}), delegate ? 3000 : 250);
 	});
 }

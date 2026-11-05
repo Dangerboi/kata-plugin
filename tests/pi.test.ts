@@ -671,14 +671,14 @@ test("pi accepts replace on todo init and refuses without it while tasks are ope
   expect(old.closed_reason).toBe("wontfix");
 });
 
-test("pi sets its transcript identity on start, a child replaces the inherited one, shutdown clears it", async () => {
+test("pi sets its transcript identity on start, a child replaces the inherited one, a shutdown leaves the next session's", async () => {
   delete process.env.KATA_TRANSCRIPT_AGENT; delete process.env.KATA_TRANSCRIPT_SESSION_ID;
   try {
   const lead = await host(); await lead.event("session_start", { reason: "startup" });
   expect([process.env.KATA_TRANSCRIPT_AGENT, process.env.KATA_TRANSCRIPT_SESSION_ID]).toEqual(["pi", lead.sid]);
   const child = await host(); await child.event("session_start", { reason: "startup" });
   expect(process.env.KATA_TRANSCRIPT_SESSION_ID).toBe(child.sid);
-  await child.event("session_shutdown", { reason: "quit" });
-  expect([process.env.KATA_TRANSCRIPT_AGENT, process.env.KATA_TRANSCRIPT_SESSION_ID]).toEqual([undefined, undefined]);
+  await lead.event("session_shutdown", { reason: "new" });
+  expect([process.env.KATA_TRANSCRIPT_AGENT, process.env.KATA_TRANSCRIPT_SESSION_ID]).toEqual(["pi", child.sid]);
   } finally { delete process.env.KATA_TRANSCRIPT_AGENT; delete process.env.KATA_TRANSCRIPT_SESSION_ID; }
 });

@@ -1697,6 +1697,10 @@ test("a plan whose parent moved to another project creates new items there and r
   const moved = await show(`${target}#${short}`);
   expect(moved.children.map((c: any) => c.title).sort()).toEqual(["After the move", "Before the move"]);
   expect(moved.children.every((c: any) => c.project_id === moved.issue.project_id)).toBe(true);
+  const stale = moved.children.find((c: any) => c.title === "Before the move");
+  const closedByOldRef = await app.call({ op: "done", task: `${parent.split("#")[0]}#${stale.short_id}`, message, evidence });
+  expect(closedByOldRef.isError, closedByOldRef.content[0].text).toBeUndefined();
+  expect((await show(`${target}#${stale.short_id}`)).issue.status).toBe("closed");
   expect(app.entries.filter(e => e.customType === "io.kata.omp.parent").at(-1)!.data.parent).toBe(`${target}#${short}`);
   const resumed = host({ sid: app.sid, entries: structuredClone(app.entries) }); await resumed.event("session_start");
   expect((await resumed.call({ op: "view" })).details.kata.parent).toBe(`${target}#${short}`);
@@ -1711,6 +1715,33 @@ test("a ticket item naming a moved ticket is pinned and closed in its current pr
   expect(done.isError, done.content[0].text).toBeUndefined();
   expect(done.content[0].text).toContain(`(${target}#${ticket})`);
   expect((await show(`${target}#${ticket}`)).issue.status).toBe("closed");
+});
+
+test("a moved explicit parent is not re-adopted by every later todo call", async () => {
+  const showsOfParent = (app: { calls: string[][] }, ref: string) => app.calls.filter(a => a[0] === "show" && a[1].endsWith(`#${ref.split("#")[1]}`)).length;
+  const followUp = async (moveIt: boolean) => {
+    const parent = `v2test#${await issue()}`; process.env.KATA_REF = parent;
+    const app = host(); await app.event("session_start"); await app.init(["First"]);
+    if (moveIt) await kata(["move", parent, await otherProject(), "--json"]);
+    await app.call({ op: "init", replace: true, items: ["Second"] });
+    const before = showsOfParent(app, parent);
+    expect((await app.call({ op: "init", replace: true, items: [`Third ${moveIt}`] })).isError).toBeUndefined();
+    return showsOfParent(app, parent) - before;
+  };
+  expect(await followUp(true)).toBe(await followUp(false));
+});
+
+test("a project renamed mid-session is looked up again after the stale name fails", async () => {
+  const app = host(); await app.event("session_start");
+  const project = await otherProject(), renamed = `${project}x`;
+  const first = (await kata(["create", "--project", project, "First in renamed", "--force-new", "--json"])).issue.short_id;
+  const second = (await kata(["create", "--project", project, "Second in renamed", "--force-new", "--json"])).issue.short_id;
+  await app.init(["Plain item"]);
+  expect((await app.call({ op: "append", items: [`${project}#${first}: first`] })).isError).toBeUndefined();
+  await kata(["projects", "rename", project, renamed, "--json"]);
+  const result = await app.call({ op: "append", items: [`${renamed}#${second}: second`] });
+  expect(result.isError, result.content[0].text).toBeUndefined();
+  expect(result.content[0].text).toContain(`${renamed}#${second}`);
 });
 
 test("unmoved refs are pinned from the cached project list without another projects call", async () => {

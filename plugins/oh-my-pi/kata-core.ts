@@ -423,6 +423,7 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 	let currentId: string | undefined;
 	let bound = false;
 	let assignedRef: string | undefined;
+	let movedFrom: string | undefined; // the ref the plan's parent was rehomed from
 	let requestedRef: string | undefined;
 	let sessionTeammate: string | undefined;
 	let boundAgent: string | undefined;
@@ -486,6 +487,8 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 			const detail = envelope?.message ?? (result.stderr || result.stdout || "").trim().split("\n").slice(-3).join(" ");
 			// A host that fails to spawn reports a bare failure with no output at all; Kata always says something.
 			const notRun = !result.killed && !envelope && !detail;
+			// A renamed project's old name no longer resolves: drop the cached list so the next lookup reloads it.
+			if (envelope?.code === "project_not_initialized") registered = undefined;
 			throw new KataError(`kata ${args[0]} ${result.killed ? `timed out after ${timeout}ms` : notRun ? "could not run" : "failed"}${detail ? `: ${detail}` : ""}`, { exit: result.code, code: envelope?.code, detail, data: envelope?.data && typeof envelope.data === "object" ? envelope.data : undefined, killed: result.killed, notRun });
 		}
 		return result.stdout;
@@ -587,6 +590,7 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 		autoParents.delete(old);
 		if (marker) autoParents.set(current, { ...marker, parent: current });
 		plan.parent = current;
+		movedFrom = old;
 		host.appendEntry(STATE_ENTRY, { parent: current, workspace: plan.workspace, sessionId: plan.sessionId, auto: plan.auto, label: plan.label });
 	}
 
@@ -1183,6 +1187,11 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 		if (!plan.local && !plan.tasks.some(t => t.content === target) && /(?:^|#)[0-9a-hjkmnp-tv-z]{26}$/i.test(target)) target = await pin(target, plan.workspace!);
 		const exact = plan.tasks.filter(t => t.content === target || t.ref === target || t.ref.split("#")[1] === target);
 		if (exact.length === 1) return exact;
+		if (target.includes("#") && !exact.length) {
+			const short = target.split("#")[1];
+			const moved = plan.tasks.filter(t => t.ref.split("#")[1] === short);
+			if (moved.length === 1) return moved;
+		}
 		const needle = target.toLowerCase();
 		const fuzzy = plan.tasks.filter(t => t.content.toLowerCase().includes(needle));
 		if (fuzzy.length === 1) return fuzzy;
@@ -1194,7 +1203,8 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 	async function ensureParent(params: any, ctx: any): Promise<string | undefined> {
 		const explicit = assignedRef ?? options.explicitRef?.() ?? process.env.KATA_REF;
 		const target = explicit || params.ref;
-		if (target && ((!explicit && params.ref) || !plan.parent || (target.includes("#") ? plan.parent !== target : plan.parent.split("#").pop() !== target))) {
+		const rehomed = movedFrom === target && plan.parent?.split("#").pop() === target?.split("#").pop();
+		if (target && ((!explicit && params.ref) || !plan.parent || (target.includes("#") ? plan.parent !== target && !rehomed : plan.parent.split("#").pop() !== target))) {
 			requestedRef = target;
 			try { await adopt(target, ctx); }
 			catch (error) { bound = false; throw error; }
@@ -1393,7 +1403,8 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 			const target = explicit || params.ref || plan.parent;
 			if (target) {
 				const workspace = explicit || !params.ref ? plan.workspace || ctx.cwd : ctx.cwd;
-				const parent = target === plan.parent ? target : await pin(target, workspace);
+				const rehomed = movedFrom === target && plan.parent?.split("#").pop() === target.split("#").pop();
+				const parent = target === plan.parent ? target : rehomed ? plan.parent! : await pin(target, workspace);
 				if (explicit && params.ref && parent !== await pin(params.ref, workspace)) throw new Error(`Kata init ref ${params.ref} conflicts with the explicit binding ${explicit}; neither plan was replaced.`);
 				const tasks = tasksOf(await childrenOf(parent, workspace), parent);
 				refuseOpen(params.replace === true, [...tasks, ...named], wanted);
