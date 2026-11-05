@@ -391,7 +391,8 @@ export function createDelegates(env: DelegatesEnv): Delegates {
 		}
 	}
 
-	async function step(event: DelegateEvent) {
+	// What an event changes at once, so a delegate is found by its session before the queued writes run.
+	function note(event: DelegateEvent): DelegateRecord | undefined {
 		const r = env.store.get(event.id);
 		switch (event.type) {
 			case "started": {
@@ -402,28 +403,27 @@ export function createDelegates(env: DelegatesEnv): Delegates {
 				} else record.sessionId = event.sessionId;
 				record.exited = undefined;
 				env.store.put(record);
-				if (record.state === "started" || record.state === "failed") await assign(record);
-				return;
+				return record;
 			}
-			case "nextUse":
-				if (r && !r.exited && (r.state === "started" || r.state === "failed")) await assign(r);
-				return;
+			case "ranTool":
+				if (r && !r.ranTool) { r.ranTool = true; env.store.put(r); }
+				return r;
 			case "exited":
-				if (!r) return;
-				if (!r.exited) { r.exited = event.outcome; env.store.put(r); }
-				await env.reconcile();
-				return;
+				if (r && !r.exited) { r.exited = event.outcome; env.store.put(r); }
+				return r;
+			default:
+				return r;
 		}
 	}
 
 	return {
 		apply(event) {
-			if (event.type === "ranTool") {
-				const r = env.store.get(event.id);
-				if (r && !r.ranTool) { r.ranTool = true; env.store.put(r); }
-				return Promise.resolve();
-			}
-			return env.serial(() => step(event)).catch(env.debug);
+			const r = note(event);
+			if (!r || event.type === "ranTool") return Promise.resolve();
+			return env.serial(async () => {
+				if (event.type === "exited") await env.reconcile();
+				else if (!r.exited && (r.state === "started" || r.state === "failed")) await assign(r);
+			}).catch(env.debug);
 		},
 		check,
 		assignment(ctx) {

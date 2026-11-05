@@ -22,7 +22,7 @@ function app(options: any = {}) {
   const ctx = { cwd: options.cwd || cwd, sessionManager: { getSessionId: () => id, getBranch: () => entries } };
   const core = createKataCore({ appendEntry: (customType, data) => entries.push({ type: "custom", customType, data }),
     exec: async (_file, args, opts) => { calls.push(args); return await options.before?.(args) ?? run(args, opts.cwd); },
-  }, { namespace: "omp", executable: binary, executableVars: ["KATA_OMP_EXECUTABLE"], delegateKeys: ["omp.subagent_id"], explicitRef: () => options.ref });
+  }, { namespace: "omp", executable: binary, executableVars: ["KATA_OMP_EXECUTABLE"], explicitRef: () => options.ref });
   return { core, calls, entries, ctx, call: (p: any) => core.execute(p, ctx) };
 }
 // Kata unusable: the only case that selects a session-local plan.
@@ -240,7 +240,7 @@ test("authenticated daemon actor can create and complete a plan despite local ac
     const setup = await authRun(["init", "--project", "authenticated-fixture"]); if (setup.code) throw new Error(setup.stderr);
     const ref = JSON.parse((await authRun(["create", "Token actor plan", "--json"])).stdout).issue.short_id;
     const status = JSON.parse((await authRun(["status", ref, "--json"])).stdout); expect(status.actor).toBe("token-actor");
-    const core = createKataCore({ appendEntry() {}, exec: (_file, args) => authRun(args) }, { namespace: "omp", executable: binary, executableVars: ["KATA_OMP_EXECUTABLE"], delegateKeys: ["omp.subagent_id"], explicitRef: () => ref });
+    const core = createKataCore({ appendEntry() {}, exec: (_file, args) => authRun(args) }, { namespace: "omp", executable: binary, executableVars: ["KATA_OMP_EXECUTABLE"], explicitRef: () => ref });
     const ctx = { cwd: authCwd, sessionManager: { getSessionId: () => "auth-fixture", getBranch: () => [] } };
     const initialized = await core.execute({ op: "init", items: ["Authenticated task"] }, ctx);
     expect(initialized.isError, initialized.content[0].text).toBeUndefined();
@@ -419,7 +419,7 @@ for (const outcome of ["interrupted", "unrelated", "reassigned"]) test(`deferred
   } });
   await b.call({ op: "view" });
   expect(interrupted).toBe(outcome !== "unrelated");
-  await b.core.drainRetries();
+  await b.core.drain();
   const final = await show(ref);
   expect(final.status).toBe("closed");
   expect(final.metadata["todo.removed"]).not.toBe(true);

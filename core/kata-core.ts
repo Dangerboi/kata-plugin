@@ -4,6 +4,7 @@ import { appendFileSync, realpathSync } from "node:fs";
 import { decidePlanParent, explicitParent, isExplicitParent, namesPlanParent } from "./plan-parent";
 import { trustedInbox } from "./inbox";
 import { createDelegates, heldByDelegate as heldBy, type DelegateAssignment, type DelegateObservation, type DelegateRecord, type DelegateStore, type Who } from "./delegates";
+import { createSettlement, MAX_FAILURES, openChildren, type CloseRequest } from "./settlement";
 
 // Canonical shared source. scripts/vendor-core.ts copies this file into each
 // self-contained plugin; host adapters own their event/schema/identity APIs.
@@ -364,18 +365,26 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 	let reminders = 0;
 	let progressed = true;
 	let cache: { id?: string; contract?: string; inbox?: string; actor?: Promise<string>; pending?: Promise<void>; inboxPending?: Promise<void>; personInbox?: boolean } = {};
-	const autoParents = new Map<string, Binding>();
-	// An automatic parent whose children left no close evidence stays open and flagged needs-review; the verdict holds until its revision or children change.
-	class NoEvidence extends Error {}
-	const flagged = new Map<string, string>();
-	const verdictKey = (view: any, revision = view.issue.revision) => `${revision}|${view.children.map((c: any) => `${c.uid}:${c.revision}`).sort().join(",")}`;
+	// Throttled closes, ticket closes waiting on children and the automatic parent's close (see settlement.ts).
+	// The timer is omp's ctx timer (contained, cleared on session_shutdown) when the host has one; pi has none.
+	const settlement = createSettlement({
+		namespace, kata: (args, cwd) => kata(args, cwd), owned, projectList: cwd => projectList(cwd),
+		clock: () => Date.now(),
+		timer(fire, ms) {
+			const ctx = currentCtx;
+			if (typeof ctx?.setTimeout === "function" && typeof ctx.clearTimer === "function") { const handle = ctx.setTimeout(fire, ms); return () => ctx.clearTimer(handle); }
+			const handle = setTimeout(fire, ms);
+			handle.unref?.();
+			return () => clearTimeout(handle);
+		},
+		due: () => { void serial(drain).catch(debug); },
+		delegatesRunning: () => jobsBusy || delegates.running(),
+		itemsOpen: ticket => named.some(t => t.ticket === ticket && OPEN.has(t.status)),
+		performTask, performTicket: (ticket, request) => owned(ticket, request.cwd, "check").then(decision => closeWith(ticket, decision, request)),
+		flag: flagDropped, debug,
+	});
 	let registered: { id?: string; list: Promise<{ id: number; name: string }[]> } | undefined;
-	const retries = new Map<string, { task: Task; to: Status; change: Change; cwd: string; at: number }>();
-	// A named ticket whose close Kata refused for open children: retried once they close.
-	type PendingClose = { key: string; message: string; evidence: string[]; cwd: string };
-	const pendingCloses = new Map<string, PendingClose>();
-	let retryTimer: ReturnType<typeof setTimeout> | undefined;
-	let retryTimerCtx: any;
+	type PendingClose = CloseRequest & { cwd: string };
 	let lastSnapshot: string | undefined;
 	// Items that name an existing ticket. They live in the session's snapshot, not
 	// in Kata: the ticket can sit under any parent or project, and several items
@@ -385,19 +394,19 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 	const nextStamp = () => (stamp = Math.max(Date.now(), stamp + 1));
 	// The plan's tasks: Kata children (or the local plan) merged with named items by creation time.
 	const withNamed = (base: Task[]) => named.length ? [...base.filter(t => !t.ticket), ...named].sort((a, b) => (a.at || 0) - (b.at || 0)) : base;
+	let jobsBusy = false;
 	const memoryRecords = new Map<string, DelegateRecord>();
 	const delegates = createDelegates({
 		namespace,
 		store: host.delegateStore ?? { records: () => [...memoryRecords.values()], get: id => memoryRecords.get(id), put: record => { memoryRecords.set(record.id, record); },
 			of: ctx => { const id = ctx?.sessionManager?.getSessionId?.(); return [...memoryRecords.values()].find(record => record.sessionId === id); } },
 		kata: (args, cwd) => kata(args, cwd), actor: (cwd, ref) => actor(cwd, ref), owned, work, serial, plan: () => plan,
-		load: cwd => load(cwd), projectNames: cwd => projectNames(cwd), reconcile: () => reconcile(), cwd: () => path.resolve(currentCtx?.cwd ?? process.cwd()), debug,
+		load: cwd => load(cwd), projectNames: cwd => projectNames(cwd), reconcile: () => drain(), cwd: () => path.resolve(currentCtx?.cwd ?? process.cwd()), debug,
 	});
 	function persist() {
 		if (!currentId || !main(currentCtx)) return;
 		const data = { version: 1, sessionId: currentId,
-			plan: structuredClone({ ...plan, tasks: plan.tasks.filter(t => !t.ticket) }), autoParents: [...autoParents.values()], retries: [...retries.entries()],
-			...(pendingCloses.size ? { pendingCloses: [...pendingCloses.entries()] } : {}),
+			plan: structuredClone({ ...plan, tasks: plan.tasks.filter(t => !t.ticket) }), ...settlement.snapshot(),
 			...(named.length ? { named: structuredClone(named) } : {}) };
 		const encoded = JSON.stringify(data);
 		if (encoded === lastSnapshot) return;
@@ -532,9 +541,7 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 		try { current = `${await projectName(shown.issue.project_id, cwd)}#${shown.issue.short_id}`; }
 		catch (error) { debug(error); return; }
 		if (current === old || plan.parent !== old) return;
-		const marker = autoParents.get(old);
-		autoParents.delete(old);
-		if (marker) autoParents.set(current, { ...marker, parent: current });
+		settlement.renameAutoParent(old, current);
 		plan.parent = current;
 		aliases.add(old);
 		host.appendEntry(STATE_ENTRY, { parent: current, workspace: plan.workspace, sessionId: plan.sessionId, auto: plan.auto, label: plan.label });
@@ -641,7 +648,7 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 
 	function goLocal(ctx: any) {
 		plan.local = true; delete plan.error;
-		scheduleRetry();
+		settlement.schedule();
 		if (warnedFor === (currentId ?? "")) return;
 		warnedFor = currentId ?? "";
 		if (main(ctx) && host.allowUI?.(ctx) !== false) ctx?.ui?.notify?.(`Kata is unreachable${outage ? ` (${outage})` : ""}. todo keeps a session-local plan and replays it into Kata when Kata returns.`, "warning");
@@ -676,7 +683,7 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 		} catch (error) {
 			// Whatever Kata took stays; the unreplayed plan is retried (creates are idempotent).
 			plan = { tasks: withNamed(local), local: true, workspace: plan.workspace };
-			scheduleRetry();
+			settlement.schedule();
 			throw error;
 		}
 	}
@@ -751,8 +758,6 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 		currentCtx = ctx;
 		plan = { tasks: [], workspace: path.resolve(ctx.cwd) }; named = []; aliases.clear();
 		scope = "unknown"; refusal = undefined; outage = "";
-		retries.clear(); autoParents.clear(); pendingCloses.clear();
-		clearRetryTimer();
 		const branch: any[] = ctx.sessionManager?.getBranch?.() ?? [];
 		const snapshotOf = (owner: unknown) => [...branch].reverse().find((entry: any) => entry?.type === "custom" && entry.customType === SNAPSHOT_ENTRY && entry.data?.version === 1 && entry.data.sessionId === owner)?.data;
 		let snapshot = snapshotOf(id);
@@ -766,12 +771,9 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 		}
 		// A forked session keeps the source id as the parent's owner: the parent's session_id metadata names it.
 		const parentOwner = source ?? id;
+		settlement.restore(snapshot && !source ? snapshot : undefined);
 		if (snapshot) {
 			if (!source) {
-				for (const binding of snapshot.autoParents ?? []) autoParents.set(binding.parent, binding);
-				for (const [ref, pending] of snapshot.retries ?? []) retries.set(ref, pending);
-				for (const [ticket, pending] of snapshot.pendingCloses as [string, PendingClose][] ?? []) pendingCloses.set(ticket, pending);
-				if (retries.size) scheduleRetry();
 				if (snapshot.plan?.local && !requested) plan = { ...structuredClone(snapshot.plan), workspace: plan.workspace };
 			}
 			named = structuredClone(snapshot.named ?? []);
@@ -793,7 +795,7 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 				if (id && !plan.local) return sessionBinding(ctx);
 			},
 		});
-		if (down) { await drainRetries(); bound = true; refresh(ctx); return; }
+		if (down) { await drain(); bound = true; refresh(ctx); return; }
 		const saved = choice.saved;
 		if (choice.parent) {
 			const workspace = choice.workspace;
@@ -805,18 +807,18 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 			setParent({ parent: qualified, workspace, sessionId: owner, auto, label: saved?.label });
 			await load(workspace);
 		}
-		if (replay) await drainRetries();
+		if (replay) await drain();
 		bound = true;
 		refresh(ctx);
 	}
 
 	function setParent(binding: Binding) {
 		scope = "bound";
-		if (!binding.auto) autoParents.delete(binding.parent);
+		if (!binding.auto) settlement.dropAutoParent(binding.parent);
 		if (plan.parent === binding.parent && plan.workspace === binding.workspace && plan.auto === binding.auto && plan.label === binding.label) return;
 		if (plan.parent !== binding.parent) aliases.clear();
 		plan = { ...binding, tasks: withNamed(plan.parent === binding.parent ? plan.tasks : []) };
-		if (binding.auto) autoParents.set(binding.parent, binding);
+		if (binding.auto) settlement.addAutoParent(binding);
 		host.appendEntry(STATE_ENTRY, binding);
 	}
 
@@ -829,10 +831,10 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 			if (shown.issue.status === "open" && !shown.children?.length) {
 				const decision = await owned(plan.parent, plan.workspace, false, false, shown.issue.revision);
 				await kata(["close", plan.parent, "--if-match", String(decision.revision), "--superseded-by", parent, "--message", `This session adopted ${parent} as its plan parent.`], plan.workspace);
-				autoParents.delete(plan.parent);
+				settlement.dropAutoParent(plan.parent);
 			}
 		}
-		if (plan.parent === parent) autoParents.delete(parent);
+		if (plan.parent === parent) settlement.dropAutoParent(parent);
 		setParent({ parent, workspace: path.resolve(workspace), sessionId: ctx.sessionManager?.getSessionId?.(), auto: false });
 		await load(workspace);
 	}
@@ -946,7 +948,7 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 		}
 		task.revision = decision.revision;
 		task.status = to;
-		if (!change.remove) retries.delete(ref);
+		if (!change.remove) settlement.cancelTaskClose(ref);
 		if (to !== "blocked") task.blocker = undefined;
 	}
 
@@ -1031,7 +1033,7 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 
 	// The last item of a ticket is done: close it with that item's evidence. Kata
 	// refuses a ticket with open children; it stays open and says why once. When
-	// every open child is a task of this plan the close is retried (see closePending)
+	// every open child is a task of this plan the close is held (see settlement.ts)
 	// as they close; an umbrella with children outside the plan stays open.
 	async function closeTicket(task: Task, decision: any, change: Change, cwd: string) {
 		const ticket = task.ticket!;
@@ -1042,33 +1044,20 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 			const open = openChildren(JSON.parse(await kata(["show", ticket, "--json"], cwd)), ticket);
 			const many = open.length !== 1;
 			const ours = open.every(ref => plan.tasks.some(t => (t.ticket ?? t.ref) === ref));
-			if (ours) pendingCloses.set(ticket, { ...request, key: noteKey(task, "close-after-children") });
+			if (ours) settlement.holdTicketClose(ticket, { ...request, key: noteKey(task, "close-after-children") }, cwd);
 			const why = `Every todo item for ${ticket} is done, but ${open.length} open ${many ? "children block" : "child blocks"} closing it, so it stays open.`;
 			await note(task, "blocked", ours
 				? `${why} It closes once ${many ? "they are" : "that child is"} closed; the plugin retries when ${many ? "they close" : "it closes"} during this session.`
 				: `${why} ${many ? "They are" : "It is"} outside this todo plan, so close the ticket yourself once ${many ? "they are" : "it is"} done.`, cwd);
 		}
 	}
-	// Qualified refs of a ticket's open children.
-	const openChildren = (view: any, ticket: string): string[] => ((view.children ?? []) as any[]).filter(c => c.status !== "closed").map(c => qualifiedRef(c, ticket));
+
 	async function closeWith(ticket: string, decision: any, request: PendingClose) {
 		const args = ["close", ticket, "--done", "--if-match", String(decision.revision), "--idempotency-key", request.key, "--message", request.message];
 		for (const e of request.evidence) args.push("--evidence", e);
 		await kata(args, request.cwd);
 		if (decision.metadata?.["todo.status"] !== undefined) {
 			await owned(ticket, request.cwd, "check", true).then(closed => work(ticket, "todo.status", "completed", request.cwd, closed)).catch(debug);
-		}
-	}
-	// Retry the closes Kata refused for open children. Silent unless it closes the ticket.
-	async function closePending() {
-		for (const [ticket, pending] of pendingCloses) {
-			try {
-				const view = JSON.parse(await kata(["show", ticket, "--json"], pending.cwd));
-				if (view.issue.status !== "open" || named.some(t => t.ticket === ticket && OPEN.has(t.status))) { pendingCloses.delete(ticket); continue; }
-				if (openChildren(view, ticket).length) continue;
-				await closeWith(ticket, await owned(ticket, pending.cwd, "check"), pending);
-				pendingCloses.delete(ticket);
-			} catch (error) { debug(error); }
 		}
 	}
 
@@ -1097,7 +1086,7 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 		}
 		const decision = await owned(task.ref, cwd, "check", true, task.revision);
 		await work(task.ref, "todo.removed", true, cwd, decision);
-		retries.delete(task.ref);
+		settlement.cancelTaskClose(task.ref);
 	}
 
 	function nextTask(tasks: Task[]): Task | undefined {
@@ -1198,124 +1187,41 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 	}
 
 	class DeferredClose extends Error {}
-	function scheduleRetry() {
-		if (retryTimer) return;
-		const fire = () => { retryTimer = undefined; retryTimerCtx = undefined; void serial(drainRetries).catch(debug); };
-		// omp's ctx timer is contained and cleared on session_shutdown; pi has none.
-		if (typeof currentCtx?.setTimeout === "function" && typeof currentCtx.clearTimer === "function") {
-			retryTimerCtx = currentCtx;
-			retryTimer = currentCtx.setTimeout(fire, 60_100);
-		} else {
-			retryTimer = setTimeout(fire, 60_100);
-			retryTimer.unref?.();
-		}
-	}
-	function clearRetryTimer() {
-		if (!retryTimer) return;
-		if (retryTimerCtx) retryTimerCtx.clearTimer(retryTimer); else clearTimeout(retryTimer);
-		retryTimer = undefined; retryTimerCtx = undefined;
-	}
 	async function closeTask(args: string[], task: Task, to: Status, change: Change, cwd: string) {
 		try { await kata(args, cwd); }
 		catch (error) {
 			if (!isKataCode(error, "sibling_throttle")) throw error;
-			retries.set(task.ref, { task: { ...task }, to, change: { ...change }, cwd, at: Date.now() + 60_000 });
+			const text = settlement.deferTaskClose(task, to, change, cwd);
 			persist();
-			scheduleRetry();
-			throw new DeferredClose(`Kata deferred closing "${task.content}" under its sibling throttle. It remains open and will retry after 60 seconds.`);
+			throw new DeferredClose(text);
 		}
-	}
-	async function drainRetries() {
-		if (plan.local && currentCtx) await replayLocal(currentCtx).catch(debug);
-		for (const [ref, pending] of retries) {
-			if (pending.at > Date.now()) continue;
-			try {
-				const current = JSON.parse(await kata(["show", ref, "--json"], pending.cwd)).issue;
-				if (pending.task.revision === undefined || current.status !== "open" || current.revision !== pending.task.revision) {
-					retries.delete(ref); continue;
-				}
-				if (pending.change.remove) await remove(pending.task, pending.change, pending.cwd);
-				else await transition(pending.task, pending.to, pending.change, pending.cwd);
-				retries.delete(ref);
-				if (plan.tasks.some(task => task.ref === ref)) { await load(plan.workspace); await advance(plan.workspace); }
-			} catch (error) { debug(error); }
-		}
-		if (retries.size || plan.local) scheduleRetry();
-		persist();
-		await reconcile();
 	}
 
-	function proofArgs(items: any[]): string[] {
-		const values = new Set<string>();
-		for (const item of items) {
-			if (item.type === "attachment") continue; // Kata only accepts attachments linked on the closed issue itself, so a child's never carries over.
-			const key: Record<string, string> = { commit: "sha", pr: "url", test: "command", external: "account", "no-change-audit": "rationale", "duplicate-of": "issue_ref", "superseded-by": "issue_ref" };
-			const value = item[key[item.type]];
-			if (typeof value === "string" && value.trim()) values.add(`${item.type}:${value}`);
-			else if (item.type === "reviewed-paths" && Array.isArray(item.paths) && item.paths.length) for (const file of item.paths) { if (typeof file !== "string" || !file.trim()) throw new Error("Malformed Kata evidence"); values.add(`reviewed-paths:${file}`); }
-			else throw new Error("Malformed or unknown Kata evidence");
-		}
-		return [...values].flatMap(value => ["--evidence", value]);
+	// Re-run a throttled close, then reload and start the next task.
+	async function performTask(pending: { task: Task; to: Status; change: Change; cwd: string }) {
+		const { task, change, cwd } = pending;
+		if (change.remove) await remove(task, change, cwd);
+		else await transition(task, pending.to, change, cwd);
+		settlement.cancelTaskClose(task.ref);
+		if (plan.tasks.some(t => t.ref === task.ref)) { await load(plan.workspace); await advance(plan.workspace); }
 	}
 
-	let jobsBusy = false;
-	const delegatedRunning = () => jobsBusy || delegates.running();
-	async function reconcile() {
+	// The plugin gave up on a close: the issue needs a human.
+	async function flagDropped(ref: string, cwd: string, error: unknown) {
+		const code = (error as KataError | undefined)?.code;
+		await kata(["label", "add", ref, "needs-review"], cwd);
+		await kata(["comment", ref, "--body", `The plugin gave up closing ${ref} after ${MAX_FAILURES} failed attempts (Kata error code: ${code ?? "none, not a Kata error"}): ${(error as Error)?.message ?? error}. Review it and close it yourself.`], cwd);
+	}
+
+	// The one settlement pass: delegates the host saw end settle first, then the session's offline plan replays, then closes Kata deferred and the automatic parent.
+	async function drain() {
 		const seen = host.observe?.();
 		jobsBusy = !!seen?.busy;
 		await delegates.settle(seen?.exited);
-		await closePending();
-		for (const binding of autoParents.values()) {
-			const { parent, workspace } = binding;
-			let decision: any, initial: any;
-			try {
-				if (delegatedRunning()) return;
-				initial = JSON.parse(await kata(["show", parent, "--json"], workspace));
-				if (initial.issue.status === "closed" || initial.issue.metadata?.[`${namespace}.auto_parent`] !== true || initial.issue.metadata?.[`${namespace}.session_id`] !== binding.sessionId) continue;
-				if (!initial.children?.length || initial.children.some((c: any) => c.status !== "closed")) continue;
-				if (flagged.get(parent) === verdictKey(initial)) continue;
-				decision = await owned(parent, workspace, false, false, initial.issue.revision);
-				const closedTimes = initial.children.filter((c: any) => c.closed_reason !== "wontfix").map((c: any) => Date.parse(c.closed_at));
-				if (closedTimes.some((time: number) => !Number.isFinite(time))) throw new Error("Kata child close time unavailable");
-				const since = closedTimes.length ? new Date(Math.min(...closedTimes)).toISOString() : undefined;
-				const evidence: any[] = [];
-				const audits = new Map<string, any[]>();
-				let projects: { id: number; name: string }[] | undefined;
-				for (const child of initial.children) {
-					if (child.closed_reason === "wontfix") continue;
-					let project = child.qualified_id?.split("#")[0];
-					if (!project && child.project_id === initial.issue.project_id) project = parent.split("#")[0];
-					if (!project) {
-						projects ??= await projectList(workspace);
-						project = projects.find(p => p.id === child.project_id)?.name;
-					}
-					if (!project) throw new Error("Kata child project unavailable");
-					if (!audits.has(project)) audits.set(project, JSON.parse(await kata(["audit", "closes", "--project", project, "--since", since!, "--json"], workspace)).rows);
-					const rows = audits.get(project)!;
-					const row = rows.filter((r: any) => r.issue === child.short_id).sort((a: any, b: any) => b.event_id - a.event_id)[0];
-					if (!row?.event_id) throw new Error("Kata child close event unavailable");
-					const page = JSON.parse(await kata(["events", "--project", project, "--after", String(row.event_id - 1), "--limit", "1", "--json"], workspace));
-					const event = page.events?.[0];
-					if (page.reset_required || event?.event_id !== row.event_id || event.type !== "issue.closed" || event.issue_uid !== child.uid || Date.parse(event.payload?.closed_at) !== Date.parse(child.closed_at) || !Array.isArray(event.payload?.evidence) || !event.payload.evidence.length) throw new Error("Kata current child evidence unavailable");
-					evidence.push(...event.payload.evidence);
-				}
-				const proof = proofArgs(evidence);
-				if (!proof.length) throw new NoEvidence("Kata child close evidence union is empty");
-				const final = JSON.parse(await kata(["show", parent, "--json"], workspace));
-				if (final.issue.status === "closed" || delegatedRunning()) continue;
-				if (final.issue.revision !== initial.issue.revision || final.children?.length !== initial.children.length || final.children.some((c: any) => c.status !== "closed" || !initial.children.some((old: any) => old.uid === c.uid && old.revision === c.revision))) continue;
-				await kata(["close", parent, "--done", "--if-match", String(final.issue.revision), "--idempotency-key", `${namespace}-parent-close:${parent}:${final.issue.revision}`, "--message", `${namespace.toUpperCase()} session ${binding.sessionId}: all ${final.children.length} child issues are closed in Kata and delegated work has settled. Evidence is the union of their current Kata-recorded close events.`, ...proof], workspace);
-			} catch (error) {
-				debug(error);
-				if (isKataCode(error, "sibling_throttle")) { scheduleRetry(); continue; }
-				try {
-					const live = await owned(parent, workspace);
-					if (decision && live.revision !== decision.revision) continue;
-					await kata(["label", "add", parent, "needs-review"], workspace);
-					if (error instanceof NoEvidence) flagged.set(parent, verdictKey(initial, JSON.parse(await kata(["show", parent, "--json"], workspace)).issue.revision));
-				} catch (error) { debug(error); }
-			}
-		}
+		if (plan.local && currentCtx) await replayLocal(currentCtx).catch(debug);
+		await settlement.drain();
+		if (plan.local) settlement.schedule();
+		persist();
 	}
 
 	// ---------------------------------------------------------------------- ops
@@ -1341,7 +1247,7 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 		const op = params.op as string;
 		if (op === "view") {
 			await load(cwd);
-			if (plan.parent) await reconcile();
+			if (plan.parent) await drain();
 			return render(plan);
 		}
 		if (op === "init") {
@@ -1373,7 +1279,7 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 			if (target || needsParent(desired.map(d => d.content))) await ensureParent(params, ctx);
 			cwd = plan.workspace;
 			await load(cwd);
-			for (const task of plan.tasks) if (wanted.has(itemKey(task)) && retries.get(task.ref)?.change.remove) retries.delete(task.ref);
+			for (const task of plan.tasks) if (wanted.has(itemKey(task)) && settlement.removalDeferred(task.ref)) settlement.cancelTaskClose(task.ref);
 			for (const task of plan.tasks) {
 				if (!wanted.has(itemKey(task))) await remove(task, { message: "replaced by a new todo plan" }, cwd);
 			}
@@ -1427,7 +1333,7 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 						if (!existing.length) plan.tasks.push({ content, phase, ref: `local-${digest(phase, content)}`, status: "pending", at: nextStamp() });
 					} else {
 						await create(phase, content, cwd);
-						for (const task of plan.tasks.filter(t => t.content === content && t.phase === phase)) if (retries.get(task.ref)?.change.remove) retries.delete(task.ref);
+						for (const task of plan.tasks.filter(t => t.content === content && t.phase === phase)) if (settlement.removalDeferred(task.ref)) settlement.cancelTaskClose(task.ref);
 					}
 				}
 				await load(cwd);
@@ -1439,9 +1345,9 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 				const decision = plan.local || task.ticket ? undefined : await owned(task.ref, cwd, true, !OPEN.has(task.status), task.revision);
 				if (decision) task.revision = decision.revision;
 				if (!OPEN.has(task.status) && !task.ticket) await reopenParent();
-				for (const other of plan.tasks) if (other !== task && other.status === "in_progress" && leads(other) && !retries.has(other.ref)) await transition(other, "pending", {}, cwd);
+				for (const other of plan.tasks) if (other !== task && other.status === "in_progress" && leads(other) && !settlement.hasTaskClose(other.ref)) await transition(other, "pending", {}, cwd);
 				await transition(task, "in_progress", change, cwd, decision);
-				retries.delete(task.ref);
+				settlement.cancelTaskClose(task.ref);
 				break;
 			}
 			case "done":
@@ -1465,7 +1371,7 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 				throw new Error(`Unknown op "${op}".`);
 		}
 		await advance(cwd);
-		await reconcile();
+		await drain();
 		return render(plan);
 	}
 
@@ -1563,7 +1469,7 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 
 	async function remind(messages: any[], ctx: any): Promise<string | undefined> {
 		if (!main(ctx)) return;
-		const refreshed = await bounded(serial(async () => { await load(plan.workspace); await drainRetries(); return true; }));
+		const refreshed = await bounded(serial(async () => { await load(plan.workspace); await drain(); return true; }));
 		if (!refreshed || plan.error) return;
 		const open = plan.tasks.filter(t => t.status === "pending" || t.status === "in_progress");
 		if (open.length === 0 || reminders >= MAX_REMINDERS || !progressed) return;
@@ -1666,7 +1572,7 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 		stateEntry: STATE_ENTRY,
 		resetReminders() { reminders = 0; },
 		debug, bounded, serial, kata, projectNames, pin, actor, owned, work, load, refresh, probe, bind, delegates,
-		ensureParent, destination, candidate, adopt, reconcile, drainRetries, apply, execute, command,
+		ensureParent, destination, candidate, adopt, drain, apply, execute, command,
 		observeToolResult, remind, warm, tickets, inboxActor,
 	};
 }

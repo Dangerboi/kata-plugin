@@ -277,6 +277,7 @@ test("finished unclosed delegates remain open needs-review, with no parent proof
   const sessionFile = `${scratch}/delegate-unclosed.jsonl`;
   app.emit("task:subagent:lifecycle", { id: "unclosed", agent: "task", status: "started", sessionFile, description: "Await unverified delegate" });
   await app.call({ op: "view" });
+  await ran(app, "unclosed", sessionFile);
   app.emit("task:subagent:lifecycle", { id: "unclosed", status: "completed", sessionFile });
   await app.call({ op: "done", task: "Lead keeps working", message, evidence });
   const child = (await show(parent)).children.find((c: any) => c.title === "Await unverified delegate");
@@ -360,20 +361,12 @@ function throttledClose() {
   app.ctx.clearTimer = (timer: any) => { timers.delete(timer); };
   return { app, timers, lift: () => { throttled = false; } };
 }
-test("a throttled close is retried by the host timer", async () => {
-  const { app, timers, lift } = throttledClose();
-  const parent = await app.init(["Throttled task"]);
-  expect((await app.call({ op: "done", message, evidence })).content[0].text).toContain("retry");
-  expect(timers.size).toBe(1);
-  lift();
-  const actualNow = Date.now;
-  Date.now = () => actualNow() + 61_000;
-  try {
-    for (const timer of [...timers]) timer.run();
-    for (let i = 0; i < 100 && (await show(parent)).issue.status !== "closed"; i++) await new Promise(resolve => setTimeout(resolve, 50));
-  } finally { Date.now = actualNow; }
-  expect((await show(parent)).issue.status).toBe("closed");
-});
+// The session's entries as if the retry deadline had passed (the snapshot keeps absolute deadlines).
+function dueEntries(entries: any[]) {
+  const copy = JSON.parse(JSON.stringify(entries));
+  for (const entry of copy) for (const [, pending] of entry.data?.retries ?? []) pending.at = 0;
+  return copy;
+}
 test("binding another session cancels the pending retry through the host", async () => {
   const { app, timers } = throttledClose();
   await app.init(["Throttled task"]);
@@ -394,11 +387,8 @@ test("sibling throttle retries the pinned close and does not falsely complete me
   expect(result.isError).toBeUndefined();
   expect(result.content[0].text).toContain("retry");
   expect((await show(parent)).children[0].metadata["todo.status"]).toBe("in_progress");
-  app.ctx.cwd = outside;
-  const actualNow = Date.now;
-  Date.now = () => actualNow() + 61_000;
-  try { await app.event("session_stop"); await app.call({ op: "view" }); }
-  finally { Date.now = actualNow; }
+  const resumed = host({ cwd: outside, sid: app.sid, entries: dueEntries(app.entries) }); await resumed.event("session_start");
+  await resumed.call({ op: "view" });
   expect((await show(parent)).issue.status).toBe("closed");
 });
 
@@ -434,12 +424,18 @@ test("typed automatic parent can be recovered after losing the session entry", a
   expect((await recovered.call({ op: "view" })).details.kata.parent).toBe(parent);
 });
 
+// A delegate that exits having run no tool has its assignment rolled back; these tests need one that did work.
+async function ran(lead: ReturnType<typeof host>, id: string, sessionFile: string) {
+  await host({ sessionFile, agent: { kind: "sub", id, parentId: lead.ctx.agent.id } }).event("tool_call", { toolName: "read", input: { path: "README.md" } });
+}
+
 test("async snapshot settles a delegate when terminal lifecycle delivery is missing", async () => {
   let recent: any[] = [];
   const app = host({ snapshot: () => ({ running: [], recent }) });
   await app.event("session_start"); const parent = await app.init(["Wait for snapshot"]);
   app.emit("task:subagent:lifecycle", { id: "snapshot-child", agent: "task", status: "started", sessionFile: `${scratch}/snapshot-child.jsonl`, description: "Wait for snapshot" });
   await app.call({ op: "view" });
+  await ran(app, "snapshot-child", `${scratch}/snapshot-child.jsonl`);
   recent = [{ id: "snapshot-child", type: "task", status: "completed" }];
   await app.event("session_stop"); await app.call({ op: "view" });
   const child = (await show(parent)).children.find((c: any) => c.title === "Wait for snapshot");
@@ -739,13 +735,10 @@ test("queued close survives extension recreation and retries only after its dead
   const entries = JSON.parse(JSON.stringify(app.entries));
   const resumed = host({ sid: app.sid, entries }); await resumed.event("session_start");
   expect(resumed.calls.some(a => a[0] === "close")).toBe(false);
-  const now = Date.now; Date.now = () => now() + 61_000;
-  try {
-    const restarted = host({ sid: app.sid, entries }); await restarted.event("session_start");
-    await restarted.call({ op: "view" });
-    expect((await show(parent)).issue.status).toBe("closed");
-    expect((await kata(["audit", "closes", "--json"])).rows.filter((r: any) => r.issue === parent.split("#")[1])).toHaveLength(1);
-  } finally { Date.now = now; }
+  const restarted = host({ sid: app.sid, entries: dueEntries(entries) }); await restarted.event("session_start");
+  await restarted.call({ op: "view" });
+  expect((await show(parent)).issue.status).toBe("closed");
+  expect((await kata(["audit", "closes", "--json"])).rows.filter((r: any) => r.issue === parent.split("#")[1])).toHaveLength(1);
 });
 
 // The 2026-10-19 eval: omp sent todo init and the tests delegation in one batch.
@@ -873,6 +866,7 @@ test("a finished delegate that leaves its plan task open hands it back for revie
   const task = (await show(ref)).children.find((c: any) => c.title === "Write widget tests");
   expect(task.metadata["omp.subagent_id"]).toBe("handback");
   expect((await app.call({ op: "done", task: "Write widget tests", message, evidence })).isError).toBe(true);
+  await ran(app, "handback", sessionFile);
   app.emit("task:subagent:lifecycle", { id: "handback", status: "completed", sessionFile });
   await app.call({ op: "view" });
   const settled = await show(`v2test#${task.short_id}`);
@@ -1003,6 +997,7 @@ test("after a hand-back, a bare done closes the lead's own active task", async (
   app.emit("task:subagent:lifecycle", { id: "bare-done", status: "started", sessionFile, parentToolCallId: "bare-done", index: 0 });
   await app.call({ op: "view" });
   expect((await app.call({ op: "start", task: "Implement widget" })).isError).toBeUndefined();
+  await ran(app, "bare-done", sessionFile);
   app.emit("task:subagent:lifecycle", { id: "bare-done", status: "completed", sessionFile });
   await app.call({ op: "view" });
   expect((await app.call({ op: "done", message, evidence })).isError).toBeUndefined();

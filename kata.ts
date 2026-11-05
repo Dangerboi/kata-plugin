@@ -120,7 +120,7 @@ export default function ompKata(pi: any) {
 	// delegate's lifecycle record, so it cannot misroute a delegate that is still
 	// being registered. A record, if present, always wins.
 	const untrackedTan = (ctx: any) => ctx?.agent?.kind === "sub" && /^Tan-/.test(ctx.agent.id ?? "") && !store.of(ctx);
-	const { serial, bounded, debug, kata, owned, bind, reconcile } = core;
+	const { serial, bounded, debug, kata, owned, bind, drain } = core;
 	// While the follower runs, `liveInbox` is the main session's `<kata_inbox>` text and the per-turn inbox read is skipped for it.
 	let liveInbox: string | undefined, follower: InboxFollower | undefined;
 	const warm = (ctx: any) => core.warm(ctx, core.delegates.assignment(ctx)?.workspace || ctx.cwd, !(main(ctx) && liveInbox !== undefined));
@@ -380,7 +380,7 @@ export default function ompKata(pi: any) {
 		stopFollower();
 		const session = attentionSession;
 		attentionSession = undefined;
-		// After reconcile: the automatic parent's close still records this session.
-		await bounded(serial(async () => { await reconcile(); if (session) await attention("end", session); }), SHUTDOWN_BOUND_MS);
+		// After the drain: the automatic parent's close still records this session.
+		await bounded(serial(async () => { await drain(); if (session) await attention("end", session); }), SHUTDOWN_BOUND_MS);
 	});
 }
