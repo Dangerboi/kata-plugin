@@ -1,6 +1,7 @@
 import { afterAll, beforeAll, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync } from "node:fs";
 import path from "node:path";
+import { KataError } from "../core/kata-core";
 import { createSettlement, MAX_FAILURES, RETRY_MS, type CloseRequest, type TaskClose } from "../core/settlement";
 import { assertIsolated } from "./isolation";
 import { isolatedKata } from "./kata-fixture";
@@ -115,14 +116,30 @@ test("a deferred close that Kata no longer needs is dropped without running", as
   expect(s.settlement.snapshot().retries).toEqual([]);
 });
 
-test("a deferred removal is told from a completion, and cancelling removes the close", async () => {
+test("cancelling a removal drops a deferred removal and leaves a deferred completion", async () => {
   const s = build();
   const fake = (ref: string) => ({ ref, content: "A task", phase: "Phase", status: "in_progress" as const, revision: 1 });
   s.settlement.deferTaskClose(fake("a#aaaa"), "abandoned", { remove: true }, cwd);
   s.settlement.deferTaskClose(fake("a#bbbb"), "completed", change, cwd);
-  expect([s.settlement.removalDeferred("a#aaaa"), s.settlement.removalDeferred("a#bbbb"), s.settlement.hasTaskClose("a#bbbb")]).toEqual([true, false, true]);
-  s.settlement.cancelTaskClose("a#bbbb");
-  expect(s.settlement.hasTaskClose("a#bbbb")).toBe(false);
+  s.settlement.cancelRemoval("a#aaaa");
+  s.settlement.cancelRemoval("a#bbbb");
+  expect([s.settlement.hasTaskClose("a#aaaa"), s.settlement.hasTaskClose("a#bbbb")]).toEqual([false, true]);
+});
+
+test("a close is never dropped for the drains Kata was unreachable, and completes once it returns", async () => {
+  const child = await create("Outage task");
+  let down = true;
+  const outage = new KataError("daemon unavailable", { exit: 7, code: "daemon_unavailable" });
+  const s = build({ fail: args => down && args[0] === "show" ? outage : undefined });
+  s.settlement.deferTaskClose(await taskOf(child), "completed", change, cwd);
+  for (let i = 0; i < MAX_FAILURES + 2; i++) { s.advance(RETRY_MS + 1); await s.settlement.drain(); }
+  expect(s.flagged).toEqual([]);
+  expect(s.settlement.snapshot().retries.map(([ref]) => ref)).toEqual([child]);
+  down = false;
+  s.advance(RETRY_MS + 1);
+  await s.settlement.drain();
+  expect(s.performed).toEqual([child]);
+  expect((await view(child)).issue.status).toBe("closed");
 });
 
 test("a pending close that fails for another reason is retried on three drains, then dropped and flagged", async () => {

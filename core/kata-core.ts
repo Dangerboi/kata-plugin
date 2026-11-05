@@ -4,7 +4,7 @@ import { appendFileSync, realpathSync } from "node:fs";
 import { decidePlanParent, explicitParent, isExplicitParent, namesPlanParent } from "./plan-parent";
 import { trustedInbox } from "./inbox";
 import { createDelegates, heldByDelegate as heldBy, type DelegateAssignment, type DelegateObservation, type DelegateRecord, type DelegateStore, type Who } from "./delegates";
-import { createSettlement, MAX_FAILURES, openChildren, type CloseRequest } from "./settlement";
+import { createSettlement, MAX_FAILURES, openChildren, type CloseRequest, type PendingClose } from "./settlement";
 
 // Canonical shared source. scripts/vendor-core.ts copies this file into each
 // self-contained plugin; host adapters own their event/schema/identity APIs.
@@ -384,7 +384,6 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 		flag: flagDropped, debug,
 	});
 	let registered: { id?: string; list: Promise<{ id: number; name: string }[]> } | undefined;
-	type PendingClose = CloseRequest & { cwd: string };
 	let lastSnapshot: string | undefined;
 	// Items that name an existing ticket. They live in the session's snapshot, not
 	// in Kata: the ticket can sit under any parent or project, and several items
@@ -1202,7 +1201,6 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 		const { task, change, cwd } = pending;
 		if (change.remove) await remove(task, change, cwd);
 		else await transition(task, pending.to, change, cwd);
-		settlement.cancelTaskClose(task.ref);
 		if (plan.tasks.some(t => t.ref === task.ref)) { await load(plan.workspace); await advance(plan.workspace); }
 	}
 
@@ -1279,7 +1277,7 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 			if (target || needsParent(desired.map(d => d.content))) await ensureParent(params, ctx);
 			cwd = plan.workspace;
 			await load(cwd);
-			for (const task of plan.tasks) if (wanted.has(itemKey(task)) && settlement.removalDeferred(task.ref)) settlement.cancelTaskClose(task.ref);
+			for (const task of plan.tasks) if (wanted.has(itemKey(task))) settlement.cancelRemoval(task.ref);
 			for (const task of plan.tasks) {
 				if (!wanted.has(itemKey(task))) await remove(task, { message: "replaced by a new todo plan" }, cwd);
 			}
@@ -1333,7 +1331,7 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 						if (!existing.length) plan.tasks.push({ content, phase, ref: `local-${digest(phase, content)}`, status: "pending", at: nextStamp() });
 					} else {
 						await create(phase, content, cwd);
-						for (const task of plan.tasks.filter(t => t.content === content && t.phase === phase)) if (settlement.removalDeferred(task.ref)) settlement.cancelTaskClose(task.ref);
+						for (const task of plan.tasks.filter(t => t.content === content && t.phase === phase)) settlement.cancelRemoval(task.ref);
 					}
 				}
 				await load(cwd);
