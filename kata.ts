@@ -81,12 +81,16 @@ export type InboxFollowerDeps = {
 	trusted(requests: unknown, mine: string, recipient: string): { text: string };
 	/** The id of the newest event of the project: the stream is tailed from there, so history never replays. */
 	head(): Promise<number>;
+	/** Milliseconds on a monotonic clock. */
+	now(): number;
 	setTimer(fn: () => void, ms: number): unknown;
 	clearTimer(handle: unknown): void;
 	debug(error: unknown): void;
 };
 
 const MIN_BACKOFF_MS = 1000, MAX_BACKOFF_MS = 30_000;
+// A stream that ended after staying up this long was healthy: only then does the restart backoff start over.
+const HEALTHY_STREAM_MS = 30_000;
 export const slotKey = (address: string) => "notify." + Buffer.from(address, "utf8").toString("base64url");
 const identityOf = (slot: Slot) => JSON.stringify([slot.from, slot.message, slot.re ?? "", slot.kind ?? "", slot.broadcast ?? false]);
 const asRecord = (value: unknown): Record<string, unknown> | undefined => value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : undefined;
@@ -241,21 +245,20 @@ export function createInboxFollower(deps: InboxFollowerDeps): InboxFollower {
 	}
 
 	async function follow(gen: number, stream: InboxStream) {
-		let sawLine = false;
+		const startedAt = deps.now();
 		try {
 			for await (const line of stream.lines) {
 				if (gen !== generation) return;
-				sawLine = true;
 				onLine(line);
 			}
 			await stream.exited;
 		} catch (error) { deps.debug(error); }
 		if (gen !== generation) return;
-		scheduleRestart(gen, sawLine);
+		scheduleRestart(gen, deps.now() - startedAt >= HEALTHY_STREAM_MS);
 	}
 
-	function scheduleRestart(gen: number, sawLine: boolean) {
-		if (sawLine) backoff = MIN_BACKOFF_MS;
+	function scheduleRestart(gen: number, healthy: boolean) {
+		if (healthy) backoff = MIN_BACKOFF_MS;
 		const delay = backoff;
 		backoff = Math.min(backoff * 2, MAX_BACKOFF_MS);
 		timer = deps.setTimer(() => { timer = undefined; if (gen === generation) void boot(gen); }, delay);
@@ -678,6 +681,7 @@ export default function ompKata(pi: any) {
 			publish: text => { liveInbox = text; },
 			trusted: core.trustedInbox,
 			head: () => knownProjectHead(cwd, args => kata(args, cwd)),
+			now: () => performance.now(),
 			setTimer: (fn, ms) => { const handle = setTimeout(fn, ms); handle.unref(); return handle; },
 			clearTimer: handle => clearTimeout(handle as ReturnType<typeof setTimeout>),
 			debug,

@@ -37,8 +37,9 @@ const slot = (message: string, extra: object = {}) => ({ from: "lead", message, 
 
 function follower(options: { requests?: () => unknown[]; read?: () => Promise<unknown>; head?: () => Promise<number>; actor?: () => Promise<string>; spawn?: (cursor?: number) => any } = {}) {
 	const streams: ReturnType<typeof fakeStream>[] = [], cursors: (number | undefined)[] = [];
-	const delivered: string[] = [], published: string[] = [], timers: (() => void)[] = [], debugged: unknown[] = [];
+	const delivered: string[] = [], published: string[] = [], timers: (() => void)[] = [], delays: number[] = [], debugged: unknown[] = [];
 	let reads = 0;
+	const clock = { now: 0 };
 	const deps: InboxFollowerDeps = {
 		address: ADDRESS,
 		actor: options.actor ?? (async () => "lead"),
@@ -54,11 +55,12 @@ function follower(options: { requests?: () => unknown[]; read?: () => Promise<un
 		publish: text => published.push(text),
 		trusted: (requests, mine) => ({ text: (Array.isArray(requests) ? requests : []).filter((r: any) => r.from === mine).map((r: any) => `${r.ref}:${r.message}`).join("|") }),
 		head: options.head ?? (async () => 0),
-		setTimer: fn => { timers.push(fn); return timers.length; },
+		now: () => clock.now,
+		setTimer: (fn, ms) => { timers.push(fn); delays.push(ms); return timers.length; },
 		clearTimer: () => { timers.length = 0; },
 		debug: error => debugged.push(error),
 	};
-	return { follow: createInboxFollower(deps), streams, cursors, delivered, published, timers, debugged, reads: () => reads };
+	return { follow: createInboxFollower(deps), streams, cursors, delivered, published, timers, delays, clock, debugged, reads: () => reads };
 }
 
 test("parseStreamLine reads a slot write, a clear and a reset frame, and ignores other keys", () => {
@@ -513,4 +515,20 @@ test("a live delivery cuts a long message on a character boundary and says it is
 	expect(text).toContain("Message from lead on proj#abcd");
 	expect(text).toContain("kata notify proj#abcd --to lead/worker --clear");
 	expect(deliveryText("proj#abcd", ADDRESS, slot("short"))).toContain("\n\nshort\n\n");
+});
+
+test("a stream that keeps dropping right after a line backs off further each time; only a stream that stayed up a while resets it", async () => {
+	const t = follower();
+	t.follow.start(); await tick();
+	for (let i = 0; i < 3; i++) {
+		t.streams[i].push(slotLine(10 + i, "abcd", slot("m" + i)));
+		await tick();
+		t.streams[i].end(); await tick();
+		t.timers.shift()!(); await tick();
+	}
+	expect(t.delays).toEqual([1000, 2000, 4000]);
+	t.clock.now += 60_000;
+	t.streams[3].end(); await tick();
+	expect(t.delays.at(-1)).toBe(1000);
+	t.follow.stop();
 });
