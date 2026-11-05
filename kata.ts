@@ -19,7 +19,7 @@ import { execFile, spawn } from "node:child_process";
 import { closeSync, openSync, readSync } from "node:fs";
 import { createInterface } from "node:readline";
 import path from "node:path";
-import { createKataCore, DESCRIPTION, sessionKey, render, matchDelegation, namedTargets,
+import { createKataCore, DESCRIPTION, sessionKey, render, matchDelegation, namedTargets, isSessionAddress,
 	kataCommands as parseKataCommands, teammateFor, ticketAutocomplete, delegateCommand, delegateContext, untrackedDelegateContext, type Binding, type Task } from "./core/kata-core";
 
 const EXECUTABLE = process.env.KATA_OMP_EXECUTABLE || "kata";
@@ -66,7 +66,7 @@ function execWithTranscript(file: string, args: string[], options: { cwd: string
 type Slot = { from: string; message: string; re?: string; kind?: string; broadcast?: boolean };
 type InboxStream = { lines: AsyncIterable<string>; exited: Promise<unknown>; kill(): void };
 type SlotState = { eventId?: number; identity: string | null; slot?: Slot; title?: string; ref: string; streamed: number; seeded: boolean };
-type StreamEvent = { type: "reset"; after: number } | { type: "slot"; key: string; ref: string; eventId: number; to: Slot | null };
+type StreamEvent = { type: "reset"; after: number } | { type: "reread" } | { type: "slot"; key: string; ref: string; eventId: number; to: Slot | null };
 export type InboxFollower = { start(): void; stop(): void };
 export type InboxFollowerDeps = {
 	address: string;
@@ -100,8 +100,12 @@ function toSlot(value: unknown): Slot | undefined {
 /** The leading `"event_id":<n>` of a stream line: cheap enough to run on every line of a replay. */
 export const eventIdOf = (line: string) => { const m = /^\{"event_id":(\d+),/.exec(line); return m ? Number(m[1]) : undefined; };
 
-/** One stream line for a slot key, or a reset frame; undefined for every other line. */
+/**
+ * One stream line for a slot key, a reset frame, or a delete/restore (which change what `kata inbox` lists
+ * without a slot diff, so the inbox is read again); undefined for every other line.
+ */
 export function parseStreamLine(line: string, key: string): StreamEvent | undefined {
+	if (line.includes('"type":"issue.soft_deleted"') || line.includes('"type":"issue.restored"')) return { type: "reread" };
 	const reset = line.includes('"reset_required"');
 	if (!reset && !line.includes(key)) return undefined;
 	let parsed: Record<string, unknown> | undefined;
@@ -124,6 +128,20 @@ export function deliveryText(ref: string, address: string, slot: Slot): string {
 	if (slot.kind) notes.push(`This is a ${slot.kind} notice.`);
 	notes.push(`When you have handled it, clear it: \`kata notify ${ref} --to ${address} --clear\``);
 	return [`Message from ${slot.from} on ${ref}, sent to you through kata:`, slot.message, notes.join("\n")].join("\n\n");
+}
+
+const HEAD_PAGE = 10_000;
+
+/** The id of the newest event of the project, by paging `kata events --after`: one call per 10000 events. */
+export async function projectHead(run: (args: string[]) => Promise<string>): Promise<number> {
+	let after = 0;
+	for (;;) {
+		const page = JSON.parse(await run(["events", "--json", "--after", String(after), "--limit", String(HEAD_PAGE)]));
+		if (!Array.isArray(page?.events) || typeof page.next_after_id !== "number") throw new Error("kata events returned no page");
+		if (page.events.length < HEAD_PAGE) return page.next_after_id;
+		if (page.next_after_id <= after) throw new Error("kata events page did not advance");
+		after = page.next_after_id;
+	}
 }
 
 /**
@@ -165,8 +183,8 @@ export function createInboxFollower(deps: InboxFollowerDeps): InboxFollower {
 		deps.deliver(deliveryText(o.ref ?? stored?.ref ?? issue, deps.address, slot));
 	}
 
-	async function readOnce(gen: number) {
-		const since = streamed, quiet = !seededOnce;
+	async function readOnce(gen: number, forceQuiet: boolean) {
+		const since = streamed, quiet = forceQuiet || !seededOnce;
 		let requests: unknown;
 		try { requests = asRecord(await deps.read())?.requests; } catch (error) { return deps.debug(error); }
 		if (gen !== generation || !Array.isArray(requests)) return;
@@ -182,20 +200,22 @@ export function createInboxFollower(deps: InboxFollowerDeps): InboxFollower {
 		for (const [issue, state] of states) if (state.identity !== null && !listed.has(issue) && !newer(issue)) apply(issue, null, { quiet: true, read: true });
 	}
 
-	async function readInbox() {
-		if (reading) { readAgain = true; return; }
+	// `quiet` re-reads only update the section; a coalesced loud request (a reset) keeps the next pass loud.
+	let loudAgain = false;
+	async function readInbox(quiet = false) {
+		if (reading) { readAgain = true; loudAgain ||= !quiet; return; }
 		reading = true;
-		try { do { readAgain = false; await readOnce(generation); } while (readAgain && running); }
+		loudAgain = !quiet;
+		try { do { readAgain = false; const loud = loudAgain; loudAgain = false; await readOnce(generation, !loud); } while (readAgain && running); }
 		finally { reading = false; }
 	}
 
 	function onLine(line: string) {
 		const id = eventIdOf(line);
 		if (id !== undefined && id > cursor) cursor = id;
-		// Delete and restore change which requests `kata inbox` lists without a slot diff, so re-read it.
-		if (line.includes('"type":"issue.soft_deleted"') || line.includes('"type":"issue.restored"')) { void readInbox(); return; }
 		const event = parseStreamLine(line, key);
 		if (!event) return;
+		if (event.type === "reread") { void readInbox(true); return; }
 		if (event.type === "reset") { cursor = event.after; void readInbox(); return; }
 		apply(event.key, event.to, { eventId: event.eventId, ref: event.ref, quiet: false });
 	}
@@ -635,23 +655,7 @@ export default function ompKata(pi: any) {
 			deliver: text => { try { Promise.resolve(pi.sendUserMessage(text, { deliverAs: "aside", attribution: "agent" })).catch(debug); } catch (error) { debug(error); } },
 			publish: text => { liveInbox = text; },
 			trusted: core.trustedInbox,
-			head: async () => {
-				// An event with id > n exists exactly when a one-row read after n returns it. Double to an upper bound, then bisect for the largest id: O(log head) small calls.
-				const hasAfter = async (n: number) => {
-					const page = JSON.parse(await kata(["events", "--json", "--after", String(n), "--limit", "1"], cwd));
-					if (!Array.isArray(page?.events)) throw new Error("kata events returned no page");
-					return page.events.length > 0;
-				};
-				if (!(await hasAfter(0))) return 0;
-				let low = 0, high = 1;
-				while (await hasAfter(high)) { low = high; high *= 2; }
-				// Invariant: an event exists after low, none after high; so the largest id is high.
-				while (high - low > 1) {
-					const mid = Math.floor((low + high) / 2);
-					if (await hasAfter(mid)) low = mid; else high = mid;
-				}
-				return high;
-			},
+			head: () => projectHead(args => kata(args, cwd)),
 			setTimer: (fn, ms) => { const handle = setTimeout(fn, ms); handle.unref(); return handle; },
 			clearTimer: handle => clearTimeout(handle as ReturnType<typeof setTimeout>),
 			debug,
@@ -670,7 +674,7 @@ export default function ompKata(pi: any) {
 		stopFollower();
 		// Live delivery is omp-only: it needs a session inbox address, the aside delivery, and no opt-out (tern-kata delivers for the agents it starts).
 		const user = process.env.KATA_INBOX_USER;
-		const live = !!user?.includes("/") && process.env.KATA_OMP_LIVE_INBOX !== "0" && typeof pi.sendUserMessage === "function";
+		const live = !!user && isSessionAddress(user) && process.env.KATA_OMP_LIVE_INBOX !== "0" && typeof pi.sendUserMessage === "function";
 		if (live) liveInbox = "";
 		void warm(ctx);
 		if (live) startFollower(ctx, user!);

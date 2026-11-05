@@ -1220,6 +1220,7 @@ test("a long trusted inbox is capped like kata inbox --context with an omitted n
   expect(rows.length).toBeLessThan(12);
   expect(Buffer.byteLength(section)).toBeLessThanOrEqual(8 * 1024);
   expect(section).toContain(`${12 - rows.length} request(s) omitted; run kata inbox without --context`);
+  expect(section).not.toContain("truncated");
   for (const ref of refs) await kata(["notify", ref, "--to", "v2-builder/capped", "--clear", "--json"]);
 });
 
@@ -1234,6 +1235,12 @@ test("a bare actor in KATA_INBOX_USER is a person's inbox: the session reads non
   expect(app.notices).toHaveLength(1);
   expect(app.notices[0][0]).toContain("v2-builder/<name>");
   await kata(["notify", ref, "--to", "v2-builder", "--clear", "--json"]);
+  // A trailing slash names no teammate: still a person's inbox.
+  process.env.KATA_INBOX_USER = "v2-builder/";
+  const slashed = host(); await slashed.event("session_start"); await slashed.contractReady;
+  await slashed.event("before_agent_start", { systemPrompt: ["base"] });
+  expect(slashed.calls.filter(a => a[0] === "inbox")).toEqual([]);
+  expect(slashed.notices).toHaveLength(1);
 });
 
 // ---------------------------------------------------------- items naming tickets

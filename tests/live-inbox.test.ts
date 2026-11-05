@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync } from "node:fs";
 import path from "node:path";
 import { assertIsolated } from "./isolation";
 import { adoptIsolatedKata, isolatedKata } from "./kata-fixture";
-import ompKata, { createInboxFollower, deliveryText, parseStreamLine, slotKey, type InboxFollowerDeps } from "../kata";
+import ompKata, { createInboxFollower, deliveryText, parseStreamLine, projectHead, slotKey, type InboxFollowerDeps } from "../kata";
 assertIsolated();
 
 // ------------------------------------------------------------------ follower, no Kata
@@ -129,6 +129,50 @@ test("a deleted or restored issue re-reads the inbox, which then omits or lists 
 	await tick();
 	expect(t.published.at(-1)).toBe("abcd:pending");
 	t.follow.stop();
+});
+
+test("a request delivered before its issue was deleted and restored is delivered once overall and shown again", async () => {
+	let inbox: unknown[] = [];
+	const t = follower({ requests: () => inbox });
+	t.follow.start(); await tick();
+	inbox = [{ ref: "abcd", ...slot("pending") }];
+	t.streams[0].push(slotLine(5, "abcd", slot("pending")));
+	await tick();
+	inbox = [];
+	t.streams[0].push(JSON.stringify({ event_id: 6, type: "issue.soft_deleted", project_name: "proj", issue_short_id: "abcd", payload: {} }));
+	await tick();
+	expect(t.published.at(-1)).toBe("");
+	inbox = [{ ref: "abcd", ...slot("pending") }];
+	t.streams[0].push(JSON.stringify({ event_id: 7, type: "issue.restored", project_name: "proj", issue_short_id: "abcd", payload: {} }));
+	await tick();
+	expect(t.published.at(-1)).toBe("abcd:pending");
+	expect(t.delivered).toEqual([deliveryText("proj#abcd", ADDRESS, slot("pending"))]);
+	t.follow.stop();
+});
+
+test("parseStreamLine reports a delete or restore as a re-read, whatever the slot key", () => {
+	for (const type of ["issue.soft_deleted", "issue.restored"]) {
+		expect(parseStreamLine(JSON.stringify({ event_id: 3, type, project_name: "proj", issue_short_id: "abcd", payload: {} }), KEY)).toEqual({ type: "reread" });
+	}
+});
+
+test("projectHead pages to the newest event id, however large the ids are", async () => {
+	const calls: string[][] = [];
+	const full = Array.from({ length: 10_000 }, (_, i) => ({ event_id: i }));
+	const pages: Record<string, object> = {
+		"0": { events: full, next_after_id: 3_000_000 },
+		"3000000": { events: full, next_after_id: 6_000_000 },
+		"6000000": { events: [{ event_id: 6_000_001 }], next_after_id: 6_000_001 },
+	};
+	const head = await projectHead(async args => { calls.push(args); return JSON.stringify(pages[args[3]]); });
+	expect(head).toBe(6_000_001);
+	expect(calls.map(c => c[3])).toEqual(["0", "3000000", "6000000"]);
+	expect(calls[0]).toEqual(["events", "--json", "--after", "0", "--limit", "10000"]);
+});
+
+test("projectHead of an empty project is 0, and a page without events is an error", async () => {
+	expect(await projectHead(async () => JSON.stringify({ events: [], next_after_id: 0 }))).toBe(0);
+	await expect(projectHead(async () => "{}")).rejects.toThrow();
 });
 
 test("the stream starts at the head, and requests that existed then are shown but never delivered", async () => {
