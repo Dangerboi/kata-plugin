@@ -27,7 +27,7 @@ function capField(value: unknown, limit: number): Capped {
 	return { text: JSON.stringify(c.text), truncated: c.truncated };
 }
 /** The one trust rule: a request counts only when its writer is the session's own actor. */
-const isTrusted = (request: { from?: unknown }, mine: string) => typeof request.from === "string" && request.from === mine;
+const isTrusted = (request: { from?: unknown }, mine: string | undefined) => typeof request.from === "string" && request.from === mine;
 
 export function trustedInbox(requests: unknown, mine: string, recipient: string): { requests: any[]; text: string } {
 	const kept = (Array.isArray(requests) ? requests : []).filter(r => r && typeof r.ref === "string" && typeof r.message === "string" && isTrusted(r, mine));
