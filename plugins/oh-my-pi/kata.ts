@@ -85,10 +85,12 @@ export default function ompKata(pi: any) {
 	const core = createKataCore({
 		// omp's exec spawns with the environment it captured at startup and ignores an env option, so
 		// a close that must carry the transcript identity is spawned here, without a shell or an env program.
-		exec: (file, args, options) => {
-			const { KATA_TRANSCRIPT_AGENT: agent, KATA_TRANSCRIPT_SESSION_ID: session } = process.env;
-			return agent && session && args[0] === "close" ? execWithTranscript(file, args, options, agent, session) : pi.exec(file, args, options);
+		// A delegate runs in the lead's process: its closes carry its own session, never the lead's.
+		exec: (file, args, { transcript, ...options }) => {
+			const pair = transcript === undefined ? { agent: process.env.KATA_TRANSCRIPT_AGENT, id: process.env.KATA_TRANSCRIPT_SESSION_ID } : transcript ?? undefined;
+			return pair?.agent && pair.id && args[0] === "close" ? execWithTranscript(file, args, options, pair.agent, pair.id) : pi.exec(file, args, options);
 		},
+		transcript: ctx => !ctx || main(ctx) ? undefined : childSession(self(ctx)) ?? null,
 		appendEntry: (...args) => pi.appendEntry(...args),
 		getSessionName: () => pi.getSessionName?.(),
 		isMain: main,
@@ -102,7 +104,7 @@ export default function ompKata(pi: any) {
 		// A finished delegate that left its task open hands it back once settled.
 		isDelegated: ref => [...(coordinator?.records.values() ?? [])].some(record => (record.ref || record.planRef) === ref && (record.state === "started" || record.reported !== record.state)),
 		beforeReconcile: syncSnapshots,
-		delegatedRunning: () => [...(coordinator?.records.values() ?? [])].some(record => record.state === "started" || (!record.ref && !record.untracked) || record.ready) ||
+		delegatedRunning: () => [...(coordinator?.records.values() ?? [])].some(record => record.state === "started" || record.ready) ||
 			(core.currentCtx?.getAsyncJobSnapshot?.()?.running ?? []).some((job: any) => job.type === "task"),
 	}, { namespace: "omp", executable: EXECUTABLE, executableVars: EXECUTABLE_VARS, delegateKeys: ["omp.subagent_id"], debugFile: process.env.KATA_OMP_DEBUG });
 	// /tan runs a side conversation in a sub session whose agent id omp mints as
@@ -209,15 +211,17 @@ export default function ompKata(pi: any) {
 	}
 
 	async function settleRecord(record: Delegate) {
-		if (!record.ref || !record.binding || record.state === "started" || record.reported === record.state) return;
+		// A delegate whose binding failed midway still holds its plan task: hand it back like any unclosed one.
+		const ref = record.ref ?? record.planRef;
+		if (!ref || !record.binding || record.state === "started" || record.reported === record.state) return;
 		const cwd = record.binding.workspace;
-		const view = JSON.parse(await kata(["show", record.ref, "--json"], cwd));
+		const view = JSON.parse(await kata(["show", ref, "--json"], cwd));
 		if (view.issue.status !== "closed") {
 			// Only observation metadata belongs to the parent; delegate work.* stays untouched.
-			if (view.issue.metadata?.["omp.status"] !== record.state) await kata(["meta", "set", record.ref, "omp.status", record.state, "--if-match", String(view.issue.revision)], cwd);
-			await kata(["comment", record.ref, "--idempotency-key", `omp-settle:${record.coordinator.id}:${record.id}:${record.state}`,
+			if (view.issue.metadata?.["omp.status"] !== record.state) await kata(["meta", "set", ref, "omp.status", record.state, "--if-match", String(view.issue.revision)], cwd);
+			await kata(["comment", ref, "--idempotency-key", `omp-settle:${record.coordinator.id}:${record.id}:${record.state}`,
 				"--body", `Subagent ${record.id} ${record.state} without closing its Kata issue. Review the work and supply evidence before closing.`], cwd);
-			await core.handBack(record.ref, cwd, { id: record.id, teammate: record.teammate, lead: process.env.KATA_TEAMMATE || "", state: record.state, planTask: !!record.planRef });
+			await core.handBack(ref, cwd, { id: record.id, teammate: record.teammate, lead: process.env.KATA_TEAMMATE || "", state: record.state, planTask: !!record.planRef });
 		}
 		record.reported = record.state;
 	}
