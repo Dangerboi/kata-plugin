@@ -20,6 +20,8 @@ export interface OmpHostOptions {
   after?: (args: string[], result: any) => void;
   /** Tool call id passed to `execute`. */
   callId?: string;
+  /** Receives the adapter's `sendUserMessage` calls; omitted: the host offers none. */
+  sendUserMessage?: (...args: any[]) => void;
   /** Runs after each `event`, e.g. to undo process-level side effects of the handler. */
   afterEvent?: () => void;
 }
@@ -40,6 +42,7 @@ export function ompHost(options: OmpHostOptions) {
     ui: { notify: (...args: any[]) => notices.push(args), setWidget: (...args: any[]) => widgets.push(args) },
   };
   ompKata({ zod: schema, registerTool: (value: any) => tool = value, appendEntry: (customType: string, data: any) => entries.push({ type: "custom", customType, data }),
+    ...options.sendUserMessage && { sendUserMessage: options.sendUserMessage },
     on: (name: string, callback: any) => handlers.set(name, callback), events: { on: (name: string, callback: any) => bus.set(name, callback) },
     async exec(_file: string, args: string[], opts: any) {
       calls.push(args);

@@ -920,7 +920,7 @@ test("a finished delegate that leaves its plan task open hands it back for revie
   expect(closed.labels.some((l: any) => l.label === "needs-review")).toBe(false);
 });
 
-test("a delegate whose binding failed is handed back when it exits, and the automatic parent closes", async () => {
+test("a delegate whose assignment failed is handed back when it exits, and the automatic parent closes", async () => {
   process.env.KATA_TEAMMATE = "lead-mate";
   const app = host({ before: (args: string[]) => args[0] === "meta" && args[3] === "omp.subagent_id" ? { code: 1, stdout: "", stderr: "delegation service permission denied" } : undefined });
   await app.event("session_start");
@@ -941,7 +941,7 @@ test("a delegate whose binding failed is handed back when it exits, and the auto
   expect((await show(ref)).issue.status).toBe("closed");
 });
 
-test("a bound delegate's own todo close records the delegate's session, not the lead's", async () => {
+test("an assigned delegate's own todo close records the delegate's session, not the lead's", async () => {
   const config = path.join(env.KATA_HOME, "config.toml");
   writeFileSync(config, "[close.transcript]\nenabled = true\n");
   try {
@@ -1944,7 +1944,7 @@ test("a fork does not adopt the source's offline plan", async () => {
   const source = host({ before: (a: string[]) => a[0] !== "init" && a[0] !== "projects" ? down() : undefined });
   await source.event("session_start");
   await source.call({ op: "init", items: ["Offline only"] });
-  expect(source.entries.some(e => e.data?.plan?.local)).toBe(true);
+  expect((await source.call({ op: "view" })).content[0].text).toContain("Offline only");
   const next = fork(source, "id"); await next.event("session_start");
   expect((await next.call({ op: "view" })).content[0].text).not.toContain("Offline only");
 });
