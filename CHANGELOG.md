@@ -10,6 +10,7 @@
 - An unregistered folder takes the project name to register from Kata's structured `project_not_initialized` data (project, then alias), then the folder name. No code path reads Kata's message wording.
 - pi: the pre-filled attention baseline is marked as not started, so Kata 0.21's pi hook sends no `attention-native … end` when a session without `KATA_REF` quits.
 - Appending a ticket item that is already open in the plan does nothing. It used to create a stray child issue under the parent, or throw in a plan of only ticket items, which has no parent.
+- A Kata error that follows a warning line (Kata 0.21 prints one when close transcripts are on and no session is set) is still read by its code, so a throttled or refused close is handled as such instead of as a generic failure.
 - Development: run the suite against the installed Kata with `KATA_TEST_EXECUTABLE="$(readlink -f "$(command -v kata)")" bun run test`. Error fixtures are re-captured from Kata 0.21.0. The default `smoke:omp` scenario turns transcripts on and checks that the plugin's close and a delegate's close record omp sessions.
 
 Upgrade notes:

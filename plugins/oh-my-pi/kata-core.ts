@@ -484,7 +484,8 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 			throw new KataError(`kata ${args[0]} could not run: ${(error as Error).message}`, { exit: -1, notRun: true });
 		}
 		if (result.code !== 0 || result.killed) {
-			const envelope = [result.stdout, result.stderr].map(text => { try { return JSON.parse(text ?? "").error; } catch { return undefined; } }).find(e => e && typeof e === "object");
+			// Kata may print warning lines (e.g. a skipped transcript) before the envelope, which is always the last line.
+			const envelope = [result.stdout, result.stderr].map(text => { try { return JSON.parse((text ?? "").trim().split("\n").pop() ?? "").error; } catch { return undefined; } }).find(e => e && typeof e === "object");
 			const detail = envelope?.message ?? (result.stderr || result.stdout || "").trim().split("\n").slice(-3).join(" ");
 			// A host that fails to spawn reports a bare failure with no output at all; Kata always says something.
 			const notRun = !result.killed && !envelope && !detail;

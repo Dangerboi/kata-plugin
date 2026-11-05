@@ -518,6 +518,16 @@ test("a throttled close is deferred by its code, whatever the message says", asy
   expect(r.content[0].text).toContain("retry after 60 seconds");
   expect((await show(ref)).status).toBe("open");
 });
+test("a throttled close is deferred when Kata prints a warning line before the envelope", async () => {
+  // Kata 0.21 with close transcripts on and no session prints this line ahead of the JSON error.
+  const warned = () => { const t = siblingThrottle(); return { ...t, stderr: `close: transcript: current session unavailable or invalid; skipping attachment\n${t.stderr}` }; };
+  const a = app({ before: (args: string[]) => args[0] === "close" ? warned() : undefined });
+  await init(a); const ref = a.core.plan.tasks[0].ref;
+  const r = await a.call({ ...done, task: "First" });
+  expect(r.isError).toBeUndefined();
+  expect(r.content[0].text).toContain("retry after 60 seconds");
+  expect((await show(ref)).status).toBe("open");
+});
 test("throttle wording on a close Kata refused for another reason is an error, not a deferral", async () => {
   const a = app({ before: (args: string[]) => args[0] === "close" ? { code: 1, stdout: "", stderr: '{"error":{"kind":"internal","code":"internal","message":"sibling-close throttle: too many closes","exit_code":1}}\n' } : undefined });
   await init(a);

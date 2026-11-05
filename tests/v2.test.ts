@@ -101,40 +101,47 @@ test("the main session exports its transcript identity on start and switch, and 
   }
 });
 
-test("a close whose Kata executable is missing is an outage whether or not the transcript pair is set", async () => {
-  const outcome = async (withPair: boolean) => {
-    const saved = process.env.PATH, nowhere = mkdtempSync(path.join(scratch, "nowhere-"));
-    // Without the pair the close goes through the host's exec; with it, the adapter spawns Kata itself.
-    const app = host({ sid: `missing-${withPair}`, transcript: withPair, before: (args: string[]) => {
-      if (args[0] === "close") throw missingExecutable();
-    } });
+// A host whose spawn fails reports a bare failure with no output; the paired close, spawned by the adapter, must read the same.
+for (const [name, bareResult, pairedBin] of [
+  ["missing", () => { throw missingExecutable(); }, (dir: string) => dir],
+  ["not executable", () => ({ code: 1, stdout: "", stderr: "" }), (dir: string) => { writeFileSync(path.join(dir, "kata"), "#!/bin/sh\n", { mode: 0o644 }); return dir; }],
+] as const) {
+  test(`a close whose Kata executable is ${name} is an outage whether or not the transcript pair is set`, async () => {
+    const outcome = async (withPair: boolean) => {
+      const saved = process.env.PATH, bin = mkdtempSync(path.join(scratch, "nowhere-"));
+      // Without the pair the close goes through the host's exec; with it, the adapter spawns Kata itself.
+      const app = host({ sid: `${name}-${withPair}`, transcript: withPair, before: (args: string[]) => args[0] === "close" ? bareResult() : undefined });
+      await app.event("session_start");
+      const a = await issue("Ticket A");
+      await app.call({ op: "init", items: [`v2test#${a}: only step`] });
+      // The paired close is spawned by the adapter itself, so PATH must lead to the broken executable.
+      if (withPair) process.env.PATH = pairedBin(bin);
+      try {
+        const result = await app.call({ op: "done", message, evidence });
+        return { isError: result.isError, text: result.content[0].text.replace(/:?\s*(Executable not found[^\n]*|spawn kata \w+)|v2test#\w+/g, "") };
+      } finally { process.env.PATH = saved; }
+    };
+    const bare = await outcome(false);
+    expect(bare.isError).toBe(true);
+    expect(await outcome(true)).toEqual(bare);
+  });
+}
+
+test("a plugin close records the omp session as its transcript when close transcripts are on", async () => {
+  const config = path.join(env.KATA_HOME, "config.toml");
+  writeFileSync(config, "[close.transcript]\nenabled = true\n");
+  try {
+    const app = host({ sid: "transcript-recorded", transcript: true });
     await app.event("session_start");
     const a = await issue("Ticket A");
     await app.call({ op: "init", items: [`v2test#${a}: only step`] });
-    // The paired close is spawned by the adapter itself, so it needs a PATH without Kata.
-    if (withPair) process.env.PATH = nowhere;
-    try {
-      const result = await app.call({ op: "done", message, evidence });
-      return { isError: result.isError, text: result.content[0].text.replace(/Executable not found[^\n]*|spawn kata ENOENT|v2test#\w+/g, "") };
-    } finally { process.env.PATH = saved; }
-  };
-  const bare = await outcome(false);
-  expect(bare.isError).toBe(true);
-  expect(await outcome(true)).toEqual(bare);
-});
-
-test("a plugin close records the omp session as its transcript when close transcripts are on", async () => {
-  writeFileSync(path.join(env.KATA_HOME, "config.toml"), "[close.transcript]\nenabled = true\n");
-  const app = host({ sid: "transcript-recorded", transcript: true });
-  await app.event("session_start");
-  const a = await issue("Ticket A");
-  await app.call({ op: "init", items: [`v2test#${a}: only step`] });
-  const done = await app.call({ op: "done", message, evidence });
-  expect(done.isError, done.content?.[0]?.text).toBeUndefined();
-  expect(app.calls.some(c => c[0] === "close")).toBe(false);
-  const closes = (await kata(["events", "--after", "0", "--limit", "500", "--json"])).events.filter((e: any) => e.type === "issue.closed" && e.payload?.transcript?.session_id === "transcript-recorded");
-  expect(closes.length).toBeGreaterThan(0);
-  expect(closes[0].payload.transcript).toMatchObject({ agent: "omp", session_id: "transcript-recorded" });
+    const done = await app.call({ op: "done", message, evidence });
+    expect(done.isError, done.content?.[0]?.text).toBeUndefined();
+    expect(app.calls.some(c => c[0] === "close")).toBe(false);
+    const closes = (await kata(["events", "--after", "0", "--limit", "500", "--json"])).events.filter((e: any) => e.type === "issue.closed" && e.payload?.transcript?.session_id === "transcript-recorded");
+    expect(closes.length).toBeGreaterThan(0);
+    expect(closes[0].payload.transcript).toMatchObject({ agent: "omp", session_id: "transcript-recorded" });
+  } finally { writeFileSync(config, ""); }
 });
 
 test("an unreachable Kata gets a local plan without Kata mutations and one warning", async () => {

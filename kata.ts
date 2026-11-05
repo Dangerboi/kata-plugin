@@ -43,18 +43,18 @@ type Assignment = { labels: string[]; texts: string[]; refs?: (string | undefine
 
 const delegatesBySession = new Map<string, Delegate>();
 
-// Runs Kata directly with the transcript identity in its environment. Like pi.exec, a non-zero exit
-// is a result, a timeout or abort reports killed, and a spawn failure (ENOENT) rejects.
+// Runs Kata directly with the transcript identity in its environment. Like pi.exec, a non-zero exit or
+// any spawn failure other than a missing executable is a result, a timeout or abort reports killed,
+// and ENOENT rejects.
 function execWithTranscript(file: string, args: string[], options: { cwd: string; timeout: number; signal?: AbortSignal }, agent: string, session: string) {
 	return new Promise<{ code: number; stdout: string; stderr: string; killed: boolean }>((resolve, reject) => {
-		execFile(file, args, { cwd: options.cwd, timeout: options.timeout, signal: options.signal, maxBuffer: 64 * 1024 * 1024,
+		execFile(file, args, { cwd: options.cwd, timeout: options.timeout, signal: options.signal, killSignal: "SIGKILL", maxBuffer: 64 * 1024 * 1024,
 			env: { ...process.env, KATA_TRANSCRIPT_AGENT: agent, KATA_TRANSCRIPT_SESSION_ID: session } },
 			(error, stdout, stderr) => {
 				if (!error) return resolve({ code: 0, stdout, stderr, killed: false });
 				const failure = error as NodeJS.ErrnoException & { killed?: boolean };
-				const aborted = failure.name === "AbortError";
-				if (typeof failure.code === "string" && !aborted) return reject(error);
-				resolve({ code: typeof failure.code === "number" ? failure.code : 1, stdout, stderr, killed: aborted || !!failure.killed });
+				if (failure.code === "ENOENT") return reject(error);
+				resolve({ code: typeof failure.code === "number" ? failure.code : 1, stdout, stderr, killed: failure.name === "AbortError" || !!failure.killed });
 			});
 	});
 }
