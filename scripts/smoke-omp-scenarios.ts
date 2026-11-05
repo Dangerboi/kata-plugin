@@ -17,7 +17,7 @@ export type Issue = {
 	events: { type: string; payload: any }[];
 };
 /** One model request as the scripted provider saw it. */
-export type Request = { agent: string; system: string };
+export type Request = { agent: string; system: string; /** Text of every user-role message in the request. */ users: string[]; /** Role of every message in the request, in order. */ roles: string[] };
 export type Store = {
 	/** Requests recorded by the scripted provider, oldest first. */
 	requests(): Request[];
@@ -122,7 +122,60 @@ export const SCENARIOS: Scenario[] = [{
 	},
 }, {
 	name: "inbox",
-	env: { KATA_INBOX_USER: "smoke-user/lead" },
+	// The notify sender and the session share this actor, so the trust rule accepts the requests.
+	env: { KATA_INBOX_USER: "smoke-user/lead", KATA_AUTHOR: "smoke-user" },
+	// A prompt containing "slow-work" runs a slow bash step; every other turn just answers.
+	scripts: { [MAIN]: Array.from({ length: 60 }, () => (ctx: TurnContext) => ctx.texts.at(-1)?.includes("slow-work") ? [{ tool: "bash", args: { command: "sleep 4" } }] : ["noted"]) },
+	async drive(session) {
+		const checks: Check[] = [];
+		const target = JSON.parse(session.kata(["create", "Inbox target", "--json"])).issue.short_id;
+		const main = () => session.requests().filter(r => r.agent === MAIN);
+		const carrying = (mark: string) => main().filter(r => r.users.some(u => u.includes(mark)));
+		const shows = (mark: string) => (main().at(-1)?.system ?? "").includes(`<kata_inbox>`) && (main().at(-1)?.system ?? "").includes(mark);
+		const until = async (condition: () => boolean, ms = 20_000) => { for (const end = Date.now() + ms; !condition() && Date.now() < end;) await new Promise(r => setTimeout(r, 100)); return condition(); };
+		const notify = (message: string) => session.kata(["notify", target, "--to", "smoke-user/lead", "--message", message]);
+		const clear = () => session.kata(["notify", target, "--to", "smoke-user/lead", "--clear"]);
+		await session.prompt(`${MAIN} start`);
+		checks.push({ name: "no inbox section before any notify", ok: !shows("smoke-") });
+
+		// An idle agent: nobody types, yet a turn starts on the request.
+		notify("smoke-idle-marker");
+		const idle = await until(() => carrying("smoke-idle-marker").length > 0);
+		checks.push({ name: "a notify to an idle agent starts a turn carrying it", ok: idle, detail: "no request carried the message" });
+		const text = carrying("smoke-idle-marker")[0]?.users.find(u => u.includes("smoke-idle-marker")) ?? "";
+		checks.push({ name: "the delivered message names the sender, the issue and how to clear it", ok: text.includes("smoke-user") && text.includes(`omp-smoke#${target}`) && text.includes(`kata notify omp-smoke#${target} --to smoke-user/lead --clear`), detail: text });
+		// Let the turn the request started finish before the next prompt.
+		await new Promise(r => setTimeout(r, 1500));
+		await session.prompt("after the idle delivery");
+		checks.push({ name: "the inbox section shows the request on the next prompt", ok: shows("smoke-idle-marker") });
+		// Later requests keep the delivered message in their history, so a second delivery shows as a second copy there.
+		const copies = (mark: string) => main().at(-1)?.users.filter(u => u.includes(mark)).length ?? 0;
+		checks.push({ name: "the idle request was delivered once", ok: copies("smoke-idle-marker") === 1, detail: `${copies("smoke-idle-marker")} copies` });
+
+		// A cleared request is not delivered, and leaves the section.
+		clear();
+		await new Promise(r => setTimeout(r, 1500));
+		const afterClear = main().length;
+		await session.prompt("after the clear");
+		checks.push({ name: "clearing delivers nothing", ok: main().length === afterClear + 1, detail: `${main().length - afterClear} requests after the clear` });
+		checks.push({ name: "the cleared request leaves the section", ok: !shows("smoke-idle-marker") });
+
+		// A working agent: the request waits for the step boundary, behind the tool result.
+		const running = session.prompt("slow-work please");
+		await new Promise(r => setTimeout(r, 1500));
+		notify("smoke-working-marker");
+		await running;
+		const working = carrying("smoke-working-marker");
+		checks.push({ name: "a notify to a working agent arrives within the same run, once", ok: working.length > 0 && copies("smoke-working-marker") === 1, detail: `${working.length} requests carried it, ${copies("smoke-working-marker")} copies` });
+		const roles = working[0]?.roles ?? [];
+		checks.push({ name: "it arrives after the slow tool step finished, not by interrupting it", ok: roles.slice(-3).join() === "assistant,toolResult,user", detail: roles.join() });
+		clear();
+		return checks;
+	},
+}, {
+	name: "inbox-per-turn",
+	// KATA_OMP_LIVE_INBOX=0 is what tern-kata sets for the agents it starts: it delivers there itself.
+	env: { KATA_INBOX_USER: "smoke-user/lead", KATA_AUTHOR: "smoke-user", KATA_OMP_LIVE_INBOX: "0" },
 	scripts: { [MAIN]: Array.from({ length: 12 }, () => ["noted"]) },
 	async drive(session) {
 		const MARK = "smoke-inbox-marker";
@@ -138,6 +191,8 @@ export const SCENARIOS: Scenario[] = [{
 		await session.prompt(`${MAIN} start`);
 		checks.push({ name: "no inbox section before any notify", ok: !seen() });
 		session.kata(["notify", target, "--to", "smoke-user/lead", "--message", MARK]);
+		await new Promise(r => setTimeout(r, 2000));
+		checks.push({ name: "with live delivery off, a notify starts no turn", ok: !session.requests().some(r => r.users.some(u => u.includes(MARK))) && session.requests().length === 1, detail: `${session.requests().length} requests` });
 		const shown = await within(2, true);
 		checks.push({ name: "notify sent mid-session reaches the system prompt within two turns", ok: shown > 0, detail: "never appeared" });
 		session.kata(["notify", target, "--to", "smoke-user/lead", "--clear"]);
@@ -145,6 +200,7 @@ export const SCENARIOS: Scenario[] = [{
 		checks.push({ name: "clearing the request removes the section within two turns", ok: cleared > 0, detail: "still present" });
 		await session.prompt("one more turn");
 		checks.push({ name: "the cleared request stays gone", ok: !seen() });
+		checks.push({ name: "no message was delivered live at any point", ok: !session.requests().some(r => r.users.some(u => u.includes(MARK))) });
 		return checks;
 	},
 }, {

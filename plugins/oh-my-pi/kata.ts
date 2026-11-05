@@ -16,8 +16,9 @@
 // (labeled with the repo) or in its inferred project, registered on first use.
 // The plan is session-local only while Kata is unreachable, then it replays.
 
-import { execFile } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { closeSync, openSync, readSync } from "node:fs";
+import { createInterface } from "node:readline";
 import path from "node:path";
 import { createKataCore, DESCRIPTION, sessionKey, render, matchDelegation, namedTargets,
 	kataCommands as parseKataCommands, teammateFor, ticketAutocomplete, delegateCommand, delegateContext, untrackedDelegateContext, type Binding, type Task } from "./kata-core";
@@ -60,6 +61,212 @@ function execWithTranscript(file: string, args: string[], options: { cwd: string
 	});
 }
 
+// ------------------------------------------------------------- live inbox
+
+// A request as Kata stores it in the slot `notify.<base64url(address)>` of one issue.
+type Slot = { from: string; message: string; re?: string; kind?: string; broadcast?: boolean };
+type InboxStream = { lines: AsyncIterable<string>; exited: Promise<unknown>; kill(): void };
+type SlotState = { eventId?: number; identity: string | null; slot?: Slot; title?: string; ref: string; streamed: number; seeded: boolean };
+type StreamEvent = { type: "reset"; after: number } | { type: "slot"; key: string; ref: string; eventId: number; to: Slot | null };
+export type InboxFollower = { start(): void; stop(): void };
+export type InboxFollowerDeps = {
+	address: string;
+	/** The session's own actor: only requests it wrote are trusted. */
+	actor(): Promise<string>;
+	/** The parsed output of `kata inbox --for <address> --json`; rejects when Kata cannot answer. */
+	read(): Promise<unknown>;
+	spawn(cursor: number | undefined): InboxStream;
+	deliver(text: string): void;
+	/** The trusted requests rendered for the `<kata_inbox>` section; "" when there are none. */
+	publish(text: string): void;
+	trusted(requests: unknown, mine: string, recipient: string): { text: string };
+	/** The id of the newest event of the project: the stream is tailed from there, so history never replays. */
+	head(): Promise<number>;
+	setTimer(fn: () => void, ms: number): unknown;
+	clearTimer(handle: unknown): void;
+	debug(error: unknown): void;
+};
+
+const MIN_BACKOFF_MS = 1000, MAX_BACKOFF_MS = 30_000;
+export const slotKey = (address: string) => "notify." + Buffer.from(address, "utf8").toString("base64url");
+const identityOf = (slot: Slot) => JSON.stringify([slot.from, slot.message, slot.re ?? "", slot.kind ?? "", slot.broadcast ?? false]);
+const asRecord = (value: unknown): Record<string, unknown> | undefined => value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : undefined;
+
+function toSlot(value: unknown): Slot | undefined {
+	const r = asRecord(value);
+	if (!r || typeof r.from !== "string" || typeof r.message !== "string") return undefined;
+	return { from: r.from, message: r.message, ...(typeof r.re === "string" && r.re ? { re: r.re } : {}), ...(typeof r.kind === "string" && r.kind ? { kind: r.kind } : {}), ...(r.broadcast === true ? { broadcast: true } : {}) };
+}
+
+/** The leading `"event_id":<n>` of a stream line: cheap enough to run on every line of a replay. */
+export const eventIdOf = (line: string) => { const m = /^\{"event_id":(\d+),/.exec(line); return m ? Number(m[1]) : undefined; };
+
+/** One stream line for a slot key, or a reset frame; undefined for every other line. */
+export function parseStreamLine(line: string, key: string): StreamEvent | undefined {
+	const reset = line.includes('"reset_required"');
+	if (!reset && !line.includes(key)) return undefined;
+	let parsed: Record<string, unknown> | undefined;
+	try { parsed = asRecord(JSON.parse(line)); } catch { return undefined; }
+	if (!parsed) return undefined;
+	if (parsed.reset_required === true && typeof parsed.reset_after_id === "number") return { type: "reset", after: parsed.reset_after_id };
+	if (parsed.type !== "issue.metadata_updated" || typeof parsed.event_id !== "number" || typeof parsed.issue_short_id !== "string") return undefined;
+	const change = asRecord(asRecord(asRecord(parsed.payload)?.diff)?.[key]);
+	if (!change) return undefined;
+	const ref = typeof parsed.project_name === "string" && parsed.project_name ? `${parsed.project_name}#${parsed.issue_short_id}` : parsed.issue_short_id;
+	if (change.to === null) return { type: "slot", key: parsed.issue_short_id, ref, eventId: parsed.event_id, to: null };
+	const to = toSlot(change.to);
+	return to ? { type: "slot", key: parsed.issue_short_id, ref, eventId: parsed.event_id, to } : undefined;
+}
+
+/** What the agent is told when a request arrives. */
+export function deliveryText(ref: string, address: string, slot: Slot): string {
+	const notes: string[] = [];
+	if (slot.re) notes.push(`It is about comment ${slot.re}.`);
+	if (slot.kind) notes.push(`This is a ${slot.kind} notice.`);
+	notes.push(`When you have handled it, clear it: \`kata notify ${ref} --to ${address} --clear\``);
+	return [`Message from ${slot.from} on ${ref}, sent to you through kata:`, slot.message, notes.join("\n")].join("\n\n");
+}
+
+/**
+ * Follows `kata events --tail` for one address and hands each new trusted request to `deliver` once.
+ * The stream starts at the head found when it begins, so requests that existed then are only shown, never
+ * delivered. A restart resumes from the last event id, and the inbox is read again to catch what a
+ * stream that could not resume missed.
+ */
+export function createInboxFollower(deps: InboxFollowerDeps): InboxFollower {
+	const key = slotKey(deps.address);
+	const states = new Map<string, SlotState>();
+	let running = false, generation = 0, mine: string | undefined, seededOnce = false, headed = false;
+	let child: InboxStream | undefined, timer: unknown, cursor = 0, backoff = MIN_BACKOFF_MS;
+	let reading = false, readAgain = false;
+	// Counts slot events from the stream, so a read leaves alone the issues the stream changed while it ran.
+	let streamed = 0;
+
+	function publish() {
+		if (mine === undefined) return;
+		const requests = [...states].filter(([, s]) => s.slot).map(([issue, s]) => ({ ref: issue, title: s.title, ...s.slot }));
+		deps.publish(deps.trusted(requests, mine, deps.address).text);
+	}
+
+	function apply(issue: string, slot: Slot | null, o: { eventId?: number; quiet: boolean; ref?: string; title?: string; read?: boolean }) {
+		const stored = states.get(issue);
+		if (o.eventId !== undefined && stored?.eventId !== undefined && o.eventId <= stored.eventId) return;
+		const identity = slot ? identityOf(slot) : null;
+		const same = stored ? stored.identity === identity : identity === null;
+		// A value the start read recorded may be the very event now arriving live (it landed between the head and the read); the stream confirms it once.
+		const confirm = same && stored?.seeded === true && !o.quiet && !o.read && slot !== null;
+		states.set(issue, {
+			eventId: o.eventId ?? stored?.eventId, identity, slot: slot ?? undefined, title: o.title ?? stored?.title, ref: o.ref ?? stored?.ref ?? issue,
+			streamed: o.read ? (stored?.streamed ?? 0) : ++streamed,
+			seeded: same && !confirm ? stored?.seeded === true : slot !== null && !!o.read && o.quiet,
+		});
+		if (same && !confirm) return publish();
+		publish();
+		if (slot === null || o.quiet || slot.from !== mine || !slot.message.trim()) return;
+		deps.deliver(deliveryText(o.ref ?? stored?.ref ?? issue, deps.address, slot));
+	}
+
+	async function readOnce(gen: number) {
+		const since = streamed, quiet = !seededOnce;
+		let requests: unknown;
+		try { requests = asRecord(await deps.read())?.requests; } catch (error) { return deps.debug(error); }
+		if (gen !== generation || !Array.isArray(requests)) return;
+		seededOnce = true;
+		const newer = (issue: string) => (states.get(issue)?.streamed ?? 0) > since;
+		const listed = new Set<string>();
+		for (const request of requests) {
+			const r = asRecord(request), slot = toSlot(request);
+			if (!r || !slot || typeof r.ref !== "string" || !r.ref) continue;
+			listed.add(r.ref);
+			if (!newer(r.ref)) apply(r.ref, slot, { quiet, read: true, title: typeof r.title === "string" ? r.title : undefined });
+		}
+		for (const [issue, state] of states) if (state.identity !== null && !listed.has(issue) && !newer(issue)) apply(issue, null, { quiet: true, read: true });
+	}
+
+	async function readInbox() {
+		if (reading) { readAgain = true; return; }
+		reading = true;
+		try { do { readAgain = false; await readOnce(generation); } while (readAgain && running); }
+		finally { reading = false; }
+	}
+
+	function onLine(line: string) {
+		const id = eventIdOf(line);
+		if (id !== undefined && id > cursor) cursor = id;
+		const event = parseStreamLine(line, key);
+		if (!event) return;
+		if (event.type === "reset") { cursor = event.after; void readInbox(); return; }
+		apply(event.key, event.to, { eventId: event.eventId, ref: event.ref, quiet: false });
+	}
+
+	async function follow(gen: number, stream: InboxStream) {
+		let sawLine = false;
+		try {
+			for await (const line of stream.lines) {
+				if (gen !== generation) return;
+				sawLine = true;
+				onLine(line);
+			}
+			await stream.exited;
+		} catch (error) { deps.debug(error); }
+		if (gen !== generation) return;
+		scheduleRestart(gen, sawLine);
+	}
+
+	function scheduleRestart(gen: number, sawLine: boolean) {
+		if (sawLine) backoff = MIN_BACKOFF_MS;
+		const delay = backoff;
+		backoff = Math.min(backoff * 2, MAX_BACKOFF_MS);
+		timer = deps.setTimer(() => { timer = undefined; if (gen === generation) void boot(gen); }, delay);
+	}
+
+	function launch(gen: number) {
+		try { child = deps.spawn(cursor > 0 ? cursor : undefined); }
+		catch (error) { deps.debug(error); return scheduleRestart(gen, false); }
+		void follow(gen, child);
+	}
+
+	async function boot(gen: number) {
+		try {
+			mine ??= await deps.actor();
+			if (!headed) { const head = await deps.head(); if (gen !== generation) return; cursor = Math.max(cursor, head); headed = true; }
+		} catch (error) { deps.debug(error); if (gen === generation) scheduleRestart(gen, false); return; }
+		if (gen !== generation) return;
+		launch(gen);
+		void readInbox();
+	}
+
+	return {
+		start() {
+			if (running) return;
+			running = true;
+			generation++;
+			backoff = MIN_BACKOFF_MS;
+			void boot(generation);
+		},
+		stop() {
+			if (!running) return;
+			running = false;
+			generation++;
+			if (timer !== undefined) deps.clearTimer(timer);
+			timer = undefined;
+			try { child?.kill(); } catch { /* already gone */ }
+			child = undefined;
+		},
+	};
+}
+
+/** `kata events --tail` as a child of this process: no shell, the process environment, no stdin. */
+function spawnEvents(cwd: string, cursor: number | undefined): InboxStream {
+	const args = ["events", "--tail", "--json", "--workspace", cwd, ...(cursor ? ["--last-event-id", String(cursor)] : [])];
+	const proc = spawn(EXECUTABLE, args, { cwd, env: { ...process.env }, stdio: ["ignore", "pipe", "ignore"] });
+	const exited = new Promise<void>(resolve => { proc.on("error", () => resolve()); proc.on("close", () => resolve()); });
+	// Never keep omp alive for the stream.
+	proc.unref();
+	if ("unref" in proc.stdout! && typeof proc.stdout.unref === "function") proc.stdout.unref();
+	return { lines: createInterface({ input: proc.stdout! }), exited, kill: () => { proc.kill("SIGKILL"); } };
+}
+
 export default function ompKata(pi: any) {
 	const z = pi.zod;
 	const main = (ctx: any) => ctx?.agent?.kind === "main";
@@ -97,7 +304,9 @@ export default function ompKata(pi: any) {
 	// being registered. A record, if present, always wins.
 	const untrackedTan = (ctx: any) => ctx?.agent?.kind === "sub" && /^Tan-/.test(ctx.agent.id ?? "") && !self(ctx);
 	const { serial, bounded, debug, kata, actor, owned, load, bind, reconcile } = core;
-	const warm = (ctx: any) => core.warm(ctx, self(ctx)?.binding?.workspace || ctx.cwd);
+	// While the follower runs, `liveInbox` is the main session's `<kata_inbox>` text and the per-turn inbox read is skipped for it.
+	let liveInbox: string | undefined, follower: InboxFollower | undefined;
+	const warm = (ctx: any) => core.warm(ctx, self(ctx)?.binding?.workspace || ctx.cwd, !(main(ctx) && liveInbox !== undefined));
 	pi.registerTool({
 		name: "todo",
 		label: "Todo (kata カタ)",
@@ -374,7 +583,8 @@ export default function ompKata(pi: any) {
 		} else if (delegate?.untracked) {
 			sections.push(`<kata_binding>\n${untrackedDelegateContext(ctx.agent.id)}\n</kata_binding>`);
 		}
-		if (core.cache.inbox) sections.push(`<kata_inbox>\n${core.cache.inbox}\n</kata_inbox>`);
+		const inbox = main(ctx) && liveInbox !== undefined ? liveInbox : core.cache.inbox;
+		if (inbox) sections.push(`<kata_inbox>\n${inbox}\n</kata_inbox>`);
 		if (main(ctx) && (core.plan.parent || core.plan.tasks.some(t => t.ticket))) sections.push(`<kata_todo>\nThe todo tool is backed by Kata. Current plan:\n${render(core.plan)}\n</kata_todo>`);
 		if (!sections.length) return;
 		return { systemPrompt: [...base, sections.join("\n\n")] };
@@ -406,6 +616,41 @@ export default function ompKata(pi: any) {
 		ctx.ui.addAutocompleteProvider((current: any) => ticketAutocomplete(current, core.tickets, { defaultProject: process.env.KATA_DEFAULT_PROJECT?.trim() || undefined }));
 	}
 
+	function stopFollower() {
+		follower?.stop();
+		follower = undefined;
+		liveInbox = undefined;
+	}
+
+	// Requests are delivered as an aside: an idle session starts a turn on them, a working one takes them at its
+	// next step boundary without losing its tool batch. The sender is a relayed agent request, not the person.
+	function startFollower(ctx: any, address: string) {
+		const cwd = path.resolve(ctx.cwd);
+		follower = createInboxFollower({
+			address,
+			actor: () => core.inboxActor(cwd),
+			read: async () => JSON.parse(await kata(["inbox", "--for", address, "--json"], cwd)),
+			spawn: cursor => spawnEvents(cwd, cursor),
+			deliver: text => { try { Promise.resolve(pi.sendUserMessage(text, { deliverAs: "aside", attribution: "agent" })).catch(debug); } catch (error) { debug(error); } },
+			publish: text => { liveInbox = text; },
+			trusted: core.trustedInbox,
+			head: async () => {
+				// Pages of the project's events end at the head: a page past it is empty and echoes its cursor.
+				let after = 0;
+				for (;;) {
+					const page = JSON.parse(await kata(["events", "--json", "--after", String(after), "--limit", "1000"], cwd));
+					if (!Array.isArray(page?.events) || typeof page.next_after_id !== "number") throw new Error("kata events returned no page");
+					if (!page.events.length) return after;
+					after = page.next_after_id;
+				}
+			},
+			setTimer: (fn, ms) => { const handle = setTimeout(fn, ms); handle.unref(); return handle; },
+			clearTimer: handle => clearTimeout(handle as ReturnType<typeof setTimeout>),
+			debug,
+		});
+		follower.start();
+	}
+
 	async function begin(ctx: any) {
 		if (!main(ctx)) { core.currentCtx = ctx; void prepareIfTracked(ctx).then(() => warm(ctx)).catch(debug); return; }
 		offerTickets(ctx);
@@ -414,7 +659,13 @@ export default function ompKata(pi: any) {
 		const id = ctx.sessionManager?.getSessionId?.();
 		// Inherited by bash-tool and plugin closes so Kata records this omp session.
 		if (id) { process.env.KATA_TRANSCRIPT_AGENT = "omp"; process.env.KATA_TRANSCRIPT_SESSION_ID = id; }
+		stopFollower();
+		// Live delivery is omp-only: it needs a session inbox address, the aside delivery, and no opt-out (tern-kata delivers for the agents it starts).
+		const user = process.env.KATA_INBOX_USER;
+		const live = !!user?.includes("/") && process.env.KATA_OMP_LIVE_INBOX !== "0" && typeof pi.sendUserMessage === "function";
+		if (live) liveInbox = "";
 		void warm(ctx);
+		if (live) startFollower(ctx, user!);
 		await bounded(serial(async () => {
 			await bind(ctx, explicit);
 			core.resetReminders();
@@ -432,6 +683,7 @@ export default function ompKata(pi: any) {
 	// The transcript pair is left for the next session_start to overwrite: clearing after a slow cleanup could delete the pair of an instance omp already started in this process.
 	pi.on("session_shutdown", async (_event: any, ctx: any) => {
 		if (!main(ctx)) return;
+		stopFollower();
 		const session = attentionSession;
 		attentionSession = undefined;
 		// After reconcile: the automatic parent's close still records this session.

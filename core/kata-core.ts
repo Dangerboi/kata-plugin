@@ -1646,7 +1646,7 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 		const quote = (value: unknown) => JSON.stringify(String(value ?? ""));
 		const line = (r: any) => {
 			const message = r.broadcast ? `broadcast from ${r.from}: ${r.message}` : r.re ? `re ${r.re}: ${r.message}` : r.message;
-			return `- issue=${quote(r.ref)} title=${quote(r.title)} from=${quote(r.from)}${r.kind ? ` kind=${quote(r.kind)}` : ""} message=${quote(message)}`;
+			return `- issue=${quote(r.ref)}${r.title === undefined ? "" : ` title=${quote(r.title)}`} from=${quote(r.from)}${r.kind ? ` kind=${quote(r.kind)}` : ""} message=${quote(message)}`;
 		};
 		return {
 			requests: kept,
@@ -1654,10 +1654,18 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 		};
 	}
 
+	// The actor whose requests count as trusted: resolved once per session, shared by the per-turn
+	// read and the live follower so both apply the same rule.
+	function inboxActor(cwd: string): Promise<string> {
+		const entry = cache;
+		return entry.actor ??= actor(cwd).catch(error => { entry.actor = undefined; throw error; });
+	}
+
 	// The contract is fetched once per session; the inbox on every call, so a request
 	// sent mid-session reaches a later turn. A read slower than the caller's budget
-	// keeps running and lands in the cache for the next turn.
-	function warm(ctx: any, cwd = ctx.cwd) {
+	// keeps running and lands in the cache for the next turn. `inbox: false` leaves the
+	// inbox to a caller that keeps it current another way.
+	function warm(ctx: any, cwd = ctx.cwd, inbox = true) {
 		const id = ctx.sessionManager?.getSessionId?.();
 		if (cache.id !== id) cache = { id };
 		const entry = cache;
@@ -1677,11 +1685,11 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 				entry.personInbox = true;
 				if (main(ctx) && host.allowUI?.(ctx) !== false) ctx?.ui?.notify?.(`KATA_INBOX_USER=${user} is a person's inbox, so this session reads none. Use ${user}/<name> for a session inbox.`, "warning");
 			}
-		} else if (user && !entry.inboxPending) {
+		} else if (inbox && user && !entry.inboxPending) {
 			// Only requests from the session's own actor reach the prompt. A failed read (or actor
 			// lookup) keeps the last inbox; no trusted request removes the section.
 			entry.inboxPending = (async () => {
-				const mine = await (entry.actor ??= actor(cwd).catch(error => { entry.actor = undefined; throw error; }));
+				const mine = await inboxActor(cwd);
 				const out = JSON.parse(await kata(["inbox", "--for", user, "--json"], cwd));
 				entry.inbox = trustedInbox(out?.requests, mine, user).text;
 			})().catch(debug).finally(() => { entry.inboxPending = undefined; });
@@ -1728,6 +1736,6 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 		resetReminders() { reminders = 0; },
 		debug, bounded, serial, kata, projectNames, pin, actor, owned, work, load, refresh, probe, bind, handBack,
 		ensureParent, destination, candidate, adopt, reconcile, drainRetries, apply, execute, command,
-		observeToolResult, remind, warm, tickets, trustedInbox,
+		observeToolResult, remind, warm, tickets, trustedInbox, inboxActor,
 	};
 }
