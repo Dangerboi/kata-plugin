@@ -1195,12 +1195,12 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 			if (fallback === "active" && active.length > 1) throw new Error(`Several tasks are in progress (${active.map(t => `"${t.content}"`).join(", ")}); name the task.`);
 			throw new Error("Name the task (verbatim content or Kata ref).");
 		}
-		if (!plan.local && !plan.tasks.some(t => t.content === target) && /(?:^|#)[0-9a-hjkmnp-tv-z]{26}$/i.test(target)) target = await pin(target, plan.workspace!);
+		if (!plan.local && !plan.tasks.some(t => t.content === target) && /(?:^|#)[0-9a-hjkmnp-tv-z]{26}$/i.test(target)) target = await pin(target, plan.workspace || currentCtx.cwd);
 		const exact = plan.tasks.filter(t => t.content === target || t.ref === target || t.ref.split("#")[1] === target);
 		if (exact.length === 1) return exact;
 		if (QUALIFIED_REF_ONLY.test(target) && !exact.length && !plan.local) {
 			// A short id is only unique per project: compare the ticket the ref names now, never its short id alone.
-			const pinned = await pin(target, plan.workspace!).catch(() => undefined);
+			const pinned = await pin(target, plan.workspace || currentCtx.cwd).catch(() => undefined);
 			const moved = plan.tasks.filter(t => t.ref === pinned);
 			if (moved.length === 1) return moved;
 		}
