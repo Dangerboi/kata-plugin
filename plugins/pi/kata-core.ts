@@ -9,7 +9,7 @@ import { createSettlement, MAX_FAILURES, openChildren, type CloseRequest, type P
 // Canonical shared source. scripts/vendor-core.ts copies this file into each
 // self-contained plugin; host adapters own their event/schema/identity APIs.
 
-export function createdParentRef(out: any): string {
+function createdParentRef(out: any): string {
 	const event = out.event ?? out.original_event;
 	if (!out.issue?.short_id || !event?.project_name) throw new Error("kata create returned no parent identity");
 	return `${event.project_name}#${out.issue.short_id}`;
@@ -27,6 +27,8 @@ export interface CoreHost {
 	getSessionName?(): string | undefined;
 	isMain?(ctx: any): boolean;
 	allowUI?(ctx: any): boolean;
+	// The core serves one session for the process's life (a pi child), so an assigned delegate may bind it. A shared core (omp) stays bound to the lead.
+	soleSession?: boolean;
 	// Where delegate records live. Default: in memory, found by the delegate's session id.
 	delegateStore?: DelegateStore;
 	// Present: the main session follows its session inbox live (the host spawns the event stream and delivers each request as an aside).
@@ -101,7 +103,7 @@ export function inferredName(data: Record<string, unknown> | undefined, cwd: str
 export function quote(value: string): string { return `'${value.replace(/'/g, "'\\''")}'`; }
 
 // `<actor>/<teammate>` with both parts non-empty is a session inbox; anything else is a person's.
-export const isSessionAddress = (address: string) => /^[^/]+\/[^/]/.test(address);
+const isSessionAddress = (address: string) => /^[^/]+\/[^/]/.test(address);
 
 export const OPEN: ReadonlySet<Status> = new Set(["pending", "in_progress", "blocked"]);
 const WORKING: ReadonlySet<Status> = new Set(["in_progress", "blocked"]);
@@ -110,7 +112,7 @@ const MARK: Record<Status, string> = { pending: "[ ]", in_progress: "[/]", compl
 const itemKey = (item: { phase: string; content: string }) => `${item.phase}\u0000${item.content}`;
 
 // How long a main session's shutdown waits for Kata before the host may exit: closing an automatic parent takes six or more spawns, and an exit mid-way leaves the parent open.
-export const SHUTDOWN_BOUND_MS = 10_000;
+const SHUTDOWN_BOUND_MS = 10_000;
 
 export const DESCRIPTION = `Track multi-step work as a todo list stored in Kata. Tasks are identified by verbatim content (or Kata ref), NEVER generated IDs. Unique, stable task/phase names; lost text: view, NEVER guess.
 Before work, init for 3+ steps, requested task sets, or new instructions. MUST list EVERY user item separately; NEVER omit or remember leftovers.
@@ -214,14 +216,14 @@ export function delegateCommand(command: string, executable: string, executableV
 	return command;
 }
 
-export function delegateContext(executable: string, id: string, ref: string, teammate: string, binding: Binding): string {
+function delegateContext(executable: string, id: string, ref: string, teammate: string, binding: Binding): string {
 	const command = `${quote(executable)} --workspace ${quote(binding.workspace)} --project ${quote(binding.parent.split("#")[0])} --teammate ${quote(teammate)}`;
 	return `You are subagent ${id}. Your Kata issue is ${ref}; your teammate is ${teammate}. Keep the existing actor and use this issue instead of inherited KATA_REF. Track attention on your own issue. When verified, YOU must run: ${command} close ${quote(ref)} --done --message '<describe this task and its verification in at least 40 characters>' --evidence '<typed evidence for your actual verification>'. If unfinished, leave it open and explain what remains.`;
 }
 
 // A delegate that matched no plan item and named no ticket has no issue. Its
 // binding says so instead of sending it to one: the lead tracks the work.
-export function untrackedDelegateContext(id: string): string {
+function untrackedDelegateContext(id: string): string {
 	return `You are subagent ${id}. The lead session tracks this work and you have no Kata issue. Do not create, claim, close, comment on or edit Kata issues, including one named by an inherited KATA_REF. Reading Kata is fine. Report your results in your reply.`;
 }
 
@@ -1737,7 +1739,7 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 				see(ctx);
 				const context = prompt.context !== false;
 				await bounded(Promise.all([
-					main(ctx) && currentId !== sid(ctx) ? serial(() => bind(ctx)) : undefined,
+					(main(ctx) || (host.soleSession && delegates.assignment(ctx))) && currentId !== sid(ctx) ? serial(() => bind(ctx)) : undefined,
 					(async () => { await prompt.after; if (context) await warm(ctx, delegates.assignment(ctx)?.workspace || ctx.cwd, !(main(ctx) && liveInbox !== undefined)); })(),
 				]), main(ctx) ? 250 : 3000); // a delegate cannot learn its issue later
 				const sections: PromptSections = {};
