@@ -180,6 +180,15 @@ test("projectHead of an empty project is 0, and a page without events is an erro
 	await expect(projectHead(async () => "{}")).rejects.toThrow();
 });
 
+test("projectHead continues past a purge marker to the newest event", async () => {
+	const pages: Record<string, object> = {
+		"0": { reset_required: true, reset_after_id: 4, events: [], next_after_id: 4 },
+		"4": { events: [{ event_id: 5 }, { event_id: 6 }], next_after_id: 6 },
+	};
+	expect(await projectHead(async args => JSON.stringify(pages[args[3]]))).toBe(6);
+	await expect(projectHead(async () => JSON.stringify({ reset_required: true, events: [], next_after_id: 0 }))).rejects.toThrow();
+});
+
 test("the stream starts at the head, and requests that existed then are shown but never delivered", async () => {
 	const t = follower({ head: async () => 40, requests: () => [{ ref: "abcd", title: "T", ...slot("pending") }] });
 	t.follow.start(); await tick();
@@ -336,6 +345,19 @@ test("a failed first inbox read is retried while the stream stays open, and the 
 	t.follow.stop();
 });
 
+test("a pending seed retry does nothing once the first read landed another way", async () => {
+	let reads = 0;
+	const t = follower({ read: async () => { if (++reads === 1) throw new Error("kata slow"); return { requests: [{ ref: "abcd", title: "T", ...slot("waiting") }] }; } });
+	t.follow.start(); await tick();
+	expect(t.timers).toHaveLength(1);
+	t.streams[0].push(JSON.stringify({ reset_required: true, reset_after_id: 9 })); await tick();
+	expect(t.published.at(-1)).toBe("abcd:waiting");
+	const before = t.reads();
+	t.timers.shift()!(); await tick();
+	expect(t.reads()).toBe(before);
+	t.follow.stop();
+});
+
 test("a later session start in the same process pages the event log forward from the head it already knew", async () => {
 	const calls: string[] = [];
 	let head = 25_000;
@@ -483,4 +505,12 @@ test("nothing is delivered after stop", async () => {
 	await settle(1000);
 	expect(t.delivered).toEqual([]);
 	await kata(["notify", ref, "--to", address, "--clear", "--json"]);
+});
+
+test("the project head found after a purge is the newest event, so the stream does not replay what follows the marker", async () => {
+	const doomed = await issue();
+	await kata(["purge", `omp-v2-live#${doomed}`, "--force", "--confirm", `PURGE omp-v2-live#${doomed}`, "--json"]);
+	const kept = await issue();
+	const newest = (await kata(["comment", `omp-v2-live#${kept}`, "-m", "newest", "--json"])).event.id;
+	expect(await projectHead(kataText)).toBe(newest);
 });
