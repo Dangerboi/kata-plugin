@@ -589,6 +589,33 @@ test("a child reload keeps its binding", async () => {
   leaveChild();
 });
 
+test("an untracked child leaves the lead's marker for the children it starts", async () => {
+  const parent = await host(); await parent.event("session_start", { reason: "startup" });
+  await parent.init(["Implement marker fixture", "Write marker fixture tests"]);
+  const lead = JSON.parse(process.env.KATA_PI_PARENT!);
+  const probe = await childOf(parent);
+  await probe.event("before_agent_start", { prompt: "Reply with exactly: SUBAGENT-OK", systemPromptOptions: { sections: {} } });
+  expect(delegateRecord(probe).state).toBe("untracked");
+  expect(JSON.parse(process.env.KATA_PI_PARENT!)).toMatchObject({ sessionId: lead.sessionId, ref: lead.ref });
+  leaveChild();
+});
+
+test("a resumed assigned child shows the sub-plan it made under its issue in its first prompt", async () => {
+  const parent = await host(); await parent.event("session_start", { reason: "startup" });
+  await parent.init(["Implement resume fixture", "Write resume fixture tests"]);
+  const marker = process.env.KATA_PI_PARENT!;
+  const child = await childOf(parent);
+  await child.event("before_agent_start", { prompt: "Write resume fixture tests", systemPromptOptions: { sections: {} } });
+  await child.call({ op: "init", items: ["Sketch the resume cases"] });
+  process.env.KATA_PI_PARENT = JSON.stringify({ ...JSON.parse(marker), pid: process.pid + 1 });
+  const resumed = await host({ sid: child.sid, entries: JSON.parse(JSON.stringify(child.entries)) });
+  await resumed.event("session_start", { reason: "resume" });
+  const event: any = { prompt: "Continue", systemPromptOptions: { sections: {} } };
+  await resumed.event("before_agent_start", event);
+  expect(event.systemPromptOptions.sections.kata_todo).toContain("Sketch the resume cases");
+  leaveChild();
+});
+
 test("a child never binds an issue another writer owns", async () => {
   const parent = await host(); await parent.event("session_start", { reason: "startup" });
   const ref = await parent.init(["Implement foreign fixture"]);

@@ -93,12 +93,14 @@ export default async function piKata(pi: ExtensionAPI) {
 		getSessionName: () => pi.getSessionName(),
 		allowUI: ctx => ctx.hasUI === true,
 		isMain: () => !inherited,
+		soleSession: true,
 		delegateStore: store,
 	}, { namespace: "pi", executable, executableVars: EXECUTABLE_VARS, explicitRef: () => inherited ? undefined : explicit, debugFile: process.env.KATA_PI_DEBUG || process.env.KATA_OMP_DEBUG });
 
 	// Where the lead's plan lives, as the latest core call reported it.
 	let lead: Lead = { workspace: path.resolve(process.cwd()) };
 	function exportParent(ctx: ExtensionContext) {
+		if (inherited && !current?.ref) { process.env.KATA_PI_PARENT = JSON.stringify(inherited); return; }
 		process.env.KATA_PI_PARENT = JSON.stringify({ pid: process.pid, sessionId: ctx.sessionManager.getSessionId(),
 			ref: inherited ? current?.ref : lead.parent || explicit,
 			workspace: inherited ? current?.binding?.workspace || inherited.workspace : lead.workspace || path.resolve(ctx.cwd),
