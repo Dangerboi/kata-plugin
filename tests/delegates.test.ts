@@ -150,6 +150,7 @@ test("a delegate whose assignment failed is handed back when it exits, even with
   const task = await taskOf(parent, "Build the eta widget"), ref = `delegates-test#${task.short_id}`;
   failing = args => args[0] === "meta" && args[3] === "omp.subagent_id";
   await a.delegates.apply(a.started("eta", "Build the eta widget"));
+  failing = args => args[0] === "label";
   await a.delegates.apply({ type: "exited", id: "eta", outcome: "completed" });
   // The hand back cannot finish while the write keeps failing; it runs again on the next settlement.
   failing = undefined;
@@ -158,6 +159,36 @@ test("a delegate whose assignment failed is handed back when it exits, even with
   expect(labels(view)).toContain("needs-review");
   expect(view.issue.metadata.teammate).toBe(LEAD);
   expect(await a.delegated("Build the eta widget")).toBe(false);
+});
+
+test("a rollback that failed partway finishes on the next settle instead of refusing the lead", async () => {
+  const a = lead(); const parent = await a.plan(["Build the iota widget", "Lead step"]);
+  const task = await taskOf(parent, "Build the iota widget"), ref = `delegates-test#${task.short_id}`;
+  await a.delegates.apply(a.started("iota", "Build the iota widget"));
+  failing = args => args[0] === "meta" && args[1] === "unset" && args[3] === "omp.status";
+  await a.delegates.apply({ type: "exited", id: "iota", outcome: "ended" });
+  expect(await a.delegated("Build the iota widget")).toBe(true);
+  failing = undefined;
+  await a.view();
+  const view = await show(ref);
+  expect(await a.delegated("Build the iota widget")).toBe(false);
+  for (const key of ["omp.subagent_id", "omp.session_id", "omp.status", "omp.parent_agent_id"]) expect(view.issue.metadata[key]).toBeUndefined();
+  expect(view.issue.metadata.teammate).toBe(LEAD);
+});
+
+test("a resumed delegate whose settle never finished keeps its issue instead of handing it back mid-work", async () => {
+  const a = lead(); const parent = await a.plan(["Build the kappa widget", "Lead step"]);
+  const task = await taskOf(parent, "Build the kappa widget"), ref = `delegates-test#${task.short_id}`;
+  await a.delegates.apply(a.started("kappa", "Build the kappa widget"));
+  failing = args => args[0] === "meta" && args[3] === "todo.status";
+  await a.delegates.apply({ type: "exited", id: "kappa", outcome: "ended" });
+  failing = undefined;
+  await a.delegates.apply({ type: "nextUse", id: "kappa" });
+  await a.view();
+  const view = await show(ref);
+  expect(view.issue.metadata["omp.subagent_id"]).toBe("kappa");
+  expect(view.issue.metadata.teammate).toBe("mate-kappa");
+  expect(await a.delegated("Build the kappa widget")).toBe(true);
 });
 
 test("a delegate that exits with its issue closed leaves it closed and releases it", async () => {

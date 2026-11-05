@@ -1774,6 +1774,22 @@ test("init needs no replace once every task of the plan is closed", async () => 
   expect((await show(ref)).children.find((c: any) => c.title === "Follow-up task").status).toBe("open");
 });
 
+test("init with a bare short id that resolves in the session project refuses to abandon that ticket's open children", async () => {
+  const other = path.join(scratch, `other-${++sequence}`); mkdirSync(other);
+  await kata(["init", "--project", "v2alpha", "--json"], other);
+  const alpha = (await kata(["create", "Alpha parent", "--force-new", "--json"], other)).issue.short_id;
+  const beta = await issue("Beta parent");
+  await kata(["create", "Beta open child", "--parent", beta, "--meta", "todo.phase=Tasks", "--meta", "todo.status=pending", "--force-new", "--json"]);
+  // Short ids are random per project, so route the bare id to the session project's ticket.
+  const app = host({ before: (args: string[], opts: any) => args.includes(alpha) ? run(args.map(a => a === alpha ? `v2test#${beta}` : a), opts.cwd, opts.timeout) : undefined });
+  await app.call({ op: "init", ref: `v2alpha#${alpha}`, items: ["Alpha child"] });
+  const mark = app.calls.length;
+  const result = await app.call({ op: "init", ref: alpha, items: ["Alpha child"] });
+  expect(result.isError).toBe(true);
+  expect(kataWrites(app.calls.slice(mark))).toEqual([]);
+  expect((await show(beta)).children.map((c: any) => c.status)).toEqual(["open"]);
+});
+
 // omp's /tan runs a side conversation in a sub session named Tan-<snowflake>
 // that no task spawn created; it keeps the todo tool.
 test("an untracked /tan sub session uses omp's native todo and makes no Kata calls", async () => {

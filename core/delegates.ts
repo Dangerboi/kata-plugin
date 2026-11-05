@@ -229,7 +229,7 @@ export function createDelegates(env: DelegatesEnv): Delegates {
 		const planned = (!!first.parent && !first.local) || first.tasks.some(t => t.ticket);
 		if (planned || loadAlways) await env.load(first.workspace || env.cwd());
 		const plan = env.plan();
-		return { all: plan.tasks, parent: plan.parent, workspace: plan.workspace || env.cwd(), label: plan.label, auto: plan.auto, local: !!plan.local, planned };
+		return { all: plan.tasks, parent: plan.parent, workspace: plan.workspace, label: plan.label, auto: plan.auto, local: !!plan.local, planned };
 	}
 
 	async function check(spawns: Spawn[], held: Iterable<string> = [], scope: Scope = {}): Promise<Reservation[]> {
@@ -323,14 +323,17 @@ export function createDelegates(env: DelegatesEnv): Delegates {
 	}
 
 	// A delegate that exited having run no tool did nothing: put the issue back as it was.
-	async function rollback(r: DelegateRecord) {
+	// `issue` is the current state: each step runs only while it is still undone, so a rollback that failed partway finishes on the next settle.
+	async function rollback(r: DelegateRecord, issue: any) {
 		const { restore } = r, ref = r.ref!, cwd = r.binding!.workspace;
 		if (!restore) throw new Error(`Delegate ${r.id} has nothing to restore.`);
 		const set = (key: string) => restore.meta[key] === undefined ? ["meta", "unset", ref, key] : ["meta", "set", ref, key, String(restore.meta[key])];
-		const issue = await env.owned(ref, cwd, false, false, undefined, { teammate: r.teammate, delegate: true });
-		await env.work(ref, "work.attention", restore.meta["work.attention"] as string | undefined, cwd, issue);
-		for (const key of ["todo.status", "teammate"]) await env.kata(set(key), cwd);
-		if (restore.claimed) await env.kata(["unassign", ref], cwd);
+		if (issue.metadata?.teammate === r.teammate) {
+			const owned = await env.owned(ref, cwd, false, false, undefined, { teammate: r.teammate, delegate: true });
+			await env.work(ref, "work.attention", restore.meta["work.attention"] as string | undefined, cwd, owned);
+			for (const key of ["todo.status", "teammate"]) await env.kata(set(key), cwd);
+		}
+		if (restore.claimed && issue.owner) await env.kata(["unassign", ref], cwd);
 		// The subagent id goes last: a partial rollback leaves the task marked delegated.
 		for (const key of [keySession, ...(ns === "omp" ? ["omp.parent_agent_id", "omp.status"] : []), keySubagent]) await env.kata(set(key), cwd);
 	}
@@ -360,7 +363,7 @@ export function createDelegates(env: DelegatesEnv): Delegates {
 		const issue = JSON.parse(await env.kata(["show", ref, "--json"], cwd)).issue;
 		if (issue.status === "closed") { r.state = "settled"; env.store.put(r); return; }
 		if (r.state === "assigned" && r.observesTools && !r.ranTool) {
-			await rollback(r);
+			await rollback(r, issue);
 			r.state = "settled"; env.store.put(r);
 			return;
 		}
@@ -403,6 +406,10 @@ export function createDelegates(env: DelegatesEnv): Delegates {
 				return r;
 			case "exited":
 				if (r && !r.exited) { r.exited = event.outcome; env.store.put(r); }
+				return r;
+			case "nextUse":
+				// A resumed child whose settle never finished is working again.
+				if (r?.exited && !FINAL.has(r.state)) { r.exited = undefined; env.store.put(r); }
 				return r;
 			default:
 				return r;

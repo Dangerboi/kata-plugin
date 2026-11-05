@@ -3,8 +3,8 @@ import path from "node:path";
 import { appendFileSync, realpathSync } from "node:fs";
 import { decidePlanParent, explicitParent, isExplicitParent, namesPlanParent } from "./plan-parent";
 import { createInboxFollower, knownProjectHead, trustedInbox, type InboxFollower, type LiveInbox } from "./inbox";
-import { createDelegates, heldByDelegate as heldBy, type DelegateAssignment, type DelegateOutcome, type DelegateRecord, type DelegateStore, type Reservation, type Spawn, type Who } from "./delegates";
-import { createSettlement, MAX_FAILURES, openChildren, type CloseRequest } from "./settlement";
+import { createDelegates, heldByDelegate as heldBy, type DelegateAssignment, type DelegateRecord, type DelegateStore, type Reservation, type Spawn, type Who } from "./delegates";
+import { createSettlement, MAX_FAILURES, openChildren, type CloseRequest, type PendingClose } from "./settlement";
 
 // Canonical shared source. scripts/vendor-core.ts copies this file into each
 // self-contained plugin; host adapters own their event/schema/identity APIs.
@@ -393,7 +393,6 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 		flag: flagDropped, debug,
 	});
 	let registered: { id?: string; list: Promise<{ id: number; name: string }[]> } | undefined;
-	type PendingClose = CloseRequest & { cwd: string };
 	let lastSnapshot: string | undefined;
 	// Items that name an existing ticket. They live in the session's snapshot, not
 	// in Kata: the ticket can sit under any parent or project, and several items
@@ -1209,7 +1208,6 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 		const { task, change, cwd } = pending;
 		if (change.remove) await remove(task, change, cwd);
 		else await transition(task, pending.to, change, cwd);
-		settlement.cancelTaskClose(task.ref);
 		if (plan.tasks.some(t => t.ref === task.ref)) { await load(plan.workspace); await advance(plan.workspace); }
 	}
 
@@ -1270,7 +1268,8 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 			const target = choice.parent;
 			if (target) {
 				const workspace = choice.workspace;
-				const parent = namesPlanParent(plan.parent, aliases, target) ? plan.parent! : await pin(target, workspace);
+				const keepsParent = choice.provenance === "init" ? target === plan.parent || aliases.has(target) : namesPlanParent(plan.parent, aliases, target);
+				const parent = keepsParent && plan.parent ? plan.parent : await pin(target, workspace);
 				if (choice.overridden && parent !== await pin(choice.overridden, workspace)) throw new Error(`Kata init ref ${params.ref} conflicts with the explicit binding ${target}; neither plan was replaced.`);
 				const tasks = tasksOf(await childrenOf(parent, workspace), parent);
 				refuseOpen(params.replace === true, [...tasks, ...named], wanted);
@@ -1284,7 +1283,7 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 			if (target || needsParent(desired.map(d => d.content))) await ensureParent(params, ctx);
 			cwd = plan.workspace;
 			await load(cwd);
-			for (const task of plan.tasks) if (wanted.has(itemKey(task)) && settlement.removalDeferred(task.ref)) settlement.cancelTaskClose(task.ref);
+			for (const task of plan.tasks) if (wanted.has(itemKey(task))) settlement.cancelRemoval(task.ref);
 			for (const task of plan.tasks) {
 				if (!wanted.has(itemKey(task))) await remove(task, { message: "replaced by a new todo plan" }, cwd);
 			}
@@ -1338,7 +1337,7 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 						if (!existing.length) plan.tasks.push({ content, phase, ref: `local-${digest(phase, content)}`, status: "pending", at: nextStamp() });
 					} else {
 						await create(phase, content, cwd);
-						for (const task of plan.tasks.filter(t => t.content === content && t.phase === phase)) if (settlement.removalDeferred(task.ref)) settlement.cancelTaskClose(task.ref);
+						for (const task of plan.tasks.filter(t => t.content === content && t.phase === phase)) settlement.cancelRemoval(task.ref);
 					}
 				}
 				await load(cwd);

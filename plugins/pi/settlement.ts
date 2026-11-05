@@ -1,4 +1,4 @@
-import { qualifiedRef, type Binding, type Change, type Status, type Task } from "./kata-core";
+import { isUnusable, qualifiedRef, type Binding, type Change, type Status, type Task } from "./kata-core";
 
 // Settlement: the closes the plugin still owes a session. Throttled task closes,
 // ticket closes waiting on open children, and the automatic parent's close are
@@ -10,7 +10,7 @@ const TIMER_MS = RETRY_MS + 100;
 export const MAX_FAILURES = 3;
 
 export type CloseRequest = { key: string; message: string; evidence: string[] };
-type PendingClose = CloseRequest & { cwd: string };
+export type PendingClose = CloseRequest & { cwd: string };
 export type TaskClose = { task: Task; to: Status; change: Change; cwd: string; at: number };
 export type SettlementSnapshot = {
 	autoParents: Binding[];
@@ -44,8 +44,8 @@ export interface Settlement {
 	deferTaskClose(task: Task, to: Status, change: Change, cwd: string): string;
 	cancelTaskClose(ref: string): void;
 	hasTaskClose(ref: string): boolean;
-	// The task's deferred close is a removal.
-	removalDeferred(ref: string): boolean;
+	// Drop the task's deferred close and its failure count.
+	cancelRemoval(ref: string): void;
 	holdTicketClose(ticket: string, request: CloseRequest, cwd: string): void;
 	addAutoParent(binding: Binding): void;
 	dropAutoParent(parent: string): void;
@@ -94,9 +94,10 @@ export function createSettlement(deps: SettlementDeps): Settlement {
 	}
 	function clearTimer() { cancelTimer?.(); cancelTimer = undefined; }
 
-	// A failed close counts one drain; the third drops it and flags the issue.
+	// A failed close counts one drain; the third drops it and flags the issue. Kata being unreachable counts none.
 	async function failed(key: string, ref: string, cwd: string, error: unknown, drop: () => void) {
 		debug(error);
+		if (isUnusable(error)) return;
 		const count = (failures.get(key) ?? 0) + 1;
 		if (count < MAX_FAILURES) { failures.set(key, count); return; }
 		failures.delete(key);
@@ -199,7 +200,7 @@ export function createSettlement(deps: SettlementDeps): Settlement {
 		},
 		cancelTaskClose(ref) { retries.delete(ref); failures.delete(`task:${ref}`); },
 		hasTaskClose: ref => retries.has(ref),
-		removalDeferred: ref => retries.get(ref)?.change.remove === true,
+		cancelRemoval(ref) { if (retries.get(ref)?.change.remove === true) { retries.delete(ref); failures.delete(`task:${ref}`); } },
 		holdTicketClose(ticket, request, cwd) { pendingCloses.set(ticket, { ...request, cwd }); failures.delete(`ticket:${ticket}`); },
 		addAutoParent(binding) { autoParents.set(binding.parent, binding); },
 		dropAutoParent(parent) { autoParents.delete(parent); },
@@ -214,7 +215,7 @@ export function createSettlement(deps: SettlementDeps): Settlement {
 			try {
 				await drainTasks();
 				await drainTickets();
-				if (!deps.delegatesRunning()) await auditAutoParents();
+				await auditAutoParents();
 			} catch (error) { debug(error); }
 			if (retries.size) schedule();
 		},
