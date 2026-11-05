@@ -13,13 +13,17 @@ export function createdParentRef(out: any): string {
 	return `${event.project_name}#${out.issue.short_id}`;
 }
 
+export type TranscriptSession = { agent: string; id: string };
+
 export interface CoreHost {
-	exec(file: string, args: string[], options: { cwd: string; timeout: number }): Promise<{ code: number; stdout: string; stderr?: string; killed?: boolean }>;
+	exec(file: string, args: string[], options: { cwd: string; timeout: number; transcript?: TranscriptSession | null }): Promise<{ code: number; stdout: string; stderr?: string; killed?: boolean }>;
 	appendEntry(type: string, data: unknown): void;
 	getSessionName?(): string | undefined;
 	isMain?(ctx: any): boolean;
 	allowUI?(ctx: any): boolean;
 	isDelegated?(ref: string): boolean;
+	// The transcript session a call made for this caller records. Undefined: the host's own; null: none.
+	transcript?(ctx: any): TranscriptSession | null | undefined;
 	beforeReconcile?(): Promise<void>;
 	delegatedRunning?(): boolean;
 	binding?(ctx: any): Promise<{ ref: string; workspace: string; teammate: string } | undefined>;
@@ -492,7 +496,8 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 		const end = args.indexOf("--");
 		args = [...args.slice(0, end < 0 ? args.length : end), ...flags, ...(end < 0 ? [] : args.slice(end))];
 		let result: Awaited<ReturnType<CoreHost["exec"]>>;
-		try { result = await host.exec(options.executable, args, { cwd, timeout }); }
+		const transcript = host.transcript?.(currentCtx);
+		try { result = await host.exec(options.executable, args, transcript === undefined ? { cwd, timeout } : { cwd, timeout, transcript }); }
 		catch (error) {
 			if ((error as { code?: unknown })?.code !== "ENOENT") throw error;
 			throw new KataError(`kata ${args[0]} could not run: ${(error as Error).message}`, { exit: -1, notRun: true });

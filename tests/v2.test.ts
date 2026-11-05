@@ -886,6 +886,61 @@ test("a finished delegate that leaves its plan task open hands it back for revie
   expect(closed.labels.some((l: any) => l.label === "needs-review")).toBe(false);
 });
 
+test("a delegate whose binding failed is handed back when it exits, and the automatic parent closes", async () => {
+  process.env.KATA_TEAMMATE = "lead-mate";
+  let failing = true;
+  const app = host({ before: (args: string[]) => failing && args[0] === "meta" && args[3] === "omp.subagent_id" ? { code: 1, stdout: "", stderr: "delegation service permission denied" } : undefined });
+  await app.event("session_start");
+  const ref = await app.init(["Delegated plan task", "Lead step"]);
+  const sessionFile = `${scratch}/binding-failed.jsonl`;
+  app.emit("task:subagent:lifecycle", { id: "binding-failed", status: "started", sessionFile, description: "Delegated plan task" });
+  await app.call({ op: "view" });
+  app.emit("task:subagent:lifecycle", { id: "binding-failed", status: "completed", sessionFile });
+  await app.call({ op: "view" });
+  await Bun.sleep(300);
+  failing = false;
+  await app.call({ op: "view" });
+  const task = (await show(ref)).children.find((c: any) => c.title === "Delegated plan task");
+  const settled = await show(`v2test#${task.short_id}`);
+  expect(settled.labels.some((l: any) => l.label === "needs-review")).toBe(true);
+  expect(settled.issue.metadata.teammate).toBe("lead-mate");
+  expect((await kata(["inbox", "--for", "v2-builder/lead-mate", "--json"])).requests.some((r: any) => r.ref.endsWith(task.short_id))).toBe(true);
+  expect((await app.call({ op: "done", task: "Delegated plan task", message, evidence })).isError).toBeUndefined();
+  expect((await app.call({ op: "done", task: "Lead step", message, evidence })).isError).toBeUndefined();
+  await app.call({ op: "view" });
+  expect((await show(ref)).issue.status).toBe("closed");
+});
+
+test("a bound delegate's own todo close records the delegate's session, not the lead's", async () => {
+  const config = path.join(env.KATA_HOME, "config.toml");
+  writeFileSync(config, "[close.transcript]\nenabled = true\n");
+  try {
+    const lead = host({ sid: "transcript-lead", transcript: true });
+    await lead.event("session_start");
+    const ref = await lead.init(["Delegated transcript task", "Lead transcript step"]);
+    const sessionFile = `${scratch}/delegate-transcript.jsonl`;
+    writeFileSync(sessionFile, '{"type":"session","version":3,"id":"transcript-delegate"}\n');
+    lead.emit("task:subagent:lifecycle", { id: "Transcript.Delegate", status: "started", sessionFile, description: "Delegated transcript task" });
+    await lead.call({ op: "view" });
+    const assigned = (await show(ref)).children.find((c: any) => c.metadata?.["omp.subagent_id"] === "Transcript.Delegate");
+    const worker = host({ sessionFile, agent: { kind: "sub", id: "Transcript.Delegate", parentId: lead.ctx.agent.id }, transcript: true });
+    await worker.event("session_start");
+    expect((await worker.call({ op: "init", items: ["Delegate transcript step"] })).isError).toBeUndefined();
+    const done = await worker.call({ op: "done", task: "Delegate transcript step", message, evidence });
+    expect(done.isError, done.content?.[0]?.text).toBeUndefined();
+    const step = (await show(`v2test#${assigned.short_id}`)).children.find((c: any) => c.title === "Delegate transcript step");
+    expect(step.status).toBe("closed");
+    const closed: any[] = [];
+    for (let after = 0;;) {
+      const page = await kata(["events", "--after", String(after), "--limit", "500", "--json"]);
+      closed.push(...page.events.filter((e: any) => e.type === "issue.closed" && e.issue_short_id === step.short_id));
+      if (page.events.length < 500) break;
+      after = page.next_after_id;
+    }
+    expect(closed.map((e: any) => e.payload?.transcript?.session_id)).toEqual(["transcript-delegate"]);
+  } finally { writeFileSync(config, ""); }
+});
+
 test("delegate teammates differ across sessions that reuse an agent name", async () => {
   const teammates: string[] = [];
   for (const n of [1, 2]) {
