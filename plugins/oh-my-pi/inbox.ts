@@ -4,10 +4,10 @@
 // reads and the stream. The host supplies Kata and the process: reads, spawning the stream, timers, the clock.
 
 /** The most bytes of one request message the agent is shown. */
-export const INBOX_MESSAGE_LIMIT = 1024;
-export type Capped = { text: string; truncated: boolean };
+const INBOX_MESSAGE_LIMIT = 1024;
+type Capped = { text: string; truncated: boolean };
 /** `value` as text, cut to `limit` bytes on a character boundary with a trailing ellipsis. */
-export function capText(value: unknown, limit: number): Capped {
+function capText(value: unknown, limit: number): Capped {
 	const text = String(value ?? ""), bytes = Buffer.from(text);
 	if (bytes.length <= limit) return { text, truncated: false };
 	let end = limit - 3;
@@ -147,31 +147,49 @@ export function deliveryText(ref: string, address: string, slot: Slot): string {
 
 const HEAD_PAGE = 10_000;
 
-/** The id of the newest event of the project, by paging `kata events --after` from `from`: one call per 10000 events. */
-export async function projectHead(run: (args: string[]) => Promise<string>, from = 0): Promise<number> {
-	let after = from;
+type HeadWalk = { head: number; project?: string };
+
+// `known` lets a walk jump to a head already found for the project its pages turn out to belong to.
+async function walkHead(run: (args: string[]) => Promise<string>, from: number, known?: (project: string) => number | undefined): Promise<HeadWalk> {
+	let after = from, project: string | undefined;
 	for (;;) {
 		const page = JSON.parse(await run(["events", "--json", "--after", String(after), "--limit", String(HEAD_PAGE)]));
 		if (!Array.isArray(page?.events) || typeof page.next_after_id !== "number") throw new Error("kata events returned no page");
+		const uid = page.events[0]?.project_uid;
+		if (typeof uid === "string") project = uid;
 		// A cursor older than a purge gets no events, only the purge marker as the id to continue from.
 		if (page.events.length >= HEAD_PAGE || page.reset_required === true) {
 			if (page.next_after_id <= after) throw new Error("kata events page did not advance");
-			after = page.next_after_id;
+			after = Math.max(page.next_after_id, (project && known?.(project)) || 0);
 			continue;
 		}
-		return page.next_after_id;
+		return { head: page.next_after_id, project };
 	}
 }
 
-// Kata has no head-only query, so each session start pages forward from the head this process last saw for the workspace.
-const knownHeads = new Map<string, number>();
+/** The id of the newest event of the project, by paging `kata events --after` from `from`: one call per 10000 events. */
+export async function projectHead(run: (args: string[]) => Promise<string>, from = 0): Promise<number> {
+	return (await walkHead(run, from)).head;
+}
 
-/** `projectHead` for a workspace, remembered for the process so a later session start does not page the whole log again. */
+// Kata has no head-only query, and `kata events` lists one project's events under store-wide ids, so a head is
+// only reusable for the same project. Events name their project, so a workspace learns its project from its
+// first page (no extra Kata call) and then shares the project's head with every other workspace of it.
+const projectHeads = new Map<string, number>();
+const workspaceProjects = new Map<string, string>();
+
+/** `projectHead` for a workspace, remembered per project for the process so a later session start does not page the whole log again. */
 export async function knownProjectHead(workspace: string, run: (args: string[]) => Promise<string>): Promise<number> {
-	const key = `${process.env.KATA_HOME ?? ""}\0${workspace}`;
-	const head = await projectHead(run, knownHeads.get(key) ?? 0);
-	knownHeads.set(key, head);
-	return head;
+	const home = process.env.KATA_HOME ?? "", workspaceKey = `${home}\0${workspace}`;
+	const headKey = (project: string) => `${home}\0${project}`;
+	const earlier = workspaceProjects.get(workspaceKey);
+	const found = await walkHead(run, earlier ? projectHeads.get(headKey(earlier)) ?? 0 : 0, project => projectHeads.get(headKey(project)));
+	const project = found.project ?? earlier;
+	if (project) {
+		workspaceProjects.set(workspaceKey, project);
+		projectHeads.set(headKey(project), found.head);
+	}
+	return found.head;
 }
 
 /**
