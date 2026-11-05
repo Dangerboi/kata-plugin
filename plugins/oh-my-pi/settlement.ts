@@ -41,10 +41,10 @@ export interface SettlementDeps {
 }
 
 export interface Settlement {
-	deferTaskClose(task: Task, to: Status, change: Change, cwd: string): string;
+	pendTaskClose(task: Task, to: Status, change: Change, cwd: string): string;
 	cancelTaskClose(ref: string): void;
 	hasTaskClose(ref: string): boolean;
-	// Drop the task's deferred close and its failure count.
+	// Drop the task's pending removal and its failure count; a pending completion stays.
 	cancelRemoval(ref: string): void;
 	holdTicketClose(ticket: string, request: CloseRequest, cwd: string): void;
 	addAutoParent(binding: Binding): void;
@@ -105,17 +105,20 @@ export function createSettlement(deps: SettlementDeps): Settlement {
 		await deps.flag(ref, cwd, error).catch(debug);
 	}
 
+	// Drop a pending task close and its failure count.
+	function dropTask(ref: string) { retries.delete(ref); failures.delete(`task:${ref}`); }
+
 	async function drainTasks() {
 		for (const [ref, pending] of retries) {
 			if (pending.at > clock()) continue;
 			try {
 				const current = JSON.parse(await kata(["show", ref, "--json"], pending.cwd)).issue;
-				if (pending.task.revision === undefined || current.status !== "open" || current.revision !== pending.task.revision) { retries.delete(ref); failures.delete(`task:${ref}`); continue; }
+				if (pending.task.revision === undefined || current.status !== "open" || current.revision !== pending.task.revision) { dropTask(ref); continue; }
 				await deps.performTask(pending);
 				if (retries.get(ref) === pending) retries.delete(ref);
 				failures.delete(`task:${ref}`);
 			} catch (error) {
-				// Throttled again: the close was deferred anew, not failed.
+				// Throttled again: the close is pending anew, not failed.
 				if (retries.get(ref) !== pending) continue;
 				await failed(`task:${ref}`, pending.task.ref, pending.cwd, error, () => retries.delete(ref));
 			}
@@ -185,22 +188,22 @@ export function createSettlement(deps: SettlementDeps): Settlement {
 					const live = await owned(parent, workspace);
 					if (decision && live.revision !== decision.revision) continue;
 					await kata(["label", "add", parent, "needs-review"], workspace);
-					if (error instanceof NoEvidence) flagged.set(parent, verdictKey(initial, JSON.parse(await kata(["show", parent, "--json"], workspace)).issue.revision));
+					if (initial && !isUnusable(error)) flagged.set(parent, verdictKey(initial, JSON.parse(await kata(["show", parent, "--json"], workspace)).issue.revision));
 				} catch (error) { debug(error); }
 			}
 		}
 	}
 
 	return {
-		deferTaskClose(task, to, change, cwd) {
+		pendTaskClose(task, to, change, cwd) {
 			retries.set(task.ref, { task: { ...task }, to, change: { ...change }, cwd, at: clock() + RETRY_MS });
 			failures.delete(`task:${task.ref}`);
 			schedule();
 			return `Kata deferred closing "${task.content}" under its sibling throttle. It remains open and will retry after 60 seconds.`;
 		},
-		cancelTaskClose(ref) { retries.delete(ref); failures.delete(`task:${ref}`); },
+		cancelTaskClose: dropTask,
 		hasTaskClose: ref => retries.has(ref),
-		cancelRemoval(ref) { if (retries.get(ref)?.change.remove === true) { retries.delete(ref); failures.delete(`task:${ref}`); } },
+		cancelRemoval(ref) { if (retries.get(ref)?.change.remove === true) dropTask(ref); },
 		holdTicketClose(ticket, request, cwd) { pendingCloses.set(ticket, { ...request, cwd }); failures.delete(`ticket:${ticket}`); },
 		addAutoParent(binding) { autoParents.set(binding.parent, binding); },
 		dropAutoParent(parent) { autoParents.delete(parent); },
