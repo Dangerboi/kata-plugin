@@ -98,7 +98,7 @@ export function matchDelegation(tasks: Task[], text: string, { unavailable = new
 
 // Metadata keys that mark an issue as held by a delegate. pi also honours omp's key,
 // since both adapters can run side by side; omp reads no pi names.
-export const delegateKeys = (namespace: string): readonly string[] => namespace === "pi" ? ["pi.subagent_id", "omp.subagent_id"] : [`${namespace}.subagent_id`];
+const delegateKeys = (namespace: string): readonly string[] => namespace === "pi" ? ["pi.subagent_id", "omp.subagent_id"] : [`${namespace}.subagent_id`];
 export const heldByDelegate = (namespace: string, metadata: any): boolean => delegateKeys(namespace).some(key => !!metadata?.[key]);
 
 export type DelegateOutcome = "completed" | "failed" | "aborted" | "ended";
@@ -362,6 +362,8 @@ export function createDelegates(env: DelegatesEnv): Delegates {
 		const cwd = r.binding.workspace;
 		const issue = JSON.parse(await env.kata(["show", ref, "--json"], cwd)).issue;
 		if (issue.status === "closed") { r.state = "settled"; env.store.put(r); return; }
+		// A failed assignment the issue's holder refused (another delegate holds it) has nothing to hand back.
+		if (r.state === "failed" && heldByDelegate(ns, issue.metadata) && issue.metadata?.[keySubagent] !== r.id) { r.state = "settled"; env.store.put(r); return; }
 		if (r.state === "assigned" && !r.ranTool) {
 			await rollback(r, issue);
 			r.state = "settled"; env.store.put(r);

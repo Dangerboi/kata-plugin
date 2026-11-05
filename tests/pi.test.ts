@@ -628,6 +628,23 @@ test("a resumed assigned child shows the sub-plan it made under its issue in its
   leaveChild();
 });
 
+test("a child keeps a throttled close across its next prompt and closes when the throttle lifts", async () => {
+  const parent = await host(); await parent.event("session_start", { reason: "startup" });
+  await parent.init(["Implement throttle fixture", "Write throttle fixture tests"]);
+  let throttle = true;
+  const child = await childOf(parent, { before: (a: string[]) => a[0] === "close" && throttle ? siblingThrottle() : undefined });
+  await child.event("before_agent_start", { prompt: "Write throttle fixture tests", systemPromptOptions: { sections: {} } });
+  const ref = await child.init(["Sketch the throttle cases"]);
+  expect((await child.call({ op: "done", message, evidence })).isError).toBeUndefined();
+  const sub = (await show(ref)).children[0];
+  expect(sub.status).toBe("open");
+  await child.event("before_agent_start", { prompt: "Carry on", systemPromptOptions: { sections: {} } });
+  throttle = false;
+  await later(() => child.call({ op: "view" }));
+  expect((await show(ref)).children[0].status).toBe("closed");
+  leaveChild();
+});
+
 test("a child never binds an issue another writer owns", async () => {
   const parent = await host(); await parent.event("session_start", { reason: "startup" });
   const ref = await parent.init(["Implement foreign fixture"]);
