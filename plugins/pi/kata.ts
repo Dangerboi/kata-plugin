@@ -1,6 +1,6 @@
 import path from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { createKataCore, DESCRIPTION, kataCommands, quote, delegateCommand, ticketAutocomplete, type Lead } from "./kata-core";
+import { createKataCore, DESCRIPTION, kataCommands, quote, delegateCommand, ticketAutocomplete, type Lead, type ChildParent } from "./kata-core";
 import type { DelegateRecord, DelegateStore } from "./delegates";
 
 // Match the native adapter's capability/scope selection, including a project
@@ -18,7 +18,7 @@ export function nativeContractActive(cwd: string): boolean {
 	return false;
 }
 
-export type PiParent = { pid: number; sessionId: string; ref?: string; workspace: string; label?: string; teammate: string; provider?: string; model?: string; thinking?: string };
+export type PiParent = ChildParent & { pid: number; provider?: string; model?: string; thinking?: string };
 
 // A child pi started without its own model flags runs on the parent's model,
 // not on the configured default (which may have no working login).
@@ -93,26 +93,19 @@ export default async function piKata(pi: ExtensionAPI) {
 		getSessionName: () => pi.getSessionName(),
 		allowUI: ctx => ctx.hasUI === true,
 		isMain: () => !inherited,
-		soleSession: true,
 		delegateStore: store,
 	}, { namespace: "pi", executable, executableVars: EXECUTABLE_VARS, explicitRef: () => inherited ? undefined : explicit, debugFile: process.env.KATA_PI_DEBUG || process.env.KATA_OMP_DEBUG });
 
 	// Where the lead's plan lives, as the latest core call reported it.
 	let lead: Lead = { workspace: path.resolve(process.cwd()) };
 	function exportParent(ctx: ExtensionContext) {
-		if (inherited && !current?.ref) { process.env.KATA_PI_PARENT = JSON.stringify(inherited); return; }
+		if (inherited && !current?.ref) { process.env.KATA_PI_PARENT = JSON.stringify({ ...inherited, via: process.env.KATA_TEAMMATE }); return; }
 		process.env.KATA_PI_PARENT = JSON.stringify({ pid: process.pid, sessionId: ctx.sessionManager.getSessionId(),
 			ref: inherited ? current?.ref : lead.parent || explicit,
 			workspace: inherited ? current?.binding?.workspace || inherited.workspace : lead.workspace || path.resolve(ctx.cwd),
 			label: inherited ? current?.binding?.label || inherited.label : lead.label,
 			teammate: process.env.KATA_TEAMMATE || "",
 			...(ctx.model ? { provider: ctx.model.provider, model: ctx.model.id, thinking: pi.getThinkingLevel?.() } : {}) } satisfies PiParent);
-	}
-	// A child joins the session that started it before its first prompt runs.
-	async function prepareDelegate(ctx: ExtensionContext, prompt: string) {
-		if (!inherited) return;
-		await core.delegates.join(ctx, inherited, prompt);
-		exportParent(ctx);
 	}
 
 	pi.registerTool({
@@ -182,8 +175,9 @@ export default async function piKata(pi: ExtensionAPI) {
 	});
 
 	pi.on("before_agent_start", async (event, ctx) => {
-		if (inherited) await prepareDelegate(ctx, event.prompt || "");
-		else exportParent(ctx);
+		// A child joins the session that started it before its first prompt runs.
+		if (inherited) await core.delegates.join(ctx, inherited, event.prompt || "");
+		exportParent(ctx);
 		const native = !inherited && nativeContractActive(ctx.cwd);
 		const { sections: text, lead: next } = await core.session.beforePrompt(ctx, { context: !native });
 		if (!inherited) lead = next;

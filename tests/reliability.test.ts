@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { createKataCore } from "../core/kata-core";
 import { assertIsolated } from "./isolation";
-import { isolatedKata } from "./kata-fixture";
+import { isolatedKata, memoryDelegateStore } from "./kata-fixture";
 import { daemonUnavailable, notInitialized, notInitializedBound, notInitializedNoData, notInitializedProject, siblingThrottle } from "./kata-errors";
 assertIsolated();
 const binary = process.env.KATA_TEST_EXECUTABLE!;
@@ -21,7 +21,7 @@ function app(options: any = {}) {
   const id = options.sid || `reliability-${++seq}`;
   const ctx = { cwd: options.cwd || cwd, sessionManager: { getSessionId: () => id, getBranch: () => entries } };
   const core = createKataCore({ appendEntry: (customType, data) => entries.push({ type: "custom", customType, data }),
-    exec: async (_file, args, opts) => { calls.push(args); return await options.before?.(args) ?? run(args, opts.cwd); },
+    exec: async (_file, args, opts) => { calls.push(args); return await options.before?.(args) ?? run(args, opts.cwd); }, delegateStore: memoryDelegateStore(),
   }, { namespace: "omp", executable: binary, executableVars: ["KATA_OMP_EXECUTABLE"], explicitRef: () => options.ref });
   return { core, calls, entries, ctx, call: (p: any) => core.todo.apply(ctx, p.op, p) };
 }
@@ -256,7 +256,7 @@ test("authenticated daemon actor can create and complete a plan despite local ac
     const setup = await authRun(["init", "--project", "authenticated-fixture"]); if (setup.code) throw new Error(setup.stderr);
     const ref = JSON.parse((await authRun(["create", "Token actor plan", "--json"])).stdout).issue.short_id;
     const status = JSON.parse((await authRun(["status", ref, "--json"])).stdout); expect(status.actor).toBe("token-actor");
-    const core = createKataCore({ appendEntry() {}, exec: (_file, args) => authRun(args) }, { namespace: "omp", executable: binary, executableVars: ["KATA_OMP_EXECUTABLE"], explicitRef: () => ref });
+    const core = createKataCore({ appendEntry() {}, exec: (_file, args) => authRun(args), delegateStore: memoryDelegateStore() }, { namespace: "omp", executable: binary, executableVars: ["KATA_OMP_EXECUTABLE"], explicitRef: () => ref });
     const ctx = { cwd: authCwd, sessionManager: { getSessionId: () => "auth-fixture", getBranch: () => [] } };
     const initialized = await core.todo.apply(ctx, "init", { items: ["Authenticated task"] });
     expect(initialized.isError, initialized.content[0].text).toBeUndefined();

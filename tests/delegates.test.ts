@@ -2,9 +2,9 @@ import { afterAll, beforeAll, beforeEach, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync } from "node:fs";
 import path from "node:path";
 import { createKataCore } from "../core/kata-core";
-import type { DelegateEvent, DelegateRecord, DelegateStore } from "../core/delegates";
+import type { DelegateEvent, DelegateRecord } from "../core/delegates";
 import { assertIsolated } from "./isolation";
-import { isolatedKata } from "./kata-fixture";
+import { isolatedKata, memoryDelegateStore } from "./kata-fixture";
 assertIsolated();
 
 // The delegate lifecycle through the core's delegate events, against real Kata in a throwaway store.
@@ -24,9 +24,7 @@ let seq = 0, failing: ((args: string[]) => boolean) | undefined;
 // A lead session and its delegates: each is an agent with its own core, as in omp, sharing the one delegate store.
 function lead() {
   const entries: any[] = [], id = `delegates-lead-${++seq}`;
-  const records = new Map<string, DelegateRecord>();
-  const store: DelegateStore = { records: () => [...records.values()], get: key => records.get(key), put: record => { records.set(record.id, record); },
-    of: ctx => [...records.values()].find(record => record.sessionId === ctx.sessionManager.getSessionId()) };
+  const store = memoryDelegateStore();
   const agent = () => createKataCore({
     appendEntry: (customType, data) => entries.push({ type: "custom", customType, data }),
     exec: async (_file, args, opts) => failing?.(args) ? { code: 1, stdout: "", stderr: "delegation service permission denied" } : run(args, opts.cwd),
@@ -51,7 +49,7 @@ function lead() {
     };
   };
   const started = (name: string, text: string, extra: Partial<Extract<DelegateEvent, { type: "started" }>> = {}): DelegateEvent => ({
-    type: "started", id: name, sessionId: name, leadSessionId: id, leadTeammate: LEAD, teammate: `mate-${name}`, text, single: true, observesTools: true, ...extra,
+    type: "started", id: name, sessionId: name, leadSessionId: id, leadTeammate: LEAD, teammate: `mate-${name}`, text, single: true, ...extra,
   });
   // Whether the lead may still work an issue: a delegated task refuses the lead's start.
   const delegated = async (title: string) => {
@@ -122,10 +120,11 @@ test("a delegate that exits having run no tool has its assignment rolled back, w
   expect(await a.delegated("Build the delta widget")).toBe(false);
 });
 
-test("a delegate that observes no tools is handed back at exit, never rolled back", async () => {
+test("a delegate that ran a tool is handed back at exit, never rolled back", async () => {
   const a = lead(); const parent = await a.plan(["Build the epsilon widget"]);
   const task = await taskOf(parent, "Build the epsilon widget"), ref = `delegates-test#${task.short_id}`;
-  await a.delegates.apply(a.started("epsilon", "Build the epsilon widget", { observesTools: false }));
+  await a.delegates.apply(a.started("epsilon", "Build the epsilon widget"));
+  await a.delegates.apply({ type: "ranTool", id: "epsilon" });
   await a.delegates.apply({ type: "exited", id: "epsilon", outcome: "aborted" });
   expect(labels(await show(ref))).toContain("needs-review");
 });

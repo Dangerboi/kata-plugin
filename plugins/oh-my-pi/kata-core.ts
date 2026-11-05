@@ -28,9 +28,8 @@ export interface CoreHost {
 	isMain?(ctx: any): boolean;
 	allowUI?(ctx: any): boolean;
 	// The core serves one session for the process's life (a pi child), so an assigned delegate may bind it. A shared core (omp) stays bound to the lead.
-	soleSession?: boolean;
 	// Where delegate records live. Default: in memory, found by the delegate's session id.
-	delegateStore?: DelegateStore;
+	delegateStore: DelegateStore;
 	// Present: the main session follows its session inbox live (the host spawns the event stream and delivers each request as an aside).
 	// Absent: the inbox is read once per turn.
 	liveInbox?: LiveInbox;
@@ -53,7 +52,7 @@ export type Lead = { parent?: string; workspace: string; label?: string };
 // What a prompt gets from the core, as text: the host formats each section for its prompt.
 export type PromptSections = { contract?: string; inbox?: string; todo?: string; assignment?: string };
 // A pi child's view of the session that started it.
-export type ChildParent = { sessionId: string; ref?: string; workspace: string; label?: string; teammate: string };
+export type ChildParent = { sessionId: string; ref?: string; workspace: string; label?: string; teammate: string; via?: string };
 const CHILD_TEAMMATE = /^[a-z0-9][a-z0-9._-]{0,63}$/;
 
 export type Status = "pending" | "in_progress" | "completed" | "abandoned" | "blocked";
@@ -404,13 +403,11 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 	const nextStamp = () => (stamp = Math.max(Date.now(), stamp + 1));
 	// The plan's tasks: Kata children (or the local plan) merged with named items by creation time.
 	const withNamed = (base: Task[]) => named.length ? [...base.filter(t => !t.ticket), ...named].sort((a, b) => (a.at || 0) - (b.at || 0)) : base;
-	const memoryRecords = new Map<string, DelegateRecord>();
-	const store: DelegateStore = host.delegateStore ?? { records: () => [...memoryRecords.values()], get: id => memoryRecords.get(id), put: record => { memoryRecords.set(record.id, record); },
-		of: ctx => { const id = ctx?.sessionManager?.getSessionId?.(); return [...memoryRecords.values()].find(record => record.sessionId === id); } };
+	const store = host.delegateStore;
 	const delegates = createDelegates({
 		namespace, store,
 		kata: (args, cwd) => kata(args, cwd), actor: (cwd, ref) => actor(cwd, ref), owned, work, serial, plan: () => plan,
-		load: cwd => load(cwd), projectNames: cwd => projectNames(cwd), reconcile: () => drain(), cwd: () => path.resolve(currentCtx?.cwd ?? process.cwd()), debug,
+		load: cwd => load(cwd), projectNames: cwd => projectNames(cwd), drain: () => drain(), cwd: () => path.resolve(currentCtx?.cwd ?? process.cwd()), debug,
 	});
 	function persist() {
 		if (!currentId || !main(currentCtx)) return;
@@ -1636,6 +1633,7 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 			process.env.KATA_TEAMMATE = known.teammate;
 			process.env.KATA_INBOX_USER = `${await actor(known.binding?.workspace ?? parent.workspace, known.ref ?? parent.ref)}/${known.teammate}`;
 			await delegates.apply({ type: "nextUse", id: known.id });
+			await bounded(serial(() => bind(ctx)), 3000);
 			return;
 		}
 		const id = sid(ctx);
@@ -1668,7 +1666,7 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 		const binding: Binding = { parent: await pin(parent.ref, parent.workspace), workspace: parent.workspace, sessionId: parent.sessionId, auto: false, label: parent.label };
 		// Keep a teammate the lead chose for this child; otherwise derive a distinct one.
 		const chosen = process.env.KATA_TEAMMATE || "";
-		const teammate = chosen && chosen !== parent.teammate && CHILD_TEAMMATE.test(chosen) ? chosen : teammateFor(`${parent.teammate || namespace}:${parent.sessionId}:${id}`);
+		const teammate = chosen && chosen !== parent.teammate && chosen !== parent.via && CHILD_TEAMMATE.test(chosen) ? chosen : teammateFor(`${parent.teammate || namespace}:${parent.sessionId}:${id}`);
 		process.env.KATA_TEAMMATE = teammate;
 		process.env.KATA_INBOX_USER = `${await actor(binding.workspace, binding.parent)}/${teammate}`;
 		const scope = { parent: binding.parent, workspace: binding.workspace, label: binding.label, leadTeammate: parent.teammate, teammate };
@@ -1676,8 +1674,9 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 		let reserved: Reservation | undefined, untracked = false;
 		try { reserved = (await delegates.check([{ text: prompt }], [], scope))[0]; }
 		catch (error) { debug(error); untracked = true; }
-		await delegates.apply({ type: "started", id, sessionId: id, leadSessionId: parent.sessionId, leadTeammate: parent.teammate, teammate, text: prompt, single: true, observesTools: true,
+		await delegates.apply({ type: "started", id, sessionId: id, leadSessionId: parent.sessionId, leadTeammate: parent.teammate, teammate, text: prompt, single: true,
 			parent: binding.parent, workspace: binding.workspace, parentLabel: binding.label, reserved, untracked });
+		await bounded(serial(() => bind(ctx)), 3000); // a delegate cannot learn its issue later
 	}
 
 	return {
@@ -1739,7 +1738,7 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 				see(ctx);
 				const context = prompt.context !== false;
 				await bounded(Promise.all([
-					(main(ctx) || (host.soleSession && delegates.assignment(ctx))) && currentId !== sid(ctx) ? serial(() => bind(ctx)) : undefined,
+					main(ctx) && currentId !== sid(ctx) ? serial(() => bind(ctx)) : undefined,
 					(async () => { await prompt.after; if (context) await warm(ctx, delegates.assignment(ctx)?.workspace || ctx.cwd, !(main(ctx) && liveInbox !== undefined)); })(),
 				]), main(ctx) ? 250 : 3000); // a delegate cannot learn its issue later
 				const sections: PromptSections = {};

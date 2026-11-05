@@ -3,6 +3,13 @@ import path from "node:path";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { assertIsolated } from "./isolation";
+import type { DelegateRecord, DelegateStore } from "../core/delegates";
+
+export function memoryDelegateStore(): DelegateStore {
+  const records = new Map<string, DelegateRecord>();
+  return { records: () => [...records.values()], get: key => records.get(key), put: record => { records.set(record.id, record); },
+    of: ctx => [...records.values()].find(record => record.sessionId === ctx.sessionManager.getSessionId()) };
+}
 
 const exec = promisify(execFile);
 export function isolatedKata(binary: string, env: NodeJS.ProcessEnv, cwd: string, defaultTimeout = 5000) {
