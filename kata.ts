@@ -31,8 +31,9 @@ const EXECUTABLE_VARS = ["KATA_OMP_EXECUTABLE"];
 export const kataCommands = (command: string) => parseKataCommands(command, EXECUTABLE, EXECUTABLE_VARS);
 
 // What a task call asked for: names and texts per spawn; once a plan or ticket was seen, what each spawn is matched to.
-// The entry goes once every spawn has started or the call failed.
-type Assignment = { labels: string[]; texts: string[]; reserved?: (Reservation | undefined)[]; started: Set<number> };
+// The entry goes once the call settled: at its result for a call that ran its spawns synchronously, once the call's
+// background jobs stopped running for an async one (`jobs` holds their ids), or once every spawn has started.
+type Assignment = { labels: string[]; texts: string[]; reserved?: (Reservation | undefined)[]; started: Set<number>; jobs?: Set<string> };
 
 // OMP rebinds extension factories in the same module graph, so every instance shares the delegate records and the lead
 // Delegates that own them. A delegate's session file is the correlation key: agent names alone can collide across simultaneous sessions.
@@ -121,6 +122,9 @@ export default function ompKata(pi: any) {
 		const snapshot = ctx?.getAsyncJobSnapshot?.();
 		if (!snapshot) return;
 		const running: any[] = snapshot.running ?? [], records = store.records();
+		for (const [call, assignment] of assignments) {
+			if (assignment.jobs && !running.some(job => assignment.jobs!.has(job.id) || assignment.jobs!.has(job.agentId))) assignments.delete(call);
+		}
 		for (const job of snapshot.recent ?? []) {
 			if (job.type !== "task" || !["completed", "failed", "aborted", "cancelled"].includes(job.status)) continue;
 			const record = records.find(r => r.id === job.id || r.id === job.agentId);
@@ -264,6 +268,10 @@ export default function ompKata(pi: any) {
 		if (assignment) {
 			assignment.reserved = undefined;
 			if (event.isError || assignment.started.size >= assignment.texts.length) assignments.delete(event.toolCallId);
+			else if (event.details?.async) { // background jobs: their spawns may start after this result
+				assignment.jobs = new Set([event.details.async.jobId, ...(event.details.progress ?? []).map((spawn: any) => spawn?.id)].filter((id): id is string => typeof id === "string"));
+				await syncJobs(ctx);
+			} else assignments.delete(event.toolCallId); // the spawns ran to the end inside the call
 		}
 		await core.tools.result(ctx, event);
 	});

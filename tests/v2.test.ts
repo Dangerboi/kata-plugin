@@ -1050,6 +1050,41 @@ test("a task call that never spawns releases its plan task", async () => {
   expect(await app.event("tool_call", { toolName: "task", toolCallId: "retry", input })).toBeUndefined();
 });
 
+// The lead's plan task a task call named, bound to a delegate whose start is reported after the call returned.
+async function lateStart(app: ReturnType<typeof host>, ref: string, id: string) {
+  app.emit("task:subagent:lifecycle", { id, status: "started", sessionFile: `${scratch}/${id}.jsonl`, parentToolCallId: id, index: 0 });
+  await app.call({ op: "view" });
+  return (await show(ref)).children.find((c: any) => c.title === "Write sprocket tests").metadata["omp.subagent_id"];
+}
+
+test("a synchronous task call that settled without a start leaves no assignment for a later start", async () => {
+  const app = host(); await app.event("session_start"); const ref = await app.init(["Write sprocket tests"]);
+  const input = { task: 'Complete "Write sprocket tests"' };
+  await app.event("tool_call", { toolName: "task", toolCallId: "sync-gone", input });
+  await app.event("tool_result", { toolName: "task", toolCallId: "sync-gone", isError: false, input, details: { results: [] } });
+  expect(await lateStart(app, ref, "sync-gone")).toBeUndefined();
+});
+
+test("a background task call keeps its assignment for a late start until its jobs stop running", async () => {
+  let running: any[] = [];
+  const app = host({ snapshot: () => ({ running, recent: [] }) }); await app.event("session_start"); const ref = await app.init(["Write sprocket tests", "Write sprocket docs"]);
+  const input = { task: 'Complete "Write sprocket tests"' };
+  const details = { async: { state: "running", jobId: "job-1", type: "task" }, progress: [{ id: "late-1" }] };
+  running = [{ id: "job-1", agentId: "late-1", type: "task", status: "running" }];
+  await app.event("tool_call", { toolName: "task", toolCallId: "late-1", input });
+  await app.event("tool_result", { toolName: "task", toolCallId: "late-1", isError: false, input, details });
+  expect(await lateStart(app, ref, "late-1")).toBe("late-1");
+
+  await app.event("tool_call", { toolName: "task", toolCallId: "late-2", input: { task: 'Complete "Write sprocket docs"' } });
+  running = [{ id: "job-2", agentId: "late-2", type: "task", status: "running" }];
+  await app.event("tool_result", { toolName: "task", toolCallId: "late-2", isError: false, input, details: { async: { jobId: "job-2" }, progress: [{ id: "late-2" }] } });
+  running = [];
+  await app.event("tool_call", { toolName: "read", input: { path: "README.md" } }); // any event reads the snapshot
+  app.emit("task:subagent:lifecycle", { id: "late-2", status: "started", sessionFile: `${scratch}/late-2.jsonl`, parentToolCallId: "late-2", index: 0 });
+  await app.call({ op: "view" });
+  expect((await show(ref)).children.find((c: any) => c.title === "Write sprocket docs").metadata["omp.subagent_id"]).toBeUndefined();
+});
+
 // Hosted reads routinely take longer than the old one-second process deadline.
 test("hosted show lasting over one second completes todo init", async () => {
   const ref = `v2test#${await issue()}`;
