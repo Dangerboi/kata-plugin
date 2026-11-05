@@ -9,7 +9,7 @@ bun run check:plugins
 bun run typecheck
 ```
 
-The real native pi adapter tests need `kata agent-hook install pi` (Kata 0.19); against a Kata without it they are skipped with that reason, never faked. `test` runs OMP/pi tests, real-Kata integration tests, and revision conformance.
+Run the suite with Kata 0.21 or later to test the pi plugin's native attention coexistence. The real native pi adapter tests install `kata agent-hook install pi`; if that command is unavailable they are skipped with that reason, never faked. `test` runs OMP/pi tests, real-Kata integration tests, and revision conformance.
 
 Focused runners retain the isolation wrapper:
 

@@ -24,7 +24,7 @@ pi install git:github.com/Dangerboi/kata-plugin
 pi install ./kata-plugin/plugins/pi
 ```
 
-Requires Kata 0.19 (0.20 tested), plus the selected harness. The omp plugin delegates session attention to `kata agent-hook attention-native`, and settle comments use Kata 0.19 comment idempotency keys. Tested host versions are oh-my-pi 18.16.0 and pi 1.5.0. Bun and Node are needed for development.
+Requires Kata 0.21 for pi, or Kata 0.19 for oh-my-pi, plus the selected harness. The omp plugin delegates session attention to `kata agent-hook attention-native`, and settle comments use Kata 0.19 comment idempotency keys. Tested host versions are oh-my-pi 18.16.0 and pi 1.5.0. Bun and Node are needed for development.
 
 Start with the [first session tutorial](docs/tutorials/first-session.md), [installation guide](docs/how-to/install.md), or [development guide](docs/development.md). See [completion rules](docs/reference/closing-rules.md) and [limits](docs/explanation/limits.md) before adopting automatic closure.
 

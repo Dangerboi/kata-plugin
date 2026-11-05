@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- pi: require Kata 0.21, whose native adapter uses `KATA_ATTENTION_HOST` to keep child sessions off the lead's attention and skips OMP hosts (kenn-io/kata#707). Remove the plugin's native attention baseline workaround and retain the main process's `KATA_REF`. Explicit main binding and child assigned-issue isolation remain in place. Refresh an older generated adapter with `kata agent-hook install pi --attention`, then restart pi. The omp minimum remains Kata 0.19.
+
 ## oh-my-pi 2.4.0 / pi 1.4.0 — 2026-11-03
 
 - omp: a `task` that matches no plan item and names no ticket gets no Kata issue. It used to get a `Subagent` issue that an agent without `bash` (the `scout`) could not close, which left an open issue, a `needs-review` label, a `kata notify` and a parent that never closed. Now only a delegation matched to a plan item or naming a ticket binds an issue; any other subagent gets a short note instead of a binding, its `todo` uses omp's own list (an error on an omp without `ctx.invokeTool`), and the automatic parent closes from the plan's own items. A delegation no longer creates the automatic parent. pi is unchanged.
