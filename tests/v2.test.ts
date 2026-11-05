@@ -7,7 +7,7 @@ import { promisify } from "node:util";
 import { assertIsolated } from "./isolation";
 import { adoptIsolatedKata, isolatedKata } from "./kata-fixture";
 import { daemonUnavailable, missingExecutable, siblingThrottle } from "./kata-errors";
-import ompKata from "../kata";
+import { ompHost } from "./omp-host";
 assertIsolated();
 const exec = promisify(execFile);
 const binary = process.env.KATA_TEST_EXECUTABLE!;
@@ -31,36 +31,16 @@ const evidence = ["test:bun test fixture"];
 const message = "Implemented this isolated fixture and verified its behavior with the regression suite.";
 function host(options: any = {}) {
   const sid = options.sid === null ? undefined : options.sid || `v2-${++sequence}`;
-  let tool: any;
   const contractReady = Promise.withResolvers<void>();
-  const handlers = new Map<string, any>(), bus = new Map<string, any>();
-  const entries: any[] = options.entries || [], calls: string[][] = [], notices: any[] = [], widgets: any[] = [];
-  const schema: any = new Proxy(() => schema, { get: () => schema });
-  const ctx: any = {
-    cwd: options.cwd || cwd,
-    agent: options.agent || { kind: "main", id: `main-${sid}` },
-    sessionManager: { getSessionId: () => sid, getSessionFile: () => options.sessionFile || `${scratch}/${sid}.jsonl`, getBranch: () => entries, getHeader: () => options.header },
-    getAsyncJobSnapshot: () => options.snapshot?.() || { running: [], recent: [] },
-    ui: { notify: (...args: any[]) => notices.push(args), setWidget: (...args: any[]) => widgets.push(args) },
-  };
-  ompKata({ zod: schema, registerTool: (value: any) => tool = value, appendEntry: (customType: string, data: any) => entries.push({ type: "custom", customType, data }),
-    on: (name: string, callback: any) => handlers.set(name, callback), events: { on: (name: string, callback: any) => bus.set(name, callback) },
-    async exec(_file: string, args: string[], opts: any) {
-      calls.push(args);
-      const result = await options.before?.(args, opts) ?? await run(args, opts.cwd, opts.timeout);
-      if (args[0] === "agent-contract-hook") contractReady.resolve();
-      return result;
-    },
-  });
-  return { ctx, sid, entries, calls, notices, widgets, contractReady: contractReady.promise,
+  const app = ompHost({
+    run: (args, opts) => run(args, opts.cwd, opts.timeout), cwd: options.cwd || cwd, sid, agent: options.agent, entries: options.entries,
+    sessionFile: options.sessionFile || `${scratch}/${sid}.jsonl`, header: options.header, snapshot: options.snapshot, before: options.before,
+    after: args => { if (args[0] === "agent-contract-hook") contractReady.resolve(); },
     // The adapter spawns paired closes itself, so a host that must see or fail closes runs without the pair; `transcript: true` keeps it.
-    event: async (name: string, data: any = {}, context: any = ctx) => {
-      try { return await handlers.get(name)?.(data, context); }
-      finally { if (!options.transcript) { delete process.env.KATA_TRANSCRIPT_AGENT; delete process.env.KATA_TRANSCRIPT_SESSION_ID; } }
-    },
-    emit: (name: string, data: any) => bus.get(name)?.(data),
-    call: (params: any, context: any = ctx) => tool.execute("fixture", params, undefined, undefined, context),
-    async init(items = ["Implement fixture", "Verify fixture"]) { const result = await tool.execute("fixture", { op: "init", items }, undefined, undefined, ctx); expect(result.isError).toBeUndefined(); return result.details.kata.parent; },
+    afterEvent: () => { if (!options.transcript) { delete process.env.KATA_TRANSCRIPT_AGENT; delete process.env.KATA_TRANSCRIPT_SESSION_ID; } },
+  });
+  return { ...app, contractReady: contractReady.promise,
+    async init(items = ["Implement fixture", "Verify fixture"]) { const result = await app.call({ op: "init", items }); expect(result.isError).toBeUndefined(); return result.details.kata.parent; },
   };
 }
 beforeAll(async () => { const out = await run(["init", "--project", "v2test"]); if (out.code) throw new Error(out.stderr); });
