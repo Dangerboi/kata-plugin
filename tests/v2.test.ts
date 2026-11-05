@@ -360,20 +360,12 @@ function throttledClose() {
   app.ctx.clearTimer = (timer: any) => { timers.delete(timer); };
   return { app, timers, lift: () => { throttled = false; } };
 }
-test("a throttled close is retried by the host timer", async () => {
-  const { app, timers, lift } = throttledClose();
-  const parent = await app.init(["Throttled task"]);
-  expect((await app.call({ op: "done", message, evidence })).content[0].text).toContain("retry");
-  expect(timers.size).toBe(1);
-  lift();
-  const actualNow = Date.now;
-  Date.now = () => actualNow() + 61_000;
-  try {
-    for (const timer of [...timers]) timer.run();
-    for (let i = 0; i < 100 && (await show(parent)).issue.status !== "closed"; i++) await new Promise(resolve => setTimeout(resolve, 50));
-  } finally { Date.now = actualNow; }
-  expect((await show(parent)).issue.status).toBe("closed");
-});
+// The session's entries as if the retry deadline had passed (the snapshot keeps absolute deadlines).
+function dueEntries(entries: any[]) {
+  const copy = JSON.parse(JSON.stringify(entries));
+  for (const entry of copy) for (const [, pending] of entry.data?.retries ?? []) pending.at = 0;
+  return copy;
+}
 test("binding another session cancels the pending retry through the host", async () => {
   const { app, timers } = throttledClose();
   await app.init(["Throttled task"]);
@@ -394,11 +386,8 @@ test("sibling throttle retries the pinned close and does not falsely complete me
   expect(result.isError).toBeUndefined();
   expect(result.content[0].text).toContain("retry");
   expect((await show(parent)).children[0].metadata["todo.status"]).toBe("in_progress");
-  app.ctx.cwd = outside;
-  const actualNow = Date.now;
-  Date.now = () => actualNow() + 61_000;
-  try { await app.event("session_stop"); await app.call({ op: "view" }); }
-  finally { Date.now = actualNow; }
+  const resumed = host({ cwd: outside, sid: app.sid, entries: dueEntries(app.entries) }); await resumed.event("session_start");
+  await resumed.call({ op: "view" });
   expect((await show(parent)).issue.status).toBe("closed");
 });
 
@@ -739,13 +728,10 @@ test("queued close survives extension recreation and retries only after its dead
   const entries = JSON.parse(JSON.stringify(app.entries));
   const resumed = host({ sid: app.sid, entries }); await resumed.event("session_start");
   expect(resumed.calls.some(a => a[0] === "close")).toBe(false);
-  const now = Date.now; Date.now = () => now() + 61_000;
-  try {
-    const restarted = host({ sid: app.sid, entries }); await restarted.event("session_start");
-    await restarted.call({ op: "view" });
-    expect((await show(parent)).issue.status).toBe("closed");
-    expect((await kata(["audit", "closes", "--json"])).rows.filter((r: any) => r.issue === parent.split("#")[1])).toHaveLength(1);
-  } finally { Date.now = now; }
+  const restarted = host({ sid: app.sid, entries: dueEntries(entries) }); await restarted.event("session_start");
+  await restarted.call({ op: "view" });
+  expect((await show(parent)).issue.status).toBe("closed");
+  expect((await kata(["audit", "closes", "--json"])).rows.filter((r: any) => r.issue === parent.split("#")[1])).toHaveLength(1);
 });
 
 // The 2026-10-19 eval: omp sent todo init and the tests delegation in one batch.

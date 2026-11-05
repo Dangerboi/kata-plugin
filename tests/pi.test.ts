@@ -364,12 +364,10 @@ test("pi local plans and queued closes survive a fresh extension instance", asyn
   expect((await restored.call({op:"view"})).content[0].text).toContain("Wait through restart");
   const app = await host({before:(a:string[])=>a[0]==="close"?siblingThrottle():undefined});
   const ref = await app.init(["Durable pi close"]); await app.call({op:"done", message, evidence});
-  const entries=JSON.parse(JSON.stringify(app.entries)), now=Date.now;
-  Date.now=()=>now()+61_000;
-  try {
-    const resumed=await host({sid:app.sid,entries}); await resumed.event("session_start",{reason:"resume"}); await resumed.call({op:"view"});
-    expect((await show(ref)).issue.status).toBe("closed");
-  } finally {Date.now=now;}
+  const entries=JSON.parse(JSON.stringify(app.entries));
+  for (const entry of entries) for (const [, pending] of entry.data?.retries ?? []) pending.at = 0;
+  const resumed=await host({sid:app.sid,entries}); await resumed.event("session_start",{reason:"resume"}); await resumed.call({op:"view"});
+  expect((await show(ref)).issue.status).toBe("closed");
 });
 
 test("startup-spawned child establishes the lead session parent without lead work writes", async () => {
