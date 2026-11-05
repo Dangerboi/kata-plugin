@@ -155,7 +155,7 @@ export function createInboxFollower(deps: InboxFollowerDeps): InboxFollower {
 	const states = new Map<string, SlotState>();
 	let running = false, generation = 0, mine: string | undefined, seededOnce = false, headed = false;
 	let child: InboxStream | undefined, timer: unknown, cursor = 0, backoff = MIN_BACKOFF_MS;
-	let reading = false, readAgain = false;
+	let reading = false, readAgain = false, readTimer: unknown, readBackoff = MIN_BACKOFF_MS;
 	// Counts slot events from the stream, so a read leaves alone the issues the stream changed while it ran.
 	let streamed = 0;
 
@@ -186,7 +186,7 @@ export function createInboxFollower(deps: InboxFollowerDeps): InboxFollower {
 	async function readOnce(gen: number, forceQuiet: boolean) {
 		const since = streamed, quiet = forceQuiet || !seededOnce;
 		let requests: unknown;
-		try { requests = asRecord(await deps.read())?.requests; } catch (error) { return deps.debug(error); }
+		try { requests = asRecord(await deps.read())?.requests; } catch (error) { deps.debug(error); return scheduleSeedRetry(gen); }
 		if (gen !== generation || !Array.isArray(requests)) return;
 		seededOnce = true;
 		const newer = (issue: string) => (states.get(issue)?.streamed ?? 0) > since;
@@ -198,6 +198,14 @@ export function createInboxFollower(deps: InboxFollowerDeps): InboxFollower {
 			if (!newer(r.ref)) apply(r.ref, slot, { quiet, read: true, title: typeof r.title === "string" ? r.title : undefined });
 		}
 		for (const [issue, state] of states) if (state.identity !== null && !listed.has(issue) && !newer(issue)) apply(issue, null, { quiet: true, read: true });
+	}
+
+	// The first read is the only source of requests that existed at start, and a session with a live inbox has no per-turn read: retry it with its own backoff until it lands.
+	function scheduleSeedRetry(gen: number) {
+		if (seededOnce || gen !== generation || readTimer !== undefined) return;
+		const delay = readBackoff;
+		readBackoff = Math.min(readBackoff * 2, MAX_BACKOFF_MS);
+		readTimer = deps.setTimer(() => { readTimer = undefined; if (gen === generation) void readInbox(); }, delay);
 	}
 
 	// `quiet` re-reads only update the section; a coalesced loud request (a reset) keeps the next pass loud.
@@ -262,7 +270,7 @@ export function createInboxFollower(deps: InboxFollowerDeps): InboxFollower {
 			if (running) return;
 			running = true;
 			generation++;
-			backoff = MIN_BACKOFF_MS;
+			backoff = readBackoff = MIN_BACKOFF_MS;
 			void boot(generation);
 		},
 		stop() {
@@ -271,6 +279,8 @@ export function createInboxFollower(deps: InboxFollowerDeps): InboxFollower {
 			generation++;
 			if (timer !== undefined) deps.clearTimer(timer);
 			timer = undefined;
+			if (readTimer !== undefined) deps.clearTimer(readTimer);
+			readTimer = undefined;
 			try { child?.kill(); } catch { /* already gone */ }
 			child = undefined;
 		},

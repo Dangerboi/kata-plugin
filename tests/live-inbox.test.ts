@@ -478,3 +478,16 @@ test("a bare actor address starts no follower", async () => {
 	expect(app.sent).toEqual([]);
 	await kata(["notify", ref, "--to", "v2-builder", "--clear", "--json"]);
 });
+
+test("a failed first inbox read is retried while the stream stays open, and the waiting request is published", async () => {
+	let reads = 0;
+	const t = follower({ read: async () => { if (++reads === 1) throw new Error("kata slow"); return { requests: [{ ref: "abcd", title: "T", ...slot("waiting") }] }; } });
+	t.follow.start(); await tick();
+	expect(t.published).toEqual([]);
+	expect(t.timers).toHaveLength(1);
+	t.timers.shift()!(); await tick();
+	expect(t.published.at(-1)).toBe("abcd:waiting");
+	expect(t.delivered).toEqual([]);
+	expect(t.streams).toHaveLength(1);
+	t.follow.stop();
+});
