@@ -17,6 +17,8 @@ Optional: send the plans of repos that have no Kata project to one Kata project,
 export KATA_DEFAULT_PROJECT=vault
 ```
 
+Optional: record the agent session on each close, with a link to it in AgentsView. See [Record agent sessions on closes](record-session-transcripts.md).
+
 To try it without installing:
 
 ```sh
