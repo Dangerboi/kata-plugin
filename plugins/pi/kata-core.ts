@@ -226,6 +226,7 @@ const escape = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 // only, so the one source parses a strict prefix (`itemTicket`) and scans text
 // for whole-token refs (`qualifiedRefs`).
 const QUALIFIED_REF = "(?<![\\w./#-])[A-Za-z0-9_][\\w.-]*#[0-9a-hjkmnp-tv-z]{4,26}(?![\\w-])";
+const QUALIFIED_REF_ONLY = new RegExp(`^${QUALIFIED_REF}$`, "i");
 // Distinct qualified refs in order of appearance. Prose holds look-alikes
 // (`README.md#tasks`), so with `projects` only refs of those projects count.
 export function qualifiedRefs(text: string, projects?: ReadonlySet<string>): string[] {
@@ -763,9 +764,11 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 
 	// The issue's current qualified ref: its project is the one it lives in now,
 	// not the one the given ref names.
+	async function qualify(issue: any, cwd: string, ref: string): Promise<string> {
+		return `${await projectName(issue.project_id, cwd, ref)}#${issue.short_id}`;
+	}
 	async function pin(ref: string, cwd: string): Promise<string> {
-		const shown = JSON.parse(await kata(["show", ref, "--json"], cwd));
-		return `${await projectName(shown.issue.project_id, cwd, ref)}#${shown.issue.short_id}`;
+		return qualify(JSON.parse(await kata(["show", ref, "--json"], cwd)).issue, cwd, ref);
 	}
 
 	async function sessionBinding(ctx: any): Promise<Binding | undefined> {
@@ -859,6 +862,7 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 	function setParent(binding: Binding) {
 		scope = "bound";
 		if (!binding.auto) autoParents.delete(binding.parent);
+		if (plan.parent === binding.parent && plan.workspace === binding.workspace && plan.auto === binding.auto && plan.label === binding.label) return;
 		if (plan.parent !== binding.parent) aliases.clear();
 		plan = { ...binding, tasks: withNamed(plan.parent === binding.parent ? plan.tasks : []) };
 		if (binding.auto) autoParents.set(binding.parent, binding);
@@ -1064,7 +1068,7 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 				try { shown = JSON.parse(await kata(["show", ref, "--json"], cwd)).issue; }
 				catch (error) { throw new Error(`Todo item "${item.content}" names ${ref}, which Kata cannot resolve: ${(error as Error).message}. Nothing was created.`); }
 				if (shown.status !== "open") throw new Error(`Todo item "${item.content}" names ${ref}, which is already closed; the plugin never reopens a ticket. Nothing was created.`);
-				ticket = `${await projectName(shown.project_id, cwd, ref)}#${shown.short_id}`;
+				ticket = await qualify(shown, cwd, ref);
 				try { await owned(ticket, cwd, "check"); }
 				catch (error) { throw new Error(`Todo item "${item.content}" cannot work ${ticket}: ${(error as Error).message} Nothing was created.`); }
 				checked.set(ref, ticket);
@@ -1190,7 +1194,7 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 		if (!plan.local && !plan.tasks.some(t => t.content === target) && /(?:^|#)[0-9a-hjkmnp-tv-z]{26}$/i.test(target)) target = await pin(target, plan.workspace!);
 		const exact = plan.tasks.filter(t => t.content === target || t.ref === target || t.ref.split("#")[1] === target);
 		if (exact.length === 1) return exact;
-		if (target.includes("#") && !exact.length && !plan.local) {
+		if (QUALIFIED_REF_ONLY.test(target) && !exact.length && !plan.local) {
 			// A short id is only unique per project: compare the ticket the ref names now, never its short id alone.
 			const pinned = await pin(target, plan.workspace!).catch(() => undefined);
 			const moved = plan.tasks.filter(t => t.ref === pinned);

@@ -52,10 +52,13 @@ export default function ompKata(pi: any) {
 	const assignments = new Map<string, Assignment>();
 	const core = createKataCore({
 		// omp's exec spawns with the environment it captured at startup, not later process.env changes.
-		exec: (file, args, options) => {
+		exec: async (file, args, options) => {
 			const { KATA_TRANSCRIPT_AGENT: agent, KATA_TRANSCRIPT_SESSION_ID: session } = process.env;
 			if (!agent || !session || args[0] !== "close") return pi.exec(file, args, options);
-			return pi.exec("env", [`KATA_TRANSCRIPT_AGENT=${agent}`, `KATA_TRANSCRIPT_SESSION_ID=${session}`, file, ...args], options);
+			const result = await pi.exec("env", [`KATA_TRANSCRIPT_AGENT=${agent}`, `KATA_TRANSCRIPT_SESSION_ID=${session}`, file, ...args], options);
+			// env exits 127 when it cannot run the executable; Kata never does. Report it as the spawn failure an unwrapped call would raise.
+			if (result.code === 127) throw Object.assign(new Error(`Executable not found in $PATH: "${file}"`), { code: "ENOENT", path: file });
+			return result;
 		},
 		appendEntry: (...args) => pi.appendEntry(...args),
 		getSessionName: () => pi.getSessionName?.(),
@@ -412,14 +415,12 @@ export default function ompKata(pi: any) {
 	pi.on("session_switch", (_event: any, ctx: any) => begin(ctx));
 	pi.on("session_branch", (_event: any, ctx: any) => main(ctx) ? bounded(serial(() => bind(ctx))) : undefined);
 	pi.on("session_tree", (_event: any, ctx: any) => main(ctx) ? bounded(serial(() => bind(ctx))) : undefined);
+	// The transcript pair is left for the next session_start to overwrite: clearing after a slow cleanup could delete the pair of an instance omp already started in this process.
 	pi.on("session_shutdown", async (_event: any, ctx: any) => {
 		if (!main(ctx)) return;
 		const session = attentionSession;
 		attentionSession = undefined;
-		// After reconcile: the automatic parent's close still records this session. Cleared when the queued work ends, not when the bound gives up.
-		await bounded(serial(async () => {
-			try { await reconcile(); if (session) await attention("end", session); }
-			finally { delete process.env.KATA_TRANSCRIPT_AGENT; delete process.env.KATA_TRANSCRIPT_SESSION_ID; }
-		}));
+		// After reconcile: the automatic parent's close still records this session.
+		await bounded(serial(async () => { await reconcile(); if (session) await attention("end", session); }));
 	});
 }

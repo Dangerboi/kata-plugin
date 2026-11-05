@@ -6,7 +6,7 @@ import path from "node:path";
 import { promisify } from "node:util";
 import { assertIsolated } from "./isolation";
 import { isolatedKata, unwrapEnv } from "./kata-fixture";
-import { daemonUnavailable, siblingThrottle } from "./kata-errors";
+import { daemonUnavailable, missingExecutable, siblingThrottle } from "./kata-errors";
 import ompKata from "../kata";
 assertIsolated();
 const exec = promisify(execFile);
@@ -74,7 +74,7 @@ test("subagent start and shutdown never touch main attention or widget", async (
   expect(app.widgets).toEqual([]);
 });
 
-test("the main session exports its transcript identity on start and switch, and clears it on shutdown", async () => {
+test("the main session exports its transcript identity on start and switch, and leaves it for the next start on shutdown", async () => {
   const saved = [process.env.KATA_TRANSCRIPT_AGENT, process.env.KATA_TRANSCRIPT_SESSION_ID];
   delete process.env.KATA_TRANSCRIPT_AGENT; delete process.env.KATA_TRANSCRIPT_SESSION_ID;
   try {
@@ -88,10 +88,32 @@ test("the main session exports its transcript identity on start and switch, and 
   await child.event("session_start"); await child.event("session_shutdown");
   expect(process.env.KATA_TRANSCRIPT_SESSION_ID).toBe("transcript-next");
   await next.event("session_shutdown");
-  expect([process.env.KATA_TRANSCRIPT_AGENT, process.env.KATA_TRANSCRIPT_SESSION_ID]).toEqual([undefined, undefined]);
+  expect([process.env.KATA_TRANSCRIPT_AGENT, process.env.KATA_TRANSCRIPT_SESSION_ID]).toEqual(["omp", "transcript-next"]);
+  await host({ sid: "transcript-after" }).event("session_start");
+  expect(process.env.KATA_TRANSCRIPT_SESSION_ID).toBe("transcript-after");
   } finally {
     for (const [key, value] of [["KATA_TRANSCRIPT_AGENT", saved[0]], ["KATA_TRANSCRIPT_SESSION_ID", saved[1]]] as const) value === undefined ? delete process.env[key] : process.env[key] = value;
   }
+});
+
+test("a close whose Kata executable is missing is an outage even when wrapped with the transcript pair", async () => {
+  const missing = { code: 127, stdout: "", stderr: "env: 'kata': No such file or directory\n" };
+  const outcome = async (wrapped: boolean) => {
+    if (wrapped) { process.env.KATA_TRANSCRIPT_AGENT = "omp"; process.env.KATA_TRANSCRIPT_SESSION_ID = "missing-binary"; }
+    const app = host({ sid: wrapped ? "missing-wrapped" : "missing-bare", before: (args: string[]) => {
+      if (args[0] !== "close") return;
+      if (wrapped) return missing;
+      throw missingExecutable();
+    } });
+    await app.event("session_start");
+    const a = await issue("Ticket A");
+    await app.call({ op: "init", items: [`v2test#${a}: only step`] });
+    const result = await app.call({ op: "done", message, evidence });
+    return { isError: result.isError, text: result.content[0].text.replace(/Executable not found[^\n]*|v2test#\w+/g, "") };
+  };
+  const bare = await outcome(false);
+  expect(bare.isError).toBe(true);
+  expect(await outcome(true)).toEqual(bare);
 });
 
 test("an unreachable Kata gets a local plan without Kata mutations and one warning", async () => {
@@ -1784,4 +1806,22 @@ test("unmoved refs are pinned from the cached project list without another proje
   for (const task of ["Second cached", "Third cached"]) await app.call({ op: "append", items: [task] });
   await app.call({ op: "view" });
   expect(listed()).toBe(before);
+});
+
+test("re-binding the bound parent appends no further parent state entry", async () => {
+  const parent = `v2test#${await issue()}`; process.env.KATA_REF = parent;
+  const app = host(); await app.event("session_start"); await app.init(["First"]);
+  const parentEntries = () => app.entries.filter(e => e.customType === "io.kata.omp.parent").length;
+  const before = parentEntries();
+  await app.call({ op: "init", replace: true, items: ["Second"] });
+  await app.call({ op: "init", replace: true, ref: parent, items: ["Third"] });
+  expect(parentEntries()).toBe(before);
+});
+
+test("free text containing # is never shown as a Kata ref", async () => {
+  const app = host(); await app.init(["Plain task"]);
+  for (const target of ["Fix C# parser", "Fix #12 bug", "-flag#abc"]) {
+    expect((await app.call({ op: "done", task: target, message, evidence })).isError).toBe(true);
+    expect(app.calls.some(a => a[0] === "show" && a[1] === target)).toBe(false);
+  }
 });
