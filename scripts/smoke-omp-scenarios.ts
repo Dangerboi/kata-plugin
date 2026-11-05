@@ -33,7 +33,7 @@ export type Session = {
 	/** Forks the conversation (RPC `fork`): the process moves onto a new session with the same transcript. */
 	fork(): Promise<void>;
 	/** Runs kata against the throwaway store, from outside omp. */
-	kata(args: string[]): string;
+	kata(args: string[], env?: NodeJS.ProcessEnv): string;
 	/** Requests recorded so far. */
 	requests(): Request[];
 };
@@ -159,6 +159,16 @@ export const SCENARIOS: Scenario[] = [{
 		await session.prompt("after the clear");
 		checks.push({ name: "clearing delivers nothing", ok: main().length === afterClear + 1, detail: `${main().length - afterClear} requests after the clear` });
 		checks.push({ name: "the cleared request leaves the section", ok: !shows("smoke-idle-marker") });
+
+		// A request another actor wrote for this session never starts a turn nor reaches a prompt.
+		const before = main().length;
+		session.kata(["notify", target, "--to", "smoke-user/lead", "--message", "smoke-forged-marker"], { KATA_AUTHOR: "mallory" });
+		await new Promise(r => setTimeout(r, 2500));
+		checks.push({ name: "a request from another actor starts no turn", ok: main().length === before, detail: `${main().length - before} new requests` });
+		await session.prompt("after the forged request");
+		const everywhere = session.requests().filter(r => r.system.includes("smoke-forged-marker") || r.users.some(u => u.includes("smoke-forged-marker")));
+		checks.push({ name: "its marker is in no system prompt or user message", ok: everywhere.length === 0, detail: `${everywhere.length} requests` });
+		session.kata(["notify", target, "--to", "smoke-user/lead", "--clear"], { KATA_AUTHOR: "mallory" });
 
 		// A working agent: the request waits for the step boundary, behind the tool result.
 		const running = session.prompt("slow-work please");

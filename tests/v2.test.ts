@@ -1206,6 +1206,23 @@ test("only requests from the session's own actor reach the inbox section", async
   await asMallory(["notify", second, "--to", "v2-builder/trust", "--clear", "--json"]);
 });
 
+test("a long trusted inbox is capped like kata inbox --context with an omitted note", async () => {
+  process.env.KATA_INBOX_USER = "v2-builder/capped";
+  const app = host(); await app.event("session_start"); await app.contractReady;
+  const refs: string[] = [];
+  for (let i = 0; i < 12; i++) refs.push(await issue());
+  for (const [i, ref] of refs.entries()) await kata(["notify", ref, "--to", "v2-builder/capped", "--message", `${String(i).padStart(2, "0")}-${"x".repeat(1000)}`, "--json"]);
+  await app.event("before_agent_start", { systemPrompt: ["base"] });
+  const prompt = (await app.event("before_agent_start", { systemPrompt: ["base"] })).systemPrompt.join("\n");
+  const section = prompt.slice(prompt.indexOf("Kata inbox for"), prompt.indexOf("</kata_inbox>"));
+  const rows = section.split("\n").filter(l => l.startsWith("- issue="));
+  expect(rows.length).toBeGreaterThan(0);
+  expect(rows.length).toBeLessThan(12);
+  expect(Buffer.byteLength(section)).toBeLessThanOrEqual(8 * 1024);
+  expect(section).toContain(`${12 - rows.length} request(s) omitted; run kata inbox without --context`);
+  for (const ref of refs) await kata(["notify", ref, "--to", "v2-builder/capped", "--clear", "--json"]);
+});
+
 test("a bare actor in KATA_INBOX_USER is a person's inbox: the session reads none and says so once", async () => {
   process.env.KATA_INBOX_USER = "v2-builder";
   const app = host(); await app.event("session_start"); await app.contractReady;

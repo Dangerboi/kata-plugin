@@ -98,6 +98,39 @@ test("a clear delivers nothing and removes the request from the section", async 
 	t.follow.stop();
 });
 
+test("the same message written again after a clear is delivered again", async () => {
+	const t = follower();
+	t.follow.start(); await tick();
+	t.streams[0].push(slotLine(5, "abcd", slot("again")));
+	await tick();
+	t.streams[0].push(slotLine(6, "abcd", null));
+	t.streams[0].push(slotLine(7, "abcd", slot("again")));
+	await tick();
+	expect(t.delivered).toEqual([deliveryText("proj#abcd", ADDRESS, slot("again")), deliveryText("proj#abcd", ADDRESS, slot("again"))]);
+	t.follow.stop();
+});
+
+test("a deleted or restored issue re-reads the inbox, which then omits or lists its request", async () => {
+	let inbox: unknown[] = [];
+	const t = follower({ requests: () => inbox });
+	t.follow.start(); await tick();
+	inbox = [{ ref: "abcd", ...slot("pending") }];
+	t.streams[0].push(slotLine(5, "abcd", slot("pending")));
+	await tick();
+	expect(t.published.at(-1)).toBe("abcd:pending");
+	const reads = t.reads();
+	inbox = [];
+	t.streams[0].push(JSON.stringify({ event_id: 6, type: "issue.soft_deleted", project_name: "proj", issue_short_id: "abcd", payload: {} }));
+	await tick();
+	expect(t.reads()).toBeGreaterThan(reads);
+	expect(t.published.at(-1)).toBe("");
+	inbox = [{ ref: "abcd", ...slot("pending") }];
+	t.streams[0].push(JSON.stringify({ event_id: 7, type: "issue.restored", project_name: "proj", issue_short_id: "abcd", payload: {} }));
+	await tick();
+	expect(t.published.at(-1)).toBe("abcd:pending");
+	t.follow.stop();
+});
+
 test("the stream starts at the head, and requests that existed then are shown but never delivered", async () => {
 	const t = follower({ head: async () => 40, requests: () => [{ ref: "abcd", title: "T", ...slot("pending") }] });
 	t.follow.start(); await tick();
@@ -355,6 +388,18 @@ test("nothing is delivered after session shutdown", async () => {
 	await settle(1000);
 	expect(app.sent).toEqual([]);
 	await kata(["notify", ref, "--to", address, "--clear", "--json"]);
+});
+
+test("a session switch kills the old stream child and leaves exactly one", async () => {
+	const address = "v2-builder/live-switch";
+	const app = await open(address);
+	const children = () => Bun.spawnSync(["pgrep", "-f", `events --tail --json --workspace ${cwd}`]).stdout.toString().split("\n").filter(Boolean);
+	expect(await until(() => children().length === 1)).toBe(true);
+	const [first] = children();
+	await app.event("session_switch");
+	expect(await until(() => children().length === 1 && children()[0] !== first)).toBe(true);
+	await settle();
+	expect(children()).toHaveLength(1);
 });
 
 test("a delegate starts no follower and keeps the per-turn section", async () => {

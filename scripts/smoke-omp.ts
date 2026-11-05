@@ -36,8 +36,8 @@ const report = (name: string, ok: boolean, detail?: string) => {
 	console.log(`${ok ? "PASS" : "FAIL"} ${name}${!ok && detail ? ` (${detail})` : ""}`);
 };
 
-function kata(env: NodeJS.ProcessEnv, cwd: string, args: string[]) {
-	const out = spawnSync("kata", args, { env, cwd, encoding: "utf8", timeout: 15_000 });
+function kata(env: NodeJS.ProcessEnv, cwd: string, args: string[], extra: NodeJS.ProcessEnv = {}) {
+	const out = spawnSync("kata", args, { env: { ...env, ...extra }, cwd, encoding: "utf8", timeout: 15_000 });
 	if (out.status !== 0) throw new Error(`kata ${args.join(" ")}: ${out.stderr || out.error}`);
 	return out.stdout;
 }
@@ -99,7 +99,7 @@ async function drive(scenario: Scenario, args: string[], env: NodeJS.ProcessEnv,
 	const closed = new Promise<number | null>(resolve => child.on("close", resolve));
 	const timer = setTimeout(() => child.kill("SIGKILL"), TIMEOUT_MS);
 	const session: Session = {
-		kata: args => kata(env, work, args),
+		kata: (args, extra) => kata(env, work, args, extra),
 		requests: () => requestsIn(records),
 		async fork() {
 			const id = `f${++sequence}`;

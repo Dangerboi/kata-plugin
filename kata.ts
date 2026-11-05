@@ -192,6 +192,8 @@ export function createInboxFollower(deps: InboxFollowerDeps): InboxFollower {
 	function onLine(line: string) {
 		const id = eventIdOf(line);
 		if (id !== undefined && id > cursor) cursor = id;
+		// Delete and restore change which requests `kata inbox` lists without a slot diff, so re-read it.
+		if (line.includes('"type":"issue.soft_deleted"') || line.includes('"type":"issue.restored"')) { void readInbox(); return; }
 		const event = parseStreamLine(line, key);
 		if (!event) return;
 		if (event.type === "reset") { cursor = event.after; void readInbox(); return; }
@@ -634,14 +636,21 @@ export default function ompKata(pi: any) {
 			publish: text => { liveInbox = text; },
 			trusted: core.trustedInbox,
 			head: async () => {
-				// Pages of the project's events end at the head: a page past it is empty and echoes its cursor.
-				let after = 0;
-				for (;;) {
-					const page = JSON.parse(await kata(["events", "--json", "--after", String(after), "--limit", "1000"], cwd));
-					if (!Array.isArray(page?.events) || typeof page.next_after_id !== "number") throw new Error("kata events returned no page");
-					if (!page.events.length) return after;
-					after = page.next_after_id;
+				// An event with id > n exists exactly when a one-row read after n returns it. Double to an upper bound, then bisect for the largest id: O(log head) small calls.
+				const hasAfter = async (n: number) => {
+					const page = JSON.parse(await kata(["events", "--json", "--after", String(n), "--limit", "1"], cwd));
+					if (!Array.isArray(page?.events)) throw new Error("kata events returned no page");
+					return page.events.length > 0;
+				};
+				if (!(await hasAfter(0))) return 0;
+				let low = 0, high = 1;
+				while (await hasAfter(high)) { low = high; high *= 2; }
+				// Invariant: an event exists after low, none after high; so the largest id is high.
+				while (high - low > 1) {
+					const mid = Math.floor((low + high) / 2);
+					if (await hasAfter(mid)) low = mid; else high = mid;
 				}
+				return high;
 			},
 			setTimer: (fn, ms) => { const handle = setTimeout(fn, ms); handle.unref(); return handle; },
 			clearTimer: handle => clearTimeout(handle as ReturnType<typeof setTimeout>),
