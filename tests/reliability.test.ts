@@ -1,9 +1,9 @@
-import { afterAll, beforeAll, beforeEach, expect, setSystemTime, test } from "bun:test";
+import { afterAll, beforeAll, beforeEach, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { createKataCore } from "../core/kata-core";
 import { assertIsolated } from "./isolation";
-import { isolatedKata, memoryDelegateStore } from "./kata-fixture";
+import { isolatedKata, later, memoryDelegateStore } from "./kata-fixture";
 import { daemonUnavailable, notInitialized, notInitializedBound, notInitializedNoData, notInitializedProject, siblingThrottle } from "./kata-errors";
 assertIsolated();
 const binary = process.env.KATA_TEST_EXECUTABLE!;
@@ -35,11 +35,6 @@ async function init(a: ReturnType<typeof app>, items = ["First", "Second"], opti
 // The plan as a todo result reports it, and a plan task's qualified ref as Kata knows it.
 const tasksOf = (result: any): { content: string; status: string; blocker?: string }[] => result.details.kata.phases.flatMap((p: any) => p.tasks);
 async function child(parent: string, title: string) { return `${parent.split("#")[0]}#${(await kata(["show", parent, "--json"])).children.find((c: any) => c.title === title).short_id}`; }
-// A retry deadline passes while `fn` runs, without sleeping: a throttled close is due again.
-async function later<T>(fn: () => Promise<T>): Promise<T> {
-  setSystemTime(new Date(Date.now() + 120_000));
-  try { return await fn(); } finally { setSystemTime(); }
-}
 beforeAll(async () => { expect((await run(["init", "--project", "reliability-test"])).code).toBe(0); expect((await run(["init", "--project", "local-reliability"], localProject)).code).toBe(0); });
 beforeEach(() => { process.env.KATA_AUTHOR = "actor-a"; delete process.env.KATA_TEAMMATE; delete process.env.KATA_REF; });
 afterAll(async () => { await run(["daemon", "stop"]); });

@@ -1,3 +1,4 @@
+import { setSystemTime } from "bun:test";
 import { existsSync, mkdirSync, symlinkSync } from "node:fs";
 import path from "node:path";
 import { execFile } from "node:child_process";
@@ -36,4 +37,10 @@ export function adoptIsolatedKata(binary: string, home: string): () => void {
   return () => {
     for (const [key, value] of Object.entries(saved)) value === undefined ? delete process.env[key] : process.env[key] = value;
   };
+}
+
+/** A retry deadline passes while `fn` runs, without sleeping: a throttled close is due again. */
+export async function later<T>(fn: () => Promise<T>): Promise<T> {
+	setSystemTime(new Date(Date.now() + 120_000));
+	try { return await fn(); } finally { setSystemTime(); }
 }

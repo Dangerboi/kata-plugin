@@ -1,11 +1,11 @@
 import fc from "fast-check";
-import { afterAll, afterEach, beforeAll, beforeEach, expect, test } from "bun:test";
+import { afterAll, afterEach, beforeAll, beforeEach, expect, setSystemTime, test } from "bun:test";
 import { execFile } from "node:child_process";
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { promisify } from "node:util";
 import { assertIsolated } from "./isolation";
-import { adoptIsolatedKata, isolatedKata } from "./kata-fixture";
+import { adoptIsolatedKata, isolatedKata, later } from "./kata-fixture";
 import { daemonUnavailable, missingExecutable, siblingThrottle } from "./kata-errors";
 import { ompHost } from "./omp-host";
 assertIsolated();
@@ -355,18 +355,29 @@ test("a throttled automatic-parent close does not label the parent for review", 
 // Like omp: the host owns retry timers, and sweeps whatever is pending on shutdown.
 function throttledClose() {
   const timers = new Set<{ run: () => void }>();
-  let throttled = true;
-  const app = host({ before: (a: string[]) => a[0] === "close" && throttled ? siblingThrottle() : undefined });
+  let throttled = true, reached!: () => void;
+  const closing = new Promise<void>(resolve => reached = resolve);
+  const app = host({ before: (a: string[]) => {
+    if (a[0] !== "close") return undefined;
+    if (throttled) return siblingThrottle();
+    reached();
+    return undefined;
+  } });
   app.ctx.setTimeout = (callback: () => void) => { const timer = { run: callback }; timers.add(timer); return timer; };
   app.ctx.clearTimer = (timer: any) => { timers.delete(timer); };
-  return { app, timers, lift: () => { throttled = false; } };
+  return { app, timers, closing, lift: () => { throttled = false; } };
 }
-// The session's entries as if the retry deadline had passed (the snapshot keeps absolute deadlines).
-function dueEntries(entries: any[]) {
-  const copy = JSON.parse(JSON.stringify(entries));
-  for (const entry of copy) for (const [, pending] of entry.data?.retries ?? []) pending.at = 0;
-  return copy;
-}
+test("a throttled close is retried by the host timer", async () => {
+  const { app, timers, closing, lift } = throttledClose();
+  const parent = await app.init(["Throttled task"]);
+  expect((await app.call({ op: "done", message, evidence })).content[0].text).toContain("retry");
+  expect(timers.size).toBe(1);
+  lift();
+  setSystemTime(new Date(Date.now() + 120_000));
+  try { for (const timer of [...timers]) timer.run(); await closing; } finally { setSystemTime(); }
+  await app.call({ op: "view" });
+  expect((await show(parent)).issue.status).toBe("closed");
+});
 test("binding another session cancels the pending retry through the host", async () => {
   const { app, timers } = throttledClose();
   await app.init(["Throttled task"]);
@@ -387,8 +398,7 @@ test("sibling throttle retries the pinned close and does not falsely complete me
   expect(result.isError).toBeUndefined();
   expect(result.content[0].text).toContain("retry");
   expect((await show(parent)).children[0].metadata["todo.status"]).toBe("in_progress");
-  const resumed = host({ cwd: outside, sid: app.sid, entries: dueEntries(app.entries) }); await resumed.event("session_start");
-  await resumed.call({ op: "view" });
+  await later(async () => { const resumed = host({ cwd: outside, sid: app.sid, entries: app.entries }); await resumed.event("session_start"); await resumed.call({ op: "view" }); });
   expect((await show(parent)).issue.status).toBe("closed");
 });
 
@@ -443,16 +453,25 @@ test("async snapshot settles a delegate when terminal lifecycle delivery is miss
 });
 
 test("a missed delegate exit found at a prompt does not wait for the settlement", async () => {
-  let recent: any[] = []; let slow = false;
-  const app = host({ snapshot: () => ({ running: [], recent }), before: async (args: string[]) => { if (slow && ["show", "label", "close", "comment"].includes(args[0])) await Bun.sleep(2500); return undefined; } });
-  await app.event("session_start"); await app.init(["Wait for slow settlement"]);
-  app.emit("task:subagent:lifecycle", { id: "slow-exit", agent: "task", status: "started", sessionFile: `${scratch}/slow-exit.jsonl`, description: "Wait for slow settlement" });
-  await app.call({ op: "view" });
-  await ran(app, "slow-exit", `${scratch}/slow-exit.jsonl`);
-  recent = [{ id: "slow-exit", type: "task", status: "cancelled" }]; slow = true;
-  const started = Date.now();
-  await app.event("before_agent_start", { systemPrompt: ["base"] });
-  expect(Date.now() - started).toBeLessThan(2000);
+  let recent: any[] = [], slow = false;
+  const reached = Promise.withResolvers<void>(), gate = Promise.withResolvers<void>();
+  const app = host({ snapshot: () => ({ running: [], recent }), before: async (args: string[]) => {
+    if (slow && ["show", "label", "close", "comment"].includes(args[0])) { reached.resolve(); await gate.promise; }
+    return undefined;
+  } });
+  try {
+    await app.event("session_start"); const parent = await app.init(["Wait for slow settlement"]);
+    app.emit("task:subagent:lifecycle", { id: "slow-exit", agent: "task", status: "started", sessionFile: `${scratch}/slow-exit.jsonl`, description: "Wait for slow settlement" });
+    await app.call({ op: "view" });
+    await ran(app, "slow-exit", `${scratch}/slow-exit.jsonl`);
+    recent = [{ id: "slow-exit", type: "task", status: "cancelled" }]; slow = true;
+    await app.event("before_agent_start", { systemPrompt: ["base"] });
+    await reached.promise;
+    gate.resolve();
+    await app.call({ op: "view" });
+    const task = (await show(parent)).children.find((c: any) => c.title === "Wait for slow settlement");
+    expect((await show(`v2test#${task.short_id}`)).labels.some((l: any) => l.label === "needs-review")).toBe(true);
+  } finally { gate.resolve(); }
 });
 
 test("relative lifecycle session paths join the child's absolute session path", async () => {
@@ -748,8 +767,7 @@ test("queued close survives extension recreation and retries only after its dead
   const entries = JSON.parse(JSON.stringify(app.entries));
   const resumed = host({ sid: app.sid, entries }); await resumed.event("session_start");
   expect(resumed.calls.some(a => a[0] === "close")).toBe(false);
-  const restarted = host({ sid: app.sid, entries: dueEntries(entries) }); await restarted.event("session_start");
-  await restarted.call({ op: "view" });
+  await later(async () => { const restarted = host({ sid: app.sid, entries }); await restarted.event("session_start"); await restarted.call({ op: "view" }); });
   expect((await show(parent)).issue.status).toBe("closed");
   expect((await kata(["audit", "closes", "--json"])).rows.filter((r: any) => r.issue === parent.split("#")[1])).toHaveLength(1);
 });
@@ -904,17 +922,13 @@ test("a finished delegate that leaves its plan task open hands it back for revie
 
 test("a delegate whose binding failed is handed back when it exits, and the automatic parent closes", async () => {
   process.env.KATA_TEAMMATE = "lead-mate";
-  let failing = true;
-  const app = host({ before: (args: string[]) => failing && args[0] === "meta" && args[3] === "omp.subagent_id" ? { code: 1, stdout: "", stderr: "delegation service permission denied" } : undefined });
+  const app = host({ before: (args: string[]) => args[0] === "meta" && args[3] === "omp.subagent_id" ? { code: 1, stdout: "", stderr: "delegation service permission denied" } : undefined });
   await app.event("session_start");
   const ref = await app.init(["Delegated plan task", "Lead step"]);
   const sessionFile = `${scratch}/binding-failed.jsonl`;
   app.emit("task:subagent:lifecycle", { id: "binding-failed", status: "started", sessionFile, description: "Delegated plan task" });
   await app.call({ op: "view" });
   app.emit("task:subagent:lifecycle", { id: "binding-failed", status: "completed", sessionFile });
-  await app.call({ op: "view" });
-  await Bun.sleep(300);
-  failing = false;
   await app.call({ op: "view" });
   const task = (await show(ref)).children.find((c: any) => c.title === "Delegated plan task");
   const settled = await show(`v2test#${task.short_id}`);

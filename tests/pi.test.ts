@@ -4,7 +4,7 @@ import { mkdirSync, mkdtempSync, realpathSync, readFileSync, writeFileSync } fro
 import path from "node:path";
 import { Value } from "typebox/value";
 import { assertIsolated } from "./isolation";
-import { isolatedKata } from "./kata-fixture";
+import { isolatedKata, later } from "./kata-fixture";
 import { daemonUnavailable, siblingThrottle } from "./kata-errors";
 import piKata, { launchesPi } from "../plugins/pi/kata";
 assertIsolated();
@@ -362,8 +362,7 @@ test("pi local plans and queued closes survive a fresh extension instance", asyn
   const app = await host({before:(a:string[])=>a[0]==="close"?siblingThrottle():undefined});
   const ref = await app.init(["Durable pi close"]); await app.call({op:"done", message, evidence});
   const entries=JSON.parse(JSON.stringify(app.entries));
-  for (const entry of entries) for (const [, pending] of entry.data?.retries ?? []) pending.at = 0;
-  const resumed=await host({sid:app.sid,entries}); await resumed.event("session_start",{reason:"resume"}); await resumed.call({op:"view"});
+  await later(async () => { const resumed=await host({sid:app.sid,entries}); await resumed.event("session_start",{reason:"resume"}); await resumed.call({op:"view"}); });
   expect((await show(ref)).issue.status).toBe("closed");
 });
 
