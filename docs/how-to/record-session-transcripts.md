@@ -16,32 +16,30 @@ agentsview_url = "https://agentsview.example" # optional: your AgentsView addres
 
 Without `agentsview_url`, Kata records the agent and session ID without a link. No daemon restart is needed. The setting covers every `kata close` on this machine, so Claude Code and Codex closes, which Kata detects by itself, record their sessions too.
 
-## Map the session variable
-
-oh-my-pi and pi both pass the running session's ID to every command their `bash` tool runs, as `PI_SESSION_ID` (oh-my-pi sets no `OMP_SESSION_ID`). Tell Kata which harness that variable belongs to:
-
-```toml
-[close.transcript.session_id_env]
-omp = "PI_SESSION_ID" # oh-my-pi
-# pi = "PI_SESSION_ID" # pi
-```
-
-The key is the agent name AgentsView uses for that harness's sessions: `omp` for oh-my-pi, `pi` for pi. Kata builds the link from it (`<agentsview_url>/sessions/omp/<id>`), so a wrong name gives a link AgentsView cannot open.
-
-Map only the harness you use. Both set the same variable, so Kata cannot tell them apart: with `pi` mapped, closes made in oh-my-pi are recorded as pi sessions, and with both keys mapped Kata warns `ambiguous current session` and records none.
-
 ## What records a session
 
+Once transcripts are on, the oh-my-pi and pi plugins record the session on every close they can see; you add nothing else.
+
+- The plugin's own closes: `todo done`, `drop` and `rm`, the automatic parent's close, and the close of a superseded plan parent when the session adopts another parent.
 - A `kata close` run in the harness's `bash` tool: the agent closing an issue itself, or a delegate closing its own issue.
-- Not the plugin's own closes: `todo done`, `drop` and `rm`, and the automatic parent's close. They run outside the `bash` tool, carry no session variable, and close normally after Kata warns `current session unavailable or invalid; skipping attachment`.
+
+Each session start exports `KATA_TRANSCRIPT_AGENT` (`omp` or `pi`) and `KATA_TRANSCRIPT_SESSION_ID` (the session's ID) in the harness process. Neither plugin clears them at shutdown: a reload or new session starts in the same process and overwrites the pair, and clearing after a slow cleanup could delete the new pair. Kata uses the pair only when both are set. Kata builds the link from the agent name (`<agentsview_url>/sessions/omp/<id>`).
+
+- **oh-my-pi delegates** run inside the lead's process. A delegate's `kata close` in its `bash` tool records the delegate's own session, which AgentsView lists as a child of the lead's. If the plugin cannot read the delegate's session ID, the close records the lead's session.
+- **pi children** are separate processes, and each records its own session.
+- **Other harnesses** started from the `bash` tool (for example `claude -p`) inherit the pair, and Kata prefers it over their own session variable. Their closes record the oh-my-pi or pi session that launched them. Unset both variables in the command to record the child's own session.
+
+## `session_id_env`
+
+You do not need Kata's `[close.transcript.session_id_env]` table for oh-my-pi or pi: the explicit pair above takes precedence over it. Without the plugin, oh-my-pi and pi both pass the session ID as `PI_SESSION_ID`, so mapping that variable to `pi` would record oh-my-pi closes as pi sessions that AgentsView cannot open.
 
 ## Check it
 
-After a close from the harness's `bash` tool, read the session back from the close event:
+After a close, read the session back from the close event:
 
 ```sh
 kata events --project <project> --limit 100 --json \
   | jq '.events[] | select(.type == "issue.closed") | {issue: .issue_short_id, transcript: .payload.transcript}'
 ```
 
-A recorded close shows `{"agent": "omp", "session_id": "<id>", "url": ".../sessions/omp/<id>"}`.
+A recorded close shows `{"agent": "omp", "session_id": "<id>"}`, plus a `url` ending in `/sessions/omp/<id>` when `agentsview_url` is set.

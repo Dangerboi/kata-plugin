@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, beforeEach, expect, test } from "bun:test";
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, realpathSync, readFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { Value } from "typebox/value";
 import { assertIsolated } from "./isolation";
@@ -52,8 +52,9 @@ async function host(options: any = {}) {
     getThinkingLevel: () => options.thinking,
     setThinkingLevel: (level: any) => thinking.push(level),
     on: (name: string, callback: any) => handlers.set(name, [...(handlers.get(name) || []), callback]),
-    async exec(_file: string, args: string[], opts: any) {
+    async exec(file: string, args: string[], opts: any) {
       calls.push(args);
+      if (options.exec) return options.exec(file, args, opts);
       const result = await options.before?.(args, opts) ?? await run(args, opts.cwd, opts.timeout);
       if (args[0] === "agent-contract-hook") contractReady.resolve();
       if (args[0] === "inbox") inboxReady.resolve();
@@ -94,7 +95,7 @@ beforeAll(async () => {
 beforeEach(() => {
   process.env.KATA_AUTHOR = "pi-builder";
   process.env.KATA_PI_EXECUTABLE = binary;
-  for (const key of ["KATA_REF", "KATA_TEAMMATE", "KATA_INBOX_USER", "KATA_PI_PARENT"]) delete process.env[key];
+  for (const key of ["KATA_REF", "KATA_TEAMMATE", "KATA_INBOX_USER", "KATA_PI_PARENT", "KATA_TRANSCRIPT_AGENT", "KATA_TRANSCRIPT_SESSION_ID"]) delete process.env[key];
   globalRegistry[nativeKey] = { adapters: new Map() };
 });
 afterAll(async () => { await run(["daemon", "stop"]); delete process.env.KATA_PI_EXECUTABLE; globalRegistry[nativeKey] = previousRegistry; });
@@ -328,7 +329,31 @@ for (const order of ["plugin-first", "native-first"]) test.skipIf(!!nativeMissin
   expect(globalRegistry[nativeKey].active.get(nativeCwd).ref).toBe("");
   await child.event("session_shutdown",{reason:"quit"});
   expect((await show(ref)).issue.metadata).toEqual(baseline);
+  expect(child.calls.filter(a => a[1] === "attention-native")).toEqual([]);
   globalRegistry[nativeKey]={adapters:new Map(),active:new Map()};
+});
+
+const attentionCalls = (app: any) => app.calls.filter((a: string[]) => a[1] === "attention-native").map((a: string[]) => [a[3], a[a.indexOf("--ref") + 1]]);
+test.skipIf(!!nativeMissing)("real native adapter sends no attention end for a session without KATA_REF when the plugin loads first", async () => {
+  globalRegistry[nativeKey] = { adapters: new Map(), active: new Map() };
+  const nativeCwd = realpathSync(cwd);
+  const app = await host({ nativeOrder: "plugin-first", cwd: nativeCwd }); await app.event("session_start", { reason: "startup" });
+  expect(globalRegistry[nativeKey].active.get(nativeCwd).ref).toBe("");
+  await app.event("session_shutdown", { reason: "quit" });
+  expect(attentionCalls(app)).toEqual([]);
+  globalRegistry[nativeKey] = { adapters: new Map(), active: new Map() };
+});
+
+test.skipIf(!!nativeMissing)("real native adapter starts and ends attention once each on the lead's issue with KATA_REF", async () => {
+  const ref = (await kata(["create", "Real native attention lead", "--force-new", "--json"])).issue.short_id;
+  await kata(["claim", ref, "--json"]);
+  process.env.KATA_REF = `pitest#${ref}`;
+  globalRegistry[nativeKey] = { adapters: new Map(), active: new Map() };
+  const nativeCwd = realpathSync(cwd);
+  const app = await host({ nativeOrder: "plugin-first", cwd: nativeCwd }); await app.event("session_start", { reason: "startup" });
+  await app.event("session_shutdown", { reason: "quit" });
+  expect(attentionCalls(app)).toEqual([["start", `pitest#${ref}`], ["end", `pitest#${ref}`]]);
+  globalRegistry[nativeKey] = { adapters: new Map(), active: new Map() };
 });
 
 test("pi local plans and queued closes survive a fresh extension instance", async () => {
@@ -435,6 +460,20 @@ test("a child prompt naming any open child issue by short id binds it", async ()
   await child.event("before_agent_start", { prompt: `read issue ${named} and write the tests`, systemPromptOptions: { sections: {} } });
   expect(child.entries.find(e => e.customType === "io.kata.pi.delegate").data.ref).toBe(`pitest#${named}`);
   expect((await show(ref)).children).toHaveLength(2);
+  leaveChild();
+});
+
+test("a child started from a stale parent ref creates its issue in the project the parent moved to", async () => {
+  const parent = await host(); await parent.event("session_start", { reason: "startup" });
+  const ref = await parent.init(["Lead plan that moves"]);
+  expect(ref).toMatch(/^pitest#/);
+  await kata(["projects", "create", "pimoved", "--json"]);
+  await kata(["move", ref, "pimoved", "--json"]);
+  const child = await childOf(parent);
+  await child.event("before_agent_start", { prompt: "Investigate an independent question", systemPromptOptions: { sections: {} } });
+  const record = child.entries.find(e => e.customType === "io.kata.pi.delegate").data;
+  expect(record.ref).toMatch(/^pimoved#/);
+  expect((await show(ref)).children.map((c: any) => c.short_id)).toContain(record.ref.split("#")[1]);
   leaveChild();
 });
 
@@ -631,4 +670,50 @@ test("pi accepts replace on todo init and refuses without it while tasks are ope
   expect(replaced.isError).toBeUndefined();
   const old = (await show(parent)).children.find((c: any) => c.title === "Open pi task");
   expect(old.closed_reason).toBe("wontfix");
+});
+
+test("pi sets its transcript identity on start, a child replaces the inherited one, a shutdown leaves the next session's", async () => {
+  delete process.env.KATA_TRANSCRIPT_AGENT; delete process.env.KATA_TRANSCRIPT_SESSION_ID;
+  try {
+  const lead = await host(); await lead.event("session_start", { reason: "startup" });
+  expect([process.env.KATA_TRANSCRIPT_AGENT, process.env.KATA_TRANSCRIPT_SESSION_ID]).toEqual(["pi", lead.sid]);
+  const child = await host(); await child.event("session_start", { reason: "startup" });
+  expect(process.env.KATA_TRANSCRIPT_SESSION_ID).toBe(child.sid);
+  await lead.event("session_shutdown", { reason: "new" });
+  expect([process.env.KATA_TRANSCRIPT_AGENT, process.env.KATA_TRANSCRIPT_SESSION_ID]).toEqual(["pi", child.sid]);
+  } finally { delete process.env.KATA_TRANSCRIPT_AGENT; delete process.env.KATA_TRANSCRIPT_SESSION_ID; }
+});
+
+test("a close driven through pi's real exec records the pi session when close transcripts are on", async () => {
+  const { execCommand } = await import("../node_modules/@earendil-works/pi-coding-agent/dist/core/exec.js");
+  writeFileSync(path.join(env.KATA_HOME, "config.toml"), "[close.transcript]\nenabled = true\n");
+  const previousHome = process.env.KATA_HOME; process.env.KATA_HOME = env.KATA_HOME;
+  try {
+    const app = await host({ exec: (file: string, args: string[], opts: any) => execCommand(file, args, opts.cwd, opts) });
+    await app.event("session_start", { reason: "startup" });
+    await app.init(["Real exec transcript task"]);
+    const done = await app.call({ op: "done", task: "Real exec transcript task", message, evidence });
+    expect(done.isError, done.content?.[0]?.text).toBeUndefined();
+    const closes = (await kata(["events", "--after", "0", "--limit", "500", "--json"])).events.filter((e: any) => e.type === "issue.closed" && e.payload?.transcript?.session_id === app.sid);
+    expect(closes.length).toBeGreaterThan(0);
+    expect(closes[0].payload.transcript).toMatchObject({ agent: "pi", session_id: app.sid });
+  } finally { if (previousHome === undefined) delete process.env.KATA_HOME; else process.env.KATA_HOME = previousHome; }
+});
+
+test("a slow shutdown of the old instance does not delete the next session's transcript identity", async () => {
+  delete process.env.KATA_TRANSCRIPT_AGENT; delete process.env.KATA_TRANSCRIPT_SESSION_ID;
+  try {
+    let slow = false, resumed = 0; const release = Promise.withResolvers<void>();
+    const lead = await host({ before: async () => { if (slow) { await release.promise; resumed++; } return undefined; } });
+    await lead.event("session_start", { reason: "startup" }); await lead.init(["Slow shutdown task"]);
+    slow = true;
+    const shutdown = lead.event("session_shutdown", { reason: "new" });
+    await new Promise(resolve => setTimeout(resolve, 400));
+    const next = await host(); await next.event("session_start", { reason: "new" });
+    await shutdown;
+    release.resolve(); slow = false;
+    while (!resumed) await new Promise(resolve => setTimeout(resolve, 20));
+    await new Promise(resolve => setTimeout(resolve, 300));
+    expect([process.env.KATA_TRANSCRIPT_AGENT, process.env.KATA_TRANSCRIPT_SESSION_ID]).toEqual(["pi", next.sid]);
+  } finally { delete process.env.KATA_TRANSCRIPT_AGENT; delete process.env.KATA_TRANSCRIPT_SESSION_ID; }
 });

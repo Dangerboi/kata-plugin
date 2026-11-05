@@ -51,13 +51,14 @@ export function slug(text: string | undefined, keepCase = false): string | undef
 	return value || undefined;
 }
 // A failed Kata call. Kata's own error envelope (`--json`: {error:{kind,code,
-// hint,message,exit_code}}) and its documented exit code are kept so callers
+// hint,message,exit_code,data}}) and its documented exit code are kept so callers
 // branch on them, never on message wording.
 export class KataError extends Error {
 	constructor(message: string, readonly info: {
 		exit: number;
 		code?: string; // the envelope's error code, e.g. project_not_initialized
 		detail?: string; // Kata's own message
+		data?: Record<string, unknown>; // the envelope's structured data, e.g. {alias} or {project} on project_not_initialized
 		killed?: boolean; // our timeout killed it
 		notRun?: boolean; // Kata never ran: missing executable
 	}) { super(message); }
@@ -68,15 +69,13 @@ export class KataError extends Error {
 export const isUnusable = (error: unknown) => error instanceof KataError && error.unusable;
 export const isKataCode = (error: unknown, code: string) => error instanceof KataError && error.code === code;
 
-// The workspace name Kata would infer, read from its project_not_initialized
-// message ("alias github.com/owner/repo is not registered", "project x is not
-// registered"), else the folder. Kata has no structured field for it (the error
-// carries only `message` and `hint`): that is the one place this core reads
-// Kata's wording.
-export function inferredName(message: string, cwd: string): string {
-	const named = /project (\S+) is not registered/.exec(message)?.[1];
-	const alias = /alias (\S+) is not registered/.exec(message)?.[1]?.replace(/^local:\/\//, "").replace(/\/+$/, "").split("/").pop();
-	return slug((named ?? alias ?? path.basename(path.resolve(cwd))).replace(/\.git$/, ""), true) ?? slug(path.basename(path.resolve(cwd)), true) ?? "workspace";
+// The workspace name Kata would infer, read from the project_not_initialized
+// error's structured data: the project it names, else its alias ("local://" and
+// ".git" dropped, last segment kept), else the folder.
+export function inferredName(data: Record<string, unknown> | undefined, cwd: string): string {
+	const text = (value: unknown) => typeof value === "string" && value ? value : undefined;
+	const alias = text(data?.alias)?.replace(/^local:\/\//, "").replace(/\/+$/, "").split("/").pop();
+	return slug((text(data?.project) ?? alias ?? path.basename(path.resolve(cwd))).replace(/\.git$/, ""), true) ?? slug(path.basename(path.resolve(cwd)), true) ?? "workspace";
 }
 
 export function quote(value: string): string { return `'${value.replace(/'/g, "'\\''")}'`; }
@@ -170,7 +169,7 @@ export function teammateFor(id: string, salt?: string): string {
 	return `${base.slice(0, 57)}-${digest(salt ? `${salt}:${id}` : id).slice(0, 6)}`;
 }
 
-export function delegateCommand(command: string, executable: string, executableVars: readonly string[], teammate: string, binding?: Binding): string {
+export function delegateCommand(command: string, executable: string, executableVars: readonly string[], teammate: string, binding?: Binding, transcriptSession?: { agent: string; id: string }): string {
 	const edits: { start: number; end: number; value: string }[] = [];
 	for (const invocation of kataCommands(command, executable, executableVars)) {
 		const parsed = shellOptions(invocation.words);
@@ -182,6 +181,8 @@ export function delegateCommand(command: string, executable: string, executableV
 			if (!parsed.options.has("--project")) flags += ` --project ${quote(binding.parent.split("#")[0])}`;
 		}
 		edits.push({ start: invocation.executable.end, end: invocation.executable.end, value: flags });
+		// An in-process delegate has its own session; without this its close would record the lead's.
+		if (transcriptSession && parsed.args[0] === "close") edits.push({ start: invocation.executable.start, end: invocation.executable.start, value: `env KATA_TRANSCRIPT_AGENT=${quote(transcriptSession.agent)} KATA_TRANSCRIPT_SESSION_ID=${quote(transcriptSession.id)} ` });
 	}
 	for (const edit of edits.sort((a, b) => b.start - a.start)) command = command.slice(0, edit.start) + edit.value + command.slice(edit.end);
 	return command;
@@ -225,6 +226,7 @@ const escape = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 // only, so the one source parses a strict prefix (`itemTicket`) and scans text
 // for whole-token refs (`qualifiedRefs`).
 const QUALIFIED_REF = "(?<![\\w./#-])[A-Za-z0-9_][\\w.-]*#[0-9a-hjkmnp-tv-z]{4,26}(?![\\w-])";
+const QUALIFIED_REF_ONLY = new RegExp(`^${QUALIFIED_REF}$`, "i");
 // Distinct qualified refs in order of appearance. Prose holds look-alikes
 // (`README.md#tasks`), so with `projects` only refs of those projects count.
 export function qualifiedRefs(text: string, projects?: ReadonlySet<string>): string[] {
@@ -418,10 +420,11 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 	// unknown: not probed; workspace: the cwd has its own project; unbound: Kata is
 	// up but the cwd is unregistered; bound: a parent is set; down: Kata unusable.
 	let scope: "unknown" | "workspace" | "unbound" | "bound" | "down" = "unknown";
-	let refusal = "", outage = "", warnedFor: string | undefined;
+	let refusal: Record<string, unknown> | undefined, outage = "", warnedFor: string | undefined;
 	let currentId: string | undefined;
 	let bound = false;
 	let assignedRef: string | undefined;
+	const aliases = new Set<string>(); // refs the plan's parent was rehomed from: they still name it
 	let requestedRef: string | undefined;
 	let sessionTeammate: string | undefined;
 	let boundAgent: string | undefined;
@@ -431,7 +434,7 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 	let progressed = true;
 	let cache: { id?: string; contract?: string; inbox?: string; pending?: Promise<void>; inboxPending?: Promise<void> } = {};
 	const autoParents = new Map<string, Binding>();
-	let registered: { id?: string; names: Promise<Set<string>> } | undefined;
+	let registered: { id?: string; list: Promise<{ id: number; name: string }[]> } | undefined;
 	const retries = new Map<string, { task: Task; to: Status; change: Change; cwd: string; at: number }>();
 	// A named ticket whose close Kata refused for open children: retried once they close.
 	type PendingClose = { key: string; message: string; evidence: string[]; cwd: string };
@@ -481,11 +484,14 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 			throw new KataError(`kata ${args[0]} could not run: ${(error as Error).message}`, { exit: -1, notRun: true });
 		}
 		if (result.code !== 0 || result.killed) {
-			const envelope = [result.stdout, result.stderr].map(text => { try { return JSON.parse(text ?? "").error; } catch { return undefined; } }).find(e => e && typeof e === "object");
+			// Kata may print warning lines (e.g. a skipped transcript) before the envelope, which is always the last line.
+			const envelope = [result.stdout, result.stderr].map(text => { try { return JSON.parse((text ?? "").trim().split("\n").pop() ?? "").error; } catch { return undefined; } }).find(e => e && typeof e === "object");
 			const detail = envelope?.message ?? (result.stderr || result.stdout || "").trim().split("\n").slice(-3).join(" ");
 			// A host that fails to spawn reports a bare failure with no output at all; Kata always says something.
 			const notRun = !result.killed && !envelope && !detail;
-			throw new KataError(`kata ${args[0]} ${result.killed ? `timed out after ${timeout}ms` : notRun ? "could not run" : "failed"}${detail ? `: ${detail}` : ""}`, { exit: result.code, code: envelope?.code, detail, killed: result.killed, notRun });
+			// A renamed project's old name no longer resolves: drop the cached list so the next lookup reloads it.
+			if (envelope?.code === "project_not_initialized") registered = undefined;
+			throw new KataError(`kata ${args[0]} ${result.killed ? `timed out after ${timeout}ms` : notRun ? "could not run" : "failed"}${detail ? `: ${detail}` : ""}`, { exit: result.code, code: envelope?.code, detail, data: envelope?.data && typeof envelope.data === "object" ? envelope.data : undefined, killed: result.killed, notRun });
 		}
 		return result.stdout;
 	}
@@ -560,13 +566,34 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 
 	// -------------------------------------------------------------- plan state
 
-	async function childrenOf(parent: string, cwd: string): Promise<any[]> {
+	async function showParent(parent: string, cwd: string): Promise<any> {
 		const shown = JSON.parse(await kata(["show", parent, "--json"], cwd));
 		const children = (shown.children ?? []) as any[];
 		if (!shown.issue || !Array.isArray(children) || children.some(c => !c || typeof c.title !== "string" || typeof c.short_id !== "string")) {
 			throw new Error("kata show returned an invalid issue or children response");
 		}
-		return children;
+		return shown;
+	}
+
+	async function childrenOf(parent: string, cwd: string): Promise<any[]> {
+		return (await showParent(parent, cwd)).children ?? [];
+	}
+
+	// `kata move` keeps old refs resolving but the issue and its open children now
+	// live in another project. Follow the parent: the saved binding, child
+	// creation, delegate context and the pi marker all derive the project from it.
+	async function rehome(shown: any, ref: string, cwd: string): Promise<void> {
+		const old = ref;
+		let current: string;
+		try { current = `${await projectName(shown.issue.project_id, cwd)}#${shown.issue.short_id}`; }
+		catch (error) { debug(error); return; }
+		if (current === old || plan.parent !== old) return;
+		const marker = autoParents.get(old);
+		autoParents.delete(old);
+		if (marker) autoParents.set(current, { ...marker, parent: current });
+		plan.parent = current;
+		aliases.add(old);
+		host.appendEntry(STATE_ENTRY, { parent: current, workspace: plan.workspace, sessionId: plan.sessionId, auto: plan.auto, label: plan.label });
 	}
 
 	function tasksOf(children: any[], parent: string): Task[] {
@@ -609,7 +636,10 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 		if (plan.local) { delete plan.error; plan.tasks = withNamed(plan.tasks); return []; }
 		if (!plan.parent) { if (named.length) { delete plan.error; await followTickets(cwd); } plan.tasks = withNamed([]); return []; }
 		try {
-			const children = await childrenOf(plan.parent, cwd);
+			const ref = plan.parent;
+			const shown = await showParent(ref, cwd);
+			await rehome(shown, ref, cwd);
+			const children = (shown.children ?? []) as any[];
 			await followTickets(cwd);
 			plan.tasks = withNamed(tasksOf(children, plan.parent));
 			delete plan.error;
@@ -641,9 +671,9 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 	// executable, unreachable daemon) is down, and it is probed again next time.
 	async function probe(cwd: string): Promise<boolean> {
 		if (scope !== "unknown" && scope !== "down") return true;
-		try { await kata(["list", "--limit", "1", "--json"], cwd, 15_000); scope = "workspace"; refusal = ""; }
+		try { await kata(["list", "--limit", "1", "--json"], cwd, 15_000); scope = "workspace"; refusal = undefined; }
 		catch (error) {
-			if (isKataCode(error, "project_not_initialized")) { scope = "unbound"; refusal = (error as KataError).info.detail ?? ""; }
+			if (isKataCode(error, "project_not_initialized")) { scope = "unbound"; refusal = (error as KataError).info.data ?? {}; }
 			else if (isUnusable(error)) { scope = "down"; outage = (error as Error)?.message ?? String(error); debug(error); return false; }
 			else throw error; // a missing project or a refused login is an error, never a local plan
 		}
@@ -707,25 +737,39 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 		}
 	}
 
-	// Names of the registered Kata projects, read once per session. An unreadable
-	// list is empty, so no ref in prose is taken for a ticket.
-	function projectNames(cwd: string): Promise<Set<string>> {
-		if (registered?.id !== currentId) registered = undefined;
-		registered ??= {
+	// The registered Kata projects (id and name), read once per session and
+	// again only when a project id is not in it (a project registered later).
+	function projectList(cwd: string, fresh = false): Promise<{ id: number; name: string }[]> {
+		if (fresh || registered?.id !== currentId) registered = undefined;
+		const entry: NonNullable<typeof registered> = registered ??= {
 			id: currentId,
-			names: kata(["projects", "list", "--json"], cwd).then(out => new Set<string>(JSON.parse(out).projects.map((p: any) => p.name)))
-				.catch(error => { debug(error); registered = undefined; return new Set<string>(); }),
+			list: kata(["projects", "list", "--json"], cwd).then(out => (JSON.parse(out).projects as any[]).map(p => ({ id: p.id, name: p.name })))
+				.catch(error => { if (registered === entry) registered = undefined; throw error; }),
 		};
-		return registered.names;
+		return entry.list;
 	}
 
-	async function pin(ref: string, cwd: string): Promise<string> {
-		const shown = JSON.parse(await kata(["show", ref, "--json"], cwd));
-		if (ref.includes("#")) return `${ref.split("#")[0]}#${shown.issue.short_id}`;
-		const projects = JSON.parse(await kata(["projects", "list", "--json"], cwd)).projects;
-		const project = projects.find((p: any) => p.id === shown.issue.project_id);
+	// An unreadable list is empty, so no ref in prose is taken for a ticket.
+	function projectNames(cwd: string): Promise<Set<string>> {
+		return projectList(cwd).then(list => new Set(list.map(p => p.name)), error => { debug(error); return new Set<string>(); });
+	}
+
+	// `ref` is what Kata was asked: a project name the list lacks means the project was renamed since it was read.
+	async function projectName(id: number, cwd: string, ref?: string): Promise<string> {
+		const asked = ref?.includes("#") ? ref.split("#")[0] : undefined;
+		const stale = asked !== undefined && !(await projectList(cwd)).some(p => p.name === asked);
+		const project = (stale ? undefined : (await projectList(cwd)).find(p => p.id === id)) ?? (await projectList(cwd, true)).find(p => p.id === id);
 		if (!project) throw new Error("Kata issue project could not be pinned.");
-		return `${project.name}#${shown.issue.short_id}`;
+		return project.name;
+	}
+
+	// The issue's current qualified ref: its project is the one it lives in now,
+	// not the one the given ref names.
+	async function qualify(issue: any, cwd: string, ref: string): Promise<string> {
+		return `${await projectName(issue.project_id, cwd, ref)}#${issue.short_id}`;
+	}
+	async function pin(ref: string, cwd: string): Promise<string> {
+		return qualify(JSON.parse(await kata(["show", ref, "--json"], cwd)).issue, cwd, ref);
 	}
 
 	async function sessionBinding(ctx: any): Promise<Binding | undefined> {
@@ -760,8 +804,8 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 		currentId = id;
 		lastSnapshot = undefined;
 		currentCtx = ctx;
-		plan = { tasks: [] }; named = [];
-		scope = "unknown"; refusal = ""; outage = "";
+		plan = { tasks: [] }; named = []; aliases.clear();
+		scope = "unknown"; refusal = undefined; outage = "";
 		retries.clear(); autoParents.clear(); pendingCloses.clear();
 		clearRetryTimer();
 		const branch: any[] = ctx.sessionManager?.getBranch?.() ?? [];
@@ -820,6 +864,7 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 		scope = "bound";
 		if (!binding.auto) autoParents.delete(binding.parent);
 		if (plan.parent === binding.parent && plan.workspace === binding.workspace && plan.auto === binding.auto && plan.label === binding.label) return;
+		if (plan.parent !== binding.parent) aliases.clear();
 		plan = { ...binding, tasks: withNamed(plan.parent === binding.parent ? plan.tasks : []) };
 		if (binding.auto) autoParents.set(binding.parent, binding);
 		host.appendEntry(STATE_ENTRY, binding);
@@ -1024,7 +1069,7 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 				try { shown = JSON.parse(await kata(["show", ref, "--json"], cwd)).issue; }
 				catch (error) { throw new Error(`Todo item "${item.content}" names ${ref}, which Kata cannot resolve: ${(error as Error).message}. Nothing was created.`); }
 				if (shown.status !== "open") throw new Error(`Todo item "${item.content}" names ${ref}, which is already closed; the plugin never reopens a ticket. Nothing was created.`);
-				ticket = `${ref.split("#")[0]}#${shown.short_id}`;
+				ticket = await qualify(shown, cwd, ref);
 				try { await owned(ticket, cwd, "check"); }
 				catch (error) { throw new Error(`Todo item "${item.content}" cannot work ${ticket}: ${(error as Error).message} Nothing was created.`); }
 				checked.set(ref, ticket);
@@ -1150,6 +1195,12 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 		if (!plan.local && !plan.tasks.some(t => t.content === target) && /(?:^|#)[0-9a-hjkmnp-tv-z]{26}$/i.test(target)) target = await pin(target, plan.workspace!);
 		const exact = plan.tasks.filter(t => t.content === target || t.ref === target || t.ref.split("#")[1] === target);
 		if (exact.length === 1) return exact;
+		if (QUALIFIED_REF_ONLY.test(target) && !exact.length && !plan.local) {
+			// A short id is only unique per project: compare the ticket the ref names now, never its short id alone.
+			const pinned = await pin(target, plan.workspace!).catch(() => undefined);
+			const moved = plan.tasks.filter(t => t.ref === pinned);
+			if (moved.length === 1) return moved;
+		}
 		const needle = target.toLowerCase();
 		const fuzzy = plan.tasks.filter(t => t.content.toLowerCase().includes(needle));
 		if (fuzzy.length === 1) return fuzzy;
@@ -1161,7 +1212,7 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 	async function ensureParent(params: any, ctx: any): Promise<string | undefined> {
 		const explicit = assignedRef ?? options.explicitRef?.() ?? process.env.KATA_REF;
 		const target = explicit || params.ref;
-		if (target && ((!explicit && params.ref) || !plan.parent || (target.includes("#") ? plan.parent !== target : plan.parent.split("#").pop() !== target))) {
+		if (target && ((!explicit && params.ref) || !plan.parent || (target.includes("#") ? target !== plan.parent && !aliases.has(target) : plan.parent.split("#").pop() !== target))) {
 			requestedRef = target;
 			try { await adopt(target, ctx); }
 			catch (error) { bound = false; throw error; }
@@ -1261,6 +1312,7 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 	function proofArgs(items: any[]): string[] {
 		const values = new Set<string>();
 		for (const item of items) {
+			if (item.type === "attachment") continue; // Kata only accepts attachments linked on the closed issue itself, so a child's never carries over.
 			const key: Record<string, string> = { commit: "sha", pr: "url", test: "command", external: "account", "no-change-audit": "rationale", "duplicate-of": "issue_ref", "superseded-by": "issue_ref" };
 			const value = item[key[item.type]];
 			if (typeof value === "string" && value.trim()) values.add(`${item.type}:${value}`);
@@ -1288,14 +1340,14 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 				const since = closedTimes.length ? new Date(Math.min(...closedTimes)).toISOString() : undefined;
 				const evidence: any[] = [];
 				const audits = new Map<string, any[]>();
-				let projects: any[] | undefined;
+				let projects: { id: number; name: string }[] | undefined;
 				for (const child of initial.children) {
 					if (child.closed_reason === "wontfix") continue;
 					let project = child.qualified_id?.split("#")[0];
 					if (!project && child.project_id === initial.issue.project_id) project = parent.split("#")[0];
 					if (!project) {
-						projects ??= JSON.parse(await kata(["projects", "list", "--json"], workspace)).projects;
-						project = projects!.find(p => p.id === child.project_id)?.name;
+						projects ??= await projectList(workspace);
+						project = projects.find(p => p.id === child.project_id)?.name;
 					}
 					if (!project) throw new Error("Kata child project unavailable");
 					if (!audits.has(project)) audits.set(project, JSON.parse(await kata(["audit", "closes", "--project", project, "--since", since!, "--json"], workspace)).rows);
@@ -1359,7 +1411,7 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 			const target = explicit || params.ref || plan.parent;
 			if (target) {
 				const workspace = explicit || !params.ref ? plan.workspace || ctx.cwd : ctx.cwd;
-				const parent = target === plan.parent ? target : await pin(target, workspace);
+				const parent = target === plan.parent || aliases.has(target) ? plan.parent! : await pin(target, workspace);
 				if (explicit && params.ref && parent !== await pin(params.ref, workspace)) throw new Error(`Kata init ref ${params.ref} conflicts with the explicit binding ${explicit}; neither plan was replaced.`);
 				const tasks = tasksOf(await childrenOf(parent, workspace), parent);
 				refuseOpen(params.replace === true, [...tasks, ...named], wanted);
@@ -1415,6 +1467,8 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 				await reopenParent();
 				for (const content of items) {
 					const ticket = resolved.get(itemKey({ phase, content }));
+					// A ticket item already open in the plan is already there: it is never a child to create.
+					if (!ticket && itemTicket(content)) continue;
 					if (ticket) {
 						// A finished or dropped item comes back as a fresh one.
 						named = named.filter(t => t.phase !== phase || t.content !== content || OPEN.has(t.status));
@@ -1645,7 +1699,7 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 		get cache() { return cache; },
 		stateEntry: STATE_ENTRY,
 		resetReminders() { reminders = 0; },
-		debug, bounded, serial, kata, projectNames, actor, owned, work, load, refresh, probe, bind, handBack,
+		debug, bounded, serial, kata, projectNames, pin, actor, owned, work, load, refresh, probe, bind, handBack,
 		ensureParent, destination, candidate, adopt, reconcile, drainRetries, apply, execute, command,
 		observeToolResult, remind, warm, tickets,
 	};

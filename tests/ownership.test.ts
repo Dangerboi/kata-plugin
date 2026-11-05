@@ -1,6 +1,7 @@
 import { assertIsolated } from "./isolation";
+import { adoptIsolatedKata } from "./kata-fixture";
 assertIsolated();
-import { afterAll, beforeAll, expect, test } from "bun:test";
+import { afterAll, afterEach, beforeAll, beforeEach, expect, test } from "bun:test";
 import { execFile } from "node:child_process";
 import { mkdtempSync, mkdirSync } from "node:fs";
 import os from "node:os";
@@ -86,6 +87,9 @@ beforeAll(async () => {
   console.log(`Real Kata throwaway store: ${scratch}`);
 }, 20000);
 afterAll(async () => { await run(["daemon", "stop"]); });
+let restore: (() => void) | undefined;
+beforeEach(() => { restore = adoptIsolatedKata(binary!, env.KATA_HOME); });
+afterEach(() => restore?.());
 
 // Removing the ownership gate or swallowing claim failures must fail these.
 for (const op of ["start", "block", "unblock"]) {

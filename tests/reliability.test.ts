@@ -4,7 +4,7 @@ import path from "node:path";
 import { createKataCore } from "../core/kata-core";
 import { assertIsolated } from "./isolation";
 import { isolatedKata } from "./kata-fixture";
-import { daemonUnavailable, notInitialized, siblingThrottle } from "./kata-errors";
+import { daemonUnavailable, notInitialized, notInitializedBound, notInitializedNoData, notInitializedProject, siblingThrottle } from "./kata-errors";
 assertIsolated();
 const binary = process.env.KATA_TEST_EXECUTABLE!;
 const root = mkdtempSync(path.join(process.env.KATA_TEST_ROOT!, "reliability-"));
@@ -518,6 +518,16 @@ test("a throttled close is deferred by its code, whatever the message says", asy
   expect(r.content[0].text).toContain("retry after 60 seconds");
   expect((await show(ref)).status).toBe("open");
 });
+test("a throttled close is deferred when Kata prints a warning line before the envelope", async () => {
+  // Kata 0.21 with close transcripts on and no session prints this line ahead of the JSON error.
+  const warned = () => { const t = siblingThrottle(); return { ...t, stderr: `close: transcript: current session unavailable or invalid; skipping attachment\n${t.stderr}` }; };
+  const a = app({ before: (args: string[]) => args[0] === "close" ? warned() : undefined });
+  await init(a); const ref = a.core.plan.tasks[0].ref;
+  const r = await a.call({ ...done, task: "First" });
+  expect(r.isError).toBeUndefined();
+  expect(r.content[0].text).toContain("retry after 60 seconds");
+  expect((await show(ref)).status).toBe("open");
+});
 test("throttle wording on a close Kata refused for another reason is an error, not a deferral", async () => {
   const a = app({ before: (args: string[]) => args[0] === "close" ? { code: 1, stdout: "", stderr: '{"error":{"kind":"internal","code":"internal","message":"sibling-close throttle: too many closes","exit_code":1}}\n' } : undefined });
   await init(a);
@@ -525,8 +535,27 @@ test("throttle wording on a close Kata refused for another reason is an error, n
   expect(r.isError).toBe(true);
   expect(a.entries.filter(e => e.customType === "io.kata.omp.state").at(-1)?.data.retries ?? []).toHaveLength(0);
 });
-test("an unregistered workspace plans in the project named by Kata's refusal", async () => {
-  const a = app({ cwd: outside, before: (args: string[]) => args[0] === "list" && args.includes("--limit") && args[args.indexOf("--limit") + 1] === "1" ? notInitialized("github.com/acme/inferred-widgets") : undefined });
-  const parent = await init(a);
-  expect(parent).toMatch(/^inferred-widgets#/);
+const refuseList = (failure: ReturnType<typeof notInitialized>) => (args: string[]) => args[0] === "list" && args.includes("--limit") && args[args.indexOf("--limit") + 1] === "1" ? failure : undefined;
+test("an unregistered git workspace plans in the project named by the refusal's alias, whatever the message says", async () => {
+  const a = app({ cwd: outside, before: refuseList(reworded(notInitialized(), "alias github.com/acme/inferred-widgets is not registered", "nothing found here")) });
+  expect(await init(a)).toMatch(/^inferred-widgets#/);
+});
+test("a refusal naming a project plans in that project, whatever the message says", async () => {
+  const a = app({ cwd: outside, before: refuseList(reworded(notInitializedProject(), "project nope is not registered", "nothing found here")) });
+  expect(await init(a)).toMatch(/^nope#/);
+});
+test("a .kata.toml-bound unregistered project plans in the bound project", async () => {
+  const a = app({ cwd: outside, before: refuseList(notInitializedBound()) });
+  expect(await init(a)).toMatch(/^bound-proj#/);
+});
+test("the alias is slugged: local:// scheme, trailing slashes and .git dropped, last segment kept", async () => {
+  const slugged = (alias: string) => ({ ...notInitialized(), stderr: notInitialized().stderr.replaceAll("github.com/acme/inferred-widgets", alias) });
+  for (const [alias, name] of [["local:///tmp/work/My.Repo/", "My.Repo"], ["github.com/acme/widgets.git", "widgets"]]) {
+    const a = app({ cwd: outside, before: refuseList(slugged(alias)) });
+    expect(await init(a)).toMatch(new RegExp(`^${name.replace(/\./g, "\\.")}#`));
+  }
+});
+test("a refusal without data falls back to the folder name", async () => {
+  const a = app({ cwd: outside, before: refuseList(notInitializedNoData()) });
+  expect(await init(a)).toMatch(/^outside#/);
 });

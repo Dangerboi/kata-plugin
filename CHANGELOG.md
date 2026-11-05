@@ -1,5 +1,24 @@
 # Changelog
 
+## oh-my-pi 2.5.0 / pi 1.5.0 — 2026-11-05
+
+**Requires Kata 0.21.0** (was 0.19; 0.20 tested). The CLI and the daemon both need 0.21.0.
+
+- **Close transcripts record omp and pi sessions.** Once `[close.transcript] enabled = true` is in Kata's `config.toml`, the plugin's own closes and the agent's `kata close` calls record `omp <id>` or `pi <id>`. `session_id_env` is no longer needed for omp or pi. omp delegates record their own session on the closes they run. Another harness launched from omp's or pi's bash tool inherits the pair, so its closes link the launching session.
+- **Moved issues stay together.** After `kata move`, new plan tasks, delegated work and ticket items follow the issue to the project it now lives in, instead of landing in the old project.
+- **Attachment evidence no longer stalls the automatic parent.** A child closed with Kata 0.21 `attachment` evidence used to leave the parent `needs-review`. The parent now closes with the children's other evidence, and stays open for review only if none remains.
+- An unregistered folder takes the project name to register from Kata's structured `project_not_initialized` data (project, then alias), then the folder name. No code path reads Kata's message wording.
+- pi: the pre-filled attention baseline is marked as not started, so Kata 0.21's pi hook sends no `attention-native … end` when a session without `KATA_REF` quits.
+- Appending a ticket item that is already open in the plan does nothing. It used to create a stray child issue under the parent, or throw in a plan of only ticket items, which has no parent.
+- A Kata error that follows a warning line (Kata 0.21 prints one when close transcripts are on and no session is set) is still read by its code, so a throttled or refused close is handled as such instead of as a generic failure.
+- Development: run the suite against the installed Kata with `KATA_TEST_EXECUTABLE="$(readlink -f "$(command -v kata)")" bun run test`. Error fixtures are re-captured from Kata 0.21.0. The default `smoke:omp` scenario turns transcripts on and checks that the plugin's close and a delegate's close record omp sessions.
+
+Upgrade notes:
+
+- Kata 0.21.0's schema 43 is one-way. Older binaries can't open the upgraded store; rolling back needs the pre-upgrade backup plus its matching binary.
+- Re-run `kata agent-hook install pi` so the installed pi hook includes the child-session guard.
+- Session transcripts for agents other than Claude Code and Codex need daemon API 0.34.0. An older daemon warns and closes without the transcript.
+
 ## oh-my-pi 2.4.0 / pi 1.4.0 — 2026-11-03
 
 - omp: a `task` that matches no plan item and names no ticket gets no Kata issue. It used to get a `Subagent` issue that an agent without `bash` (the `scout`) could not close, which left an open issue, a `needs-review` label, a `kata notify` and a parent that never closed. Now only a delegation matched to a plan item or naming a ticket binds an issue; any other subagent gets a short note instead of a binding, its `todo` uses omp's own list (an error on an omp without `ctx.invokeTool`), and the automatic parent closes from the plan's own items. A delegation no longer creates the automatic parent. pi is unchanged.

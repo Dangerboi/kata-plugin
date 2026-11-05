@@ -16,6 +16,8 @@
 // (labeled with the repo) or in its inferred project, registered on first use.
 // The plan is session-local only while Kata is unreachable, then it replays.
 
+import { execFile } from "node:child_process";
+import { closeSync, openSync, readSync } from "node:fs";
 import path from "node:path";
 import { createKataCore, DESCRIPTION, sessionKey, render, matchDelegation, namedTargets,
 	kataCommands as parseKataCommands, teammateFor, ticketAutocomplete, delegateCommand, delegateContext, untrackedDelegateContext, type Binding, type Task } from "./kata-core";
@@ -42,6 +44,22 @@ type Assignment = { labels: string[]; texts: string[]; refs?: (string | undefine
 
 const delegatesBySession = new Map<string, Delegate>();
 
+// Runs Kata directly with the transcript identity in its environment. Like pi.exec, a non-zero exit or
+// any spawn failure other than a missing executable is a result, a timeout or abort reports killed,
+// and ENOENT rejects.
+function execWithTranscript(file: string, args: string[], options: { cwd: string; timeout: number; signal?: AbortSignal }, agent: string, session: string) {
+	return new Promise<{ code: number; stdout: string; stderr: string; killed: boolean }>((resolve, reject) => {
+		execFile(file, args, { cwd: options.cwd, timeout: options.timeout, signal: options.signal, killSignal: "SIGKILL", maxBuffer: 64 * 1024 * 1024,
+			env: { ...process.env, KATA_TRANSCRIPT_AGENT: agent, KATA_TRANSCRIPT_SESSION_ID: session } },
+			(error, stdout, stderr) => {
+				if (!error) return resolve({ code: 0, stdout, stderr, killed: false });
+				const failure = error as NodeJS.ErrnoException & { killed?: boolean };
+				if (failure.code === "ENOENT") return reject(error);
+				resolve({ code: typeof failure.code === "number" ? failure.code : 1, stdout, stderr, killed: failure.name === "AbortError" || !!failure.killed });
+			});
+	});
+}
+
 export default function ompKata(pi: any) {
 	const z = pi.zod;
 	const main = (ctx: any) => ctx?.agent?.kind === "main";
@@ -50,7 +68,12 @@ export default function ompKata(pi: any) {
 	// Spawn text per task tool call; refs once a plan existed when it was seen.
 	const assignments = new Map<string, Assignment>();
 	const core = createKataCore({
-		exec: (...args) => pi.exec(...args),
+		// omp's exec spawns with the environment it captured at startup and ignores an env option, so
+		// a close that must carry the transcript identity is spawned here, without a shell or an env program.
+		exec: (file, args, options) => {
+			const { KATA_TRANSCRIPT_AGENT: agent, KATA_TRANSCRIPT_SESSION_ID: session } = process.env;
+			return agent && session && args[0] === "close" ? execWithTranscript(file, args, options, agent, session) : pi.exec(file, args, options);
+		},
 		appendEntry: (...args) => pi.appendEntry(...args),
 		getSessionName: () => pi.getSessionName?.(),
 		isMain: main,
@@ -293,9 +316,31 @@ export default function ompKata(pi: any) {
 		if (!commands.length) return;
 		const record = self(ctx);
 		const teammate = record?.teammate || teammateFor(ctx.agent.id);
-		try { return { input: { ...event.input, command: delegateCommand(event.input.command, EXECUTABLE, EXECUTABLE_VARS, teammate, record?.binding) } }; }
+		try { return { input: { ...event.input, command: delegateCommand(event.input.command, EXECUTABLE, EXECUTABLE_VARS, teammate, record?.binding, childSession(record)) } }; }
 		catch (error) { return { block: true, reason: String(error) }; }
 	});
+
+	// A delegate's session file starts with a header carrying its own session id, the one AgentsView lists it under.
+	const childSessions = new Map<string, string>();
+	function childSession(record?: { sessionFile?: string }) {
+		const file = record?.sessionFile;
+		if (!file) return undefined;
+		if (!childSessions.has(file)) {
+			let id = "";
+			try {
+				const fd = openSync(file, "r"), buffer = Buffer.alloc(4096);
+				let length: number;
+				try { length = readSync(fd, buffer, 0, buffer.length, 0); } finally { closeSync(fd); }
+				for (const line of buffer.toString("utf8", 0, length).split("\n")) {
+					const header = line.startsWith('{"type":"session"') ? JSON.parse(line) : undefined;
+					if (header) { id = typeof header.id === "string" ? header.id : ""; break; }
+				}
+			} catch { /* the file may not be flushed yet; try again on the next close */ }
+			if (!id) return undefined;
+			childSessions.set(file, id);
+		}
+		return { agent: "omp", id: childSessions.get(file)! };
+	}
 
 	pi.on("tool_result", (event: any, ctx: any) => {
 		// Started delegates hold their own tasks; a denied or partial spawn releases
@@ -367,6 +412,8 @@ export default function ompKata(pi: any) {
 		const explicit = process.env.KATA_REF;
 		const previous = attentionSession;
 		const id = ctx.sessionManager?.getSessionId?.();
+		// Inherited by bash-tool and plugin closes so Kata records this omp session.
+		if (id) { process.env.KATA_TRANSCRIPT_AGENT = "omp"; process.env.KATA_TRANSCRIPT_SESSION_ID = id; }
 		void warm(ctx);
 		await bounded(serial(async () => {
 			await bind(ctx, explicit);
@@ -382,10 +429,12 @@ export default function ompKata(pi: any) {
 	pi.on("session_switch", (_event: any, ctx: any) => begin(ctx));
 	pi.on("session_branch", (_event: any, ctx: any) => main(ctx) ? bounded(serial(() => bind(ctx))) : undefined);
 	pi.on("session_tree", (_event: any, ctx: any) => main(ctx) ? bounded(serial(() => bind(ctx))) : undefined);
+	// The transcript pair is left for the next session_start to overwrite: clearing after a slow cleanup could delete the pair of an instance omp already started in this process.
 	pi.on("session_shutdown", async (_event: any, ctx: any) => {
 		if (!main(ctx)) return;
 		const session = attentionSession;
 		attentionSession = undefined;
+		// After reconcile: the automatic parent's close still records this session.
 		await bounded(serial(async () => { await reconcile(); if (session) await attention("end", session); }));
 	});
 }
