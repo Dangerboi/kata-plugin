@@ -442,6 +442,19 @@ test("async snapshot settles a delegate when terminal lifecycle delivery is miss
   expect((await show(`v2test#${child.short_id}`)).labels.some((l: any) => l.label === "needs-review")).toBe(true);
 });
 
+test("a missed delegate exit found at a prompt does not wait for the settlement", async () => {
+  let recent: any[] = []; let slow = false;
+  const app = host({ snapshot: () => ({ running: [], recent }), before: async (args: string[]) => { if (slow && ["show", "label", "close", "comment"].includes(args[0])) await Bun.sleep(2500); return undefined; } });
+  await app.event("session_start"); await app.init(["Wait for slow settlement"]);
+  app.emit("task:subagent:lifecycle", { id: "slow-exit", agent: "task", status: "started", sessionFile: `${scratch}/slow-exit.jsonl`, description: "Wait for slow settlement" });
+  await app.call({ op: "view" });
+  await ran(app, "slow-exit", `${scratch}/slow-exit.jsonl`);
+  recent = [{ id: "slow-exit", type: "task", status: "cancelled" }]; slow = true;
+  const started = Date.now();
+  await app.event("before_agent_start", { systemPrompt: ["base"] });
+  expect(Date.now() - started).toBeLessThan(2000);
+});
+
 test("relative lifecycle session paths join the child's absolute session path", async () => {
   const app = host(); await app.event("session_start"); const parent = await app.init(["Relative child path"]);
   app.emit("task:subagent:lifecycle", { id: "relative-child", agent: "task", status: "started", sessionFile: "../relative-session.jsonl", description: "Relative child path" });
@@ -816,6 +829,15 @@ test("an untracked delegate's todo on an omp without invokeTool says it has no K
   expect(result.isError).toBe(true);
   expect(result.content[0].text).toContain("matched no plan item or ticket");
   expect(result.content[0].text).not.toContain("binding");
+});
+
+test("another lead's spawn keeps a running untracked delegate's identity", async () => {
+  const { worker } = await untrackedDelegate("untracked-survives");
+  const other = host(); await other.event("session_start"); await other.init(["Unrelated plan"]);
+  other.emit("task:subagent:lifecycle", { id: "other-child", agent: "scout", status: "started", sessionFile: `${scratch}/other-child.jsonl`, description: "Unrelated work" });
+  await other.call({ op: "view" });
+  const native = { content: [{ type: "text", text: "native list" }], details: { phases: [] } };
+  expect(await worker.call({ op: "view" }, { ...worker.ctx, invokeTool: async () => native })).toBe(native);
 });
 
 test("an untracked delegate's system prompt has the note, not an issue binding", async () => {
