@@ -107,7 +107,7 @@ export default function ompKata(pi: any) {
 		// Live delivery needs the aside delivery, and no opt-out (tern-kata delivers for the agents it starts).
 		get liveInbox() {
 			if (process.env.KATA_OMP_LIVE_INBOX === "0" || typeof pi.sendUserMessage !== "function") return undefined;
-			return { spawn: spawnEvents, deliver: text => pi.sendUserMessage(text, { deliverAs: "aside", attribution: "agent" }) };
+			return { spawn: spawnEvents, deliver: (text: string) => pi.sendUserMessage(text, { deliverAs: "aside", attribution: "agent" }) };
 		},
 	}, { namespace: "omp", executable: EXECUTABLE, executableVars: EXECUTABLE_VARS, debugFile: process.env.KATA_OMP_DEBUG, attentionHarness: "pi", prefetch: true });
 	// /tan runs a side conversation in a sub session whose agent id omp mints as
