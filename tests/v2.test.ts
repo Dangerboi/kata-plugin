@@ -334,6 +334,34 @@ test("new work reopens an auto parent; all-wontfix parents require review", asyn
   expect(view.labels.some((l: any) => l.label === "needs-review")).toBe(true);
 });
 
+test("a flagged automatic parent is not re-audited until its revision changes", async () => {
+  const app = host(); const parent = await app.init(["x"]);
+  await app.call({ op: "drop", message: "no" });
+  const turn = async () => {
+    const before = app.calls.length;
+    await app.event("session_stop"); await app.call({ op: "view" });
+    return app.calls.slice(before).map(a => a[0]).filter(verb => ["audit", "events", "label"].includes(verb));
+  };
+  expect(await turn()).toEqual([]);
+  await kata(["meta", "set", parent, "reviewer", "someone", "--json"]);
+  expect(await turn()).toContain("label");
+  expect(await turn()).toEqual([]);
+});
+
+test("a throttled automatic-parent close does not label the parent for review", async () => {
+  let parent = "";
+  const timers = new Set<{ run: () => void }>();
+  const app = host({ before: (a: string[]) => a[0] === "close" && a.includes(parent) ? siblingThrottle() : undefined });
+  app.ctx.setTimeout = (callback: () => void) => { const timer = { run: callback }; timers.add(timer); return timer; };
+  app.ctx.clearTimer = (timer: any) => { timers.delete(timer); };
+  parent = await app.init(["Throttled parent"]);
+  await app.call({ op: "done", message, evidence });
+  const view = await show(parent);
+  expect(view.issue.status).toBe("open");
+  expect(view.labels.some((l: any) => l.label === "needs-review")).toBe(false);
+  expect(timers.size).toBe(1);
+});
+
 // Like omp: the host owns retry timers, and sweeps whatever is pending on shutdown.
 function throttledClose() {
   const timers = new Set<{ run: () => void }>();
