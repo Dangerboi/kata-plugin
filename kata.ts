@@ -415,8 +415,10 @@ export default function ompKata(pi: any) {
 		if (!main(ctx)) return;
 		const session = attentionSession;
 		attentionSession = undefined;
-		try { await bounded(serial(async () => { await reconcile(); if (session) await attention("end", session); })); }
-		// After reconcile: the automatic parent's close still records this session.
-		finally { delete process.env.KATA_TRANSCRIPT_AGENT; delete process.env.KATA_TRANSCRIPT_SESSION_ID; }
+		// After reconcile: the automatic parent's close still records this session. Cleared when the queued work ends, not when the bound gives up.
+		await bounded(serial(async () => {
+			try { await reconcile(); if (session) await attention("end", session); }
+			finally { delete process.env.KATA_TRANSCRIPT_AGENT; delete process.env.KATA_TRANSCRIPT_SESSION_ID; }
+		}));
 	});
 }

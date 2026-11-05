@@ -4,8 +4,8 @@ Package: `kata-pi`; portable entry: `plugins/pi/kata.ts`. The repository root ha
 
 | Event/surface | Behavior |
 | --- | --- |
-| `session_start` | Restore saved plans/retries or child binding; retain the native attention baseline and clear inherited `KATA_REF`. Export the child-process marker. |
-| `session_tree`, `session_shutdown` | Reload/drain reconciliation; unfinished children request review on their own issues. |
+| `session_start` | Restore saved plans/retries or child binding; retain the native attention baseline and clear inherited `KATA_REF`. Export the child-process marker, plus `KATA_TRANSCRIPT_AGENT=pi` and `KATA_TRANSCRIPT_SESSION_ID`; a child replaces the pair it inherited. |
+| `session_tree`, `session_shutdown` | Reload/drain reconciliation; unfinished children request review on their own issues. After the shutdown's closes, `session_shutdown` clears the transcript variables. |
 | `before_agent_start` | Bind inherited child work, inject its contract and exact issue/teammate/close command, or add the main plan and fallback context. |
 | `agent_before_settle` | Add a hidden continuation for actionable unfinished main work, within a three-reminder progress budget. Questions, blockers, aborts and errors suppress it. |
 | `tool_call` | Ensure a parent before a Bash command that launches `pi`; mutate Bash input in place to route bare `kata` and enforce child teammate attribution. Refuse child `--as`. |

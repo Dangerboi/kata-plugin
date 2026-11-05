@@ -1,7 +1,7 @@
 import fc from "fast-check";
 import { afterAll, beforeAll, beforeEach, expect, test } from "bun:test";
 import { execFile } from "node:child_process";
-import { mkdirSync, mkdtempSync } from "node:fs";
+import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { promisify } from "node:util";
 import { assertIsolated } from "./isolation";
@@ -214,6 +214,23 @@ test("a delegate bound to an existing plan item gets a teammate, the verbatim co
   await parent.call({ op: "view" }); expect((await show(ref)).issue.status).toBe("closed");
   expect(child.widgets).toEqual([]);
   expect(child.calls.some(a => a[0] === "meta" && a[3]?.startsWith("work."))).toBe(false);
+});
+
+test("a delegate's close carries the transcript identity from its session file header, read again until the header exists", async () => {
+  const parent = host(); await parent.event("session_start"); const ref = await parent.init(["Header delegated work", "Keep leading"]);
+  const sessionFile = `${scratch}/delegate-header.jsonl`;
+  writeFileSync(sessionFile, "");
+  parent.emit("task:subagent:lifecycle", { id: "Header.Delegate", agent: "task", status: "started", sessionFile, description: "Header delegated work" });
+  const child = host({ agent: { kind: "sub", id: "Header.Delegate", parentId: parent.ctx.agent.id }, sessionFile });
+  await child.event("session_start"); await child.contractReady;
+  await child.event("before_agent_start", { systemPrompt: ["child base"] });
+  await parent.call({ op: "view" });
+  const tracked = (await show(ref)).children.find((c: any) => c.metadata?.["omp.subagent_id"] === "Header.Delegate");
+  const close = () => child.event("tool_call", { toolName: "bash", input: { command: `kata close v2test#${tracked.short_id} --done --message '${message}' --test 'header fixture'` } });
+  expect((await close()).input.command).not.toContain("KATA_TRANSCRIPT");
+  writeFileSync(sessionFile, '{"type":"session","version":3,"id":"delegate-header-id"}\n{"type":"message"}\n');
+  expect((await close()).input.command).toStartWith("env KATA_TRANSCRIPT_AGENT='omp' KATA_TRANSCRIPT_SESSION_ID='delegate-header-id' kata ");
+  await child.event("session_shutdown");
 });
 
 test("finished unclosed delegates remain open needs-review, with no parent proof fallback", async () => {

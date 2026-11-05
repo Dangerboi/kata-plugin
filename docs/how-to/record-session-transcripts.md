@@ -20,7 +20,7 @@ Without `agentsview_url`, Kata records the agent and session ID without a link. 
 
 Once transcripts are on, the oh-my-pi and pi plugins record the session on every close they can see; you add nothing else.
 
-- The plugin's own closes: `todo done`, `drop` and `rm`, and the automatic parent's close.
+- The plugin's own closes: `todo done`, `drop` and `rm`, the automatic parent's close, and the close of a superseded plan parent when the session adopts another parent.
 - A `kata close` run in the harness's `bash` tool: the agent closing an issue itself, or a delegate closing its own issue.
 
 Each session start exports `KATA_TRANSCRIPT_AGENT` (`omp` or `pi`) and `KATA_TRANSCRIPT_SESSION_ID` (the session's ID) in the harness process, and the shutdown removes them. Kata uses the pair only when both are set. Kata builds the link from the agent name (`<agentsview_url>/sessions/omp/<id>`).

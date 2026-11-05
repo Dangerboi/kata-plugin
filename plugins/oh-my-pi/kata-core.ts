@@ -182,7 +182,7 @@ export function delegateCommand(command: string, executable: string, executableV
 		}
 		edits.push({ start: invocation.executable.end, end: invocation.executable.end, value: flags });
 		// An in-process delegate has its own session; without this its close would record the lead's.
-		if (transcriptSession && parsed.args[0] === "close") edits.push({ start: invocation.executable.start, end: invocation.executable.start, value: `KATA_TRANSCRIPT_AGENT=${quote(transcriptSession.agent)} KATA_TRANSCRIPT_SESSION_ID=${quote(transcriptSession.id)} ` });
+		if (transcriptSession && parsed.args[0] === "close") edits.push({ start: invocation.executable.start, end: invocation.executable.start, value: `env KATA_TRANSCRIPT_AGENT=${quote(transcriptSession.agent)} KATA_TRANSCRIPT_SESSION_ID=${quote(transcriptSession.id)} ` });
 	}
 	for (const edit of edits.sort((a, b) => b.start - a.start)) command = command.slice(0, edit.start) + edit.value + command.slice(edit.end);
 	return command;
@@ -577,12 +577,12 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 	// `kata move` keeps old refs resolving but the issue and its open children now
 	// live in another project. Follow the parent: the saved binding, child
 	// creation, delegate context and the pi marker all derive the project from it.
-	async function rehome(shown: any, cwd: string): Promise<void> {
-		const old = plan.parent!;
+	async function rehome(shown: any, ref: string, cwd: string): Promise<void> {
+		const old = ref;
 		let current: string;
 		try { current = `${await projectName(shown.issue.project_id, cwd)}#${shown.issue.short_id}`; }
 		catch (error) { debug(error); return; }
-		if (current === old) return;
+		if (current === old || plan.parent !== old) return;
 		const marker = autoParents.get(old);
 		autoParents.delete(old);
 		if (marker) autoParents.set(current, { ...marker, parent: current });
@@ -630,8 +630,9 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 		if (plan.local) { delete plan.error; plan.tasks = withNamed(plan.tasks); return []; }
 		if (!plan.parent) { if (named.length) { delete plan.error; await followTickets(cwd); } plan.tasks = withNamed([]); return []; }
 		try {
-			const shown = await showParent(plan.parent, cwd);
-			await rehome(shown, cwd);
+			const ref = plan.parent;
+			const shown = await showParent(ref, cwd);
+			await rehome(shown, ref, cwd);
 			const children = (shown.children ?? []) as any[];
 			await followTickets(cwd);
 			plan.tasks = withNamed(tasksOf(children, plan.parent));
@@ -1321,14 +1322,14 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 				const since = closedTimes.length ? new Date(Math.min(...closedTimes)).toISOString() : undefined;
 				const evidence: any[] = [];
 				const audits = new Map<string, any[]>();
-				let projects: any[] | undefined;
+				let projects: { id: number; name: string }[] | undefined;
 				for (const child of initial.children) {
 					if (child.closed_reason === "wontfix") continue;
 					let project = child.qualified_id?.split("#")[0];
 					if (!project && child.project_id === initial.issue.project_id) project = parent.split("#")[0];
 					if (!project) {
-						projects ??= JSON.parse(await kata(["projects", "list", "--json"], workspace)).projects;
-						project = projects!.find(p => p.id === child.project_id)?.name;
+						projects ??= await projectList(workspace);
+						project = projects.find(p => p.id === child.project_id)?.name;
 					}
 					if (!project) throw new Error("Kata child project unavailable");
 					if (!audits.has(project)) audits.set(project, JSON.parse(await kata(["audit", "closes", "--project", project, "--since", since!, "--json"], workspace)).rows);

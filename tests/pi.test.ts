@@ -462,6 +462,20 @@ test("a child prompt naming any open child issue by short id binds it", async ()
   leaveChild();
 });
 
+test("a child started from a stale parent ref creates its issue in the project the parent moved to", async () => {
+  const parent = await host(); await parent.event("session_start", { reason: "startup" });
+  const ref = await parent.init(["Lead plan that moves"]);
+  expect(ref).toMatch(/^pitest#/);
+  await kata(["projects", "create", "pimoved", "--json"]);
+  await kata(["move", ref, "pimoved", "--json"]);
+  const child = await childOf(parent);
+  await child.event("before_agent_start", { prompt: "Investigate an independent question", systemPromptOptions: { sections: {} } });
+  const record = child.entries.find(e => e.customType === "io.kata.pi.delegate").data;
+  expect(record.ref).toMatch(/^pimoved#/);
+  expect((await show(ref)).children.map((c: any) => c.short_id)).toContain(record.ref.split("#")[1]);
+  leaveChild();
+});
+
 test("a child that never runs a tool leaves no issue and restores its plan task", async () => {
   const parent = await host(); await parent.event("session_start", { reason: "startup" });
   const ref = await parent.init(["Implement idle fixture", "Write idle fixture tests"]);
