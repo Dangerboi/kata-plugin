@@ -1263,7 +1263,8 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 			const target = choice.parent;
 			if (target) {
 				const workspace = choice.workspace;
-				const parent = namesPlanParent(plan.parent, aliases, target) ? plan.parent! : await pin(target, workspace);
+				const keepsParent = choice.provenance === "init" ? target === plan.parent || aliases.has(target) : namesPlanParent(plan.parent, aliases, target);
+				const parent = keepsParent && plan.parent ? plan.parent : await pin(target, workspace);
 				if (choice.overridden && parent !== await pin(choice.overridden, workspace)) throw new Error(`Kata init ref ${params.ref} conflicts with the explicit binding ${target}; neither plan was replaced.`);
 				const tasks = tasksOf(await childrenOf(parent, workspace), parent);
 				refuseOpen(params.replace === true, [...tasks, ...named], wanted);
