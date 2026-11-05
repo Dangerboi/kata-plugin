@@ -1,12 +1,14 @@
-import { afterAll, afterEach, beforeAll, beforeEach, expect, test } from "bun:test";
+import { afterAll, afterEach, beforeAll, expect, test } from "bun:test";
+import { spawn } from "node:child_process";
 import { mkdirSync, mkdtempSync } from "node:fs";
 import path from "node:path";
+import { createInterface } from "node:readline";
 import { assertIsolated } from "./isolation";
-import { adoptIsolatedKata, isolatedKata } from "./kata-fixture";
-import ompKata, { createInboxFollower, deliveryText, parseStreamLine, projectHead, knownProjectHead, slotKey, type InboxFollowerDeps } from "../kata";
+import { isolatedKata } from "./kata-fixture";
+import { createInboxFollower, deliveryText, parseStreamLine, projectHead, knownProjectHead, slotKey, type InboxFollowerDeps } from "../core/inbox";
 assertIsolated();
 
-// ------------------------------------------------------------------ follower, no Kata
+// ------------------------------------------------------------------ follower with fakes
 const ADDRESS = "lead/worker", KEY = slotKey(ADDRESS);
 const tick = async (times = 4) => { for (let i = 0; i < times; i++) await new Promise(resolve => setTimeout(resolve, 0)); };
 
@@ -33,6 +35,8 @@ function fakeStream() {
 function slotLine(id: number, issue: string, to: object | null, o: { from?: object | null } = {}) {
 	return JSON.stringify({ event_id: id, type: "issue.metadata_updated", project_name: "proj", issue_short_id: issue, payload: { diff: { [KEY]: { from: o.from ?? null, to } } } });
 }
+// The section's requests as `issue:message`, so a test reads what the agent would be shown.
+const summary = (text: string) => text.split("\n").filter(l => l.startsWith("- ")).map(l => `${/issue="([^"]*)"/.exec(l)![1]}:${JSON.parse(/ message=(".*")$/.exec(l)![1])}`).join("|");
 const slot = (message: string, extra: object = {}) => ({ from: "lead", message, ...extra });
 
 function follower(options: { requests?: () => unknown[]; read?: () => Promise<unknown>; head?: () => Promise<number>; actor?: () => Promise<string>; spawn?: (cursor?: number) => any } = {}) {
@@ -52,8 +56,7 @@ function follower(options: { requests?: () => unknown[]; read?: () => Promise<un
 			return { lines: s.lines(), exited: s.exited, kill: () => { s.killed++; s.end(); } };
 		},
 		deliver: text => delivered.push(text),
-		publish: text => published.push(text),
-		trusted: (requests, mine) => ({ text: (Array.isArray(requests) ? requests : []).filter((r: any) => r.from === mine).map((r: any) => `${r.ref}:${r.message}`).join("|") }),
+		publish: text => published.push(summary(text)),
 		head: options.head ?? (async () => 0),
 		now: () => clock.now,
 		setTimer: (fn, ms) => { timers.push(fn); delays.push(ms); return timers.length; },
@@ -320,167 +323,6 @@ test("a failing spawn or actor lookup backs off quietly and recovers", async () 
 	t.follow.stop();
 });
 
-// ------------------------------------------------------------------ omp adapter, real Kata
-const binary = process.env.KATA_TEST_EXECUTABLE!;
-if (!binary || !path.isAbsolute(binary)) throw new Error("Set KATA_TEST_EXECUTABLE to the absolute Kata binary.");
-const scratch = mkdtempSync(path.join(process.env.KATA_TEST_ROOT!, "live-"));
-const cwd = path.join(scratch, "workspace");
-mkdirSync(cwd);
-const env = { ...process.env, KATA_HOME: path.join(scratch, "home"), KATA_AUTHOR: "v2-builder" };
-for (const key of ["KATA_SERVER", "KATA_DAEMON", "KATA_AUTH_TOKEN", "KATA_REF", "KATA_TEAMMATE", "KATA_INBOX_USER", "KATA_OMP_LIVE_INBOX"]) delete env[key];
-const run = isolatedKata(binary, env, cwd, 5000);
-async function kata(args: string[], extraEnv: NodeJS.ProcessEnv = {}): Promise<any> {
-	const out = await run(args, cwd, 5000, extraEnv);
-	if (out.code) throw new Error(out.stderr);
-	return JSON.parse(out.stdout);
-}
-let sequence = 0;
-const issue = async () => (await kata(["create", `Live inbox ${++sequence}`, "--force-new", "--json"])).issue.short_id;
-const until = async (condition: () => boolean, ms = 8000) => { const end = Date.now() + ms; while (!condition() && Date.now() < end) await new Promise(resolve => setTimeout(resolve, 25)); return condition(); };
-// Integration tests against a real stream: "nothing was delivered" can only be observed by waiting out the stream's latency.
-const settle = (ms = 700) => new Promise(resolve => setTimeout(resolve, ms));
-
-function host(options: { agent?: object } = {}) {
-	const sid = `live-${++sequence}`;
-	const handlers = new Map<string, any>(), sent: any[][] = [], calls: string[][] = [];
-	const schema: any = new Proxy(() => schema, { get: () => schema });
-	const ctx: any = {
-		cwd,
-		agent: options.agent ?? { kind: "main", id: `main-${sid}` },
-		sessionManager: { getSessionId: () => sid, getSessionFile: () => `${scratch}/${sid}.jsonl`, getBranch: () => [], getHeader: () => undefined },
-		getAsyncJobSnapshot: () => ({ running: [], recent: [] }),
-		ui: { notify() {}, setWidget() {} },
-	};
-	ompKata({ zod: schema, registerTool() {}, appendEntry() {}, on: (name: string, callback: any) => handlers.set(name, callback), events: { on() {} },
-		sendUserMessage: (...args: any[]) => { sent.push(args); },
-		async exec(_file: string, args: string[], opts: any) { calls.push(args); return run(args, opts.cwd, opts.timeout); } });
-	const event = async (name: string, data: any = {}) => {
-		try { return await handlers.get(name)?.(data, ctx); }
-		finally { delete process.env.KATA_TRANSCRIPT_AGENT; delete process.env.KATA_TRANSCRIPT_SESSION_ID; }
-	};
-	const section = async () => ((await event("before_agent_start", { systemPrompt: ["base"] }))?.systemPrompt ?? []).join("\n");
-	return { sent, calls, event, section };
-}
-
-let restore: (() => void) | undefined;
-const apps: ReturnType<typeof host>[] = [];
-const open = async (address: string, options: Parameters<typeof host>[0] = {}) => {
-	process.env.KATA_INBOX_USER = address;
-	const app = host(options); apps.push(app);
-	await app.event("session_start");
-	return app;
-};
-beforeAll(async () => { const out = await run(["init", "--project", "omp-v2-live"]); if (out.code) throw new Error(out.stderr); });
-beforeEach(() => { restore = adoptIsolatedKata(binary, env.KATA_HOME); process.env.KATA_AUTHOR = "v2-builder"; for (const key of ["KATA_REF", "KATA_TEAMMATE", "KATA_INBOX_USER", "KATA_OMP_LIVE_INBOX"]) delete process.env[key]; });
-afterEach(async () => { for (const app of apps.splice(0)) await app.event("session_shutdown"); restore?.(); });
-afterAll(async () => { await run(["daemon", "stop"]); });
-
-test("a notify reaches the main session as an aside, the section is current without an inbox read, and a clear delivers nothing", async () => {
-	const address = "v2-builder/live-main";
-	const app = await open(address);
-	const ref = await issue();
-	await until(() => app.calls.some(a => a[0] === "inbox"));
-	const reads = app.calls.filter(a => a[0] === "inbox").length;
-	await kata(["notify", ref, "--to", address, "--message", "live-ping-8841", "--json"]);
-	expect(await until(() => app.sent.length === 1)).toBe(true);
-	expect(app.sent[0][1]).toEqual({ deliverAs: "aside", attribution: "agent" });
-	expect(app.sent[0][0]).toContain("live-ping-8841");
-	expect(app.sent[0][0]).toContain(`kata notify omp-v2-live#${ref} --to ${address} --clear`);
-	const shown = await app.section();
-	expect(shown).toContain("<kata_inbox>");
-	expect(shown).toContain("live-ping-8841");
-	await app.section();
-	expect(app.calls.filter(a => a[0] === "inbox").length).toBe(reads);
-	await kata(["notify", ref, "--to", address, "--clear", "--json"]);
-	await settle();
-	expect(app.sent).toHaveLength(1);
-	let gone = false;
-	for (let i = 0; i < 40 && !gone; i++) { gone = !(await app.section()).includes("live-ping-8841"); if (!gone) await settle(50); }
-	expect(gone).toBe(true);
-});
-
-test("a request pending at session start is shown but not delivered", async () => {
-	const address = "v2-builder/live-pending";
-	const ref = await issue();
-	await kata(["notify", ref, "--to", address, "--message", "pending-before-start-3310", "--json"]);
-	const app = await open(address);
-	let shown = "";
-	for (let i = 0; i < 40 && !shown.includes("pending-before-start-3310"); i++) { shown = await app.section(); if (!shown.includes("pending-before-start-3310")) await settle(50); }
-	expect(shown).toContain("pending-before-start-3310");
-	await settle();
-	expect(app.sent).toEqual([]);
-	await kata(["notify", ref, "--to", address, "--clear", "--json"]);
-});
-
-test("a request written by another actor is not delivered or shown", async () => {
-	const address = "v2-builder/live-forged";
-	const app = await open(address);
-	const ref = await issue();
-	await until(() => app.calls.some(a => a[0] === "inbox"));
-	await kata(["notify", ref, "--to", address, "--message", "forged-live-5501", "--json"], { KATA_AUTHOR: "mallory" });
-	await settle();
-	expect(app.sent).toEqual([]);
-	expect(await app.section()).not.toContain("forged-live-5501");
-	await kata(["notify", ref, "--to", address, "--clear", "--json"], { KATA_AUTHOR: "mallory" });
-});
-
-test("nothing is delivered after session shutdown", async () => {
-	const address = "v2-builder/live-shutdown";
-	const app = await open(address);
-	const ref = await issue();
-	await until(() => app.calls.some(a => a[0] === "inbox"));
-	await app.event("session_shutdown");
-	await kata(["notify", ref, "--to", address, "--message", "after-shutdown-2207", "--json"]);
-	await settle(1000);
-	expect(app.sent).toEqual([]);
-	await kata(["notify", ref, "--to", address, "--clear", "--json"]);
-});
-
-test("a session switch kills the old stream child and leaves exactly one", async () => {
-	const address = "v2-builder/live-switch";
-	const app = await open(address);
-	const children = () => Bun.spawnSync(["pgrep", "-f", `events --tail --json --workspace ${cwd}`]).stdout.toString().split("\n").filter(Boolean);
-	expect(await until(() => children().length === 1)).toBe(true);
-	const [first] = children();
-	await app.event("session_switch");
-	expect(await until(() => children().length === 1 && children()[0] !== first)).toBe(true);
-	await settle();
-	expect(children()).toHaveLength(1);
-});
-
-test("a delegate starts no follower and keeps the per-turn section", async () => {
-	const address = "v2-builder/live-delegate";
-	const app = await open(address, { agent: { kind: "sub", id: "Worker" } });
-	const ref = await issue();
-	await kata(["notify", ref, "--to", address, "--message", "delegate-note-6602", "--json"]);
-	await settle();
-	expect(app.sent).toEqual([]);
-	await kata(["notify", ref, "--to", address, "--clear", "--json"]);
-});
-
-test("KATA_OMP_LIVE_INBOX=0 delivers nothing live and keeps the per-turn section", async () => {
-	process.env.KATA_OMP_LIVE_INBOX = "0";
-	const address = "v2-builder/live-off";
-	const app = await open(address);
-	const ref = await issue();
-	await kata(["notify", ref, "--to", address, "--message", "per-turn-only-9912", "--json"]);
-	await settle();
-	expect(app.sent).toEqual([]);
-	await app.section();
-	expect(await app.section()).toContain("per-turn-only-9912");
-	expect(app.calls.some(a => a[0] === "events")).toBe(false);
-	await kata(["notify", ref, "--to", address, "--clear", "--json"]);
-});
-
-test("a bare actor address starts no follower", async () => {
-	const app = await open("v2-builder");
-	const ref = await issue();
-	await kata(["notify", ref, "--to", "v2-builder", "--message", "person-only-live-1", "--json"]);
-	await settle();
-	expect(app.sent).toEqual([]);
-	await kata(["notify", ref, "--to", "v2-builder", "--clear", "--json"]);
-});
-
 test("a failed first inbox read is retried while the stream stays open, and the waiting request is published", async () => {
 	let reads = 0;
 	const t = follower({ read: async () => { if (++reads === 1) throw new Error("kata slow"); return { requests: [{ ref: "abcd", title: "T", ...slot("waiting") }] }; } });
@@ -531,4 +373,114 @@ test("a stream that keeps dropping right after a line backs off further each tim
 	t.streams[3].end(); await tick();
 	expect(t.delays.at(-1)).toBe(1000);
 	t.follow.stop();
+});
+
+// ------------------------------------------------------------------ follower, real Kata
+// The module reads Kata through its dependencies; these tests hand it the real `kata inbox` read, the real
+// `kata events --tail` stream and the real project head, in a throwaway store.
+const binary = process.env.KATA_TEST_EXECUTABLE!;
+if (!binary || !path.isAbsolute(binary)) throw new Error("Set KATA_TEST_EXECUTABLE to the absolute Kata binary.");
+const scratch = mkdtempSync(path.join(process.env.KATA_TEST_ROOT!, "live-"));
+const cwd = path.join(scratch, "workspace");
+mkdirSync(cwd);
+const env = { ...process.env, KATA_HOME: path.join(scratch, "home"), KATA_AUTHOR: "v2-builder" };
+for (const key of ["KATA_SERVER", "KATA_DAEMON", "KATA_AUTH_TOKEN", "KATA_REF", "KATA_TEAMMATE", "KATA_INBOX_USER"]) delete env[key];
+const run = isolatedKata(binary, env, cwd, 5000);
+async function kataText(args: string[], extraEnv: NodeJS.ProcessEnv = {}): Promise<string> {
+	const out = await run(args, cwd, 5000, extraEnv);
+	if (out.code) throw new Error(out.stderr);
+	return out.stdout;
+}
+const kata = async (args: string[], extraEnv: NodeJS.ProcessEnv = {}) => JSON.parse(await kataText(args, extraEnv));
+let sequence = 0;
+const issue = async () => (await kata(["create", `Live inbox ${++sequence}`, "--force-new", "--json"])).issue.short_id;
+const until = async (condition: () => boolean, ms = 8000) => { const end = Date.now() + ms; while (!condition() && Date.now() < end) await new Promise(resolve => setTimeout(resolve, 25)); return condition(); };
+// "Nothing was delivered" can only be observed by waiting out the real stream's latency.
+const settle = (ms = 700) => new Promise(resolve => setTimeout(resolve, ms));
+
+function realStream(cursor: number | undefined) {
+	const args = ["events", "--tail", "--json", "--workspace", cwd, ...(cursor ? ["--last-event-id", String(cursor)] : [])];
+	const proc = spawn(binary, args, { cwd, env, stdio: ["ignore", "pipe", "ignore"] });
+	const exited = new Promise<void>(resolve => { proc.on("error", () => resolve()); proc.on("close", () => resolve()); });
+	return { lines: createInterface({ input: proc.stdout! }), exited, kill: () => { proc.kill("SIGKILL"); } };
+}
+
+const live: ReturnType<typeof liveFollower>[] = [];
+function liveFollower(address: string) {
+	const delivered: string[] = [], published: string[] = [];
+	let reads = 0;
+	const follow = createInboxFollower({
+		address,
+		actor: async () => "v2-builder",
+		read: async () => { reads++; return JSON.parse(await kataText(["inbox", "--for", address, "--json"])); },
+		spawn: realStream,
+		deliver: text => delivered.push(text),
+		publish: text => published.push(text),
+		head: () => projectHead(kataText),
+		now: () => performance.now(),
+		setTimer: (fn, ms) => { const handle = setTimeout(fn, ms); handle.unref(); return handle; },
+		clearTimer: handle => clearTimeout(handle as ReturnType<typeof setTimeout>),
+		debug: () => {},
+	});
+	const t = { follow, delivered, published, reads: () => reads, shown: () => published.at(-1) ?? "" };
+	live.push(t);
+	follow.start();
+	return t;
+}
+
+beforeAll(async () => { const out = await run(["init", "--project", "omp-v2-live"]); if (out.code) throw new Error(out.stderr); });
+afterEach(() => { for (const t of live.splice(0)) t.follow.stop(); });
+afterAll(async () => { await run(["daemon", "stop"]); });
+
+test("a notify is delivered once with how to clear it, the section is current without another read, and a clear delivers nothing", async () => {
+	const address = "v2-builder/live-main";
+	const t = liveFollower(address);
+	const ref = await issue();
+	expect(await until(() => t.reads() > 0)).toBe(true);
+	const reads = t.reads();
+	await kata(["notify", ref, "--to", address, "--message", "live-ping-8841", "--json"]);
+	expect(await until(() => t.delivered.length === 1)).toBe(true);
+	expect(t.delivered[0]).toContain("live-ping-8841");
+	expect(t.delivered[0]).toContain(`kata notify omp-v2-live#${ref} --to ${address} --clear`);
+	expect(t.shown()).toContain("live-ping-8841");
+	expect(t.reads()).toBe(reads);
+	await kata(["notify", ref, "--to", address, "--clear", "--json"]);
+	expect(await until(() => t.shown() === "")).toBe(true);
+	await settle();
+	expect(t.delivered).toHaveLength(1);
+});
+
+test("a request pending at start is shown but not delivered", async () => {
+	const address = "v2-builder/live-pending";
+	const ref = await issue();
+	await kata(["notify", ref, "--to", address, "--message", "pending-before-start-3310", "--json"]);
+	const t = liveFollower(address);
+	expect(await until(() => t.shown().includes("pending-before-start-3310"))).toBe(true);
+	await settle();
+	expect(t.delivered).toEqual([]);
+	await kata(["notify", ref, "--to", address, "--clear", "--json"]);
+});
+
+test("a request written by another actor is neither delivered nor shown", async () => {
+	const address = "v2-builder/live-forged";
+	const t = liveFollower(address);
+	const ref = await issue();
+	expect(await until(() => t.reads() > 0)).toBe(true);
+	await kata(["notify", ref, "--to", address, "--message", "forged-live-5501", "--json"], { KATA_AUTHOR: "mallory" });
+	await settle();
+	expect(t.delivered).toEqual([]);
+	expect(t.published.join("\n")).not.toContain("forged-live-5501");
+	await kata(["notify", ref, "--to", address, "--clear", "--json"], { KATA_AUTHOR: "mallory" });
+});
+
+test("nothing is delivered after stop", async () => {
+	const address = "v2-builder/live-stopped";
+	const t = liveFollower(address);
+	const ref = await issue();
+	expect(await until(() => t.reads() > 0)).toBe(true);
+	t.follow.stop();
+	await kata(["notify", ref, "--to", address, "--message", "after-stop-2207", "--json"]);
+	await settle(1000);
+	expect(t.delivered).toEqual([]);
+	await kata(["notify", ref, "--to", address, "--clear", "--json"]);
 });
