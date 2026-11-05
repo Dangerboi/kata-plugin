@@ -1,15 +1,12 @@
 import { assertIsolated } from "./isolation";
-import { adoptIsolatedKata } from "./kata-fixture";
+import { adoptIsolatedKata, isolatedKata } from "./kata-fixture";
+import { ompHost } from "./omp-host";
 assertIsolated();
 import { afterAll, afterEach, beforeAll, beforeEach, expect, test } from "bun:test";
-import { execFile } from "node:child_process";
 import { mkdtempSync, mkdirSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { promisify } from "node:util";
-import ompKata from "../kata";
 
-const exec = promisify(execFile);
 const binary = process.env.KATA_TEST_EXECUTABLE;
 if (!binary || !path.isAbsolute(binary)) throw new Error("Set KATA_TEST_EXECUTABLE to an absolute kata-main binary path.");
 const scratch = mkdtempSync(path.join(process.env.KATA_TEST_ROOT!, "omp-kata-ownership-"));
@@ -22,15 +19,7 @@ process.env.KATA_TEAMMATE = "worker-a";
 delete process.env.KATA_REF;
 delete process.env.KATA_INBOX_USER;
 
-async function run(args: string[]) {
-  assertIsolated(env);
-  try {
-    const out = await exec(binary!, args, { cwd, env, timeout: 15000 });
-    return { ...out, code: 0, killed: false };
-  } catch (err: any) {
-    return { stdout: err.stdout ?? "", stderr: err.stderr ?? err.message, code: err.code ?? 1, killed: !!err.killed };
-  }
-}
+const run = isolatedKata(binary, env, cwd, 15000);
 async function kata(args: string[]) {
   const out = await run(args);
   if (out.code !== 0) throw new Error(`${args.join(" ")}: ${out.stderr}`);
@@ -49,36 +38,24 @@ async function claim(ref: string, actor = "actor-a") { await kata(["claim", ref,
 
 type Before = (args: string[]) => Promise<any>;
 function host(parent: string | undefined, before?: Before) {
-  let tool: any;
-  const events = new Map<string, any>();
   const calls: string[][] = [];
-  const notices: string[] = [];
-  const schema: any = new Proxy(() => schema, { get: () => schema });
-  const ctx = {
-    cwd,
-    agent: { kind: "main", id: "ownership-main" },
-    sessionManager: { getSessionId: () => `ownership-${parent}`, getBranch: () => parent ? [{ type: "custom", customType: "io.kata.omp.parent", data: { parent } }] : [] },
-    ui: { notify: (message: string) => notices.push(message), setWidget() {} },
-  };
-  ompKata({
-    zod: schema,
-    registerTool(value: any) { tool = value; },
-    appendEntry() {},
-    on(name: string, callback: any) { events.set(name, callback); },
-    async exec(_file: string, args: string[]) {
+  const app = ompHost({
+    run: args => run(args), cwd, sid: `ownership-${parent}`, agent: { kind: "main", id: "ownership-main" },
+    entries: parent ? [{ type: "custom", customType: "io.kata.omp.parent", data: { parent } }] : [], callId: "test",
+    async before(args) {
       // Legacy race hooks target short refs; execution still uses the pinned refs.
       const comparable = args.map(a => a.startsWith("omptest#") ? a.slice(8) : a);
       calls.push(comparable);
-      const override = await before?.(comparable);
-      return override ?? run(args);
+      return before?.(comparable);
     },
   });
+  const flush = () => app.call({ op: "view" }, app.ctx);
   return {
-    calls, notices,
-    async begin() { await events.get("session_start")({}, ctx); await tool.execute("flush", { op: "view" }, undefined, undefined, ctx); },
-    async shutdown() { await events.get("session_shutdown")({}, ctx); await tool.execute("flush", { op: "view" }, undefined, undefined, ctx); },
-    async call(params: any) { return tool.execute("test", params, undefined, undefined, ctx); },
-    async input(text: string) { return events.get("input")({ text, source: "interactive" }, ctx); },
+    calls, get notices() { return app.notices.map(args => args[0] as string); },
+    async begin() { await app.event("session_start"); await flush(); },
+    async shutdown() { await app.event("session_shutdown"); await flush(); },
+    call: app.call,
+    input: (text: string) => app.event("input", { text, source: "interactive" }),
   };
 }
 beforeAll(async () => {
