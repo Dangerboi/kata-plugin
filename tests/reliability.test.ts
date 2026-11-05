@@ -419,7 +419,7 @@ for (const outcome of ["interrupted", "unrelated", "reassigned"]) test(`deferred
   } });
   await b.call({ op: "view" });
   expect(interrupted).toBe(outcome !== "unrelated");
-  await b.core.drainRetries();
+  await b.core.drain();
   const final = await show(ref);
   expect(final.status).toBe("closed");
   expect(final.metadata["todo.removed"]).not.toBe(true);

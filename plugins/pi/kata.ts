@@ -299,7 +299,7 @@ export default async function piKata(pi: ExtensionAPI) {
 	pi.on("session_tree", (_event, ctx) => core.bounded(core.serial(async () => {
 		await core.bind(ctx, explicit);
 		if (!inherited) exportParent(ctx);
-		await core.reconcile();
+		await core.drain();
 	})));
 	// A child's shutdown is its last act; give its own issue cleanup time to finish.
 	// A reload continues the same session, so it is not an ending.
@@ -307,7 +307,7 @@ export default async function piKata(pi: ExtensionAPI) {
 		// The transcript pair is not cleared here: pi fires this on the old instance for reload/new/resume/fork, then the new instance's session_start in the same process, and a slow cleanup would delete the new pair. session_start overwrites it and process exit ends the rest.
 		await core.bounded(core.serial(async () => {
 		await core.load(core.plan.workspace || ctx.cwd);
-		await core.drainRetries();
+		await core.drain();
 		if (delegate && event?.reason !== "reload") {
 			const { ref, binding: { workspace }, restore } = delegate;
 			const view = JSON.parse(await core.kata(["show", ref, "--json"], workspace));
