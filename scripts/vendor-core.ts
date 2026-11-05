@@ -3,7 +3,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const omp = readFileSync(path.join(root, "kata.ts"), "utf8").replace('"./core/kata-core"', '"./kata-core"');
+const omp = readFileSync(path.join(root, "kata.ts"), "utf8").replace(/"\.\/core\/([\w-]+)"/g, '"./$1"');
 const files = new Map([["plugins/oh-my-pi/kata.ts", "// Generated from root kata.ts by bun run build:plugins.\n" + omp]]);
 // Every core module goes into both self-contained plugin directories.
 for (const name of readdirSync(path.join(root, "core")).filter(name => name.endsWith(".ts")).sort()) {
