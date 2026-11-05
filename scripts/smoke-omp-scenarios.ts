@@ -48,6 +48,8 @@ export type Scenario = {
 	drive?(session: Session): Promise<Check[]>;
 	/** Keeps the session file on disk (omp's `--no-session` is dropped); RPC `fork` needs one. */
 	persist?: boolean;
+	/** Contents of the throwaway KATA_HOME/config.toml, written before the store is initialised. */
+	config?: string;
 	/** Environment for the omp child. */
 	env?: Record<string, string>;
 	/** Scripted turns keyed by a marker that appears in the agent's first user message. */
@@ -70,6 +72,8 @@ const message = "Verified the smoke scenario by running it end to end against a 
 
 export const SCENARIOS: Scenario[] = [{
 	name: "default",
+	config: "[close.transcript]\nenabled = true\n",
+	setup: create => ({ bashClosed: create("Close from the main agent's bash") }),
 	prompt: `${MAIN} Plan the parser work, delegate the first item, close the second, then stop.`,
 	livePrompt: () => `Use the todo tool to plan two items, 'Implement parser module' and 'Write parser tests'. Delegate 'Implement parser module' to a task subagent (name it ImplementParser) and tell it to close its Kata issue with evidence ${evidence} and a 40+ character message. Then mark 'Write parser tests' done through the todo tool with evidence ${evidence} and a 40+ character message. Change no files. Stop when both are closed.`,
 	scripts: {
@@ -77,6 +81,7 @@ export const SCENARIOS: Scenario[] = [{
 			[{ tool: "todo", args: { op: "init", list: [{ phase: "Parser", items: ["Implement parser module", "Write parser tests"] }], message: "Smoke parser session" } }],
 			[{ tool: "task", args: { name: "ImplementParser", agent: "task", task: `${SUB} Implement parser module`, solutionSpace: "one fix: nothing to change, just close the issue" } }],
 			[{ tool: "todo", args: { op: "done", task: "Write parser tests", message, evidence: [evidence] } }],
+			[{ tool: "bash", args: { command: `kata close ${vars().bashClosed} --done --message '${message}' --evidence '${evidence}'` } }],
 			["All parser work is finished."],
 			// omp wakes the main agent when the background delegate reports back.
 			["The delegate has reported back."],
@@ -91,21 +96,27 @@ export const SCENARIOS: Scenario[] = [{
 			["Parser module done."],
 		],
 	},
-	async check(store) {
+	async check(store, ids) {
 		const issues = await store.issues();
+		const bashClosed = issues.find(i => i.ref.endsWith(ids.bashClosed));
 		const children = issues.filter(i => i.metadata["todo.phase"]);
 		const parent = issues.find(i => i.metadata["omp.session_id"] && !i.metadata["omp.subagent_id"] && !i.metadata["todo.phase"]);
 		const parser = children.find(i => i.title === "Implement parser module");
 		const tests = children.find(i => i.title === "Write parser tests");
 		const hasRecorded = (e: any) => e?.type === recorded.type && e?.command === recorded.command;
+		const transcript = (i?: Issue) => i?.events.find(e => e.type === "issue.closed")?.payload?.transcript;
 		const closeEvidence = (i?: Issue) => i?.events.find(e => e.type === "issue.closed")?.payload?.evidence ?? [];
 		return [
 			{ name: "todo init creates the automatic parent", ok: !!parent, detail: parent?.title },
 			{ name: "todo init creates both plan tasks", ok: children.length === 2 && !!parser && !!tests, detail: children.map(c => c.title).join(", ") },
 			{ name: "task delegation binds to its plan task (omp.subagent_id)", ok: !!parser?.metadata["omp.subagent_id"], detail: JSON.stringify(parser?.metadata) },
-			{ name: "no stray issue was created for the delegation", ok: issues.length === 3, detail: `${issues.length} issues` },
+			{ name: "no stray issue was created for the delegation", ok: issues.length === 4, detail: `${issues.length} issues` },
 			{ name: "todo done closes with the evidence", ok: tests?.status === "closed" && closeEvidence(tests).some(hasRecorded), detail: `${tests?.status} ${JSON.stringify(closeEvidence(tests))}` },
 			{ name: "delegate closed its own task with evidence", ok: parser?.status === "closed" && closeEvidence(parser).some(hasRecorded), detail: `${parser?.status} ${JSON.stringify(closeEvidence(parser))}` },
+			{ name: "the plugin's todo done close records the omp session", ok: transcript(tests)?.agent === "omp" && !!transcript(tests)?.session_id, detail: JSON.stringify(transcript(tests)) },
+			{ name: "the automatic parent's close records the same omp session as todo done", ok: transcript(parent)?.agent === "omp" && transcript(parent)?.session_id === transcript(tests)?.session_id, detail: JSON.stringify(transcript(parent)) },
+			{ name: "the main agent's bash close inherits the omp session", ok: bashClosed?.status === "closed" && transcript(bashClosed)?.agent === "omp" && transcript(bashClosed)?.session_id === transcript(tests)?.session_id, detail: `${bashClosed?.status} ${JSON.stringify(transcript(bashClosed))}` },
+			{ name: "the delegate's bash close records the omp session", ok: transcript(parser)?.agent === "omp" && !!transcript(parser)?.session_id, detail: JSON.stringify(transcript(parser)) },
 			{ name: "session shutdown closed the automatic parent", ok: parent?.status === "closed", detail: parent?.status },
 		];
 	},

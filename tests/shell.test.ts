@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import { assertIsolated } from "./isolation";
 import { kataCommands } from "../kata";
-import { kataCommands as coreCommands } from "../core/kata-core";
+import { delegateCommand, kataCommands as coreCommands } from "../core/kata-core";
 assertIsolated();
 
 test("only command positions are Kata invocations", () => {
@@ -22,4 +22,11 @@ test("each adapter recognizes only its own executable variables", () => {
   expect(kataCommands('"${KATA_PI_EXECUTABLE}" list')).toHaveLength(0);
   expect(coreCommands('"$KATA_PI_EXECUTABLE" list', "kata", pi)).toHaveLength(1);
   expect(coreCommands('"${KATA_PI_EXECUTABLE}" list', "kata", pi)).toHaveLength(1);
+});
+
+test("a delegate's own session prefixes only its close", () => {
+  const own = { agent: "omp", id: "child-uuid" };
+  expect(delegateCommand("kata close ab12 --done && kata show ab12", "kata", [], "tm-1", undefined, own))
+    .toBe("KATA_TRANSCRIPT_AGENT='omp' KATA_TRANSCRIPT_SESSION_ID='child-uuid' kata --teammate 'tm-1' close ab12 --done && kata --teammate 'tm-1' show ab12");
+  expect(delegateCommand("kata close ab12 --done", "kata", [], "tm-1")).toBe("kata --teammate 'tm-1' close ab12 --done");
 });

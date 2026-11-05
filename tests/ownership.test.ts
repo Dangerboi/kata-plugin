@@ -1,4 +1,5 @@
 import { assertIsolated } from "./isolation";
+import { unwrapEnv } from "./kata-fixture";
 assertIsolated();
 import { afterAll, beforeAll, expect, test } from "bun:test";
 import { execFile } from "node:child_process";
@@ -64,7 +65,8 @@ function host(parent: string | undefined, before?: Before) {
     registerTool(value: any) { tool = value; },
     appendEntry() {},
     on(name: string, callback: any) { events.set(name, callback); },
-    async exec(_file: string, args: string[]) {
+    async exec(file: string, wrapped: string[]) {
+      const { args } = unwrapEnv(file, wrapped);
       // Legacy race hooks target short refs; execution still uses the pinned refs.
       const comparable = args.map(a => a.startsWith("omptest#") ? a.slice(8) : a);
       calls.push(comparable);

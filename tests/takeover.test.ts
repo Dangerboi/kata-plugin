@@ -3,7 +3,7 @@ import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync } from "node:fs";
 import path from "node:path";
 import { assertIsolated } from "./isolation";
-import { isolatedKata } from "./kata-fixture";
+import { isolatedKata, unwrapEnv } from "./kata-fixture";
 import { daemonUnavailable, missingExecutable } from "./kata-errors";
 import ompKata from "../kata";
 assertIsolated();
@@ -45,9 +45,10 @@ function host(options: any = {}) {
   };
   ompKata({ zod: schema, registerTool: (value: any) => tool = value, appendEntry: (customType: string, data: any) => entries.push({ type: "custom", customType, data }),
     on: (name: string, callback: any) => handlers.set(name, callback), events: { on: () => {} },
-    async exec(file: string, args: string[], opts: any) {
+    async exec(file: string, wrapped: string[], opts: any) {
+      const { args, env: extra } = unwrapEnv(file, wrapped);
       calls.push(args);
-      return await options.before?.(args, opts) ?? await run(args, opts.cwd, opts.timeout);
+      return await options.before?.(args, opts) ?? await run(args, opts.cwd, opts.timeout, extra);
     },
   });
   return { ctx, sid, entries, calls, notices, widgets, tool,

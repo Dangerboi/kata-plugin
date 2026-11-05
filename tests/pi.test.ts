@@ -94,7 +94,7 @@ beforeAll(async () => {
 beforeEach(() => {
   process.env.KATA_AUTHOR = "pi-builder";
   process.env.KATA_PI_EXECUTABLE = binary;
-  for (const key of ["KATA_REF", "KATA_TEAMMATE", "KATA_INBOX_USER", "KATA_PI_PARENT"]) delete process.env[key];
+  for (const key of ["KATA_REF", "KATA_TEAMMATE", "KATA_INBOX_USER", "KATA_PI_PARENT", "KATA_TRANSCRIPT_AGENT", "KATA_TRANSCRIPT_SESSION_ID"]) delete process.env[key];
   globalRegistry[nativeKey] = { adapters: new Map() };
 });
 afterAll(async () => { await run(["daemon", "stop"]); delete process.env.KATA_PI_EXECUTABLE; globalRegistry[nativeKey] = previousRegistry; });
@@ -328,7 +328,31 @@ for (const order of ["plugin-first", "native-first"]) test.skipIf(!!nativeMissin
   expect(globalRegistry[nativeKey].active.get(nativeCwd).ref).toBe("");
   await child.event("session_shutdown",{reason:"quit"});
   expect((await show(ref)).issue.metadata).toEqual(baseline);
+  expect(child.calls.filter(a => a[1] === "attention-native")).toEqual([]);
   globalRegistry[nativeKey]={adapters:new Map(),active:new Map()};
+});
+
+const attentionCalls = (app: any) => app.calls.filter((a: string[]) => a[1] === "attention-native").map((a: string[]) => [a[3], a[a.indexOf("--ref") + 1]]);
+test.skipIf(!!nativeMissing)("real native adapter sends no attention end for a session without KATA_REF when the plugin loads first", async () => {
+  globalRegistry[nativeKey] = { adapters: new Map(), active: new Map() };
+  const nativeCwd = realpathSync(cwd);
+  const app = await host({ nativeOrder: "plugin-first", cwd: nativeCwd }); await app.event("session_start", { reason: "startup" });
+  expect(globalRegistry[nativeKey].active.get(nativeCwd).ref).toBe("");
+  await app.event("session_shutdown", { reason: "quit" });
+  expect(attentionCalls(app)).toEqual([]);
+  globalRegistry[nativeKey] = { adapters: new Map(), active: new Map() };
+});
+
+test.skipIf(!!nativeMissing)("real native adapter starts and ends attention once each on the lead's issue with KATA_REF", async () => {
+  const ref = (await kata(["create", "Real native attention lead", "--force-new", "--json"])).issue.short_id;
+  await kata(["claim", ref, "--json"]);
+  process.env.KATA_REF = `pitest#${ref}`;
+  globalRegistry[nativeKey] = { adapters: new Map(), active: new Map() };
+  const nativeCwd = realpathSync(cwd);
+  const app = await host({ nativeOrder: "plugin-first", cwd: nativeCwd }); await app.event("session_start", { reason: "startup" });
+  await app.event("session_shutdown", { reason: "quit" });
+  expect(attentionCalls(app)).toEqual([["start", `pitest#${ref}`], ["end", `pitest#${ref}`]]);
+  globalRegistry[nativeKey] = { adapters: new Map(), active: new Map() };
 });
 
 test("pi local plans and queued closes survive a fresh extension instance", async () => {
@@ -631,4 +655,16 @@ test("pi accepts replace on todo init and refuses without it while tasks are ope
   expect(replaced.isError).toBeUndefined();
   const old = (await show(parent)).children.find((c: any) => c.title === "Open pi task");
   expect(old.closed_reason).toBe("wontfix");
+});
+
+test("pi sets its transcript identity on start, a child replaces the inherited one, shutdown clears it", async () => {
+  delete process.env.KATA_TRANSCRIPT_AGENT; delete process.env.KATA_TRANSCRIPT_SESSION_ID;
+  try {
+  const lead = await host(); await lead.event("session_start", { reason: "startup" });
+  expect([process.env.KATA_TRANSCRIPT_AGENT, process.env.KATA_TRANSCRIPT_SESSION_ID]).toEqual(["pi", lead.sid]);
+  const child = await host(); await child.event("session_start", { reason: "startup" });
+  expect(process.env.KATA_TRANSCRIPT_SESSION_ID).toBe(child.sid);
+  await child.event("session_shutdown", { reason: "quit" });
+  expect([process.env.KATA_TRANSCRIPT_AGENT, process.env.KATA_TRANSCRIPT_SESSION_ID]).toEqual([undefined, undefined]);
+  } finally { delete process.env.KATA_TRANSCRIPT_AGENT; delete process.env.KATA_TRANSCRIPT_SESSION_ID; }
 });

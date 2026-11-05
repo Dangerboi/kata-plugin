@@ -43,7 +43,7 @@ A missing executable or an unreachable or unresponsive daemon (a Kata call that 
 
 ## Hooks
 
-The plugin injects the Kata contract and runs `kata agent-hook attention-native` itself; no `kata agent-hook install` step is needed. Kata 0.20 has no `omp` installer, so nothing else adds the contract to omp. If something else already put the contract in the system prompt, the plugin skips its own copy.
+The plugin injects the Kata contract and runs `kata agent-hook attention-native` itself; no `kata agent-hook install` step is needed. Kata 0.21.0 has no `omp` installer, so nothing else adds the contract to omp. If something else already put the contract in the system prompt, the plugin skips its own copy.
 
 Qualified explicit issue references and saved bindings take precedence over directory probing, including in unbound worktrees. An unavailable explicit issue is an error.
 

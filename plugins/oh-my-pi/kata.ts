@@ -16,6 +16,7 @@
 // (labeled with the repo) or in its inferred project, registered on first use.
 // The plan is session-local only while Kata is unreachable, then it replays.
 
+import { closeSync, openSync, readSync } from "node:fs";
 import path from "node:path";
 import { createKataCore, DESCRIPTION, sessionKey, render, matchDelegation, namedTargets,
 	kataCommands as parseKataCommands, teammateFor, ticketAutocomplete, delegateCommand, delegateContext, untrackedDelegateContext, type Binding, type Task } from "./kata-core";
@@ -50,7 +51,12 @@ export default function ompKata(pi: any) {
 	// Spawn text per task tool call; refs once a plan existed when it was seen.
 	const assignments = new Map<string, Assignment>();
 	const core = createKataCore({
-		exec: (...args) => pi.exec(...args),
+		// omp's exec spawns with the environment it captured at startup, not later process.env changes.
+		exec: (file, args, options) => {
+			const { KATA_TRANSCRIPT_AGENT: agent, KATA_TRANSCRIPT_SESSION_ID: session } = process.env;
+			if (!agent || !session || args[0] !== "close") return pi.exec(file, args, options);
+			return pi.exec("env", [`KATA_TRANSCRIPT_AGENT=${agent}`, `KATA_TRANSCRIPT_SESSION_ID=${session}`, file, ...args], options);
+		},
 		appendEntry: (...args) => pi.appendEntry(...args),
 		getSessionName: () => pi.getSessionName?.(),
 		isMain: main,
@@ -293,9 +299,31 @@ export default function ompKata(pi: any) {
 		if (!commands.length) return;
 		const record = self(ctx);
 		const teammate = record?.teammate || teammateFor(ctx.agent.id);
-		try { return { input: { ...event.input, command: delegateCommand(event.input.command, EXECUTABLE, EXECUTABLE_VARS, teammate, record?.binding) } }; }
+		try { return { input: { ...event.input, command: delegateCommand(event.input.command, EXECUTABLE, EXECUTABLE_VARS, teammate, record?.binding, childSession(record)) } }; }
 		catch (error) { return { block: true, reason: String(error) }; }
 	});
+
+	// A delegate's session file starts with a header carrying its own session id, the one AgentsView lists it under.
+	const childSessions = new Map<string, string>();
+	function childSession(record?: { sessionFile?: string }) {
+		const file = record?.sessionFile;
+		if (!file) return undefined;
+		if (!childSessions.has(file)) {
+			let id = "";
+			try {
+				const fd = openSync(file, "r"), buffer = Buffer.alloc(4096);
+				let length: number;
+				try { length = readSync(fd, buffer, 0, buffer.length, 0); } finally { closeSync(fd); }
+				for (const line of buffer.toString("utf8", 0, length).split("\n")) {
+					const header = line.startsWith('{"type":"session"') ? JSON.parse(line) : undefined;
+					if (header) { id = typeof header.id === "string" ? header.id : ""; break; }
+				}
+			} catch { /* the file may not be flushed yet; try again on the next close */ }
+			if (!id) return undefined;
+			childSessions.set(file, id);
+		}
+		return { agent: "omp", id: childSessions.get(file)! };
+	}
 
 	pi.on("tool_result", (event: any, ctx: any) => {
 		// Started delegates hold their own tasks; a denied or partial spawn releases
@@ -367,6 +395,8 @@ export default function ompKata(pi: any) {
 		const explicit = process.env.KATA_REF;
 		const previous = attentionSession;
 		const id = ctx.sessionManager?.getSessionId?.();
+		// Inherited by bash-tool and plugin closes so Kata records this omp session.
+		if (id) { process.env.KATA_TRANSCRIPT_AGENT = "omp"; process.env.KATA_TRANSCRIPT_SESSION_ID = id; }
 		void warm(ctx);
 		await bounded(serial(async () => {
 			await bind(ctx, explicit);
@@ -386,6 +416,8 @@ export default function ompKata(pi: any) {
 		if (!main(ctx)) return;
 		const session = attentionSession;
 		attentionSession = undefined;
-		await bounded(serial(async () => { await reconcile(); if (session) await attention("end", session); }));
+		try { await bounded(serial(async () => { await reconcile(); if (session) await attention("end", session); })); }
+		// After reconcile: the automatic parent's close still records this session.
+		finally { delete process.env.KATA_TRANSCRIPT_AGENT; delete process.env.KATA_TRANSCRIPT_SESSION_ID; }
 	});
 }

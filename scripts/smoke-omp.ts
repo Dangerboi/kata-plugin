@@ -10,7 +10,7 @@
 // on the child process only; your ~/.omp and live Kata store are never written.
 import { Database } from "bun:sqlite";
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { SCENARIOS, type Check, type Issue, type Request, type Scenario, type Session, type Store } from "./smoke-omp-scenarios";
@@ -139,6 +139,7 @@ async function run(scenario: Scenario) {
 	mkdirSync(work, { recursive: true }); mkdirSync(agentDir); mkdirSync(kataHome);
 	const env: NodeJS.ProcessEnv = { ...base, ...scenario.env, KATA_HOME: kataHome, PI_CODING_AGENT_DIR: agentDir, PI_NO_TITLE: "1", KATA_SMOKE_SCENARIO: scenario.name, KATA_SMOKE_RECORD: records };
 	try {
+		if (scenario.config) writeFileSync(path.join(kataHome, "config.toml"), scenario.config);
 		spawnSync("git", ["init", "-q", "."], { cwd: work });
 		kata(env, work, ["init", "--project", PROJECT]);
 		const vars = scenario.setup?.(title => JSON.parse(kata(env, work, ["create", title, "--force-new", "--json"])).issue.short_id) ?? {};

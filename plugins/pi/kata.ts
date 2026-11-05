@@ -1,6 +1,6 @@
 import path from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { createdParentRef, createKataCore, DESCRIPTION, kataCommands, matchDelegation, quote, render, teammateFor, delegateCommand, delegateContext, ticketAutocomplete, type Binding, type Task } from "./kata-core";
+import { createdParentRef, createKataCore, DESCRIPTION, isKataCode, kataCommands, matchDelegation, quote, render, teammateFor, delegateCommand, delegateContext, ticketAutocomplete, type Binding, type Task } from "./kata-core";
 
 // Match the native adapter's capability/scope selection, including a project
 // root boundary. Recheck at prompt time: either factory can load first.
@@ -51,7 +51,7 @@ export function isolateChildAttention(ctx: ExtensionContext, explicit?: string) 
 	}
 	const previous = registry?.active?.get(cwd);
 	if (selected && id && (!previous || previous.id !== id || previous.ended)) {
-		registry.active.set(cwd, { id, cwd, executable: selected.options.executable, ref: explicit || "", started: false, ended: false });
+		registry.active.set(cwd, { id, cwd, executable: selected.options.executable, ref: explicit || "", started: false, ended: false, startAttempted: false });
 	}
 	delete process.env.KATA_REF;
 }
@@ -107,7 +107,7 @@ export default async function piKata(pi: ExtensionAPI) {
 			const project = core.candidate(workspace).project;
 			let found: any[] = [];
 			try { found = JSON.parse(await core.kata(["list", "--status", "all", ...(project ? ["--project", project] : []), "--meta", `pi.session_id=${inherited.sessionId}`, "--label", "pi-session", "--limit", "2", "--json"], inherited.workspace)).issues ?? []; }
-			catch (error) { if (!project || !/project_not_initialized/.test(String(error))) throw error; } // the project is not registered yet: no earlier parent
+			catch (error) { if (!project || !isKataCode(error, "project_not_initialized")) throw error; } // the project is not registered yet: no earlier parent
 			const parent = found.find((issue: any) => issue.metadata?.["pi.auto_parent"] === true);
 			if (parent) inherited.ref = parent.qualified_id;
 			else {
@@ -125,7 +125,8 @@ export default async function piKata(pi: ExtensionAPI) {
 			}
 		}
 		if (!inherited.ref) throw new Error("Pi child parent identity is unavailable.");
-		const binding: Binding = { parent: inherited.ref, workspace: inherited.workspace, sessionId: inherited.sessionId, auto: false, label: inherited.label };
+		// The lead may have moved the parent since it exported this marker: the child's issue goes where the parent lives now.
+		const binding: Binding = { parent: await core.pin(inherited.ref, inherited.workspace), workspace: inherited.workspace, sessionId: inherited.sessionId, auto: false, label: inherited.label };
 		// Keep a teammate the lead chose for this child; otherwise derive a distinct one.
 		const chosen = process.env.KATA_TEAMMATE || "";
 		const teammate = chosen && chosen !== inherited.teammate && TEAMMATE.test(chosen) ? chosen : teammateFor(`${inherited.teammate || "pi"}:${inherited.sessionId}:${id}`);
@@ -267,6 +268,9 @@ export default async function piKata(pi: ExtensionAPI) {
 	}));
 	const typeahead = new WeakSet<object>();
 	pi.on("session_start", async (_event, ctx) => {
+		// Closes from this process (or its bash tool) record this pi session; a child replaces the pair it inherited.
+		process.env.KATA_TRANSCRIPT_AGENT = "pi";
+		process.env.KATA_TRANSCRIPT_SESSION_ID = ctx.sessionManager.getSessionId();
 		const saved = (ctx.sessionManager.getBranch() as any[]).filter(e => e.type === "custom" && e.customType === "io.kata.pi.delegate" && e.data?.id === ctx.sessionManager.getSessionId()).at(-1)?.data;
 		if (saved?.parentMarker && (!explicit || inherited)) {
 			inherited = saved.parentMarker;
@@ -299,7 +303,8 @@ export default async function piKata(pi: ExtensionAPI) {
 	})));
 	// A child's shutdown is its last act; give its own issue cleanup time to finish.
 	// A reload continues the same session, so it is not an ending.
-	pi.on("session_shutdown", (event, ctx) => core.bounded(core.serial(async () => {
+	pi.on("session_shutdown", async (event, ctx) => {
+		try { await core.bounded(core.serial(async () => {
 		await core.load(core.plan.workspace || ctx.cwd);
 		await core.drainRetries();
 		if (delegate && event?.reason !== "reload") {
@@ -326,5 +331,8 @@ export default async function piKata(pi: ExtensionAPI) {
 			await core.work(ref, "work.attention_msg", "Pi child ended without closing its issue; review its report and verification.", workspace, issue);
 			await core.handBack(ref, workspace, { id: delegate.id, teammate: delegate.teammate, lead: inherited?.teammate || "", state: "ended", planTask: !!restore });
 		}
-	}), delegate ? 3000 : 250));
+	}), delegate ? 3000 : 250); }
+		// After the cleanup: its closes still record this session.
+		finally { delete process.env.KATA_TRANSCRIPT_AGENT; delete process.env.KATA_TRANSCRIPT_SESSION_ID; }
+	});
 }

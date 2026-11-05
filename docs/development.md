@@ -4,12 +4,12 @@
 
 ```sh
 bun install --ignore-scripts
-KATA_TEST_EXECUTABLE=/absolute/path/to/guarded-kata bun run test
+KATA_TEST_EXECUTABLE="$(readlink -f "$(command -v kata)")" bun run test
 bun run check:plugins
 bun run typecheck
 ```
 
-The real native pi adapter tests need `kata agent-hook install pi` (Kata 0.19); against a Kata without it they are skipped with that reason, never faked. `test` runs OMP/pi tests, real-Kata integration tests, and revision conformance.
+The real native pi adapter tests need `kata agent-hook install pi` (Kata 0.21.0); against a Kata without it they are skipped with that reason, never faked. `test` runs OMP/pi tests, real-Kata integration tests, and revision conformance.
 
 Focused runners retain the isolation wrapper:
 
@@ -24,7 +24,7 @@ The semantic canary copies the default database and WAL into a disposable direct
 
 `core/kata-core.ts` holds the shared engine. Root `kata.ts` is the canonical OMP adapter. `plugins/pi/kata.ts` is the canonical pi adapter. `bun run build:plugins` vendors the core into both plugin folders and regenerates the portable OMP entry. `check:plugins` rejects stale generated sources. Each portable plugin's local imports stay inside its directory.
 
-Kata failures are read from Kata's `--json` error envelope and exit code, never from message wording: the core adds `--json` to every call (except the contract hook and `inbox --context`) and branches on `daemon_unavailable` (exit 7), `project_not_initialized` and `sibling_throttle`. A missing executable or a killed call is detected from the exec result. The one exception is `inferredName`, which reads the project or alias from the `project_not_initialized` message because Kata gives no structured field for it. Test fixtures in `tests/kata-errors.ts` are real Kata output.
+Kata failures are read from Kata's `--json` error envelope and exit code, never from message wording: the core adds `--json` to every call (except the contract hook and `inbox --context`) and branches on `daemon_unavailable` (exit 7), `project_not_initialized` and `sibling_throttle`. A missing executable or a killed call is detected from the exec result. The project name to register in an unregistered folder comes from the structured `data` on `project_not_initialized` (`project`, else `alias`), else the folder name; no code path reads a Kata message. Test fixtures in `tests/kata-errors.ts` are real Kata output.
 
 For live smoke tests, use a fresh Git folder and throwaway store as in the [tutorial](tutorials/first-session.md). Point `KATA_OMP_EXECUTABLE` or `KATA_PI_EXECUTABLE` at the guarded binary before launch. Inspect actual issues and close events; stop the test daemon and close any terminal panes you created. Keep transcripts and temporary reports outside the repository.
 
