@@ -1,3 +1,5 @@
+import { existsSync, mkdirSync, symlinkSync } from "node:fs";
+import path from "node:path";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { assertIsolated } from "./isolation";
@@ -11,11 +13,20 @@ export function isolatedKata(binary: string, env: NodeJS.ProcessEnv, cwd: string
   };
 }
 
-/** What a fake host's exec must run: the omp adapter may wrap a call as `env K=V... <executable> args...`; like the real `env`, this applies the assignments and drops the wrapper. */
-export function unwrapEnv(file: string, args: string[]): { args: string[]; env: NodeJS.ProcessEnv } {
-  if (file !== "env") return { args, env: {} };
-  const env: NodeJS.ProcessEnv = {};
-  let i = 0;
-  for (; i < args.length && /^[A-Za-z_][A-Za-z0-9_]*=/.test(args[i]); i++) env[args[i].slice(0, args[i].indexOf("="))] = args[i].slice(args[i].indexOf("=") + 1);
-  return { args: args.slice(i + 1), env };
+/**
+ * Points this process at one fixture's throwaway store and puts its Kata binary first on PATH as `kata`.
+ * The omp adapter spawns its own transcript closes itself, outside the fake host's exec, using the
+ * process environment and the default executable name. Returns the restore function.
+ */
+export function adoptIsolatedKata(binary: string, home: string): () => void {
+  assertIsolated({ ...process.env, KATA_HOME: home });
+  const bin = path.join(path.dirname(home), "bin");
+  mkdirSync(bin, { recursive: true });
+  if (!existsSync(path.join(bin, "kata"))) symlinkSync(binary, path.join(bin, "kata"));
+  const saved = { PATH: process.env.PATH, KATA_HOME: process.env.KATA_HOME };
+  process.env.PATH = `${bin}${path.delimiter}${saved.PATH ?? ""}`;
+  process.env.KATA_HOME = home;
+  return () => {
+    for (const [key, value] of Object.entries(saved)) value === undefined ? delete process.env[key] : process.env[key] = value;
+  };
 }

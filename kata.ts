@@ -15,6 +15,7 @@
 // (labeled with the repo) or in its inferred project, registered on first use.
 // The plan is session-local only while Kata is unreachable, then it replays.
 
+import { execFile } from "node:child_process";
 import { closeSync, openSync, readSync } from "node:fs";
 import path from "node:path";
 import { createKataCore, DESCRIPTION, sessionKey, render, matchDelegation, namedTargets,
@@ -42,6 +43,22 @@ type Assignment = { labels: string[]; texts: string[]; refs?: (string | undefine
 
 const delegatesBySession = new Map<string, Delegate>();
 
+// Runs Kata directly with the transcript identity in its environment. Like pi.exec, a non-zero exit
+// is a result, a timeout or abort reports killed, and a spawn failure (ENOENT) rejects.
+function execWithTranscript(file: string, args: string[], options: { cwd: string; timeout: number; signal?: AbortSignal }, agent: string, session: string) {
+	return new Promise<{ code: number; stdout: string; stderr: string; killed: boolean }>((resolve, reject) => {
+		execFile(file, args, { cwd: options.cwd, timeout: options.timeout, signal: options.signal, maxBuffer: 64 * 1024 * 1024,
+			env: { ...process.env, KATA_TRANSCRIPT_AGENT: agent, KATA_TRANSCRIPT_SESSION_ID: session } },
+			(error, stdout, stderr) => {
+				if (!error) return resolve({ code: 0, stdout, stderr, killed: false });
+				const failure = error as NodeJS.ErrnoException & { killed?: boolean };
+				const aborted = failure.name === "AbortError";
+				if (typeof failure.code === "string" && !aborted) return reject(error);
+				resolve({ code: typeof failure.code === "number" ? failure.code : 1, stdout, stderr, killed: aborted || !!failure.killed });
+			});
+	});
+}
+
 export default function ompKata(pi: any) {
 	const z = pi.zod;
 	const main = (ctx: any) => ctx?.agent?.kind === "main";
@@ -50,14 +67,11 @@ export default function ompKata(pi: any) {
 	// Spawn text per task tool call; refs once a plan existed when it was seen.
 	const assignments = new Map<string, Assignment>();
 	const core = createKataCore({
-		// omp's exec spawns with the environment it captured at startup, not later process.env changes.
-		exec: async (file, args, options) => {
+		// omp's exec spawns with the environment it captured at startup and ignores an env option, so
+		// a close that must carry the transcript identity is spawned here, without a shell or an env program.
+		exec: (file, args, options) => {
 			const { KATA_TRANSCRIPT_AGENT: agent, KATA_TRANSCRIPT_SESSION_ID: session } = process.env;
-			if (!agent || !session || args[0] !== "close") return pi.exec(file, args, options);
-			const result = await pi.exec("env", [`KATA_TRANSCRIPT_AGENT=${agent}`, `KATA_TRANSCRIPT_SESSION_ID=${session}`, file, ...args], options);
-			// env exits 127 when it cannot run the executable; Kata never does. Report it as the spawn failure an unwrapped call would raise.
-			if (result.code === 127) throw Object.assign(new Error(`Executable not found in $PATH: "${file}"`), { code: "ENOENT", path: file });
-			return result;
+			return agent && session && args[0] === "close" ? execWithTranscript(file, args, options, agent, session) : pi.exec(file, args, options);
 		},
 		appendEntry: (...args) => pi.appendEntry(...args),
 		getSessionName: () => pi.getSessionName?.(),

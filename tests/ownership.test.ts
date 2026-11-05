@@ -1,7 +1,7 @@
 import { assertIsolated } from "./isolation";
-import { unwrapEnv } from "./kata-fixture";
+import { adoptIsolatedKata } from "./kata-fixture";
 assertIsolated();
-import { afterAll, beforeAll, expect, test } from "bun:test";
+import { afterAll, afterEach, beforeAll, beforeEach, expect, test } from "bun:test";
 import { execFile } from "node:child_process";
 import { mkdtempSync, mkdirSync } from "node:fs";
 import os from "node:os";
@@ -65,8 +65,7 @@ function host(parent: string | undefined, before?: Before) {
     registerTool(value: any) { tool = value; },
     appendEntry() {},
     on(name: string, callback: any) { events.set(name, callback); },
-    async exec(file: string, wrapped: string[]) {
-      const { args } = unwrapEnv(file, wrapped);
+    async exec(_file: string, args: string[]) {
       // Legacy race hooks target short refs; execution still uses the pinned refs.
       const comparable = args.map(a => a.startsWith("omptest#") ? a.slice(8) : a);
       calls.push(comparable);
@@ -88,6 +87,9 @@ beforeAll(async () => {
   console.log(`Real Kata throwaway store: ${scratch}`);
 }, 20000);
 afterAll(async () => { await run(["daemon", "stop"]); });
+let restore: (() => void) | undefined;
+beforeEach(() => { restore = adoptIsolatedKata(binary!, env.KATA_HOME); });
+afterEach(() => restore?.());
 
 // Removing the ownership gate or swallowing claim failures must fail these.
 for (const op of ["start", "block", "unblock"]) {

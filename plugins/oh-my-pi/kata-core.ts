@@ -1466,6 +1466,8 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 				await reopenParent();
 				for (const content of items) {
 					const ticket = resolved.get(itemKey({ phase, content }));
+					// A ticket item already open in the plan is already there: it is never a child to create.
+					if (!ticket && itemTicket(content)) continue;
 					if (ticket) {
 						// A finished or dropped item comes back as a fresh one.
 						named = named.filter(t => t.phase !== phase || t.content !== content || OPEN.has(t.status));

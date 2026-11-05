@@ -1,9 +1,9 @@
-import { afterAll, beforeAll, beforeEach, expect, test } from "bun:test";
+import { afterAll, afterEach, beforeAll, beforeEach, expect, test } from "bun:test";
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync } from "node:fs";
 import path from "node:path";
 import { assertIsolated } from "./isolation";
-import { isolatedKata, unwrapEnv } from "./kata-fixture";
+import { adoptIsolatedKata, isolatedKata } from "./kata-fixture";
 import { daemonUnavailable, missingExecutable } from "./kata-errors";
 import ompKata from "../kata";
 assertIsolated();
@@ -45,10 +45,9 @@ function host(options: any = {}) {
   };
   ompKata({ zod: schema, registerTool: (value: any) => tool = value, appendEntry: (customType: string, data: any) => entries.push({ type: "custom", customType, data }),
     on: (name: string, callback: any) => handlers.set(name, callback), events: { on: () => {} },
-    async exec(file: string, wrapped: string[], opts: any) {
-      const { args, env: extra } = unwrapEnv(file, wrapped);
+    async exec(_file: string, args: string[], opts: any) {
       calls.push(args);
-      return await options.before?.(args, opts) ?? await run(args, opts.cwd, opts.timeout, extra);
+      return await options.before?.(args, opts) ?? await run(args, opts.cwd, opts.timeout);
     },
   });
   return { ctx, sid, entries, calls, notices, widgets, tool,
@@ -56,7 +55,9 @@ function host(options: any = {}) {
     call: (params: any) => tool.execute("takeover", params, undefined, undefined, ctx) };
 }
 beforeAll(async () => { const out = await run(["projects", "create", "takeover-home"]); if (out.code) throw new Error(out.stderr); });
-beforeEach(() => { process.env.KATA_AUTHOR = "v2-builder"; for (const key of ["KATA_REF", "KATA_TEAMMATE", "KATA_INBOX_USER", "KATA_DEFAULT_PROJECT"]) delete process.env[key]; });
+let restore: (() => void) | undefined;
+beforeEach(() => { restore = adoptIsolatedKata(binary, env.KATA_HOME); process.env.KATA_AUTHOR = "v2-builder"; for (const key of ["KATA_REF", "KATA_TEAMMATE", "KATA_INBOX_USER", "KATA_DEFAULT_PROJECT"]) delete process.env[key]; });
+afterEach(() => restore?.());
 afterAll(async () => { await run(["daemon", "stop"]); });
 
 test("an unregistered git repo registers its inferred project and plans there without touching the repo", async () => {

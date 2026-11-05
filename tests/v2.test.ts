@@ -1,11 +1,11 @@
 import fc from "fast-check";
-import { afterAll, beforeAll, beforeEach, expect, test } from "bun:test";
+import { afterAll, afterEach, beforeAll, beforeEach, expect, test } from "bun:test";
 import { execFile } from "node:child_process";
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { promisify } from "node:util";
 import { assertIsolated } from "./isolation";
-import { isolatedKata, unwrapEnv } from "./kata-fixture";
+import { adoptIsolatedKata, isolatedKata } from "./kata-fixture";
 import { daemonUnavailable, missingExecutable, siblingThrottle } from "./kata-errors";
 import ompKata from "../kata";
 assertIsolated();
@@ -45,23 +45,28 @@ function host(options: any = {}) {
   };
   ompKata({ zod: schema, registerTool: (value: any) => tool = value, appendEntry: (customType: string, data: any) => entries.push({ type: "custom", customType, data }),
     on: (name: string, callback: any) => handlers.set(name, callback), events: { on: (name: string, callback: any) => bus.set(name, callback) },
-    async exec(file: string, wrapped: string[], opts: any) {
-      const { args, env: extra } = unwrapEnv(file, wrapped);
+    async exec(_file: string, args: string[], opts: any) {
       calls.push(args);
-      const result = await options.before?.(args, opts) ?? await run(args, opts.cwd, opts.timeout, extra);
+      const result = await options.before?.(args, opts) ?? await run(args, opts.cwd, opts.timeout);
       if (args[0] === "agent-contract-hook") contractReady.resolve();
       return result;
     },
   });
   return { ctx, sid, entries, calls, notices, widgets, contractReady: contractReady.promise,
-    event: async (name: string, data: any = {}, context: any = ctx) => handlers.get(name)?.(data, context),
+    // The adapter spawns paired closes itself, so a host that must see or fail closes runs without the pair; `transcript: true` keeps it.
+    event: async (name: string, data: any = {}, context: any = ctx) => {
+      try { return await handlers.get(name)?.(data, context); }
+      finally { if (!options.transcript) { delete process.env.KATA_TRANSCRIPT_AGENT; delete process.env.KATA_TRANSCRIPT_SESSION_ID; } }
+    },
     emit: (name: string, data: any) => bus.get(name)?.(data),
     call: (params: any, context: any = ctx) => tool.execute("fixture", params, undefined, undefined, context),
     async init(items = ["Implement fixture", "Verify fixture"]) { const result = await tool.execute("fixture", { op: "init", items }, undefined, undefined, ctx); expect(result.isError).toBeUndefined(); return result.details.kata.parent; },
   };
 }
 beforeAll(async () => { const out = await run(["init", "--project", "v2test"]); if (out.code) throw new Error(out.stderr); });
-beforeEach(() => { process.env.KATA_AUTHOR = "v2-builder"; for (const key of ["KATA_REF", "KATA_TEAMMATE", "KATA_INBOX_USER", "KATA_TRANSCRIPT_AGENT", "KATA_TRANSCRIPT_SESSION_ID"]) delete process.env[key]; });
+let restore: (() => void) | undefined;
+beforeEach(() => { restore = adoptIsolatedKata(binary, env.KATA_HOME); process.env.KATA_AUTHOR = "v2-builder"; for (const key of ["KATA_REF", "KATA_TEAMMATE", "KATA_INBOX_USER", "KATA_TRANSCRIPT_AGENT", "KATA_TRANSCRIPT_SESSION_ID"]) delete process.env[key]; });
+afterEach(() => restore?.());
 afterAll(async () => { await run(["daemon", "stop"]); });
 
 test("subagent start and shutdown never touch main attention or widget", async () => {
@@ -78,42 +83,58 @@ test("the main session exports its transcript identity on start and switch, and 
   const saved = [process.env.KATA_TRANSCRIPT_AGENT, process.env.KATA_TRANSCRIPT_SESSION_ID];
   delete process.env.KATA_TRANSCRIPT_AGENT; delete process.env.KATA_TRANSCRIPT_SESSION_ID;
   try {
-  const app = host({ sid: "transcript-main" });
+  const app = host({ sid: "transcript-main", transcript: true });
   await app.event("session_start");
   expect([process.env.KATA_TRANSCRIPT_AGENT, process.env.KATA_TRANSCRIPT_SESSION_ID]).toEqual(["omp", "transcript-main"]);
-  const next = host({ sid: "transcript-next" });
+  const next = host({ sid: "transcript-next", transcript: true });
   await next.event("session_switch");
   expect(process.env.KATA_TRANSCRIPT_SESSION_ID).toBe("transcript-next");
-  const child = host({ agent: { kind: "sub", id: "child-t", parentId: "main" } });
+  const child = host({ agent: { kind: "sub", id: "child-t", parentId: "main" }, transcript: true });
   await child.event("session_start"); await child.event("session_shutdown");
   expect(process.env.KATA_TRANSCRIPT_SESSION_ID).toBe("transcript-next");
   await next.event("session_shutdown");
   expect([process.env.KATA_TRANSCRIPT_AGENT, process.env.KATA_TRANSCRIPT_SESSION_ID]).toEqual(["omp", "transcript-next"]);
-  await host({ sid: "transcript-after" }).event("session_start");
+  await host({ sid: "transcript-after", transcript: true }).event("session_start");
   expect(process.env.KATA_TRANSCRIPT_SESSION_ID).toBe("transcript-after");
   } finally {
     for (const [key, value] of [["KATA_TRANSCRIPT_AGENT", saved[0]], ["KATA_TRANSCRIPT_SESSION_ID", saved[1]]] as const) value === undefined ? delete process.env[key] : process.env[key] = value;
   }
 });
 
-test("a close whose Kata executable is missing is an outage even when wrapped with the transcript pair", async () => {
-  const missing = { code: 127, stdout: "", stderr: "env: 'kata': No such file or directory\n" };
-  const outcome = async (wrapped: boolean) => {
-    if (wrapped) { process.env.KATA_TRANSCRIPT_AGENT = "omp"; process.env.KATA_TRANSCRIPT_SESSION_ID = "missing-binary"; }
-    const app = host({ sid: wrapped ? "missing-wrapped" : "missing-bare", before: (args: string[]) => {
-      if (args[0] !== "close") return;
-      if (wrapped) return missing;
-      throw missingExecutable();
+test("a close whose Kata executable is missing is an outage whether or not the transcript pair is set", async () => {
+  const outcome = async (withPair: boolean) => {
+    const saved = process.env.PATH, nowhere = mkdtempSync(path.join(scratch, "nowhere-"));
+    // Without the pair the close goes through the host's exec; with it, the adapter spawns Kata itself.
+    const app = host({ sid: `missing-${withPair}`, transcript: withPair, before: (args: string[]) => {
+      if (args[0] === "close") throw missingExecutable();
     } });
     await app.event("session_start");
     const a = await issue("Ticket A");
     await app.call({ op: "init", items: [`v2test#${a}: only step`] });
-    const result = await app.call({ op: "done", message, evidence });
-    return { isError: result.isError, text: result.content[0].text.replace(/Executable not found[^\n]*|v2test#\w+/g, "") };
+    // The paired close is spawned by the adapter itself, so it needs a PATH without Kata.
+    if (withPair) process.env.PATH = nowhere;
+    try {
+      const result = await app.call({ op: "done", message, evidence });
+      return { isError: result.isError, text: result.content[0].text.replace(/Executable not found[^\n]*|spawn kata ENOENT|v2test#\w+/g, "") };
+    } finally { process.env.PATH = saved; }
   };
   const bare = await outcome(false);
   expect(bare.isError).toBe(true);
   expect(await outcome(true)).toEqual(bare);
+});
+
+test("a plugin close records the omp session as its transcript when close transcripts are on", async () => {
+  writeFileSync(path.join(env.KATA_HOME, "config.toml"), "[close.transcript]\nenabled = true\n");
+  const app = host({ sid: "transcript-recorded", transcript: true });
+  await app.event("session_start");
+  const a = await issue("Ticket A");
+  await app.call({ op: "init", items: [`v2test#${a}: only step`] });
+  const done = await app.call({ op: "done", message, evidence });
+  expect(done.isError, done.content?.[0]?.text).toBeUndefined();
+  expect(app.calls.some(c => c[0] === "close")).toBe(false);
+  const closes = (await kata(["events", "--after", "0", "--limit", "500", "--json"])).events.filter((e: any) => e.type === "issue.closed" && e.payload?.transcript?.session_id === "transcript-recorded");
+  expect(closes.length).toBeGreaterThan(0);
+  expect(closes[0].payload.transcript).toMatchObject({ agent: "omp", session_id: "transcript-recorded" });
 });
 
 test("an unreachable Kata gets a local plan without Kata mutations and one warning", async () => {
@@ -1236,6 +1257,37 @@ test("finishing every item of a ticket closes it once with the last item's evide
   const event = (await kata(["events", "--after", String(rows[0].event_id - 1), "--limit", "1", "--json"])).events[0];
   expect(event.payload.evidence).toEqual([{ type: "test", command: "second item check" }]);
   expect(last.content[0].text).toContain("2/2 done");
+});
+
+test("appending a ticket item again in a plan of only tickets works without a parent issue", async () => {
+  const app = host(); await app.event("session_start");
+  const a = await issue("Ticket A");
+  const before = await total();
+  const init = await app.call({ op: "init", items: [`v2test#${a}: write the script`] });
+  expect(init.isError).toBeUndefined();
+  const again = await app.call({ op: "append", task: `v2test#${a}: write the script` });
+  expect(again.isError).toBeUndefined();
+  expect(again.content[0].text).toContain(`v2test#${a}: write the script`);
+  const done = await app.call({ op: "done", task: `v2test#${a}: write the script`, message, evidence: ["test:ticket item check"] });
+  expect(done.isError).toBeUndefined();
+  const reappended = await app.call({ op: "append", task: `v2test#${a}: write the script` });
+  expect(reappended.isError).toBe(true);
+  expect(reappended.content[0].text).toMatch(/already closed/i);
+  expect(await total()).toBe(before);
+  expect(await ofSession(app.sid)).toHaveLength(0);
+});
+
+test("appending an open ticket item again in a plan with a parent creates no child and no error", async () => {
+  const app = host(); await app.event("session_start");
+  const a = await issue("Ticket A");
+  const init = await app.call({ op: "init", items: ["update the docs", `v2test#${a}: write the script`] });
+  expect(init.isError).toBeUndefined();
+  const ref = init.details.kata.parent;
+  const before = await total();
+  const again = await app.call({ op: "append", task: `v2test#${a}: write the script` });
+  expect(again.isError).toBeUndefined();
+  expect(await total()).toBe(before);
+  expect((await show(ref)).children.map((c: any) => c.title)).toEqual(["update the docs"]);
 });
 
 test("an unresolvable or closed ref is an error that creates nothing; a bare id names no ticket", async () => {
