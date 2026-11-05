@@ -1182,6 +1182,48 @@ test("a request sent mid-session reaches the inbox section by the next turn and 
   expect(await turn()).not.toContain("midsession-ping-7731");
 });
 
+test("only requests from the session's own actor reach the inbox section", async () => {
+  process.env.KATA_INBOX_USER = "v2-builder/trust";
+  const app = host(); await app.event("session_start"); await app.contractReady;
+  const [first, second] = [await issue(), await issue()];
+  const turn = async () => { await app.event("before_agent_start", { systemPrompt: ["base"] }); return (await app.event("before_agent_start", { systemPrompt: ["base"] })).systemPrompt.join("\n"); };
+  const asMallory = (args: string[]) => run(args, cwd, 5000, { KATA_AUTHOR: "mallory" });
+  expect((await asMallory(["notify", first, "--to", "v2-builder/trust", "--message", "forged-order-4410", "--json"])).code).toBe(0);
+  expect((await asMallory(["notify", second, "--to", "v2-builder/trust", "--message", "forged-order-4411", "--json"])).code).toBe(0);
+  const quiet = await turn();
+  expect(quiet).not.toContain("forged-order-441");
+  expect(quiet).not.toContain("<kata_inbox>");
+  await kata(["notify", first, "--to", "v2-builder/trust", "--message", "genuine \"note\" 4412", "--json"]);
+  const shown = await turn();
+  expect(shown).toContain("<kata_inbox>");
+  expect(shown).toContain(`Kata inbox for "v2-builder/trust".`);
+  expect(shown).toContain(`from="v2-builder" message="genuine \\"note\\" 4412"`);
+  expect(shown).not.toContain("forged-order-441");
+  expect(app.calls.filter(a => a[0] === "inbox").every(a => a.includes("--json") && !a.includes("--context"))).toBe(true);
+  await kata(["notify", first, "--to", "v2-builder/trust", "--clear", "--json"]);
+  expect(await turn()).not.toContain("<kata_inbox>");
+  await asMallory(["notify", first, "--to", "v2-builder/trust", "--clear", "--json"]);
+  await asMallory(["notify", second, "--to", "v2-builder/trust", "--clear", "--json"]);
+});
+
+test("a long trusted inbox is capped like kata inbox --context with an omitted note", async () => {
+  process.env.KATA_INBOX_USER = "v2-builder/capped";
+  const app = host(); await app.event("session_start"); await app.contractReady;
+  const refs: string[] = [];
+  for (let i = 0; i < 12; i++) refs.push(await issue());
+  for (const [i, ref] of refs.entries()) await kata(["notify", ref, "--to", "v2-builder/capped", "--message", `${String(i).padStart(2, "0")}-${"x".repeat(1000)}`, "--json"]);
+  await app.event("before_agent_start", { systemPrompt: ["base"] });
+  const prompt = (await app.event("before_agent_start", { systemPrompt: ["base"] })).systemPrompt.join("\n");
+  const section = prompt.slice(prompt.indexOf("Kata inbox for"), prompt.indexOf("</kata_inbox>"));
+  const rows = section.split("\n").filter(l => l.startsWith("- issue="));
+  expect(rows.length).toBeGreaterThan(0);
+  expect(rows.length).toBeLessThan(12);
+  expect(Buffer.byteLength(section)).toBeLessThanOrEqual(8 * 1024);
+  expect(section).toContain(`${12 - rows.length} request(s) omitted; run kata inbox without --context`);
+  expect(section).not.toContain("truncated");
+  for (const ref of refs) await kata(["notify", ref, "--to", "v2-builder/capped", "--clear", "--json"]);
+});
+
 test("a bare actor in KATA_INBOX_USER is a person's inbox: the session reads none and says so once", async () => {
   process.env.KATA_INBOX_USER = "v2-builder";
   const app = host(); await app.event("session_start"); await app.contractReady;
@@ -1193,6 +1235,12 @@ test("a bare actor in KATA_INBOX_USER is a person's inbox: the session reads non
   expect(app.notices).toHaveLength(1);
   expect(app.notices[0][0]).toContain("v2-builder/<name>");
   await kata(["notify", ref, "--to", "v2-builder", "--clear", "--json"]);
+  // A trailing slash names no teammate: still a person's inbox.
+  process.env.KATA_INBOX_USER = "v2-builder/";
+  const slashed = host(); await slashed.event("session_start"); await slashed.contractReady;
+  await slashed.event("before_agent_start", { systemPrompt: ["base"] });
+  expect(slashed.calls.filter(a => a[0] === "inbox")).toEqual([]);
+  expect(slashed.notices).toHaveLength(1);
 });
 
 // ---------------------------------------------------------- items naming tickets
