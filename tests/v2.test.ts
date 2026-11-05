@@ -124,6 +124,15 @@ test("a plugin close records the omp session as its transcript when close transc
   } finally { writeFileSync(config, ""); }
 });
 
+test("a plan of only ticket items reports an id-shaped task that names no issue as a Kata error, as a plan with a parent does", async () => {
+  const app = host({ sid: "ticket-only-id-target" }); await app.event("session_start");
+  const a = await issue("Ticket A");
+  await app.call({ op: "init", items: [`v2test#${a}: only step`] });
+  const result = await app.call({ op: "done", task: "0123456789abcdefghjkmnpqrs", message, evidence });
+  expect(result.isError).toBe(true);
+  expect(result.content[0].text).toContain("issue not found");
+});
+
 test("an unreachable Kata gets a local plan without Kata mutations and one warning", async () => {
   const app = host({ cwd: outside, before: down }); await app.event("session_start");
   await app.init();
