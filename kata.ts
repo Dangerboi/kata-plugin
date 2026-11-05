@@ -19,7 +19,7 @@ import { execFile, spawn } from "node:child_process";
 import { closeSync, openSync, readSync } from "node:fs";
 import { createInterface } from "node:readline";
 import path from "node:path";
-import { createKataCore, DESCRIPTION, sessionKey, render, matchDelegation, namedTargets, isSessionAddress,
+import { createKataCore, DESCRIPTION, SHUTDOWN_BOUND_MS, sessionKey, render, matchDelegation, namedTargets, isSessionAddress,
 	kataCommands as parseKataCommands, teammateFor, ticketAutocomplete, delegateCommand, delegateContext, untrackedDelegateContext, type Binding, type Task } from "./core/kata-core";
 
 const EXECUTABLE = process.env.KATA_OMP_EXECUTABLE || "kata";
@@ -699,6 +699,6 @@ export default function ompKata(pi: any) {
 		const session = attentionSession;
 		attentionSession = undefined;
 		// After reconcile: the automatic parent's close still records this session.
-		await bounded(serial(async () => { await reconcile(); if (session) await attention("end", session); }));
+		await bounded(serial(async () => { await reconcile(); if (session) await attention("end", session); }), SHUTDOWN_BOUND_MS);
 	});
 }

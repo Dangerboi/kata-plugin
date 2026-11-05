@@ -89,6 +89,9 @@ const MARK: Record<Status, string> = { pending: "[ ]", in_progress: "[/]", compl
 // A plan item's identity: init keeps, refuses and closes by this same key.
 const itemKey = (item: { phase: string; content: string }) => `${item.phase}\u0000${item.content}`;
 
+// How long a main session's shutdown waits for Kata before the host may exit: closing an automatic parent takes six or more spawns, and an exit mid-way leaves the parent open.
+export const SHUTDOWN_BOUND_MS = 10_000;
+
 export const DESCRIPTION = `Track multi-step work as a todo list stored in Kata. Tasks are identified by verbatim content (or Kata ref), NEVER generated IDs. Unique, stable task/phase names; lost text: view, NEVER guess.
 Before work, init for 3+ steps, requested task sets, or new instructions. MUST list EVERY user item separately; NEVER omit or remember leftovers.
 After each change: with no active task the earliest pending starts (phase order). Blocked NEVER starts automatically; unblock returns pending. Mark done immediately; follow phase order.
