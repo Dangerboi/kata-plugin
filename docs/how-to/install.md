@@ -35,6 +35,6 @@ pi install /path/to/kata-plugin/plugins/pi
 
 The root manifest supports `pi install git:github.com/Dangerboi/kata-plugin`. Pi 1.0.2 cannot select a repository subdirectory through a Git URL; appending `/plugins/pi` changes the clone URL. Use the root shim or a local plugin directory.
 
-For one run: `pi --no-extensions -e /path/to/kata-plugin/plugins/pi/kata.ts`. Remove any other todo extension first. Keep each plugin directory intact: its adjacent `kata-core.ts` and `plan-parent.ts` are required. Do not overwrite the native adapter at the user extension path `kata.ts`.
+For one run: `pi --no-extensions -e /path/to/kata-plugin/plugins/pi/kata.ts`. Remove any other todo extension first. Keep each plugin directory intact: every adjacent core module (`kata-core.ts`, `plan-parent.ts`, `delegates.ts`, `inbox.ts`, `settlement.ts`) is required. Do not overwrite the native adapter at the user extension path `kata.ts`.
 
 The omp marketplace identifies the plugin as `kata@kata-plugin`. The same catalog lists `kata-pi` (source `plugins/pi`) so tools that read the catalog, such as Skillshare, can install the pi build from the Git URL; it is for pi, and under omp its entry exits without loading. The npm package names `kata-omp` and `kata-pi` identify the portable packages. The root pi shim does not make the OMP package a pi extension.

@@ -52,6 +52,16 @@ test("local-prefixed projects still require Kata completion evidence", async () 
   expect((await show(ref)).status).toBe("open");
   expect((await show(parent)).status).toBe("open");
 });
+test("ambiguous recovered local identities are rejected without replacing tasks", async () => {
+  const a = app({ cwd: outside, before: down }); await init(a, ["Repeated"]);
+  const saved = a.entries.filter(e => e.customType === "io.kata.omp.state").at(-1).data;
+  saved.plan.tasks.push({ ...saved.plan.tasks[0] });
+  const b = app({ cwd: outside, before: down, entries: a.entries, sid: a.ctx.sessionManager.getSessionId() });
+  const result = await b.call({ op: "append", items: ["Repeated"] });
+  expect(result.isError).toBe(true);
+  expect(tasksOf(await b.call({ op: "view" }))).toHaveLength(2);
+});
+
 for (const op of ["done", "drop", "rm"]) test(`${op} preserves foreign ownership and all issue state`, async () => {
   const a = app(); const ref = await child(await init(a), "First");
   await kata(["claim", ref, "--as", "actor-b", "--force", "--json"]);
