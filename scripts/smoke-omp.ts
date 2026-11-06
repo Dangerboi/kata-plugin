@@ -5,10 +5,10 @@
 //   bun run smoke:omp --live --model <provider/model> [--scenario <name>]
 //
 // Default runs use a scripted model provider (scripts/smoke-omp-provider.ts), so
-// no credentials or network are needed. --live uses a real model instead, through
-// one of your API-key logins. Both run omp with PI_CODING_AGENT_DIR and KATA_HOME
-// on the child process only; your ~/.omp and live Kata store are never written.
-import { Database } from "bun:sqlite";
+// no credentials or network are needed: omp runs with a throwaway PI_CODING_AGENT_DIR.
+// --live uses a real model instead, through your own omp agent directory and its
+// logins (prefer a subscription), so omp may update it as in any run. KATA_HOME is
+// a throwaway store either way; your live Kata store is never written.
 import { spawn, spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
@@ -21,7 +21,7 @@ const live = argv.includes("--live");
 const verbose = argv.includes("--verbose");
 const picked = argv.includes("--scenario") ? argv[argv.indexOf("--scenario") + 1] : undefined;
 const liveModel = argv.includes("--model") ? argv[argv.indexOf("--model") + 1] : undefined;
-if (live && !liveModel) { console.error("--live needs --model <provider/model> for a provider you log into with an API key (OAuth logins are never copied)."); process.exit(2); }
+if (live && !liveModel) { console.error("--live needs --model <provider/model> for a provider you are logged into (prefer a subscription)."); process.exit(2); }
 const scenarios = picked ? SCENARIOS.filter(s => s.name === picked) : SCENARIOS;
 if (!scenarios.length) { console.error(`Unknown scenario ${picked}. Known: ${SCENARIOS.map(s => s.name).join(", ")}`); process.exit(2); }
 
@@ -61,22 +61,6 @@ function store(env: NodeJS.ProcessEnv, cwd: string, records: string, prompts: st
 			}));
 		},
 	};
-}
-
-// --live borrows the user's API-key logins and nothing else (the model comes from
-// --model). OAuth logins are left out: refreshing a copy rotates the refresh token
-// and can log the user's own omp out. The original database is opened read-only.
-function copyUserConfig(agentDir: string) {
-	const home = process.env.PI_CODING_AGENT_DIR ?? path.join(os.homedir(), ".omp", "agent");
-	if (!existsSync(path.join(home, "agent.db"))) { console.error(`--live needs an omp login: no agent.db in ${home}`); process.exit(2); }
-	const target = path.join(agentDir, "agent.db");
-	const source = new Database(path.join(home, "agent.db"), { readonly: true });
-	try { source.run("VACUUM INTO ?", [target]); } finally { source.close(); }
-	const copy = new Database(target);
-	try {
-		copy.run("DELETE FROM auth_credentials WHERE credential_type != 'api_key'");
-		for (const table of ["auth_credential_blocks", "auth_credential_refresh_leases", "auth_credential_block_mirror_guard"]) copy.run(`DELETE FROM ${table} WHERE credential_id NOT IN (SELECT id FROM auth_credentials)`);
-	} finally { copy.close(); }
 }
 
 // Runs omp as a long-lived RPC process and hands the scenario a Session.
@@ -137,21 +121,23 @@ async function run(scenario: Scenario) {
 	if (live && !scenario.livePrompt) { console.log(`\n# scenario ${scenario.name} skipped: scripted only`); return; }
 	console.log(`\n# scenario ${scenario.name}${live ? " (live)" : " (scripted)"}`);
 	const dir = path.join(tmp, scenario.name);
-	const work = path.join(dir, "repo"), agentDir = path.join(dir, "agent"), kataHome = path.join(dir, "kata");
+	const work = path.join(dir, "repo"), agentDir = path.join(dir, "agent"), kataHome = path.join(dir, "kata"), ompConfig = path.join(dir, "omp-config.yml");
 	const records = path.join(dir, "requests.jsonl"), prompts = path.join(dir, "prompts.jsonl"), tools = path.join(dir, "tools.jsonl");
 	mkdirSync(work, { recursive: true }); mkdirSync(agentDir); mkdirSync(kataHome);
-	const env: NodeJS.ProcessEnv = { ...base, ...scenario.env, KATA_HOME: kataHome, PI_CODING_AGENT_DIR: agentDir, PI_NO_TITLE: "1", KATA_SMOKE_SCENARIO: scenario.name, KATA_SMOKE_RECORD: records, KATA_SMOKE_PROMPTS: prompts, KATA_SMOKE_TOOLS: tools };
+	const env: NodeJS.ProcessEnv = { ...base, ...scenario.env, KATA_HOME: kataHome, PI_NO_TITLE: "1", KATA_SMOKE_SCENARIO: scenario.name, KATA_SMOKE_RECORD: records, KATA_SMOKE_PROMPTS: prompts, KATA_SMOKE_TOOLS: tools };
 	try {
 		if (scenario.config) writeFileSync(path.join(kataHome, "config.toml"), scenario.config);
 		spawnSync("git", ["init", "-q", "."], { cwd: work });
 		kata(env, work, ["init", "--project", PROJECT]);
 		const vars = scenario.setup?.(title => JSON.parse(kata(env, work, ["create", title, "--force-new", "--json"])).issue.short_id) ?? {};
 		env.KATA_SMOKE_VARS = JSON.stringify(vars);
-		if (live) copyUserConfig(agentDir);
-		if (scenario.ompConfig) writeFileSync(path.join(agentDir, "config.yml"), scenario.ompConfig);
+		// Scripted runs need no login, so omp gets a throwaway agent directory; live runs use yours (inherited PI_CODING_AGENT_DIR, else omp's default).
+		if (!live) env.PI_CODING_AGENT_DIR = agentDir;
+		// A scenario's omp settings go in as an overlay for this run, never into an agent directory's config.yml.
+		if (scenario.ompConfig) writeFileSync(ompConfig, scenario.ompConfig);
 		// The smoke extension also records each agent's system prompt, so it loads after the plugin in live runs too.
 		const args = ["--no-extensions", "--no-skills", "--no-rules", "--no-context-files", "--no-lsp", "--no-title", ...(scenario.persist ? [] : ["--no-session"]),
-			"-e", path.join(root, "plugins/oh-my-pi/kata.ts"), "-e", path.join(root, "scripts/smoke-omp-provider.ts")];
+			"-e", path.join(root, "plugins/oh-my-pi/kata.ts"), "-e", path.join(root, "scripts/smoke-omp-provider.ts"), ...(scenario.ompConfig ? ["--config", ompConfig] : [])];
 		args.push("--model", live ? liveModel! : "kata-smoke/scripted");
 		let code: number | null, output: string, checks: Check[] = [];
 		if (scenario.drive) ({ code, output, checks } = await drive(scenario, args, env, work, records));

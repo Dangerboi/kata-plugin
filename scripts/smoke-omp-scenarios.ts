@@ -60,7 +60,7 @@ export type Scenario = {
 	persist?: boolean;
 	/** Contents of the throwaway KATA_HOME/config.toml, written before the store is initialised. */
 	config?: string;
-	/** Contents of the throwaway omp agent directory's config.yml (omp settings). */
+	/** omp settings for this run, in config.yml form, passed as a `--config` overlay. */
 	ompConfig?: string;
 	/** Environment for the omp child. */
 	env?: Record<string, string>;
@@ -383,8 +383,9 @@ export const SCENARIOS: Scenario[] = [{
 	name: "workers",
 	config: "[close.transcript]\nenabled = true\n",
 	// omp strips its todo tool from subagents unless prewalk is armed for their agent; a prewalk target lets delegates
-	// call todo. It hands off only at a delegate's first edit, which these never make (scripted runs skip it: no login).
-	ompConfig: "task:\n  agentPrewalk:\n    task: openrouter/google/gemini-2.5-flash-lite\n",
+	// call todo. It hands off at a delegate's first edit; the target is a subscription model, and must differ from the
+	// --model of a live run in model or thinking level, or omp skips prewalk. Scripted runs skip it: no login.
+	ompConfig: "task:\n  agentPrewalk:\n    task: anthropic/claude-haiku-5-5:low\n",
 	prompt: `${MAIN} Plan the ports, delegate all of them at once, then stop.`,
 	// Live: odd delegates plan one step under their own issue with the todo tool, finish it, then close their issue; even
 	// ones run a tool and leave their task open, so the lead hands it back.
