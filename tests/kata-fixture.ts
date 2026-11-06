@@ -1,8 +1,16 @@
+import { setSystemTime } from "bun:test";
 import { existsSync, mkdirSync, symlinkSync } from "node:fs";
 import path from "node:path";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { assertIsolated } from "./isolation";
+import type { DelegateRecord, DelegateStore } from "../core/delegates";
+
+export function memoryDelegateStore(): DelegateStore {
+  const records = new Map<string, DelegateRecord>();
+  return { records: () => [...records.values()], get: key => records.get(key), put: record => { records.set(record.id, record); },
+    of: ctx => [...records.values()].find(record => record.sessionId === ctx.sessionManager.getSessionId()) };
+}
 
 const exec = promisify(execFile);
 export function isolatedKata(binary: string, env: NodeJS.ProcessEnv, cwd: string, defaultTimeout = 5000) {
@@ -29,4 +37,10 @@ export function adoptIsolatedKata(binary: string, home: string): () => void {
   return () => {
     for (const [key, value] of Object.entries(saved)) value === undefined ? delete process.env[key] : process.env[key] = value;
   };
+}
+
+/** A retry deadline passes while `fn` runs, without sleeping: a throttled close is due again. */
+export async function later<T>(fn: () => Promise<T>): Promise<T> {
+	setSystemTime(new Date(Date.now() + 120_000));
+	try { return await fn(); } finally { setSystemTime(); }
 }

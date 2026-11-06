@@ -25,7 +25,7 @@ Once transcripts are on, the oh-my-pi and pi plugins record the session on every
 
 Each session start exports `KATA_TRANSCRIPT_AGENT` (`omp` or `pi`) and `KATA_TRANSCRIPT_SESSION_ID` (the session's ID) in the harness process. Neither plugin clears them at shutdown: a reload or new session starts in the same process and overwrites the pair, and clearing after a slow cleanup could delete the new pair. Kata uses the pair only when both are set. Kata builds the link from the agent name (`<agentsview_url>/sessions/omp/<id>`).
 
-- **oh-my-pi delegates** run inside the lead's process. A delegate's `kata close` in its `bash` tool records the delegate's own session, which AgentsView lists as a child of the lead's. If the plugin cannot read the delegate's session ID, the close records the lead's session.
+- **oh-my-pi delegates** run inside the lead's process. A delegate's `kata close` in its `bash` tool and its own `todo` closes (`done`, `drop`, `rm`) record the delegate's own session, which AgentsView lists as a child of the lead's. If the plugin cannot read the delegate's session ID yet, a `bash` close records the lead's session and a `todo` close records no session.
 - **pi children** are separate processes, and each records its own session.
 - **Other harnesses** started from the `bash` tool (for example `claude -p`) inherit the pair, and Kata prefers it over their own session variable. Their closes record the oh-my-pi or pi session that launched them. Unset both variables in the command to record the child's own session.
 

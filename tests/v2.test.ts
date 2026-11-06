@@ -1,13 +1,13 @@
 import fc from "fast-check";
-import { afterAll, afterEach, beforeAll, beforeEach, expect, test } from "bun:test";
+import { afterAll, afterEach, beforeAll, beforeEach, expect, setSystemTime, test } from "bun:test";
 import { execFile } from "node:child_process";
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { promisify } from "node:util";
 import { assertIsolated } from "./isolation";
-import { adoptIsolatedKata, isolatedKata } from "./kata-fixture";
+import { adoptIsolatedKata, isolatedKata, later } from "./kata-fixture";
 import { daemonUnavailable, missingExecutable, siblingThrottle } from "./kata-errors";
-import ompKata from "../kata";
+import { ompHost } from "./omp-host";
 assertIsolated();
 const exec = promisify(execFile);
 const binary = process.env.KATA_TEST_EXECUTABLE!;
@@ -31,36 +31,16 @@ const evidence = ["test:bun test fixture"];
 const message = "Implemented this isolated fixture and verified its behavior with the regression suite.";
 function host(options: any = {}) {
   const sid = options.sid === null ? undefined : options.sid || `v2-${++sequence}`;
-  let tool: any;
   const contractReady = Promise.withResolvers<void>();
-  const handlers = new Map<string, any>(), bus = new Map<string, any>();
-  const entries: any[] = options.entries || [], calls: string[][] = [], notices: any[] = [], widgets: any[] = [];
-  const schema: any = new Proxy(() => schema, { get: () => schema });
-  const ctx: any = {
-    cwd: options.cwd || cwd,
-    agent: options.agent || { kind: "main", id: `main-${sid}` },
-    sessionManager: { getSessionId: () => sid, getSessionFile: () => options.sessionFile || `${scratch}/${sid}.jsonl`, getBranch: () => entries, getHeader: () => options.header },
-    getAsyncJobSnapshot: () => options.snapshot?.() || { running: [], recent: [] },
-    ui: { notify: (...args: any[]) => notices.push(args), setWidget: (...args: any[]) => widgets.push(args) },
-  };
-  ompKata({ zod: schema, registerTool: (value: any) => tool = value, appendEntry: (customType: string, data: any) => entries.push({ type: "custom", customType, data }),
-    on: (name: string, callback: any) => handlers.set(name, callback), events: { on: (name: string, callback: any) => bus.set(name, callback) },
-    async exec(_file: string, args: string[], opts: any) {
-      calls.push(args);
-      const result = await options.before?.(args, opts) ?? await run(args, opts.cwd, opts.timeout);
-      if (args[0] === "agent-contract-hook") contractReady.resolve();
-      return result;
-    },
-  });
-  return { ctx, sid, entries, calls, notices, widgets, contractReady: contractReady.promise,
+  const app = ompHost({
+    run: (args, opts) => run(args, opts.cwd, opts.timeout), cwd: options.cwd || cwd, sid, agent: options.agent, entries: options.entries,
+    sessionFile: options.sessionFile || `${scratch}/${sid}.jsonl`, header: options.header, snapshot: options.snapshot, before: options.before,
+    after: args => { if (args[0] === "agent-contract-hook") contractReady.resolve(); },
     // The adapter spawns paired closes itself, so a host that must see or fail closes runs without the pair; `transcript: true` keeps it.
-    event: async (name: string, data: any = {}, context: any = ctx) => {
-      try { return await handlers.get(name)?.(data, context); }
-      finally { if (!options.transcript) { delete process.env.KATA_TRANSCRIPT_AGENT; delete process.env.KATA_TRANSCRIPT_SESSION_ID; } }
-    },
-    emit: (name: string, data: any) => bus.get(name)?.(data),
-    call: (params: any, context: any = ctx) => tool.execute("fixture", params, undefined, undefined, context),
-    async init(items = ["Implement fixture", "Verify fixture"]) { const result = await tool.execute("fixture", { op: "init", items }, undefined, undefined, ctx); expect(result.isError).toBeUndefined(); return result.details.kata.parent; },
+    afterEvent: () => { if (!options.transcript) { delete process.env.KATA_TRANSCRIPT_AGENT; delete process.env.KATA_TRANSCRIPT_SESSION_ID; } },
+  });
+  return { ...app, contractReady: contractReady.promise,
+    async init(items = ["Implement fixture", "Verify fixture"]) { const result = await app.call({ op: "init", items }); expect(result.isError).toBeUndefined(); return result.details.kata.parent; },
   };
 }
 beforeAll(async () => { const out = await run(["init", "--project", "v2test"]); if (out.code) throw new Error(out.stderr); });
@@ -142,6 +122,15 @@ test("a plugin close records the omp session as its transcript when close transc
     expect(closes.length).toBeGreaterThan(0);
     expect(closes[0].payload.transcript).toMatchObject({ agent: "omp", session_id: "transcript-recorded" });
   } finally { writeFileSync(config, ""); }
+});
+
+test("a plan of only ticket items reports an id-shaped task that names no issue as a Kata error, as a plan with a parent does", async () => {
+  const app = host({ sid: "ticket-only-id-target" }); await app.event("session_start");
+  const a = await issue("Ticket A");
+  await app.call({ op: "init", items: [`v2test#${a}: only step`] });
+  const result = await app.call({ op: "done", task: "0123456789abcdefghjkmnpqrs", message, evidence });
+  expect(result.isError).toBe(true);
+  expect(result.content[0].text).toContain("issue not found");
 });
 
 test("an unreachable Kata gets a local plan without Kata mutations and one warning", async () => {
@@ -288,6 +277,7 @@ test("finished unclosed delegates remain open needs-review, with no parent proof
   const sessionFile = `${scratch}/delegate-unclosed.jsonl`;
   app.emit("task:subagent:lifecycle", { id: "unclosed", agent: "task", status: "started", sessionFile, description: "Await unverified delegate" });
   await app.call({ op: "view" });
+  await ran(app, "unclosed", sessionFile);
   app.emit("task:subagent:lifecycle", { id: "unclosed", status: "completed", sessionFile });
   await app.call({ op: "done", task: "Lead keeps working", message, evidence });
   const child = (await show(parent)).children.find((c: any) => c.title === "Await unverified delegate");
@@ -296,6 +286,33 @@ test("finished unclosed delegates remain open needs-review, with no parent proof
   expect(view.labels.some((l: any) => l.label === "needs-review")).toBe(true);
   expect((await show(parent)).issue.status).toBe("open");
 });
+
+test("a delegate on a worker thread that runs a tool before its assignment reaches it is handed back, not rolled back", async () => {
+  // The lead's assignment write is slow, so the worker's copy has no record yet when its delegate runs a tool. A real delay:
+  // the race is between two threads and real Kata processes, which fake timers cannot order, and the fixed copy waits for the answer.
+  const app = host({ before: async (args: string[]) => { if (args[0] === "meta" && args[3] === "omp.subagent_id") await Bun.sleep(1500); } });
+  await app.event("session_start"); const parent = await app.init(["Worker delegated work", "Lead keeps working"]);
+  const sessionFile = `${scratch}/delegate-worker.jsonl`, id = "Worker.Delegate";
+  app.emit("task:subagent:lifecycle", { id, agent: "task", status: "started", sessionFile, description: "Worker delegated work" });
+  // Exit only after the lead has heard of the tool use, as it would from a real delegate's later turns; a report that
+  // never comes still ends the wait, and the hand-back check below fails.
+  const channel = new BroadcastChannel("kata-plugin:omp-delegates:1");
+  const reported = new Promise<void>(resolve => {
+    const timer = setTimeout(resolve, 8000);
+    channel.onmessage = event => { if (event.data?.kind === "ranTool" && event.data.id === id) { clearTimeout(timer); resolve(); } };
+  });
+  const worker = new Worker(new URL("./omp-worker-delegate.ts", import.meta.url), { workerData: { binary, env, cwd, sessionFile, id, parentId: app.ctx.agent.id } } as any);
+  const ran = new Promise(resolve => worker.addEventListener("message", resolve, { once: true }));
+  try {
+    await reported;
+    await ran;
+  } finally { worker.terminate(); channel.close(); }
+  app.emit("task:subagent:lifecycle", { id, status: "completed", sessionFile });
+  await app.call({ op: "done", task: "Lead keeps working", message, evidence });
+  const child = (await show(parent)).children.find((c: any) => c.title === "Worker delegated work");
+  expect(child.status).toBe("open");
+  expect((await show(`v2test#${child.short_id}`)).labels.some((l: any) => l.label === "needs-review")).toBe(true);
+}, 20_000);
 
 test("subagent bash attribution ignores quoted data, replaces teammates and refuses --as", async () => {
   const child = host({ agent: { kind: "sub", id: "Quoted-Agent", parentId: "parent" } });
@@ -334,27 +351,58 @@ test("new work reopens an auto parent; all-wontfix parents require review", asyn
   expect(view.labels.some((l: any) => l.label === "needs-review")).toBe(true);
 });
 
+test("a flagged automatic parent is not re-audited until its revision changes", async () => {
+  const app = host(); const parent = await app.init(["x"]);
+  await app.call({ op: "drop", message: "no" });
+  const turn = async () => {
+    const before = app.calls.length;
+    await app.event("session_stop"); await app.call({ op: "view" });
+    return app.calls.slice(before).map(a => a[0]).filter(verb => ["audit", "events", "label"].includes(verb));
+  };
+  expect(await turn()).toEqual([]);
+  await kata(["meta", "set", parent, "reviewer", "someone", "--json"]);
+  expect(await turn()).toContain("label");
+  expect(await turn()).toEqual([]);
+});
+
+test("a throttled automatic-parent close does not label the parent for review", async () => {
+  let parent = "";
+  const timers = new Set<{ run: () => void }>();
+  const app = host({ before: (a: string[]) => a[0] === "close" && a.includes(parent) ? siblingThrottle() : undefined });
+  app.ctx.setTimeout = (callback: () => void) => { const timer = { run: callback }; timers.add(timer); return timer; };
+  app.ctx.clearTimer = (timer: any) => { timers.delete(timer); };
+  parent = await app.init(["Throttled parent"]);
+  await app.call({ op: "done", message, evidence });
+  const view = await show(parent);
+  expect(view.issue.status).toBe("open");
+  expect(view.labels.some((l: any) => l.label === "needs-review")).toBe(false);
+  expect(timers.size).toBe(1);
+});
+
 // Like omp: the host owns retry timers, and sweeps whatever is pending on shutdown.
 function throttledClose() {
   const timers = new Set<{ run: () => void }>();
-  let throttled = true;
-  const app = host({ before: (a: string[]) => a[0] === "close" && throttled ? siblingThrottle() : undefined });
+  let throttled = true, reached!: () => void;
+  const closing = new Promise<void>(resolve => reached = resolve);
+  const app = host({ before: (a: string[]) => {
+    if (a[0] !== "close") return undefined;
+    if (throttled) return siblingThrottle();
+    reached();
+    return undefined;
+  } });
   app.ctx.setTimeout = (callback: () => void) => { const timer = { run: callback }; timers.add(timer); return timer; };
   app.ctx.clearTimer = (timer: any) => { timers.delete(timer); };
-  return { app, timers, lift: () => { throttled = false; } };
+  return { app, timers, closing, lift: () => { throttled = false; } };
 }
 test("a throttled close is retried by the host timer", async () => {
-  const { app, timers, lift } = throttledClose();
+  const { app, timers, closing, lift } = throttledClose();
   const parent = await app.init(["Throttled task"]);
   expect((await app.call({ op: "done", message, evidence })).content[0].text).toContain("retry");
   expect(timers.size).toBe(1);
   lift();
-  const actualNow = Date.now;
-  Date.now = () => actualNow() + 61_000;
-  try {
-    for (const timer of [...timers]) timer.run();
-    for (let i = 0; i < 100 && (await show(parent)).issue.status !== "closed"; i++) await new Promise(resolve => setTimeout(resolve, 50));
-  } finally { Date.now = actualNow; }
+  setSystemTime(new Date(Date.now() + 120_000));
+  try { for (const timer of [...timers]) timer.run(); await closing; } finally { setSystemTime(); }
+  await app.call({ op: "view" });
   expect((await show(parent)).issue.status).toBe("closed");
 });
 test("binding another session cancels the pending retry through the host", async () => {
@@ -377,11 +425,7 @@ test("sibling throttle retries the pinned close and does not falsely complete me
   expect(result.isError).toBeUndefined();
   expect(result.content[0].text).toContain("retry");
   expect((await show(parent)).children[0].metadata["todo.status"]).toBe("in_progress");
-  app.ctx.cwd = outside;
-  const actualNow = Date.now;
-  Date.now = () => actualNow() + 61_000;
-  try { await app.event("session_stop"); await app.call({ op: "view" }); }
-  finally { Date.now = actualNow; }
+  await later(async () => { const resumed = host({ cwd: outside, sid: app.sid, entries: app.entries }); await resumed.event("session_start"); await resumed.call({ op: "view" }); });
   expect((await show(parent)).issue.status).toBe("closed");
 });
 
@@ -417,16 +461,44 @@ test("typed automatic parent can be recovered after losing the session entry", a
   expect((await recovered.call({ op: "view" })).details.kata.parent).toBe(parent);
 });
 
+// A delegate that exits having run no tool has its assignment rolled back; these tests need one that did work.
+async function ran(lead: ReturnType<typeof host>, id: string, sessionFile: string) {
+  await host({ sessionFile, agent: { kind: "sub", id, parentId: lead.ctx.agent.id } }).event("tool_call", { toolName: "read", input: { path: "README.md" } });
+}
+
 test("async snapshot settles a delegate when terminal lifecycle delivery is missing", async () => {
   let recent: any[] = [];
   const app = host({ snapshot: () => ({ running: [], recent }) });
   await app.event("session_start"); const parent = await app.init(["Wait for snapshot"]);
   app.emit("task:subagent:lifecycle", { id: "snapshot-child", agent: "task", status: "started", sessionFile: `${scratch}/snapshot-child.jsonl`, description: "Wait for snapshot" });
   await app.call({ op: "view" });
+  await ran(app, "snapshot-child", `${scratch}/snapshot-child.jsonl`);
   recent = [{ id: "snapshot-child", type: "task", status: "completed" }];
   await app.event("session_stop"); await app.call({ op: "view" });
   const child = (await show(parent)).children.find((c: any) => c.title === "Wait for snapshot");
   expect((await show(`v2test#${child.short_id}`)).labels.some((l: any) => l.label === "needs-review")).toBe(true);
+});
+
+test("a missed delegate exit found at a prompt does not wait for the settlement", async () => {
+  let recent: any[] = [], slow = false;
+  const reached = Promise.withResolvers<void>(), gate = Promise.withResolvers<void>();
+  const app = host({ snapshot: () => ({ running: [], recent }), before: async (args: string[]) => {
+    if (slow && ["show", "label", "close", "comment"].includes(args[0])) { reached.resolve(); await gate.promise; }
+    return undefined;
+  } });
+  try {
+    await app.event("session_start"); const parent = await app.init(["Wait for slow settlement"]);
+    app.emit("task:subagent:lifecycle", { id: "slow-exit", agent: "task", status: "started", sessionFile: `${scratch}/slow-exit.jsonl`, description: "Wait for slow settlement" });
+    await app.call({ op: "view" });
+    await ran(app, "slow-exit", `${scratch}/slow-exit.jsonl`);
+    recent = [{ id: "slow-exit", type: "task", status: "cancelled" }]; slow = true;
+    await app.event("before_agent_start", { systemPrompt: ["base"] });
+    await reached.promise;
+    gate.resolve();
+    await app.call({ op: "view" });
+    const task = (await show(parent)).children.find((c: any) => c.title === "Wait for slow settlement");
+    expect((await show(`v2test#${task.short_id}`)).labels.some((l: any) => l.label === "needs-review")).toBe(true);
+  } finally { gate.resolve(); }
 });
 
 test("relative lifecycle session paths join the child's absolute session path", async () => {
@@ -722,13 +794,9 @@ test("queued close survives extension recreation and retries only after its dead
   const entries = JSON.parse(JSON.stringify(app.entries));
   const resumed = host({ sid: app.sid, entries }); await resumed.event("session_start");
   expect(resumed.calls.some(a => a[0] === "close")).toBe(false);
-  const now = Date.now; Date.now = () => now() + 61_000;
-  try {
-    const restarted = host({ sid: app.sid, entries }); await restarted.event("session_start");
-    await restarted.call({ op: "view" });
-    expect((await show(parent)).issue.status).toBe("closed");
-    expect((await kata(["audit", "closes", "--json"])).rows.filter((r: any) => r.issue === parent.split("#")[1])).toHaveLength(1);
-  } finally { Date.now = now; }
+  await later(async () => { const restarted = host({ sid: app.sid, entries }); await restarted.event("session_start"); await restarted.call({ op: "view" }); });
+  expect((await show(parent)).issue.status).toBe("closed");
+  expect((await kata(["audit", "closes", "--json"])).rows.filter((r: any) => r.issue === parent.split("#")[1])).toHaveLength(1);
 });
 
 // The 2026-10-19 eval: omp sent todo init and the tests delegation in one batch.
@@ -808,6 +876,15 @@ test("an untracked delegate's todo on an omp without invokeTool says it has no K
   expect(result.content[0].text).not.toContain("binding");
 });
 
+test("another lead's spawn keeps a running untracked delegate's identity", async () => {
+  const { worker } = await untrackedDelegate("untracked-survives");
+  const other = host(); await other.event("session_start"); await other.init(["Unrelated plan"]);
+  other.emit("task:subagent:lifecycle", { id: "other-child", agent: "scout", status: "started", sessionFile: `${scratch}/other-child.jsonl`, description: "Unrelated work" });
+  await other.call({ op: "view" });
+  const native = { content: [{ type: "text", text: "native list" }], details: { phases: [] } };
+  expect(await worker.call({ op: "view" }, { ...worker.ctx, invokeTool: async () => native })).toBe(native);
+});
+
 test("an untracked delegate's system prompt has the note, not an issue binding", async () => {
   const { worker } = await untrackedDelegate("untracked-prompt");
   process.env.KATA_REF = "v2test#inherited"; // a tern-kata Pane hands the lead's ref to its subagents
@@ -841,7 +918,7 @@ test("while the plan is local, a delegate matching a local item is not untracked
   const result = await worker.call({ op: "view" }, { ...worker.ctx, invokeTool: async () => { native++; return { content: [], details: {} }; } });
   expect(native).toBe(0);
   expect(result.isError).toBe(true);
-  expect(result.content[0].text).toContain("worker binding");
+  expect(result.content[0].text).toContain("Kata assignment");
   expect(result.content[0].text).not.toContain("matched no plan item");
 });
 
@@ -856,6 +933,7 @@ test("a finished delegate that leaves its plan task open hands it back for revie
   const task = (await show(ref)).children.find((c: any) => c.title === "Write widget tests");
   expect(task.metadata["omp.subagent_id"]).toBe("handback");
   expect((await app.call({ op: "done", task: "Write widget tests", message, evidence })).isError).toBe(true);
+  await ran(app, "handback", sessionFile);
   app.emit("task:subagent:lifecycle", { id: "handback", status: "completed", sessionFile });
   await app.call({ op: "view" });
   const settled = await show(`v2test#${task.short_id}`);
@@ -867,6 +945,57 @@ test("a finished delegate that leaves its plan task open hands it back for revie
   const closed = await show(`v2test#${task.short_id}`);
   expect(closed.issue.status).toBe("closed");
   expect(closed.labels.some((l: any) => l.label === "needs-review")).toBe(false);
+});
+
+test("a delegate whose assignment failed is handed back when it exits, and the automatic parent closes", async () => {
+  process.env.KATA_TEAMMATE = "lead-mate";
+  const app = host({ before: (args: string[]) => args[0] === "meta" && args[3] === "omp.subagent_id" ? { code: 1, stdout: "", stderr: "delegation service permission denied" } : undefined });
+  await app.event("session_start");
+  const ref = await app.init(["Delegated plan task", "Lead step"]);
+  const sessionFile = `${scratch}/binding-failed.jsonl`;
+  app.emit("task:subagent:lifecycle", { id: "binding-failed", status: "started", sessionFile, description: "Delegated plan task" });
+  await app.call({ op: "view" });
+  app.emit("task:subagent:lifecycle", { id: "binding-failed", status: "completed", sessionFile });
+  await app.call({ op: "view" });
+  const task = (await show(ref)).children.find((c: any) => c.title === "Delegated plan task");
+  const settled = await show(`v2test#${task.short_id}`);
+  expect(settled.labels.some((l: any) => l.label === "needs-review")).toBe(true);
+  expect(settled.issue.metadata.teammate).toBe("lead-mate");
+  expect((await kata(["inbox", "--for", "v2-builder/lead-mate", "--json"])).requests.some((r: any) => r.ref.endsWith(task.short_id))).toBe(true);
+  expect((await app.call({ op: "done", task: "Delegated plan task", message, evidence })).isError).toBeUndefined();
+  expect((await app.call({ op: "done", task: "Lead step", message, evidence })).isError).toBeUndefined();
+  await app.call({ op: "view" });
+  expect((await show(ref)).issue.status).toBe("closed");
+});
+
+test("an assigned delegate's own todo close records the delegate's session, not the lead's", async () => {
+  const config = path.join(env.KATA_HOME, "config.toml");
+  writeFileSync(config, "[close.transcript]\nenabled = true\n");
+  try {
+    const lead = host({ sid: "transcript-lead", transcript: true });
+    await lead.event("session_start");
+    const ref = await lead.init(["Delegated transcript task", "Lead transcript step"]);
+    const sessionFile = `${scratch}/delegate-transcript.jsonl`;
+    writeFileSync(sessionFile, '{"type":"session","version":3,"id":"transcript-delegate"}\n');
+    lead.emit("task:subagent:lifecycle", { id: "Transcript.Delegate", status: "started", sessionFile, description: "Delegated transcript task" });
+    await lead.call({ op: "view" });
+    const assigned = (await show(ref)).children.find((c: any) => c.metadata?.["omp.subagent_id"] === "Transcript.Delegate");
+    const worker = host({ sessionFile, agent: { kind: "sub", id: "Transcript.Delegate", parentId: lead.ctx.agent.id }, transcript: true });
+    await worker.event("session_start");
+    expect((await worker.call({ op: "init", items: ["Delegate transcript step"] })).isError).toBeUndefined();
+    const done = await worker.call({ op: "done", task: "Delegate transcript step", message, evidence });
+    expect(done.isError, done.content?.[0]?.text).toBeUndefined();
+    const step = (await show(`v2test#${assigned.short_id}`)).children.find((c: any) => c.title === "Delegate transcript step");
+    expect(step.status).toBe("closed");
+    const closed: any[] = [];
+    for (let after = 0;;) {
+      const page = await kata(["events", "--after", String(after), "--limit", "500", "--json"]);
+      closed.push(...page.events.filter((e: any) => e.type === "issue.closed" && e.issue_short_id === step.short_id));
+      if (page.events.length < 500) break;
+      after = page.next_after_id;
+    }
+    expect(closed.map((e: any) => e.payload?.transcript?.session_id)).toEqual(["transcript-delegate"]);
+  } finally { writeFileSync(config, ""); }
 });
 
 test("delegate teammates differ across sessions that reuse an agent name", async () => {
@@ -931,6 +1060,7 @@ test("after a hand-back, a bare done closes the lead's own active task", async (
   app.emit("task:subagent:lifecycle", { id: "bare-done", status: "started", sessionFile, parentToolCallId: "bare-done", index: 0 });
   await app.call({ op: "view" });
   expect((await app.call({ op: "start", task: "Implement widget" })).isError).toBeUndefined();
+  await ran(app, "bare-done", sessionFile);
   app.emit("task:subagent:lifecycle", { id: "bare-done", status: "completed", sessionFile });
   await app.call({ op: "view" });
   expect((await app.call({ op: "done", message, evidence })).isError).toBeUndefined();
@@ -945,6 +1075,41 @@ test("a task call that never spawns releases its plan task", async () => {
   expect(await app.event("tool_call", { toolName: "task", toolCallId: "denied", input })).toBeUndefined();
   await app.event("tool_result", { toolName: "task", toolCallId: "denied", isError: true, input });
   expect(await app.event("tool_call", { toolName: "task", toolCallId: "retry", input })).toBeUndefined();
+});
+
+// The lead's plan task a task call named, bound to a delegate whose start is reported after the call returned.
+async function lateStart(app: ReturnType<typeof host>, ref: string, id: string) {
+  app.emit("task:subagent:lifecycle", { id, status: "started", sessionFile: `${scratch}/${id}.jsonl`, parentToolCallId: id, index: 0 });
+  await app.call({ op: "view" });
+  return (await show(ref)).children.find((c: any) => c.title === "Write sprocket tests").metadata["omp.subagent_id"];
+}
+
+test("a synchronous task call that settled without a start leaves no assignment for a later start", async () => {
+  const app = host(); await app.event("session_start"); const ref = await app.init(["Write sprocket tests"]);
+  const input = { task: 'Complete "Write sprocket tests"' };
+  await app.event("tool_call", { toolName: "task", toolCallId: "sync-gone", input });
+  await app.event("tool_result", { toolName: "task", toolCallId: "sync-gone", isError: false, input, details: { results: [] } });
+  expect(await lateStart(app, ref, "sync-gone")).toBeUndefined();
+});
+
+test("a background task call keeps its assignment for a late start until its jobs stop running", async () => {
+  let running: any[] = [];
+  const app = host({ snapshot: () => ({ running, recent: [] }) }); await app.event("session_start"); const ref = await app.init(["Write sprocket tests", "Write sprocket docs"]);
+  const input = { task: 'Complete "Write sprocket tests"' };
+  const details = { async: { state: "running", jobId: "job-1", type: "task" }, progress: [{ id: "late-1" }] };
+  running = [{ id: "job-1", agentId: "late-1", type: "task", status: "running" }];
+  await app.event("tool_call", { toolName: "task", toolCallId: "late-1", input });
+  await app.event("tool_result", { toolName: "task", toolCallId: "late-1", isError: false, input, details });
+  expect(await lateStart(app, ref, "late-1")).toBe("late-1");
+
+  await app.event("tool_call", { toolName: "task", toolCallId: "late-2", input: { task: 'Complete "Write sprocket docs"' } });
+  running = [{ id: "job-2", agentId: "late-2", type: "task", status: "running" }];
+  await app.event("tool_result", { toolName: "task", toolCallId: "late-2", isError: false, input, details: { async: { jobId: "job-2" }, progress: [{ id: "late-2" }] } });
+  running = [];
+  await app.event("tool_call", { toolName: "read", input: { path: "README.md" } }); // any event reads the snapshot
+  app.emit("task:subagent:lifecycle", { id: "late-2", status: "started", sessionFile: `${scratch}/late-2.jsonl`, parentToolCallId: "late-2", index: 0 });
+  await app.call({ op: "view" });
+  expect((await show(ref)).children.find((c: any) => c.title === "Write sprocket docs").metadata["omp.subagent_id"]).toBeUndefined();
 });
 
 // Hosted reads routinely take longer than the old one-second process deadline.
@@ -1025,7 +1190,7 @@ test("tracked worker todo uses its assigned issue and teammate from an unbound w
   lead.emit("task:subagent:lifecycle", { id: "worker-todo", status: "started", sessionFile, description: "Implement worker task" });
   await lead.call({ op: "view" });
   const assigned = (await show(parent)).children.find((c: any) => c.metadata?.["omp.subagent_id"] === "worker-todo");
-  // The inherited coordinator reference must never become the worker's plan.
+  // The lead's inherited reference must never become the delegate's plan.
   process.env.KATA_REF = parent;
   const worker = host({ cwd: outside, sessionFile, agent: { kind: "sub", id: "worker-todo", parentId: lead.ctx.agent.id } });
   const result = await worker.call({ op: "init", items: ["Verify assigned worker"] });
@@ -1118,7 +1283,7 @@ for (const error of ["project vault not found", "no project access: permission d
   expect(result.content[0].text).not.toContain("Session-local");
 });
 
-test("bound worker fetches the contract with its exact hook arguments", async () => {
+test("an assigned delegate fetches the contract with its exact hook arguments", async () => {
   const lead = host();
   await lead.init(["Lead contract task"]);
   const sessionFile = `${scratch}/worker-contract.jsonl`;
@@ -1136,7 +1301,7 @@ test("bound worker fetches the contract with its exact hook arguments", async ()
   expect(prompt.systemPrompt.join("\n")).toContain(contract);
 });
 
-test("worker binding reports the preparation error and recovers after it clears", async () => {
+test("a failed assignment reports the preparation error and recovers after it clears", async () => {
   let unavailable = false;
   const lead = host({ before: (args: string[]) => unavailable && args[0] === "meta" && args[3] === "omp.subagent_id"
     ? { code: 1, stdout: "", stderr: "delegation service permission denied" } : undefined });
@@ -1707,6 +1872,22 @@ test("init needs no replace once every task of the plan is closed", async () => 
   expect((await show(ref)).children.find((c: any) => c.title === "Follow-up task").status).toBe("open");
 });
 
+test("init with a bare short id that resolves in the session project refuses to abandon that ticket's open children", async () => {
+  const other = path.join(scratch, `other-${++sequence}`); mkdirSync(other);
+  await kata(["init", "--project", "v2alpha", "--json"], other);
+  const alpha = (await kata(["create", "Alpha parent", "--force-new", "--json"], other)).issue.short_id;
+  const beta = await issue("Beta parent");
+  await kata(["create", "Beta open child", "--parent", beta, "--meta", "todo.phase=Tasks", "--meta", "todo.status=pending", "--force-new", "--json"]);
+  // Short ids are random per project, so route the bare id to the session project's ticket.
+  const app = host({ before: (args: string[], opts: any) => args.includes(alpha) ? run(args.map(a => a === alpha ? `v2test#${beta}` : a), opts.cwd, opts.timeout) : undefined });
+  await app.call({ op: "init", ref: `v2alpha#${alpha}`, items: ["Alpha child"] });
+  const mark = app.calls.length;
+  const result = await app.call({ op: "init", ref: alpha, items: ["Alpha child"] });
+  expect(result.isError).toBe(true);
+  expect(kataWrites(app.calls.slice(mark))).toEqual([]);
+  expect((await show(beta)).children.map((c: any) => c.status)).toEqual(["open"]);
+});
+
 // omp's /tan runs a side conversation in a sub session named Tan-<snowflake>
 // that no task spawn created; it keeps the todo tool.
 test("an untracked /tan sub session uses omp's native todo and makes no Kata calls", async () => {
@@ -1722,14 +1903,14 @@ test("an untracked /tan sub session uses omp's native todo and makes no Kata cal
   expect(tan.calls).toEqual([]);
 });
 
-test("a /tan sub session on an omp without invokeTool keeps the binding error", async () => {
+test("a /tan sub session on an omp without invokeTool keeps the assignment error", async () => {
   const tan = host({ agent: { kind: "sub", id: "Tan-7000000000002", parentId: "main" } });
   const result = await tan.call({ op: "view" });
   expect(result.isError).toBe(true);
-  expect(result.content[0].text).toContain("worker binding unavailable");
+  expect(result.content[0].text).toContain("Kata assignment unavailable");
 });
 
-test("a delegate whose binding failed still gets the binding error, not the native list", async () => {
+test("a delegate whose assignment failed still gets the assignment error, not the native list", async () => {
   let refuse = false;
   const lead = host({ before: (args: string[]) => refuse && args[0] === "meta" && args[3] === "omp.subagent_id" ? { code: 1, stdout: "", stderr: "meta refused" } : undefined });
   await lead.init(["Delegated plan"]);
@@ -1741,7 +1922,7 @@ test("a delegate whose binding failed still gets the binding error, not the nati
   const result = await worker.call({ op: "view" }, { ...worker.ctx, invokeTool: async () => { native++; return { content: [], details: {} }; } });
   expect(native).toBe(0);
   expect(result.isError).toBe(true);
-  expect(result.content[0].text).toContain("worker binding");
+  expect(result.content[0].text).toContain("Kata assignment failed");
 });
 
 test("a delegate spawned under a Tan- name keeps its record and the Kata path", async () => {
@@ -1786,11 +1967,11 @@ test("a fork does not replay the source's pending close retries", async () => {
   expect(next.calls.some(a => a[0] === "close")).toBe(false);
 });
 
-test("a fork does not adopt the source's offline plan", async () => {
+test("a fork does not adopt the source's local plan", async () => {
   const source = host({ before: (a: string[]) => a[0] !== "init" && a[0] !== "projects" ? down() : undefined });
   await source.event("session_start");
   await source.call({ op: "init", items: ["Offline only"] });
-  expect(source.entries.some(e => e.data?.plan?.local)).toBe(true);
+  expect((await source.call({ op: "view" })).content[0].text).toContain("Offline only");
   const next = fork(source, "id"); await next.event("session_start");
   expect((await next.call({ op: "view" })).content[0].text).not.toContain("Offline only");
 });

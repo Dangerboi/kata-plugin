@@ -5,7 +5,7 @@ import path from "node:path";
 import { assertIsolated } from "./isolation";
 import { adoptIsolatedKata, isolatedKata } from "./kata-fixture";
 import { daemonUnavailable, missingExecutable } from "./kata-errors";
-import ompKata from "../kata";
+import { ompHost } from "./omp-host";
 assertIsolated();
 const binary = process.env.KATA_TEST_EXECUTABLE!;
 if (!binary || !path.isAbsolute(binary)) throw new Error("Set KATA_TEST_EXECUTABLE to the absolute Kata binary.");
@@ -33,26 +33,7 @@ const evidence = ["test:bun test takeover"];
 const message = "Implemented this takeover fixture and verified it with the isolated suite.";
 function host(options: any = {}) {
   const sid = `takeover-${++sequence}`;
-  let tool: any;
-  const handlers = new Map<string, any>();
-  const entries: any[] = [], calls: string[][] = [], notices: any[] = [], widgets: any[] = [];
-  const schema: any = new Proxy(() => schema, { get: () => schema });
-  const ctx: any = {
-    cwd: options.cwd, agent: { kind: "main", id: `main-${sid}` },
-    sessionManager: { getSessionId: () => sid, getSessionFile: () => `${scratch}/${sid}.jsonl`, getBranch: () => entries },
-    getAsyncJobSnapshot: () => ({ running: [], recent: [] }),
-    ui: { notify: (...args: any[]) => notices.push(args), setWidget: (...args: any[]) => widgets.push(args) },
-  };
-  ompKata({ zod: schema, registerTool: (value: any) => tool = value, appendEntry: (customType: string, data: any) => entries.push({ type: "custom", customType, data }),
-    on: (name: string, callback: any) => handlers.set(name, callback), events: { on: () => {} },
-    async exec(_file: string, args: string[], opts: any) {
-      calls.push(args);
-      return await options.before?.(args, opts) ?? await run(args, opts.cwd, opts.timeout);
-    },
-  });
-  return { ctx, sid, entries, calls, notices, widgets, tool,
-    event: async (name: string, data: any = {}) => handlers.get(name)?.(data, ctx),
-    call: (params: any) => tool.execute("takeover", params, undefined, undefined, ctx) };
+  return ompHost({ run: (args, opts) => run(args, opts.cwd, opts.timeout), cwd: options.cwd, sid, sessionFile: `${scratch}/${sid}.jsonl`, before: options.before, callId: "takeover" });
 }
 beforeAll(async () => { const out = await run(["projects", "create", "takeover-home"]); if (out.code) throw new Error(out.stderr); });
 let restore: (() => void) | undefined;
@@ -140,7 +121,7 @@ test("todo results leave omp's native todo tracker nothing to track", async () =
   }
 });
 
-test("an unreachable Kata keeps a visible session-local plan and replays it when Kata returns", async () => {
+test("an unreachable Kata keeps a visible local plan and replays it when Kata returns", async () => {
   const dir = repo("outagerepo");
   let down = true;
   const app = host({ cwd: dir, before: () => down ? daemonUnavailable() : undefined });
@@ -184,7 +165,7 @@ test("a replay that fails partway keeps the local plan and finishes on the next 
   expect((await app.call({ op: "view" })).content[0].text).not.toContain("Session-local");
 });
 
-test("a resumed session replays an offline plan even after a partly failed replay", async () => {
+test("a resumed session replays a local plan even after a partly failed replay", async () => {
   let down = true, flaky = false;
   const dir = repo("resumereplay");
   const before = (a: string[]) => down ? daemonUnavailable()

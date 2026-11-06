@@ -1,8 +1,11 @@
 // Smoke-only omp extension: registers a scripted model provider. Each model call
 // answers with the next scripted turn of the agent it belongs to. The turn index
 // is the number of assistant messages already in the context, so the provider
-// keeps no state of its own.
+// keeps no state of its own. It also records each agent's system prompt as the
+// plugin left it and each finished tool call, from the thread the agent runs on,
+// in live runs too.
 import { appendFileSync } from "node:fs";
+import { isMainThread } from "node:worker_threads";
 import { AssistantMessageEventStream } from "@oh-my-pi/pi-ai";
 import { SCENARIOS, type Block, type TurnContext } from "./smoke-omp-scenarios";
 
@@ -15,6 +18,13 @@ const textOf = (message: any): string => typeof message.content === "string" ? m
 export default function (pi: any) {
 	const scenario = SCENARIOS.find(s => s.name === process.env.KATA_SMOKE_SCENARIO);
 	if (!scenario) throw new Error(`Unknown KATA_SMOKE_SCENARIO ${process.env.KATA_SMOKE_SCENARIO}`);
+	// Loaded after the plugin, so this sees the system prompt with the plugin's sections.
+	pi.on("before_agent_start", (event: any, ctx: any) => {
+		if (process.env.KATA_SMOKE_PROMPTS) appendFileSync(process.env.KATA_SMOKE_PROMPTS, JSON.stringify({ agent: ctx?.agent?.id ?? "", system: [event.systemPrompt].flat().filter(Boolean).join("\n"), mainThread: isMainThread }) + "\n");
+	});
+	pi.on("tool_result", (event: any, ctx: any) => {
+		if (process.env.KATA_SMOKE_TOOLS) appendFileSync(process.env.KATA_SMOKE_TOOLS, JSON.stringify({ agent: ctx?.agent?.id ?? "", tool: event.toolName, op: event.toolName === "todo" ? event.input?.op : undefined, isError: !!event.isError, mainThread: isMainThread }) + "\n");
+	});
 	let counter = 0;
 	pi.registerProvider(PROVIDER, {
 		baseUrl: "https://scripted.invalid/",
