@@ -27,6 +27,7 @@
 
 Upgrade notes:
 
+- Tested with oh-my-pi 18.17.0. That release runs subagents on worker threads once nine or more run at once, and a delegate on a worker doesn't get its assignment yet. Set `task.workerThreads: 0` in omp's settings to keep them on the main thread (see Limits).
 - Kata 0.21.0's schema 43 is one-way. Older binaries can't open the upgraded store; rolling back needs the pre-upgrade backup plus its matching binary.
 - Re-run `kata agent-hook install pi` so the installed pi hook includes the child-session guard.
 - Session transcripts for agents other than Claude Code and Codex need daemon API 0.34.0. An older daemon warns and closes without the transcript.
