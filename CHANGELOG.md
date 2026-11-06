@@ -24,7 +24,7 @@
 - Session shutdown waits up to 10 s (was 250 ms) for the automatic parent to close, so a slow Kata no longer leaves it open when omp or pi exits.
 - A close that keeps failing for a reason other than Kata's sibling throttle is retried on up to three settlement passes, then dropped and labelled `needs-review` with a comment naming Kata's error code, instead of being retried for the rest of the session. Passes while Kata is unreachable don't count, so an outage never drops a close.
 - In a plan of only ticket items, a `todo` target shaped like an issue id that names no issue reports Kata's error instead of a Node `TypeError`.
-- Development: run the suite against the installed Kata with `KATA_TEST_EXECUTABLE="$(readlink -f "$(command -v kata)")" bun run test`. Error fixtures are re-captured from Kata 0.21.0. The default `smoke:omp` scenario turns transcripts on and checks that the plugin's close and a delegate's close record omp sessions. The `workers` scenario delegates ten plan tasks at once and checks that every delegate, those on worker threads included, sees its own task.
+- Development: run the suite against the installed Kata with `KATA_TEST_EXECUTABLE="$(readlink -f "$(command -v kata)")" bun run test`. Error fixtures are re-captured from Kata 0.21.0. The default `smoke:omp` scenario turns transcripts on and checks that the plugin's close and a delegate's close record omp sessions. The `workers` scenario delegates fourteen plan tasks at once and checks that every delegate, those on worker threads included, sees its own task; with `--live`, that worker delegates plan and close through their own `todo` and `kata close`, and are handed back after using a tool.
 
 Upgrade notes:
 

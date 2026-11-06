@@ -13,7 +13,7 @@ import { spawn, spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { SCENARIOS, type Check, type Issue, type Prompt, type Request, type Scenario, type Session, type Store } from "./smoke-omp-scenarios";
+import { SCENARIOS, type Check, type Issue, type Prompt, type Request, type ToolUse, type Scenario, type Session, type Store } from "./smoke-omp-scenarios";
 
 const root = path.resolve(import.meta.dir, "..");
 const argv = process.argv.slice(2);
@@ -46,10 +46,11 @@ function linesIn<T>(file: string): T[] {
 	return existsSync(file) ? readFileSync(file, "utf8").split("\n").filter(Boolean).map(line => JSON.parse(line)) : [];
 }
 
-function store(env: NodeJS.ProcessEnv, cwd: string, records: string, prompts: string): Store {
+function store(env: NodeJS.ProcessEnv, cwd: string, records: string, prompts: string, tools: string): Store {
 	return {
 		requests: () => linesIn<Request>(records),
 		prompts: () => linesIn<Prompt>(prompts),
+		tools: () => linesIn<ToolUse>(tools),
 		live,
 		async issues() {
 			const listed = JSON.parse(kata(env, cwd, ["list", "--status", "all", "--limit", "0", "--json"])).issues;
@@ -137,9 +138,9 @@ async function run(scenario: Scenario) {
 	console.log(`\n# scenario ${scenario.name}${live ? " (live)" : " (scripted)"}`);
 	const dir = path.join(tmp, scenario.name);
 	const work = path.join(dir, "repo"), agentDir = path.join(dir, "agent"), kataHome = path.join(dir, "kata");
-	const records = path.join(dir, "requests.jsonl"), prompts = path.join(dir, "prompts.jsonl");
+	const records = path.join(dir, "requests.jsonl"), prompts = path.join(dir, "prompts.jsonl"), tools = path.join(dir, "tools.jsonl");
 	mkdirSync(work, { recursive: true }); mkdirSync(agentDir); mkdirSync(kataHome);
-	const env: NodeJS.ProcessEnv = { ...base, ...scenario.env, KATA_HOME: kataHome, PI_CODING_AGENT_DIR: agentDir, PI_NO_TITLE: "1", KATA_SMOKE_SCENARIO: scenario.name, KATA_SMOKE_RECORD: records, KATA_SMOKE_PROMPTS: prompts };
+	const env: NodeJS.ProcessEnv = { ...base, ...scenario.env, KATA_HOME: kataHome, PI_CODING_AGENT_DIR: agentDir, PI_NO_TITLE: "1", KATA_SMOKE_SCENARIO: scenario.name, KATA_SMOKE_RECORD: records, KATA_SMOKE_PROMPTS: prompts, KATA_SMOKE_TOOLS: tools };
 	try {
 		if (scenario.config) writeFileSync(path.join(kataHome, "config.toml"), scenario.config);
 		spawnSync("git", ["init", "-q", "."], { cwd: work });
@@ -147,6 +148,7 @@ async function run(scenario: Scenario) {
 		const vars = scenario.setup?.(title => JSON.parse(kata(env, work, ["create", title, "--force-new", "--json"])).issue.short_id) ?? {};
 		env.KATA_SMOKE_VARS = JSON.stringify(vars);
 		if (live) copyUserConfig(agentDir);
+		if (scenario.ompConfig) writeFileSync(path.join(agentDir, "config.yml"), scenario.ompConfig);
 		// The smoke extension also records each agent's system prompt, so it loads after the plugin in live runs too.
 		const args = ["--no-extensions", "--no-skills", "--no-rules", "--no-context-files", "--no-lsp", "--no-title", ...(scenario.persist ? [] : ["--no-session"]),
 			"-e", path.join(root, "plugins/oh-my-pi/kata.ts"), "-e", path.join(root, "scripts/smoke-omp-provider.ts")];
@@ -165,7 +167,7 @@ async function run(scenario: Scenario) {
 		}
 		report("omp exited cleanly", code === 0, `exit ${code}\n${output.trim().split("\n").slice(-20).join("\n")}`);
 		if (scenario.check) {
-			try { checks.push(...await scenario.check(store(env, work, records, prompts), vars)); }
+			try { checks.push(...await scenario.check(store(env, work, records, prompts, tools), vars)); }
 			catch (error) { checks.push({ name: "store readable", ok: false, detail: String(error) }); }
 		}
 		for (const check of checks) report(check.name, check.ok, check.detail);
