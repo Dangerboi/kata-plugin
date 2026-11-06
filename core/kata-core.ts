@@ -61,6 +61,14 @@ export type Task = { ref: string; content: string; phase: string; status: Status
 export type Binding = { parent: string; workspace: string; sessionId?: string; auto?: boolean; label?: string };
 export type Plan = Partial<Binding> & { workspace: string; tasks: Task[]; local?: boolean; error?: string };
 export type Change = { message?: string; evidence?: string[]; reason?: string; many?: boolean; remove?: boolean };
+// An issue as `kata show --json` prints it, and each of its children; only the fields the plugin reads.
+// `qualified_id` is printed on children, not on the shown issue itself. Labels are strings (Kata 0.21); the object form is older output.
+export type KataIssue = {
+	uid: string; short_id: string; qualified_id?: string; project_id: number; title: string;
+	status: "open" | "closed"; closed_reason?: string; closed_at?: string; created_at: string;
+	revision: number; owner?: string; labels?: (string | { label: string })[]; metadata?: Record<string, unknown>;
+};
+export type KataShow = { issue: KataIssue; children?: KataIssue[] };
 export function sessionKey(file: string, cwd: string): string {
 	const absolute = path.resolve(cwd, file);
 	try { return realpathSync(absolute); }
@@ -350,7 +358,7 @@ export function ticketAutocomplete(current: TicketAutocompleteProvider, source: 
 
 export function createKataCore(host: CoreHost, options: CoreOptions) {
 	const namespace = options.namespace;
-	const heldByDelegate = (metadata: any) => heldBy(namespace, metadata);
+	const heldByDelegate = (metadata: Record<string, unknown> | undefined) => heldBy(namespace, metadata);
 	const STATE_ENTRY = `io.kata.${namespace}.parent`;
 	const SNAPSHOT_ENTRY = `io.kata.${namespace}.state`;
 	const WIDGET = `${namespace}-kata`;
@@ -476,8 +484,8 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 	// Starting unowned work requires a successful claim. Already-owned tasks
 	// require both the actor and teammate, since delegates share an actor.
 	// "check" validates assignment without taking ownership.
-	async function owned(ref: string, cwd: string, mayClaim: boolean | "check" = false, allowClosed = false, revision?: number, who?: Who): Promise<any> {
-		let issue = JSON.parse(await kata(["show", ref, "--json"], cwd)).issue;
+	async function owned(ref: string, cwd: string, mayClaim: boolean | "check" = false, allowClosed = false, revision?: number, who?: Who): Promise<KataIssue> {
+		let issue: KataIssue = JSON.parse(await kata(["show", ref, "--json"], cwd)).issue;
 		if (revision !== undefined && issue.revision !== revision) throw new Error(`Kata issue ${ref} changed since the task was selected; no work metadata was written.`);
 		if (!who?.delegate && main(currentCtx) && heldByDelegate(issue.metadata)) throw new Error(`Kata issue ${ref} belongs to a delegate; no work metadata was written.`);
 		const currentActor = await actor(cwd, ref);
@@ -508,7 +516,7 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 
 	// Keep the validated decision through each conditional write. Any intervening
 	// assignment or metadata change invalidates its revision, including after close.
-	async function work(ref: string, key: string, value: string | boolean | undefined, cwd: string, expected: any): Promise<any> {
+	async function work(ref: string, key: string, value: string | boolean | undefined, cwd: string, expected: KataIssue): Promise<KataIssue> {
 		const meta = expected.metadata ?? {};
 		const exists = Object.hasOwn(meta, key);
 		if ((!exists && value === undefined) || meta[key] === value) return expected;
@@ -525,23 +533,23 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 
 	// -------------------------------------------------------------- plan state
 
-	async function showParent(parent: string, cwd: string): Promise<any> {
-		const shown = JSON.parse(await kata(["show", parent, "--json"], cwd));
-		const children = (shown.children ?? []) as any[];
+	async function showParent(parent: string, cwd: string): Promise<KataShow> {
+		const shown: KataShow = JSON.parse(await kata(["show", parent, "--json"], cwd));
+		const children = shown.children ?? [];
 		if (!shown.issue || !Array.isArray(children) || children.some(c => !c || typeof c.title !== "string" || typeof c.short_id !== "string")) {
 			throw new Error("kata show returned an invalid issue or children response");
 		}
 		return shown;
 	}
 
-	async function childrenOf(parent: string, cwd: string): Promise<any[]> {
+	async function childrenOf(parent: string, cwd: string): Promise<KataIssue[]> {
 		return (await showParent(parent, cwd)).children ?? [];
 	}
 
 	// `kata move` keeps old refs resolving but the issue and its open children now
 	// live in another project. Follow the parent: the saved binding, child
 	// creation, delegate context and the pi marker all derive the project from it.
-	async function rehome(shown: any, ref: string, cwd: string): Promise<void> {
+	async function rehome(shown: KataShow, ref: string, cwd: string): Promise<void> {
 		const old = ref;
 		let current: string;
 		try { current = `${await projectName(shown.issue.project_id, cwd)}#${shown.issue.short_id}`; }
@@ -553,25 +561,26 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 		host.appendEntry(STATE_ENTRY, { parent: current, workspace: plan.workspace, sessionId: plan.sessionId, auto: plan.auto, label: plan.label });
 	}
 
-	function tasksOf(children: any[], parent: string): Task[] {
+	function tasksOf(children: KataIssue[], parent: string): Task[] {
 		return children
 			.filter(c => typeof c?.metadata?.["todo.phase"] === "string" && c.metadata["todo.removed"] !== true)
 			.sort((a, b) => Date.parse(a.created_at) - Date.parse(b.created_at))
 			.map(c => {
-				const meta = c.metadata;
+				const meta = c.metadata!;
+				const todo = meta["todo.status"];
 				let status: Status;
-				if (c.status === "closed") status = c.closed_reason === "wontfix" || meta["todo.status"] === "abandoned" ? "abandoned" : "completed";
-				else status = ["in_progress", "blocked"].includes(meta["todo.status"]) ? meta["todo.status"] : "pending";
+				if (c.status === "closed") status = c.closed_reason === "wontfix" || todo === "abandoned" ? "abandoned" : "completed";
+				else status = todo === "in_progress" || todo === "blocked" ? todo : "pending";
 				return {
 					ref: qualifiedRef(c, parent),
 					content: c.title,
-					phase: meta["todo.phase"],
+					phase: meta["todo.phase"] as string,
 					revision: c.revision,
 					at: Date.parse(c.created_at),
 					delegated: heldByDelegate(meta) && (meta.teammate || "") !== (sessionTeammate ?? process.env.KATA_TEAMMATE ?? ""),
-					review: (c.labels ?? []).some((l: any) => (typeof l === "string" ? l : l?.label) === "needs-review"),
+					review: (c.labels ?? []).some(l => (typeof l === "string" ? l : l?.label) === "needs-review"),
 					status,
-					blocker: status === "blocked" ? meta["work.attention_msg"] : undefined,
+					blocker: status === "blocked" ? meta["work.attention_msg"] as string | undefined : undefined,
 				};
 			});
 	}
@@ -582,21 +591,21 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 		const open = named.filter(t => OPEN.has(t.status));
 		for (const ticket of new Set(open.map(t => t.ticket!))) {
 			try {
-				const shown = JSON.parse(await kata(["show", ticket, "--json"], cwd)).issue;
+				const shown: KataIssue = JSON.parse(await kata(["show", ticket, "--json"], cwd)).issue;
 				if (shown.status !== "closed") continue;
 				for (const task of open) if (task.ticket === ticket) { task.status = shown.closed_reason === "wontfix" ? "abandoned" : "completed"; task.blocker = undefined; }
 			} catch (error) { debug(error); }
 		}
 	}
 
-	async function load(cwd: string): Promise<any[]> {
+	async function load(cwd: string): Promise<KataIssue[]> {
 		if (plan.local) { delete plan.error; plan.tasks = withNamed(plan.tasks); return []; }
 		if (!plan.parent) { if (named.length) { delete plan.error; await followTickets(cwd); } plan.tasks = withNamed([]); return []; }
 		try {
 			const ref = plan.parent;
 			const shown = await showParent(ref, cwd);
 			await rehome(shown, ref, cwd);
-			const children = (shown.children ?? []) as any[];
+			const children = shown.children ?? [];
 			await followTickets(cwd);
 			plan.tasks = withNamed(tasksOf(children, plan.parent));
 			delete plan.error;
@@ -722,7 +731,7 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 
 	// The issue's current qualified ref: its project is the one it lives in now,
 	// not the one the given ref names.
-	async function qualify(issue: any, cwd: string, ref: string): Promise<string> {
+	async function qualify(issue: KataIssue, cwd: string, ref: string): Promise<string> {
 		return `${await projectName(issue.project_id, cwd, ref)}#${issue.short_id}`;
 	}
 	async function pin(ref: string, cwd: string): Promise<string> {
@@ -806,7 +815,7 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 		if (choice.parent) {
 			const workspace = choice.workspace;
 			const qualified = await pin(choice.parent, workspace);
-			const issue = JSON.parse(await kata(["show", qualified, "--json"], workspace)).issue;
+			const issue: KataIssue = JSON.parse(await kata(["show", qualified, "--json"], workspace)).issue;
 			const marker = issue.metadata?.[`${namespace}.auto_parent`];
 			const owner = saved?.auto && typeof saved.sessionId === "string" && saved.sessionId !== id ? saved.sessionId : id;
 			const auto = !isExplicitParent(choice) && saved?.auto !== false && (marker === true || (saved?.auto === true && marker === undefined)) && issue.metadata?.[`${namespace}.session_id`] === owner;
@@ -833,7 +842,7 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 		if (plan.auto && plan.parent && plan.parent !== parent) {
 			// An automatic parent with no children only marks the session; retire it
 			// rather than leave an empty child that can never auto-close.
-			const shown = JSON.parse(await kata(["show", plan.parent, "--json"], plan.workspace));
+			const shown: KataShow = JSON.parse(await kata(["show", plan.parent, "--json"], plan.workspace));
 			if (shown.issue.status === "open" && !shown.children?.length) {
 				const decision = await owned(plan.parent, plan.workspace, false, false, shown.issue.revision);
 				await kata(["close", plan.parent, "--if-match", String(decision.revision), "--superseded-by", parent, "--message", `This session adopted ${parent} as its plan parent.`], plan.workspace);
@@ -883,7 +892,7 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 	}
 
 	// The attention and status writes for a task that starts, returns to pending, or blocks.
-	async function mark(ref: string, task: Task, from: Status, to: "in_progress" | "pending" | "blocked", change: Change, cwd: string, decision: any): Promise<any> {
+	async function mark(ref: string, task: Task, from: Status, to: "in_progress" | "pending" | "blocked", change: Change, cwd: string, decision: KataIssue): Promise<KataIssue> {
 		switch (to) {
 			case "in_progress":
 				decision = await work(ref, "work.attention", "ok", cwd, decision);
@@ -975,7 +984,7 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 	async function settleTicket(task: Task, cwd: string): Promise<void> {
 		const ticket = task.ticket!;
 		if (named.some(other => other !== task && other.ticket === ticket && WORKING.has(other.status))) return;
-		let decision: any;
+		let decision: KataIssue;
 		try { decision = await owned(ticket, cwd, "check"); }
 		catch (error) { debug(error); return; }
 		decision = await work(ticket, "work.attention", "ok", cwd, decision);
@@ -993,7 +1002,7 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 			await note(task, "drop", `Dropped from the todo plan: "${task.content}". Reason: ${change.message || change.reason || "no longer needed"}. The ticket stays open.`, cwd);
 			if (WORKING.has(from)) await settleTicket(task, cwd);
 		} else {
-			const shown = JSON.parse(await kata(["show", ticket, "--json"], cwd)).issue;
+			const shown: KataIssue = JSON.parse(await kata(["show", ticket, "--json"], cwd)).issue;
 			if (shown.status !== "open") {
 				if (to !== "pending") throw new Error(`Kata ticket ${ticket} ("${task.content}") is already closed; the plugin never reopens a ticket. Reopen it yourself if the work continues.`);
 			} else if (to !== "completed") {
@@ -1023,7 +1032,7 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 			if (!ref || !isNew(item)) continue;
 			let ticket = checked.get(ref);
 			if (!ticket) {
-				let shown: any;
+				let shown: KataIssue;
 				try { shown = JSON.parse(await kata(["show", ref, "--json"], cwd)).issue; }
 				catch (error) { throw new Error(`Todo item "${item.content}" names ${ref}, which Kata cannot resolve: ${(error as Error).message}. Nothing was created.`); }
 				if (shown.status !== "open") throw new Error(`Todo item "${item.content}" names ${ref}, which is already closed; the plugin never reopens a ticket. Nothing was created.`);
@@ -1041,13 +1050,13 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 	// refuses a ticket with open children; it stays open and says why once. When
 	// every open child is a task of this plan the close is held (see settlement.ts)
 	// as they close; an umbrella with children outside the plan stays open.
-	async function closeTicket(task: Task, decision: any, change: Change, cwd: string) {
+	async function closeTicket(task: Task, decision: KataIssue, change: Change, cwd: string) {
 		const ticket = task.ticket!;
 		const request: PendingClose = { key: noteKey(task, "close"), message: `${change.message} (item: ${task.content}; ${ticket})`, evidence: change.evidence!, cwd };
 		try { await closeWith(ticket, decision, request); }
 		catch (error) {
 			if (!isKataCode(error, "parent_has_open_children")) throw error;
-			const open = openChildren(JSON.parse(await kata(["show", ticket, "--json"], cwd)), ticket);
+			const open = openChildren(JSON.parse(await kata(["show", ticket, "--json"], cwd)) as KataShow, ticket);
 			const many = open.length !== 1;
 			const ours = open.every(ref => plan.tasks.some(t => (t.ticket ?? t.ref) === ref));
 			if (ours) settlement.holdTicketClose(ticket, { ...request, key: noteKey(task, "close-after-children") }, cwd);
@@ -1058,7 +1067,7 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 		}
 	}
 
-	async function closeWith(ticket: string, decision: any, request: PendingClose) {
+	async function closeWith(ticket: string, decision: KataIssue, request: PendingClose) {
 		const args = ["close", ticket, "--done", "--if-match", String(decision.revision), "--idempotency-key", request.key, "--message", request.message];
 		for (const e of request.evidence) args.push("--evidence", e);
 		await kata(args, request.cwd);

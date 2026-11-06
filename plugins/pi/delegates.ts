@@ -1,4 +1,4 @@
-import { OPEN, qualifiedRef, qualifiedRefs, type Binding, type Plan, type Task } from "./kata-core";
+import { OPEN, qualifiedRef, qualifiedRefs, type Binding, type KataIssue, type KataShow, type Plan, type Task } from "./kata-core";
 
 // The delegate lifecycle, shared by the omp lead and the pi child (see GLOSSARY.md: Delegate,
 // Assignment, Untracked delegate, Hand back). Adapters translate host events into DelegateEvents;
@@ -99,7 +99,7 @@ export function matchDelegation(tasks: Task[], text: string, { unavailable = new
 // Metadata keys that mark an issue as held by a delegate. pi also honours omp's key,
 // since both adapters can run side by side; omp reads no pi names.
 const delegateKeys = (namespace: string): readonly string[] => namespace === "pi" ? ["pi.subagent_id", "omp.subagent_id"] : [`${namespace}.subagent_id`];
-export const heldByDelegate = (namespace: string, metadata: any): boolean => delegateKeys(namespace).some(key => !!metadata?.[key]);
+export const heldByDelegate = (namespace: string, metadata: Record<string, unknown> | undefined): boolean => delegateKeys(namespace).some(key => !!metadata?.[key]);
 
 export type DelegateOutcome = "completed" | "failed" | "aborted" | "ended";
 // started: no decision yet (waiting for a plan that can bind it). assigned: holds its issue. failed: an assignment write
@@ -169,8 +169,8 @@ export interface DelegatesEnv {
 	store: DelegateStore;
 	kata(args: string[], cwd: string): Promise<string>;
 	actor(cwd: string, ref?: string): Promise<string>;
-	owned(ref: string, cwd: string, mayClaim?: boolean | "check", allowClosed?: boolean, revision?: number, who?: Who): Promise<any>;
-	work(ref: string, key: string, value: string | boolean | undefined, cwd: string, expected: any): Promise<any>;
+	owned(ref: string, cwd: string, mayClaim?: boolean | "check", allowClosed?: boolean, revision?: number, who?: Who): Promise<KataIssue>;
+	work(ref: string, key: string, value: string | boolean | undefined, cwd: string, expected: KataIssue): Promise<KataIssue>;
 	serial<T>(fn: () => Promise<T>): Promise<T>;
 	plan(): Plan;
 	load(cwd: string): Promise<unknown>;
@@ -214,13 +214,16 @@ export function createDelegates(env: DelegatesEnv): Delegates {
 	async function source(scope: Scope, loadAlways: boolean): Promise<Source> {
 		if (scope.parent) {
 			const workspace = scope.workspace!;
-			const shown = JSON.parse(await env.kata(["show", scope.parent, "--json"], workspace));
+			const shown: KataShow = JSON.parse(await env.kata(["show", scope.parent, "--json"], workspace));
 			const actor = await env.actor(workspace, scope.parent);
 			const lead = scope.leadTeammate ?? "", mate = scope.teammate ?? "";
 			// Another delegate's issue, or one another writer owns, is never a candidate.
-			const foreign = (c: any) => heldByDelegate(ns, c.metadata) || (!!c.owner && (c.owner !== actor || ![lead, mate].includes(c.metadata?.teammate || "")));
-			const all: Task[] = (shown.children ?? []).filter((c: any) => c.status === "open").map((c: any) => ({ ref: qualifiedRef(c, scope.parent!), content: c.title, phase: c.metadata?.["todo.phase"] ?? "",
-				status: ["in_progress", "blocked"].includes(c.metadata?.["todo.status"]) ? c.metadata["todo.status"] : "pending", delegated: foreign(c) }));
+			const foreign = (c: KataIssue) => heldByDelegate(ns, c.metadata) || (!!c.owner && (c.owner !== actor || ![lead, mate].includes((c.metadata?.teammate as string | undefined) || "")));
+			const all: Task[] = (shown.children ?? []).filter(c => c.status === "open").map(c => {
+				const todo = c.metadata?.["todo.status"];
+				return { ref: qualifiedRef(c, scope.parent!), content: c.title, phase: (c.metadata?.["todo.phase"] as string | undefined) ?? "",
+					status: todo === "in_progress" || todo === "blocked" ? todo : "pending", delegated: foreign(c) };
+			});
 			return { all, parent: scope.parent, workspace, label: scope.label, auto: false, local: false, planned: true };
 		}
 		// Items that name a ticket are bindable without a plan parent.
@@ -268,7 +271,7 @@ export function createDelegates(env: DelegatesEnv): Delegates {
 	}
 
 	const ompKeys = ns === "omp" ? ["omp.parent_agent_id", "omp.status"] : [];
-	function capture(issue: any): Restore {
+	function capture(issue: KataIssue): Restore {
 		const keys = ["teammate", "todo.status", "work.attention", keySubagent, keySession, ...ompKeys];
 		return { claimed: !issue.owner, meta: Object.fromEntries(keys.map(key => [key, issue.metadata?.[key]])) };
 	}
@@ -297,7 +300,7 @@ export function createDelegates(env: DelegatesEnv): Delegates {
 			: { parent: src.parent!, workspace: src.workspace, sessionId: r.leadSessionId, auto: src.auto, label: src.label };
 		r.binding = binding;
 		const ref = r.planRef, cwd = binding.workspace;
-		let issue = JSON.parse(await env.kata(["show", ref, "--json"], cwd)).issue;
+		let issue: KataIssue = JSON.parse(await env.kata(["show", ref, "--json"], cwd)).issue;
 		r.restore ??= capture(issue);
 		// Retry an interrupted transfer only if it is already ours.
 		if (issue.metadata?.teammate !== r.teammate || issue.owner !== await env.actor(cwd)) {
@@ -324,7 +327,7 @@ export function createDelegates(env: DelegatesEnv): Delegates {
 
 	// A delegate that exited having run no tool did nothing: put the issue back as it was.
 	// `issue` is the current state: each step runs only while it is still undone, so a rollback that failed partway finishes on the next settle.
-	async function rollback(r: DelegateRecord, issue: any) {
+	async function rollback(r: DelegateRecord, issue: KataIssue) {
 		const { restore } = r, ref = r.ref!, cwd = r.binding!.workspace;
 		if (!restore) throw new Error(`Delegate ${r.id} has nothing to restore.`);
 		const set = (key: string) => restore.meta[key] === undefined ? ["meta", "unset", ref, key] : ["meta", "set", ref, key, String(restore.meta[key])];
@@ -342,7 +345,7 @@ export function createDelegates(env: DelegatesEnv): Delegates {
 	// the subagent id goes last, so a partial failure leaves it marked delegated rather than free and foreign.
 	async function handBack(r: DelegateRecord, ref: string, cwd: string) {
 		const lead = r.leadTeammate;
-		const issue = JSON.parse(await env.kata(["show", ref, "--json"], cwd)).issue;
+		const issue: KataIssue = JSON.parse(await env.kata(["show", ref, "--json"], cwd)).issue;
 		if (issue.status === "open") {
 			if (issue.metadata?.teammate === r.teammate) {
 				await env.kata(lead ? ["meta", "set", ref, "teammate", lead, "--if-match", String(issue.revision)] : ["meta", "unset", ref, "teammate", "--if-match", String(issue.revision)], cwd);
@@ -360,7 +363,7 @@ export function createDelegates(env: DelegatesEnv): Delegates {
 		const ref = refOf(r);
 		if (!ref || !r.binding) { r.state = "settled"; env.store.put(r); return; }
 		const cwd = r.binding.workspace;
-		const issue = JSON.parse(await env.kata(["show", ref, "--json"], cwd)).issue;
+		const issue: KataIssue = JSON.parse(await env.kata(["show", ref, "--json"], cwd)).issue;
 		if (issue.status === "closed") { r.state = "settled"; env.store.put(r); return; }
 		// A failed assignment the issue's holder refused (another delegate holds it) has nothing to hand back.
 		if (r.state === "failed" && heldByDelegate(ns, issue.metadata) && issue.metadata?.[keySubagent] !== r.id) { r.state = "settled"; env.store.put(r); return; }
