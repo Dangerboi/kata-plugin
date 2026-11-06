@@ -18,9 +18,15 @@ export type Issue = {
 };
 /** One model request as the scripted provider saw it. */
 export type Request = { agent: string; system: string; /** Text of every user-role message in the request. */ users: string[]; /** Role of every message in the request, in order. */ roles: string[] };
+/** One agent prompt: the system prompt the plugin left, and whether the agent ran on omp's main thread. */
+export type Prompt = { agent: string; system: string; mainThread: boolean };
 export type Store = {
 	/** Requests recorded by the scripted provider, oldest first. */
 	requests(): Request[];
+	/** Every agent prompt, oldest first (live runs too). */
+	prompts(): Prompt[];
+	/** A real model did the work (--live). */
+	live: boolean;
 	/** Every issue in the project except the ones filtered out by `parent`. */
 	issues(): Promise<Issue[]>;
 };
@@ -63,6 +69,9 @@ export type Scenario = {
 const MAIN = "[smoke:main]";
 const SUB = "[smoke:sub]";
 const SCOUT = "[smoke:scout]";
+const WORKER = "[smoke:worker]";
+// omp 18.17 runs a subagent on a worker thread once nine or more run at once (its docs say four).
+const PORTS = ["lexer", "parser", "printer", "checker", "linker", "loader", "emitter", "resolver", "formatter", "bundler"].map(part => `Port ${part} module`);
 const vars = (): Record<string, string> => JSON.parse(process.env.KATA_SMOKE_VARS ?? "{}");
 const lastRef = (ctx: TurnContext, pattern: RegExp) => ctx.texts.join("\n").match(pattern)?.[0];
 
@@ -360,6 +369,59 @@ export const SCENARIOS: Scenario[] = [{
 			{ name: "the scout created no Subagent issue", ok: !issues.some(i => i.title.startsWith("Subagent")), detail: issues.map(i => i.title).join(", ") },
 			{ name: "no issue carries needs-review", ok: labelled.length === 0, detail: labelled.map(i => i.ref).join(", ") },
 			{ name: "the lead got no inbox request", ok: requests.length === 0, detail: requests.join(", ") },
+			{ name: "session shutdown closed the automatic parent", ok: parent?.status === "closed", detail: parent?.status },
+		];
+	},
+}, {
+	name: "workers",
+	config: "[close.transcript]\nenabled = true\n",
+	prompt: `${MAIN} Plan the ports, delegate all of them at once, then stop.`,
+	livePrompt: () => `Use the todo tool to plan these items: ${PORTS.map(p => `'${p}'`).join(", ")}. Then delegate all of them in one task call with one task per item, named Port1 to Port${PORTS.length} in that order, each naming its item and telling the subagent to close its Kata issue with evidence ${evidence} and a 40+ character message. Change no files. Stop when all of them are closed.`,
+	scripts: {
+		[MAIN]: [
+			[{ tool: "todo", args: { op: "init", list: [{ phase: "Ports", items: PORTS }], message: "Smoke worker-thread session" } }],
+			[{ tool: "task", args: { context: "Smoke port work: nothing to change, just close your Kata issue.", tasks: PORTS.map((port, i) => ({ name: `Port${i + 1}`, agent: "task", task: `${WORKER} ${port}`, solutionSpace: "one fix: nothing to change, just close the issue" })) } }],
+			["The ports are delegated."],
+			// omp wakes the main agent as background delegates report back.
+			...PORTS.map(() => ["A delegate has reported back."]),
+		],
+		[WORKER]: [
+			ctx => {
+				const ref = ctx.system.match(/Your Kata issue is ([\w#-]+)/)?.[1];
+				if (!ref) return ["No Kata binding in system prompt."];
+				return [{ tool: "bash", args: { command: `kata close ${ref} --done --message '${message}' --evidence '${evidence}'` } }];
+			},
+			["Port done."],
+		],
+	},
+	async check(store) {
+		const issues = await store.issues();
+		const children = issues.filter(i => i.metadata["todo.phase"]);
+		const parent = issues.find(i => i.metadata["omp.session_id"] && !i.metadata["todo.phase"]);
+		// Each delegate's first prompt, by the name the task call gave it.
+		const first = new Map<string, Prompt>();
+		for (const prompt of store.prompts()) if (/^Port\d+$/.test(prompt.agent) && !first.has(prompt.agent)) first.set(prompt.agent, prompt);
+		const wrong = PORTS.map((port, i) => {
+			const ref = first.get(`Port${i + 1}`)?.system.match(/Your Kata issue is [\w-]+#([\w]+)/)?.[1];
+			const task = children.find(c => c.title === port);
+			return !task || ref !== task.ref ? `Port${i + 1}: ${ref ?? "none"} for ${task?.ref ?? "no task"}` : undefined;
+		}).filter(Boolean);
+		const labelled = issues.filter(i => i.events.some(e => /label/.test(e.type) && JSON.stringify(e.payload).includes("needs-review")));
+		const checks: Check[] = [
+			{ name: "omp ran at least one delegate on a worker thread", ok: [...first.values()].some(p => !p.mainThread), detail: `${[...first.values()].filter(p => !p.mainThread).length} of ${first.size} delegates off the main thread` },
+			{ name: "every delegate, on a worker or not, saw its own plan task in its system prompt", ok: first.size === PORTS.length && wrong.length === 0, detail: wrong.join(", ") || `${first.size} delegates prompted` },
+			{ name: "no stray issue, and none carries needs-review", ok: issues.length === PORTS.length + 1 && labelled.length === 0, detail: `${issues.length} issues; labelled ${labelled.map(i => i.ref).join(", ")}` },
+		];
+		// omp 18.17 fails every model call a worker-thread subagent makes through an extension's provider (the scripted
+		// one), so only a real model gets worker delegates past their first turn.
+		if (!store.live) return checks;
+		const open = children.filter(c => c.status !== "closed" || !(c.events.find(e => e.type === "issue.closed")?.payload?.evidence ?? []).some((e: unknown) => typeof e === "object" && e !== null && "command" in e && e.command === recorded.command));
+		// A delegate's bash close carries its own session only when the plugin found its assignment; without it, it inherits the lead's.
+		const sessions = children.map(c => c.events.find(e => e.type === "issue.closed")?.payload?.transcript?.session_id);
+		const lead = parent?.events.find(e => e.type === "issue.closed")?.payload?.transcript?.session_id;
+		return [...checks,
+			{ name: "every delegate closed its own task with evidence", ok: children.length === PORTS.length && open.length === 0, detail: open.map(c => `${c.title}:${c.status}`).join(", ") },
+			{ name: "every delegate's close records its own omp session, not the lead's", ok: sessions.every(Boolean) && new Set(sessions).size === PORTS.length && !sessions.includes(lead), detail: JSON.stringify({ lead, sessions }) },
 			{ name: "session shutdown closed the automatic parent", ok: parent?.status === "closed", detail: parent?.status },
 		];
 	},

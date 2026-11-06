@@ -17,6 +17,7 @@
 // The plan is session-local only while Kata is unreachable, then it replays.
 
 import { execFile, spawn } from "node:child_process";
+import { BroadcastChannel, isMainThread, threadId } from "node:worker_threads";
 import { closeSync, openSync, readSync } from "node:fs";
 import { createInterface } from "node:readline";
 import { createKataCore, DESCRIPTION, sessionKey, kataCommands as parseKataCommands, teammateFor, ticketAutocomplete, delegateCommand } from "./kata-core";
@@ -36,11 +37,67 @@ export const kataCommands = (command: string) => parseKataCommands(command, EXEC
 // background jobs stopped running for an async one (`jobs` holds their ids), or once every spawn has started.
 type Assignment = { labels: string[]; texts: string[]; reserved?: (Reservation | undefined)[]; started: Set<number>; jobs?: Set<string> };
 
-// OMP rebinds extension factories in the same module graph, so every instance shares the delegate records and the lead
-// Delegates that own them. A delegate's session file is the correlation key: agent names alone can collide across simultaneous sessions.
+// OMP rebinds extension factories in the same module graph, so every instance on a thread shares the delegate records and
+// the lead Delegates that own them. A delegate's session file is the correlation key: agent names alone can collide across simultaneous sessions.
 const recordsBySession = new Map<string, DelegateRecord>();
 const leads = new Map<string, DelegateEvents>();
 
+// omp runs a subagent on a worker thread once enough run at once, and loads a separate copy of this module there, so
+// the records and lead Delegates above stay on the main thread. A worker's copy asks the main thread's copy over this
+// channel (omp's event bus does not cross threads) and keeps the answer in its own map, which its store then reads.
+type DelegateWire =
+	| { kind: "nextUse"; req: string; key: string; id: string }
+	| { kind: "record"; req: string; record?: DelegateRecord }
+	| { kind: "ranTool"; key: string; id: string };
+const delegateChannel = new BroadcastChannel("kata-plugin:omp-delegates:1");
+// Never keep omp alive for the channel.
+delegateChannel.unref();
+// How long the main thread waits for a lead's started event that has not arrived yet, and a worker for an answer.
+const RECORD_WAIT_MS = 3000;
+const ANSWER_WAIT_MS = 30_000;
+const arrivals = new Map<string, (() => void)[]>();
+function putRecord(record: DelegateRecord) {
+	recordsBySession.set(record.sessionId, record);
+	for (const arrived of arrivals.get(record.sessionId) ?? []) arrived();
+	arrivals.delete(record.sessionId);
+}
+function recordArrival(key: string): Promise<void> {
+	return new Promise(resolve => {
+		const timer = setTimeout(() => { arrivals.delete(key); resolve(); }, RECORD_WAIT_MS);
+		timer.unref?.();
+		arrivals.set(key, [...(arrivals.get(key) ?? []), () => { clearTimeout(timer); resolve(); }]);
+	});
+}
+async function answerWorker(message: DelegateWire) {
+	if (message.kind === "record") return;
+	if (!recordsBySession.has(message.key)) await recordArrival(message.key);
+	const record = recordsBySession.get(message.key);
+	if (record?.id !== message.id) return message.kind === "nextUse" ? delegateChannel.postMessage({ kind: "record", req: message.req } satisfies DelegateWire) : undefined;
+	await leads.get(record.leadSessionId)?.apply({ type: message.kind, id: message.id });
+	if (message.kind === "nextUse") delegateChannel.postMessage({ kind: "record", req: message.req, record: recordsBySession.get(message.key) } satisfies DelegateWire);
+}
+let asked = 0;
+const answers = new Map<string, (record: DelegateRecord | undefined) => void>();
+// A worker's copy: the lead's queue runs the delegate's next use, and the record it answers with replaces this thread's copy.
+function askMain(key: string, id: string): Promise<void> {
+	const req = `${threadId}:${++asked}`;
+	return new Promise(resolve => {
+		const timer = setTimeout(() => { answers.delete(req); resolve(); }, ANSWER_WAIT_MS);
+		timer.unref?.();
+		answers.set(req, record => {
+			clearTimeout(timer);
+			if (record) recordsBySession.set(key, record); else recordsBySession.delete(key);
+			resolve();
+		});
+		delegateChannel.postMessage({ kind: "nextUse", req, key, id } satisfies DelegateWire);
+	});
+}
+delegateChannel.onmessage = (event: { data: unknown }) => {
+	// Only this module's copies post on this channel.
+	const message = event.data as DelegateWire;
+	if (isMainThread) void answerWorker(message).catch(() => { /* the worker's wait ends on its own */ });
+	else if (message.kind === "record") { answers.get(message.req)?.(message.record); answers.delete(message.req); }
+};
 
 // Runs Kata directly with the transcript identity in its environment. Like pi.exec, a non-zero exit or
 // any spawn failure other than a missing executable is a result, a timeout or abort reports killed,
@@ -85,7 +142,7 @@ export default function ompKata(pi: any) {
 	const store: DelegateStore = {
 		records: () => [...recordsBySession.values()].filter(record => record.leadSessionId === leadSession()),
 		get: id => store.records().find(record => record.id === id),
-		put: record => { recordsBySession.set(record.sessionId, record); },
+		put: putRecord,
 		of: ctx => {
 			const file = ctx.sessionManager?.getSessionFile?.();
 			const record = file ? recordsBySession.get(sessionKey(file, ctx.cwd)) : undefined;
@@ -155,8 +212,8 @@ export default function ompKata(pi: any) {
 		}),
 		async execute(_id: string, params: any, signal: AbortSignal | undefined, onUpdate: any, ctx: any) {
 			await enter(ctx);
+			if (!main(ctx)) await nextUseOf(ctx);
 			const record = !main(ctx) ? store.of(ctx) : undefined;
-			if (record) await nextUse(record);
 			if ((untrackedTan(ctx) || record?.state === "untracked") && typeof ctx.invokeTool === "function") return ctx.invokeTool(params, { signal, onUpdate });
 			return core.todo.apply(ctx, params.op, params);
 		},
@@ -175,9 +232,19 @@ export default function ompKata(pi: any) {
 	});
 	// --------------------------------------------------------------- delegates
 
-	// The Delegates that owns a delegate's record is the lead's.
-	const nextUse = (record: DelegateRecord) => leads.get(record.leadSessionId)?.apply({ type: "nextUse", id: record.id });
-	const nextUseOf = (ctx: any) => { const record = store.of(ctx); return record ? nextUse(record) : undefined; };
+	// The Delegates that owns a delegate's record is the lead's, on the main thread; a worker's copy reaches it over the channel.
+	const nextUseOf = (ctx: any): Promise<void> | undefined => {
+		if (!isMainThread) {
+			const file = ctx?.agent?.kind === "sub" ? ctx.sessionManager?.getSessionFile?.() : undefined;
+			return file ? askMain(sessionKey(file, ctx.cwd), ctx.agent.id) : undefined;
+		}
+		const record = store.of(ctx);
+		return record ? leads.get(record.leadSessionId)?.apply({ type: "nextUse", id: record.id }) : undefined;
+	};
+	const ranTool = (record: DelegateRecord) => {
+		if (isMainThread) void leads.get(record.leadSessionId)?.apply({ type: "ranTool", id: record.id });
+		else delegateChannel.postMessage({ kind: "ranTool", key: record.sessionId, id: record.id } satisfies DelegateWire);
+	};
 
 	pi.events?.on("task:subagent:lifecycle", (event: any) => {
 		const ctx = seen;
@@ -217,7 +284,7 @@ export default function ompKata(pi: any) {
 		await enter(ctx);
 		await core.tools.call(ctx);
 		const record = ctx.agent?.kind === "sub" ? store.of(ctx) : undefined;
-		if (record) void leads.get(record.leadSessionId)?.apply({ type: "ranTool", id: record.id });
+		if (record) ranTool(record);
 		if (main(ctx) && event.toolName === "task" && event.toolCallId) {
 			const items: any[] = Array.isArray(event.input?.tasks) ? event.input.tasks : [event.input];
 			// omp's short task name is the clearest signal; the task text is the fallback.
