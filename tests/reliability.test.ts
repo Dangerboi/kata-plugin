@@ -25,7 +25,7 @@ function app(options: any = {}) {
   }, { namespace: "omp", executable: binary, executableVars: ["KATA_OMP_EXECUTABLE"], explicitRef: () => options.ref });
   return { core, calls, entries, ctx, call: (p: any) => core.todo.apply(ctx, p.op, p) };
 }
-// Kata unusable: the only case that selects a session-local plan.
+// Kata unusable: the only case that selects a local plan.
 const down = daemonUnavailable;
 const message = "Verified the isolated reliability task with the behavioral regression suite.";
 const done = { op: "done", message, evidence: ["test:reliability fixture"] };

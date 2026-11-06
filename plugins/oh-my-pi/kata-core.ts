@@ -58,7 +58,7 @@ const CHILD_TEAMMATE = /^[a-z0-9][a-z0-9._-]{0,63}$/;
 
 export type Status = "pending" | "in_progress" | "completed" | "abandoned" | "blocked";
 // An open plan task's status from its `todo.status` metadata: anything but started or blocked is pending.
-export const openStatus = (value: unknown): Status => value === "in_progress" || value === "blocked" ? value : "pending";
+export const openTaskStatus = (value: unknown): Status => value === "in_progress" || value === "blocked" ? value : "pending";
 export type Task = { ref: string; content: string; phase: string; status: Status; ticket?: string; at?: number; blocker?: string; delegated?: boolean; review?: boolean; revision?: number; proof?: { message?: string; evidence?: string[] } };
 export type Binding = { parent: string; workspace: string; sessionId?: string; auto?: boolean; label?: string };
 export type Plan = Partial<Binding> & { workspace: string; tasks: Task[]; local?: boolean; error?: string };
@@ -132,7 +132,7 @@ NEVER call todo alone: init with first work; done/start with next action.
 
 Kata specifics:
 - An item that works an existing ticket starts with its qualified ref: \`<project>#<short_id>: <action>\` (for example \`myproj#a1b2: write the smoke script\`). It creates no issue: start claims the ticket and marks it in progress, done comments on it, and the last item of a ticket to be done closes it with that item's evidence (a ticket with open children stays open and gets a comment), drop/rm only comment and never close it. A ref that does not resolve, or a closed ticket, is an error. Only that prefix names a ticket; a bare id is text. A plan whose items all name tickets creates no parent issue.
-- Every other task is a Kata child issue of one parent issue. On init pass \`ref\` with the Kata issue this plan serves (search first: kata search "<terms>" --agent); an explicit KATA_REF or worker binding must match it. Without a ref, use that binding, the session's existing parent, or a new parent titled by \`message\`.
+- Every other task is a Kata child issue of one parent issue. On init pass \`ref\` with the Kata issue this plan serves (search first: kata search "<terms>" --agent); an explicit KATA_REF or a delegate's assignment must match it. Without a ref, use that issue, the session's existing parent, or a new parent titled by \`message\`.
 - done closes the issue (an item naming a ticket: see above). Kata requires \`evidence\` (commit:<sha>, test:<cmd>, pr:<url>, reviewed-paths:<path>) and a \`message\` of 40+ characters saying what changed and how it was verified. Unverified work: block it instead.
 - init whose new list leaves out open tasks changes nothing and returns an error listing the missing ones; pass \`replace: true\` only to deliberately drop them (they close as wontfix).
 - drop/rm take the reason in \`message\`.
@@ -571,7 +571,7 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 				const meta = c.metadata!;
 				let status: Status;
 				if (c.status === "closed") status = c.closed_reason === "wontfix" || meta["todo.status"] === "abandoned" ? "abandoned" : "completed";
-				else status = openStatus(meta["todo.status"]);
+				else status = openTaskStatus(meta["todo.status"]);
 				return {
 					ref: qualifiedRef(c, parent),
 					content: c.title,
@@ -667,7 +667,7 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 		settlement.schedule();
 		if (warnedFor === (currentId ?? "")) return;
 		warnedFor = currentId ?? "";
-		if (main(ctx) && host.allowUI?.(ctx) !== false) ctx?.ui?.notify?.(`Kata is unreachable${outage ? ` (${outage})` : ""}. todo keeps a session-local plan and replays it into Kata when Kata returns.`, "warning");
+		if (main(ctx) && host.allowUI?.(ctx) !== false) ctx?.ui?.notify?.(`Kata is unreachable${outage ? ` (${outage})` : ""}. todo keeps a local plan and replays it into Kata when Kata returns.`, "warning");
 	}
 
 	// Kata is back: create the parent and tasks the local plan accumulated.
@@ -1207,6 +1207,7 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 		return decision;
 	}
 
+	// Thrown when Kata throttled a close, which is now a pending close (settlement.ts owns the `PendingClose` name).
 	class ClosePending extends Error {}
 	async function closeTask(args: string[], task: Task, to: Status, change: Change, cwd: string) {
 		try { await kata(args, cwd); }
@@ -1258,7 +1259,7 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 		currentId ||= ctx.sessionManager?.getSessionId?.();
 		if (plan.local) {
 			try { await replayLocal(ctx); }
-			catch (error) { if (params.op !== "view") throw new Error(`Kata is reachable again, but the session-local plan could not be replayed into it: ${(error as Error).message}`); }
+			catch (error) { if (params.op !== "view") throw new Error(`Kata is reachable again, but the local plan could not be replayed into it: ${(error as Error).message}`); }
 		}
 		let cwd = plan.workspace;
 		const change: Change = { message: params.message?.trim() || undefined, evidence: params.evidence, reason: params.reason?.trim() || undefined };

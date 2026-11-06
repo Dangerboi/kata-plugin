@@ -121,7 +121,7 @@ test("todo results leave omp's native todo tracker nothing to track", async () =
   }
 });
 
-test("an unreachable Kata keeps a visible session-local plan and replays it when Kata returns", async () => {
+test("an unreachable Kata keeps a visible local plan and replays it when Kata returns", async () => {
   const dir = repo("outagerepo");
   let down = true;
   const app = host({ cwd: dir, before: () => down ? daemonUnavailable() : undefined });
@@ -165,7 +165,7 @@ test("a replay that fails partway keeps the local plan and finishes on the next 
   expect((await app.call({ op: "view" })).content[0].text).not.toContain("Session-local");
 });
 
-test("a resumed session replays an offline plan even after a partly failed replay", async () => {
+test("a resumed session replays a local plan even after a partly failed replay", async () => {
   let down = true, flaky = false;
   const dir = repo("resumereplay");
   const before = (a: string[]) => down ? daemonUnavailable()

@@ -302,9 +302,10 @@ test("a delegate on a worker thread that runs a tool before its assignment reach
     channel.onmessage = event => { if (event.data?.kind === "ranTool" && event.data.id === id) { clearTimeout(timer); resolve(); } };
   });
   const worker = new Worker(new URL("./omp-worker-delegate.ts", import.meta.url), { workerData: { binary, env, cwd, sessionFile, id, parentId: app.ctx.agent.id } } as any);
+  const ran = new Promise(resolve => worker.addEventListener("message", resolve, { once: true }));
   try {
     await reported;
-    await new Promise(resolve => worker.addEventListener("message", resolve, { once: true }));
+    await ran;
   } finally { worker.terminate(); channel.close(); }
   app.emit("task:subagent:lifecycle", { id, status: "completed", sessionFile });
   await app.call({ op: "done", task: "Lead keeps working", message, evidence });
@@ -1189,7 +1190,7 @@ test("tracked worker todo uses its assigned issue and teammate from an unbound w
   lead.emit("task:subagent:lifecycle", { id: "worker-todo", status: "started", sessionFile, description: "Implement worker task" });
   await lead.call({ op: "view" });
   const assigned = (await show(parent)).children.find((c: any) => c.metadata?.["omp.subagent_id"] === "worker-todo");
-  // The inherited coordinator reference must never become the worker's plan.
+  // The lead's inherited reference must never become the delegate's plan.
   process.env.KATA_REF = parent;
   const worker = host({ cwd: outside, sessionFile, agent: { kind: "sub", id: "worker-todo", parentId: lead.ctx.agent.id } });
   const result = await worker.call({ op: "init", items: ["Verify assigned worker"] });
@@ -1282,7 +1283,7 @@ for (const error of ["project vault not found", "no project access: permission d
   expect(result.content[0].text).not.toContain("Session-local");
 });
 
-test("bound worker fetches the contract with its exact hook arguments", async () => {
+test("an assigned delegate fetches the contract with its exact hook arguments", async () => {
   const lead = host();
   await lead.init(["Lead contract task"]);
   const sessionFile = `${scratch}/worker-contract.jsonl`;
@@ -1902,7 +1903,7 @@ test("an untracked /tan sub session uses omp's native todo and makes no Kata cal
   expect(tan.calls).toEqual([]);
 });
 
-test("a /tan sub session on an omp without invokeTool keeps the binding error", async () => {
+test("a /tan sub session on an omp without invokeTool keeps the assignment error", async () => {
   const tan = host({ agent: { kind: "sub", id: "Tan-7000000000002", parentId: "main" } });
   const result = await tan.call({ op: "view" });
   expect(result.isError).toBe(true);
@@ -1966,7 +1967,7 @@ test("a fork does not replay the source's pending close retries", async () => {
   expect(next.calls.some(a => a[0] === "close")).toBe(false);
 });
 
-test("a fork does not adopt the source's offline plan", async () => {
+test("a fork does not adopt the source's local plan", async () => {
   const source = host({ before: (a: string[]) => a[0] !== "init" && a[0] !== "projects" ? down() : undefined });
   await source.event("session_start");
   await source.call({ op: "init", items: ["Offline only"] });

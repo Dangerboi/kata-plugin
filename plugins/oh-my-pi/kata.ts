@@ -82,14 +82,14 @@ async function answerWorker(message: DelegateWire) {
 	await leads.get(record.leadSessionId)?.apply({ type: message.kind, id: message.id });
 	if (message.kind === "nextUse") delegateChannel.postMessage({ kind: "record", req: message.req, record: recordsBySession.get(message.key) } satisfies DelegateWire);
 }
-let questionsAsked = 0;
+let requestCount = 0;
 // A worker's questions by request id, until the main thread answers; a wait that gave up keeps its entry, so a late answer still lands.
 const awaitingAnswer = new Map<string, (record: DelegateRecord | undefined) => void>();
 // The latest question a worker's copy has out per delegate session: a tool call waits for its answer before reading the record.
 const latestQuestion = new Map<string, Promise<void>>();
 // A worker's copy: the lead's queue runs the delegate's next use, and the record it answers with replaces this thread's copy.
 function askMain(key: string, id: string): Promise<void> {
-	const req = `${threadId}:${++questionsAsked}`;
+	const req = `${threadId}:${++requestCount}`;
 	const answered = new Promise<void>(resolve => {
 		const timer = setTimeout(resolve, ANSWER_WAIT_MS);
 		timer.unref?.();
@@ -145,7 +145,10 @@ export default function ompKata(pi: any) {
 	const main = (ctx: any) => ctx?.agent?.kind === "main";
 	const sessionId = (ctx: any): string | undefined => ctx?.sessionManager?.getSessionId?.();
 	// A delegate's correlation key: its session file, resolved against its cwd.
-	const sessionKeyOf = (ctx: any): string | undefined => { const file = ctx?.sessionManager?.getSessionFile?.(); return file ? sessionKey(file, ctx.cwd) : undefined; };
+	const sessionKeyOf = (ctx: { cwd: string; sessionManager?: { getSessionFile?(): string | undefined } } | undefined): string | undefined => {
+		const file = ctx?.sessionManager?.getSessionFile?.();
+		return file ? sessionKey(file, ctx!.cwd) : undefined;
+	};
 	// The context of the latest event: the lifecycle bus carries none. A sub identity that reaches a main-session handler (omp's advisor) never replaces the main one.
 	let seen: any;
 	const see = (ctx: any) => { if (main(ctx) || !seen || !main(seen)) seen = ctx; };

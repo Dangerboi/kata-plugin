@@ -1,4 +1,4 @@
-import { OPEN, openStatus, qualifiedRef, qualifiedRefs, type Binding, type KataIssue, type KataShow, type Plan, type Task } from "./kata-core";
+import { OPEN, openTaskStatus, qualifiedRef, qualifiedRefs, type Binding, type KataIssue, type KataShow, type Plan, type Task } from "./kata-core";
 
 // The delegate lifecycle, shared by the omp lead and the pi child (see GLOSSARY.md: Delegate,
 // Assignment, Untracked delegate, Hand back). Adapters translate host events into DelegateEvents;
@@ -220,7 +220,7 @@ export function createDelegates(env: DelegatesEnv): Delegates {
 			// Another delegate's issue, or one another writer owns, is never a candidate.
 			const foreign = (c: KataIssue) => heldByDelegate(ns, c.metadata) || (!!c.owner && (c.owner !== actor || ![lead, mate].includes((c.metadata?.teammate as string | undefined) || "")));
 			const all: Task[] = (shown.children ?? []).filter(c => c.status === "open").map(c => ({ ref: qualifiedRef(c, scope.parent!), content: c.title,
-				phase: (c.metadata?.["todo.phase"] as string | undefined) ?? "", status: openStatus(c.metadata?.["todo.status"]), delegated: foreign(c) }));
+				phase: (c.metadata?.["todo.phase"] as string | undefined) ?? "", status: openTaskStatus(c.metadata?.["todo.status"]), delegated: foreign(c) }));
 			return { all, parent: scope.parent, workspace, label: scope.label, auto: false, local: false, planned: true };
 		}
 		// Items that name a ticket are bindable without a plan parent.
