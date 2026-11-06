@@ -57,6 +57,8 @@ export type ChildParent = { sessionId: string; ref?: string; workspace: string; 
 const CHILD_TEAMMATE = /^[a-z0-9][a-z0-9._-]{0,63}$/;
 
 export type Status = "pending" | "in_progress" | "completed" | "abandoned" | "blocked";
+// An open plan task's status from its `todo.status` metadata: anything but started or blocked is pending.
+export const openStatus = (value: unknown): Status => value === "in_progress" || value === "blocked" ? value : "pending";
 export type Task = { ref: string; content: string; phase: string; status: Status; ticket?: string; at?: number; blocker?: string; delegated?: boolean; review?: boolean; revision?: number; proof?: { message?: string; evidence?: string[] } };
 export type Binding = { parent: string; workspace: string; sessionId?: string; auto?: boolean; label?: string };
 export type Plan = Partial<Binding> & { workspace: string; tasks: Task[]; local?: boolean; error?: string };
@@ -567,10 +569,9 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 			.sort((a, b) => Date.parse(a.created_at) - Date.parse(b.created_at))
 			.map(c => {
 				const meta = c.metadata!;
-				const todo = meta["todo.status"];
 				let status: Status;
-				if (c.status === "closed") status = c.closed_reason === "wontfix" || todo === "abandoned" ? "abandoned" : "completed";
-				else status = todo === "in_progress" || todo === "blocked" ? todo : "pending";
+				if (c.status === "closed") status = c.closed_reason === "wontfix" || meta["todo.status"] === "abandoned" ? "abandoned" : "completed";
+				else status = openStatus(meta["todo.status"]);
 				return {
 					ref: qualifiedRef(c, parent),
 					content: c.title,
@@ -691,7 +692,7 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 					else await transition(task, t.status, { ...t.proof, reason: t.blocker }, cwd);
 				} catch (error) {
 					debug(error);
-					await transition(task, "blocked", { reason: `Replaying "${t.status}" from the offline plan failed: ${(error as Error).message}` }, cwd).catch(debug);
+					await transition(task, "blocked", { reason: `Replaying "${t.status}" from the local plan failed: ${(error as Error).message}` }, cwd).catch(debug);
 				}
 			}
 			await advance(cwd).catch(debug);
@@ -778,7 +779,7 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 		let snapshot = snapshotOf(id);
 		// A fork gets a new session id and copies the source's entries. It shares the source's work:
 		// adopt its parent and ticket items, but not its retries (the source still owns those closes)
-		// nor its offline plan (replaying that would make a second automatic parent).
+		// nor its local plan (replaying that would make a second automatic parent).
 		let source: string | undefined;
 		if (!snapshot && id) {
 			source = forkSourceId(ctx.sessionManager?.getHeader?.()?.parentSession);
@@ -806,7 +807,7 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 			...sources, stored,
 			session: async () => {
 				if (!await probe(ctx.cwd)) { down = true; return; }
-				// A restored offline plan replays into its parent itself; do not rebind over it.
+				// A restored local plan replays into its parent itself; do not rebind over it.
 				if (id && !plan.local) return sessionBinding(ctx);
 			},
 		});
@@ -1056,7 +1057,8 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 		try { await closeWith(ticket, decision, request); }
 		catch (error) {
 			if (!isKataCode(error, "parent_has_open_children")) throw error;
-			const open = openChildren(JSON.parse(await kata(["show", ticket, "--json"], cwd)) as KataShow, ticket);
+			const shown: KataShow = JSON.parse(await kata(["show", ticket, "--json"], cwd));
+			const open = openChildren(shown, ticket);
 			const many = open.length !== 1;
 			const ours = open.every(ref => plan.tasks.some(t => (t.ticket ?? t.ref) === ref));
 			if (ours) settlement.holdTicketClose(ticket, { ...request, key: noteKey(task, "close-after-children") }, cwd);
@@ -1205,14 +1207,14 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 		return decision;
 	}
 
-	class DeferredClose extends Error {}
+	class ClosePending extends Error {}
 	async function closeTask(args: string[], task: Task, to: Status, change: Change, cwd: string) {
 		try { await kata(args, cwd); }
 		catch (error) {
 			if (!isKataCode(error, "sibling_throttle")) throw error;
 			const text = settlement.pendTaskClose(task, to, change, cwd);
 			persist();
-			throw new DeferredClose(text);
+			throw new ClosePending(text);
 		}
 	}
 
@@ -1231,7 +1233,7 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 		await kata(["comment", ref, "--body", `The plugin gave up closing ${ref} after ${MAX_FAILURES} failed attempts (Kata error code: ${code ?? "none, not a Kata error"}): ${(error as Error)?.message ?? error}. Review it and close it yourself.`], cwd);
 	}
 
-	// The one settlement pass: exited delegates settle first, then the session's offline plan replays, then pending closes and the automatic parent.
+	// The one settlement pass: exited delegates settle first, then the session's local plan replays, then pending closes and the automatic parent.
 	async function drain() {
 		await delegates.settle();
 		if (plan.local && currentCtx) await replayLocal(currentCtx).catch(debug);
@@ -1422,7 +1424,7 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 				return {
 					content: [{ type: "text" as const, text: `${(err as Error).message}\n\n${render(plan)}` }],
 					details: details(params.op),
-					isError: err instanceof DeferredClose ? undefined : true,
+					isError: err instanceof ClosePending ? undefined : true,
 				};
 			} finally {
 				persist();

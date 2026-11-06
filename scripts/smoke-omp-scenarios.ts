@@ -436,7 +436,9 @@ export const SCENARIOS: Scenario[] = [{
 		const closers = numbers.filter(n => n % 2 === 1), leavers = numbers.filter(n => n % 2 === 0);
 		// omp 18.17 fails every model call a worker-thread subagent makes through an extension's provider (the scripted
 		// one), so only a real model gets worker delegates past their first turn.
+		const onMain = numbers.filter(n => first.get(`Port${n}`)?.mainThread);
 		if (!store.live) return [...checks,
+			{ name: "every delegate on the main thread closed its own plan task", ok: onMain.length > 0 && onMain.every(n => taskOf(n)?.status === "closed"), detail: onMain.filter(n => taskOf(n)?.status !== "closed").map(n => `Port${n}: ${taskOf(n)?.status}`).join(", ") || `${onMain.length} closed` },
 			{ name: "no stray issue", ok: issues.length === PORTS.length + 1, detail: `${issues.length} issues` },
 			{ name: "none carries needs-review", ok: !issues.some(labelled), detail: issues.filter(labelled).map(i => i.ref).join(", ") },
 		];

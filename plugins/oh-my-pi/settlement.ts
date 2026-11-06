@@ -50,7 +50,7 @@ export interface Settlement {
 	addAutoParent(binding: Binding): void;
 	dropAutoParent(parent: string): void;
 	renameAutoParent(old: string, current: string): void;
-	// Arm the timer (the core's offline plan retries on it too).
+	// Arm the timer (the core's local plan retries on it too).
 	schedule(): void;
 	drain(): Promise<void>;
 	snapshot(): SettlementSnapshot;
@@ -146,12 +146,13 @@ export function createSettlement(deps: SettlementDeps): Settlement {
 			let decision: KataIssue | undefined, initial: KataShow | undefined;
 			try {
 				if (deps.delegatesRunning()) return;
-				const view: KataShow = initial = JSON.parse(await kata(["show", parent, "--json"], workspace));
-				const children = view.children ?? [];
-				if (view.issue.status === "closed" || view.issue.metadata?.[`${namespace}.auto_parent`] !== true || view.issue.metadata?.[`${namespace}.session_id`] !== binding.sessionId) continue;
+				// `as` narrows `initial`, which the catch below also reads, to the parsed view.
+				initial = JSON.parse(await kata(["show", parent, "--json"], workspace)) as KataShow;
+				const children = initial.children ?? [];
+				if (initial.issue.status === "closed" || initial.issue.metadata?.[`${namespace}.auto_parent`] !== true || initial.issue.metadata?.[`${namespace}.session_id`] !== binding.sessionId) continue;
 				if (!children.length || children.some(c => c.status !== "closed")) continue;
-				if (flagged.get(parent) === verdictKey(view)) continue;
-				decision = await owned(parent, workspace, false, false, view.issue.revision);
+				if (flagged.get(parent) === verdictKey(initial)) continue;
+				decision = await owned(parent, workspace, false, false, initial.issue.revision);
 				const closedTimes = children.filter(c => c.closed_reason !== "wontfix").map(c => Date.parse(c.closed_at ?? ""));
 				if (closedTimes.some((time: number) => !Number.isFinite(time))) throw new Error("Kata child close time unavailable");
 				const since = closedTimes.length ? new Date(Math.min(...closedTimes)).toISOString() : undefined;
@@ -161,7 +162,7 @@ export function createSettlement(deps: SettlementDeps): Settlement {
 				for (const child of children) {
 					if (child.closed_reason === "wontfix") continue;
 					let project = child.qualified_id?.split("#")[0];
-					if (!project && child.project_id === view.issue.project_id) project = parent.split("#")[0];
+					if (!project && child.project_id === initial.issue.project_id) project = parent.split("#")[0];
 					if (!project) {
 						projects ??= await deps.projectList(workspace);
 						project = projects.find(p => p.id === child.project_id)?.name;
@@ -179,10 +180,10 @@ export function createSettlement(deps: SettlementDeps): Settlement {
 				const proof = proofArgs(evidence);
 				if (!proof.length) throw new NoEvidence("Kata child close evidence union is empty");
 				const final: KataShow = JSON.parse(await kata(["show", parent, "--json"], workspace));
-				const now = final.children ?? [];
+				const finalChildren = final.children ?? [];
 				if (final.issue.status === "closed" || deps.delegatesRunning()) continue;
-				if (final.issue.revision !== view.issue.revision || now.length !== children.length || now.some(c => c.status !== "closed" || !children.some(old => old.uid === c.uid && old.revision === c.revision))) continue;
-				await kata(["close", parent, "--done", "--if-match", String(final.issue.revision), "--idempotency-key", `${namespace}-parent-close:${parent}:${final.issue.revision}`, "--message", `${namespace.toUpperCase()} session ${binding.sessionId}: all ${now.length} child issues are closed in Kata and delegated work has settled. Evidence is the union of their current Kata-recorded close events.`, ...proof], workspace);
+				if (final.issue.revision !== initial.issue.revision || finalChildren.length !== children.length || finalChildren.some(c => c.status !== "closed" || !children.some(old => old.uid === c.uid && old.revision === c.revision))) continue;
+				await kata(["close", parent, "--done", "--if-match", String(final.issue.revision), "--idempotency-key", `${namespace}-parent-close:${parent}:${final.issue.revision}`, "--message", `${namespace.toUpperCase()} session ${binding.sessionId}: all ${finalChildren.length} child issues are closed in Kata and delegated work has settled. Evidence is the union of their current Kata-recorded close events.`, ...proof], workspace);
 			} catch (error) {
 				debug(error);
 				if (codeOf(error) === "sibling_throttle") { schedule(); continue; }
@@ -190,7 +191,10 @@ export function createSettlement(deps: SettlementDeps): Settlement {
 					const live = await owned(parent, workspace);
 					if (decision && live.revision !== decision.revision) continue;
 					await kata(["label", "add", parent, "needs-review"], workspace);
-					if (initial && !isUnusable(error)) flagged.set(parent, verdictKey(initial, (JSON.parse(await kata(["show", parent, "--json"], workspace)) as KataShow).issue.revision));
+					if (initial && !isUnusable(error)) {
+						const current: KataShow = JSON.parse(await kata(["show", parent, "--json"], workspace));
+						flagged.set(parent, verdictKey(initial, current.issue.revision));
+					}
 				} catch (error) { debug(error); }
 			}
 		}

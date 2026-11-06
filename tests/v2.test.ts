@@ -294,14 +294,16 @@ test("a delegate on a worker thread that runs a tool before its assignment reach
   await app.event("session_start"); const parent = await app.init(["Worker delegated work", "Lead keeps working"]);
   const sessionFile = `${scratch}/delegate-worker.jsonl`, id = "Worker.Delegate";
   app.emit("task:subagent:lifecycle", { id, agent: "task", status: "started", sessionFile, description: "Worker delegated work" });
+  // Exit only after the lead has heard of the tool use, as it would from a real delegate's later turns; a report that
+  // never comes still ends the wait, and the hand-back check below fails.
   const channel = new BroadcastChannel("kata-plugin:omp-delegates:1");
-  const reported = new Promise<boolean>(resolve => {
-    const timer = setTimeout(() => resolve(false), 8000);
-    channel.onmessage = event => { if (event.data?.kind === "ranTool" && event.data.id === id) { clearTimeout(timer); resolve(true); } };
+  const reported = new Promise<void>(resolve => {
+    const timer = setTimeout(resolve, 8000);
+    channel.onmessage = event => { if (event.data?.kind === "ranTool" && event.data.id === id) { clearTimeout(timer); resolve(); } };
   });
   const worker = new Worker(new URL("./omp-worker-delegate.ts", import.meta.url), { workerData: { binary, env, cwd, sessionFile, id, parentId: app.ctx.agent.id } } as any);
   try {
-    expect(await reported).toBe(true);
+    await reported;
     await new Promise(resolve => worker.addEventListener("message", resolve, { once: true }));
   } finally { worker.terminate(); channel.close(); }
   app.emit("task:subagent:lifecycle", { id, status: "completed", sessionFile });
@@ -915,7 +917,7 @@ test("while the plan is local, a delegate matching a local item is not untracked
   const result = await worker.call({ op: "view" }, { ...worker.ctx, invokeTool: async () => { native++; return { content: [], details: {} }; } });
   expect(native).toBe(0);
   expect(result.isError).toBe(true);
-  expect(result.content[0].text).toContain("worker binding");
+  expect(result.content[0].text).toContain("Kata assignment");
   expect(result.content[0].text).not.toContain("matched no plan item");
 });
 
@@ -1298,7 +1300,7 @@ test("bound worker fetches the contract with its exact hook arguments", async ()
   expect(prompt.systemPrompt.join("\n")).toContain(contract);
 });
 
-test("worker binding reports the preparation error and recovers after it clears", async () => {
+test("a failed assignment reports the preparation error and recovers after it clears", async () => {
   let unavailable = false;
   const lead = host({ before: (args: string[]) => unavailable && args[0] === "meta" && args[3] === "omp.subagent_id"
     ? { code: 1, stdout: "", stderr: "delegation service permission denied" } : undefined });
@@ -1904,10 +1906,10 @@ test("a /tan sub session on an omp without invokeTool keeps the binding error", 
   const tan = host({ agent: { kind: "sub", id: "Tan-7000000000002", parentId: "main" } });
   const result = await tan.call({ op: "view" });
   expect(result.isError).toBe(true);
-  expect(result.content[0].text).toContain("worker binding unavailable");
+  expect(result.content[0].text).toContain("Kata assignment unavailable");
 });
 
-test("a delegate whose binding failed still gets the binding error, not the native list", async () => {
+test("a delegate whose assignment failed still gets the assignment error, not the native list", async () => {
   let refuse = false;
   const lead = host({ before: (args: string[]) => refuse && args[0] === "meta" && args[3] === "omp.subagent_id" ? { code: 1, stdout: "", stderr: "meta refused" } : undefined });
   await lead.init(["Delegated plan"]);
@@ -1919,7 +1921,7 @@ test("a delegate whose binding failed still gets the binding error, not the nati
   const result = await worker.call({ op: "view" }, { ...worker.ctx, invokeTool: async () => { native++; return { content: [], details: {} }; } });
   expect(native).toBe(0);
   expect(result.isError).toBe(true);
-  expect(result.content[0].text).toContain("worker binding");
+  expect(result.content[0].text).toContain("Kata assignment failed");
 });
 
 test("a delegate spawned under a Tan- name keeps its record and the Kata path", async () => {

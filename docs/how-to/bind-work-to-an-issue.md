@@ -4,7 +4,7 @@ Set `KATA_REF=example#abcd` before launching a harness to bind an existing open 
 
 A successful main-agent `kata claim example#abcd` also establishes a binding after a fresh state check. Todo adapters additionally observe `kata meta set example#abcd work.attention ok`; they require matching ownership. Use a standalone command so the observer can identify it safely. `KATA_REF` takes precedence in the todo adapters.
 
-Todo accepts `ref` on `init`; `/todo` displays the current plan. In OMP and Pi, an explicit session or worker binding is authoritative: an `init` naming a different issue fails before replacing tasks. Full issue UIDs and short IDs resolve to the same qualified short reference.
+Todo accepts `ref` on `init`; `/todo` displays the current plan. In OMP and Pi, an explicit plan parent or a delegate's assignment is authoritative: an `init` naming a different issue fails before replacing tasks. Full issue UIDs and short IDs resolve to the same qualified short reference.
 
 
 Without an explicit binding, the first todo initialization creates a lazy session parent. An OMP delegation never creates it: it binds an existing plan item or ticket, or gets no issue. Its typed automatic marker is what grants automatic closure.

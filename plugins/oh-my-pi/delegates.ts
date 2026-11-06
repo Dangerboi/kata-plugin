@@ -1,4 +1,4 @@
-import { OPEN, qualifiedRef, qualifiedRefs, type Binding, type KataIssue, type KataShow, type Plan, type Task } from "./kata-core";
+import { OPEN, openStatus, qualifiedRef, qualifiedRefs, type Binding, type KataIssue, type KataShow, type Plan, type Task } from "./kata-core";
 
 // The delegate lifecycle, shared by the omp lead and the pi child (see GLOSSARY.md: Delegate,
 // Assignment, Untracked delegate, Hand back). Adapters translate host events into DelegateEvents;
@@ -219,11 +219,8 @@ export function createDelegates(env: DelegatesEnv): Delegates {
 			const lead = scope.leadTeammate ?? "", mate = scope.teammate ?? "";
 			// Another delegate's issue, or one another writer owns, is never a candidate.
 			const foreign = (c: KataIssue) => heldByDelegate(ns, c.metadata) || (!!c.owner && (c.owner !== actor || ![lead, mate].includes((c.metadata?.teammate as string | undefined) || "")));
-			const all: Task[] = (shown.children ?? []).filter(c => c.status === "open").map(c => {
-				const todo = c.metadata?.["todo.status"];
-				return { ref: qualifiedRef(c, scope.parent!), content: c.title, phase: (c.metadata?.["todo.phase"] as string | undefined) ?? "",
-					status: todo === "in_progress" || todo === "blocked" ? todo : "pending", delegated: foreign(c) };
-			});
+			const all: Task[] = (shown.children ?? []).filter(c => c.status === "open").map(c => ({ ref: qualifiedRef(c, scope.parent!), content: c.title,
+				phase: (c.metadata?.["todo.phase"] as string | undefined) ?? "", status: openStatus(c.metadata?.["todo.status"]), delegated: foreign(c) }));
 			return { all, parent: scope.parent, workspace, label: scope.label, auto: false, local: false, planned: true };
 		}
 		// Items that name a ticket are bindable without a plan parent.
@@ -277,7 +274,7 @@ export function createDelegates(env: DelegatesEnv): Delegates {
 	}
 
 	// Decides what the delegate works and writes the assignment. A delegate that matches nothing is untracked;
-	// one that cannot be decided yet (no plan, or an offline plan) stays started for a later use.
+	// one that cannot be decided yet (no plan, or a local plan) stays started for a later use.
 	async function decide(r: DelegateRecord) {
 		const scope: Scope = { parent: r.parent, workspace: r.workspace, label: r.parentLabel, leadTeammate: r.leadTeammate, teammate: r.teammate };
 		let src: Source | undefined;
@@ -287,7 +284,7 @@ export function createDelegates(env: DelegatesEnv): Delegates {
 			const item = matchDelegation(src.all, r.text, { unavailable: reservedRefs(r), single: r.single, label: r.label });
 			if (item?.ticket) { r.planRef = item.ticket; r.ticket = true; }
 			else if (item) {
-				// An offline plan cannot bind yet: stay undecided so a later use binds the replayed item.
+				// A local plan cannot bind yet: stay undecided so a later use binds the replayed item.
 				if (src.local) return;
 				r.planRef = item.ref;
 			}
@@ -437,9 +434,9 @@ export function createDelegates(env: DelegatesEnv): Delegates {
 		},
 		unassigned(ctx) {
 			const r = env.store.of(ctx);
-			if (!r) return "Kata worker binding unavailable; the coordinator must assign this session an issue before using todo.";
+			if (!r) return "Kata assignment unavailable; the lead must assign this delegate an issue before it uses todo.";
 			if (r.state === "untracked") return `Subagent ${r.id} matched no plan item or ticket, so it has no Kata issue and no todo list.`;
-			return `Kata worker binding failed: ${r.error || (r.state === "handed-back" || r.state === "settled" ? "its issue was handed back" : "no issue was assigned")}`;
+			return `Kata assignment failed: ${r.error || (r.state === "handed-back" || r.state === "settled" ? "its issue was handed back" : "no issue was assigned")}`;
 		},
 		holds: ref => unfinished().some(r => refOf(r) === ref),
 		running: () => env.store.records().some(r => !r.exited),
