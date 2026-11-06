@@ -63,9 +63,15 @@ function putRecord(record: DelegateRecord) {
 }
 function recordArrival(key: string): Promise<void> {
 	return new Promise(resolve => {
-		const timer = setTimeout(() => { arrivals.delete(key); resolve(); }, RECORD_WAIT_MS);
+		const arrived = () => { clearTimeout(timer); resolve(); };
+		// A wait that times out drops only itself; later waits for the same session keep theirs.
+		const timer = setTimeout(() => {
+			const rest = (arrivals.get(key) ?? []).filter(wait => wait !== arrived);
+			if (rest.length) arrivals.set(key, rest); else arrivals.delete(key);
+			resolve();
+		}, RECORD_WAIT_MS);
 		timer.unref?.();
-		arrivals.set(key, [...(arrivals.get(key) ?? []), () => { clearTimeout(timer); resolve(); }]);
+		arrivals.set(key, [...(arrivals.get(key) ?? []), arrived]);
 	});
 }
 async function answerWorker(message: DelegateWire) {
@@ -78,10 +84,12 @@ async function answerWorker(message: DelegateWire) {
 }
 let asked = 0;
 const answers = new Map<string, (record: DelegateRecord | undefined) => void>();
+// The latest question a worker's copy has out per delegate session: a tool call waits for its answer before reading the record.
+const asking = new Map<string, Promise<void>>();
 // A worker's copy: the lead's queue runs the delegate's next use, and the record it answers with replaces this thread's copy.
 function askMain(key: string, id: string): Promise<void> {
 	const req = `${threadId}:${++asked}`;
-	return new Promise(resolve => {
+	const answered = new Promise<void>(resolve => {
 		const timer = setTimeout(() => { answers.delete(req); resolve(); }, ANSWER_WAIT_MS);
 		timer.unref?.();
 		answers.set(req, record => {
@@ -91,6 +99,9 @@ function askMain(key: string, id: string): Promise<void> {
 		});
 		delegateChannel.postMessage({ kind: "nextUse", req, key, id } satisfies DelegateWire);
 	});
+	asking.set(key, answered);
+	void answered.then(() => { if (asking.get(key) === answered) asking.delete(key); });
+	return answered;
 }
 delegateChannel.onmessage = (event: { data: unknown }) => {
 	// Only this module's copies post on this channel.
@@ -245,6 +256,13 @@ export default function ompKata(pi: any) {
 		if (isMainThread) void leads.get(record.leadSessionId)?.apply({ type: "ranTool", id: record.id });
 		else delegateChannel.postMessage({ kind: "ranTool", key: record.sessionId, id: record.id } satisfies DelegateWire);
 	};
+	// A worker's copy holds a delegate's record only once the main thread answered: wait for an answer still on its way,
+	// or a tool call made before it is neither reported nor attributed to the delegate's teammate.
+	const recordOf = async (ctx: any) => {
+		const file = isMainThread ? undefined : ctx.sessionManager?.getSessionFile?.();
+		if (file) await asking.get(sessionKey(file, ctx.cwd));
+		return store.of(ctx);
+	};
 
 	pi.events?.on("task:subagent:lifecycle", (event: any) => {
 		const ctx = seen;
@@ -283,7 +301,7 @@ export default function ompKata(pi: any) {
 	pi.on("tool_call", async (event: any, ctx: any) => {
 		await enter(ctx);
 		await core.tools.call(ctx);
-		const record = ctx.agent?.kind === "sub" ? store.of(ctx) : undefined;
+		const record = ctx.agent?.kind === "sub" ? await recordOf(ctx) : undefined;
 		if (record) ranTool(record);
 		if (main(ctx) && event.toolName === "task" && event.toolCallId) {
 			const items: any[] = Array.isArray(event.input?.tasks) ? event.input.tasks : [event.input];

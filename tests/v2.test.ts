@@ -287,6 +287,30 @@ test("finished unclosed delegates remain open needs-review, with no parent proof
   expect((await show(parent)).issue.status).toBe("open");
 });
 
+test("a delegate on a worker thread that runs a tool before its assignment reaches it is handed back, not rolled back", async () => {
+  // The lead's assignment write is slow, so the worker's copy has no record yet when its delegate runs a tool. A real delay:
+  // the race is between two threads and real Kata processes, which fake timers cannot order, and the fixed copy waits for the answer.
+  const app = host({ before: async (args: string[]) => { if (args[0] === "meta" && args[3] === "omp.subagent_id") await Bun.sleep(1500); } });
+  await app.event("session_start"); const parent = await app.init(["Worker delegated work", "Lead keeps working"]);
+  const sessionFile = `${scratch}/delegate-worker.jsonl`, id = "Worker.Delegate";
+  app.emit("task:subagent:lifecycle", { id, agent: "task", status: "started", sessionFile, description: "Worker delegated work" });
+  const channel = new BroadcastChannel("kata-plugin:omp-delegates:1");
+  const reported = new Promise<boolean>(resolve => {
+    const timer = setTimeout(() => resolve(false), 8000);
+    channel.onmessage = event => { if (event.data?.kind === "ranTool" && event.data.id === id) { clearTimeout(timer); resolve(true); } };
+  });
+  const worker = new Worker(new URL("./omp-worker-delegate.ts", import.meta.url), { workerData: { binary, env, cwd, sessionFile, id, parentId: app.ctx.agent.id } } as any);
+  try {
+    expect(await reported).toBe(true);
+    await new Promise(resolve => worker.addEventListener("message", resolve, { once: true }));
+  } finally { worker.terminate(); channel.close(); }
+  app.emit("task:subagent:lifecycle", { id, status: "completed", sessionFile });
+  await app.call({ op: "done", task: "Lead keeps working", message, evidence });
+  const child = (await show(parent)).children.find((c: any) => c.title === "Worker delegated work");
+  expect(child.status).toBe("open");
+  expect((await show(`v2test#${child.short_id}`)).labels.some((l: any) => l.label === "needs-review")).toBe(true);
+}, 20_000);
+
 test("subagent bash attribution ignores quoted data, replaces teammates and refuses --as", async () => {
   const child = host({ agent: { kind: "sub", id: "Quoted-Agent", parentId: "parent" } });
   for (const command of ["kata --as actor-b list", "kata claim abc --as=actor-b", "echo hi && '/usr/bin/kata' --as actor-b list"]) {
