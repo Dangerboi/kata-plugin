@@ -676,6 +676,22 @@ test("Pi child recovers an automatic parent from a replay create envelope", asyn
   leaveChild();
 });
 
+test("Pi child creates a new automatic parent when a person deleted the lead's", async () => {
+  const sessionId = `deleted-lead-${++sequence}`;
+  const old = (await kata(["create", "Todo plan: tasks", "--meta", `pi.session_id=${sessionId}`, "--label", "pi-session", "--idempotency-key", `pi-session:${sessionId}`, "--force-new", "--json"])).issue.short_id;
+  await kata(["delete", old, "--force", "--confirm", `DELETE pitest#${old}`, "--json"]);
+  process.env.KATA_PI_PARENT = JSON.stringify({ pid: process.pid + 1, sessionId, workspace: cwd, teammate: "lead" });
+  const child = await host();
+  await child.event("session_start", { reason: "startup" });
+  await child.event("before_agent_start", { prompt: "An independent child task after a deletion", systemPromptOptions: { sections: {} } });
+  expect(delegateRecord(child)).toBeDefined();
+  const parents = (await kata(["list", "--status", "all", "--meta", `pi.session_id=${sessionId}`, "--label", "pi-session", "--json"])).issues;
+  expect(parents).toHaveLength(1);
+  expect(parents[0].short_id).not.toBe(old);
+  expect(parents[0].metadata["pi.auto_parent"]).toBe(true);
+  leaveChild();
+});
+
 test("pi items that name a ticket work and log on it without creating an issue or a parent", async () => {
   const app = await host(); await app.event("session_start", { reason: "startup" });
   const ticket = (await kata(["create", "Existing pi work", "--force-new", "--json"])).issue.short_id;
@@ -760,7 +776,14 @@ test("a close driven through pi's real exec records the pi session when close tr
     await app.init(["Real exec transcript task"]);
     const done = await app.call({ op: "done", task: "Real exec transcript task", message, evidence });
     expect(done.isError, done.content?.[0]?.text).toBeUndefined();
-    const closes = (await kata(["events", "--after", "0", "--limit", "500", "--json"])).events.filter((e: any) => e.type === "issue.closed" && e.payload?.transcript?.session_id === app.sid);
+    // The store holds every earlier test's events: page through all of them.
+    const events: any[] = [];
+    for (let after = 0; ;) {
+      const page = await kata(["events", "--after", String(after), "--limit", "500", "--json"]);
+      if (!page.events.length) break;
+      events.push(...page.events); after = page.next_after_id;
+    }
+    const closes = events.filter((e: any) => e.type === "issue.closed" && e.payload?.transcript?.session_id === app.sid);
     expect(closes.length).toBeGreaterThan(0);
     expect(closes[0].payload.transcript).toMatchObject({ agent: "pi", session_id: app.sid });
   } finally { if (previousHome === undefined) delete process.env.KATA_HOME; else process.env.KATA_HOME = previousHome; }

@@ -186,6 +186,8 @@ export function createSettlement(deps: SettlementDeps): Settlement {
 				await kata(["close", parent, "--done", "--if-match", String(final.issue.revision), "--idempotency-key", `${namespace}-parent-close:${parent}:${final.issue.revision}`, "--message", `${namespace.toUpperCase()} session ${binding.sessionId}: all ${finalChildren.length} child issues are closed in Kata and delegated work has settled. Evidence is the union of their current Kata-recorded close events.`, ...proof], workspace);
 			} catch (error) {
 				debug(error);
+				// A person deleted the parent: nothing is left to close or flag.
+				if (!initial && codeOf(error) === "issue_not_found") { autoParents.delete(parent); continue; }
 				if (codeOf(error) === "sibling_throttle") { schedule(); continue; }
 				try {
 					const live = await owned(parent, workspace);

@@ -1,5 +1,16 @@
 # Changelog
 
+## oh-my-pi 2.5.1 / pi 1.5.1 — 2026-11-07
+
+**Requires Kata 0.21.0**; 0.22.0 tested.
+
+- **A deleted automatic parent no longer locks up the todo tool.** Kata 0.22's TUI deletes an issue with `X`. After a person deleted the session's automatic parent, every `todo` call, `view` and `init` included, failed with `issue not found` and pointed at `view`, and a resumed session failed the same way; only `kata restore` got it working again. Now the plan goes with the parent: the next call says the parent was deleted, its tasks stay in Kata as they were, and `init` creates a new parent. Kata refuses the session's old idempotency key for that create, so the new parent takes a key derived from the deleted one, which a pi child starting then reaches too. A deleted explicit parent (`KATA_REF`, an init `ref`) is still an error.
+- Development: the pi close-transcript test reads every event in its store, not only the first 500, so tests added before it no longer break it.
+
+Upgrade notes:
+
+- Kata 0.22.0's schema 46 is one-way. Older binaries can't open the upgraded store; rolling back needs the pre-upgrade backup plus its matching binary.
+
 ## oh-my-pi 2.5.0 / pi 1.5.0 — 2026-11-05
 
 **Requires Kata 0.21.0** (was 0.19; 0.20 tested). The CLI and the daemon both need 0.21.0.
