@@ -76,9 +76,12 @@ const MAIN = "[smoke:main]";
 const SUB = "[smoke:sub]";
 const SCOUT = "[smoke:scout]";
 const WORKER = "[smoke:worker]";
-// omp 18.17 runs a subagent on a worker thread once nine or more run at once (its docs say four); fourteen puts
-// several on a worker, so the live run gets odd and even ones there.
+// omp runs a subagent on a worker thread once nine or more run at once (its docs say four); fourteen puts several on a
+// worker, so each run has delegates of every role there.
 const PORTS = ["lexer", "parser", "printer", "checker", "linker", "loader", "emitter", "resolver", "formatter", "bundler", "planner", "scheduler", "tracer", "profiler"].map(part => `Port ${part} module`);
+// Scripted workers: Port1, Port4, ... close their issue, Port2, Port5, ... run a tool and leave it open (hand back), Port3,
+// Port6, ... answer without a tool (rollback). Cycling by number spreads every role over the delegates omp puts on a worker.
+const workerRole = (n: number) => (["rollback", "close", "handBack"] as const)[n % 3];
 const vars = (): Record<string, string> => JSON.parse(process.env.KATA_SMOKE_VARS ?? "{}");
 const lastRef = (ctx: TurnContext, pattern: RegExp) => ctx.texts.join("\n").match(pattern)?.[0];
 
@@ -407,6 +410,9 @@ export const SCENARIOS: Scenario[] = [{
 			ctx => {
 				const ref = ctx.system.match(/Your Kata issue is ([\w#-]+)/)?.[1];
 				if (!ref) return ["No Kata binding in system prompt."];
+				const role = workerRole(PORTS.findIndex(port => ctx.texts.some(text => text.includes(port))) + 1);
+				if (role === "rollback") return ["Nothing to change for this port."];
+				if (role === "handBack") return [{ tool: "bash", args: { command: "ls" } }];
 				return [{ tool: "bash", args: { command: `kata close ${ref} --done --message '${message}' --evidence '${evidence}'` } }];
 			},
 			["Port done."],
@@ -431,36 +437,42 @@ export const SCENARIOS: Scenario[] = [{
 			{ name: "every delegate, on a worker or not, saw its own plan task in its system prompt", ok: first.size === PORTS.length && wrong.length === 0, detail: wrong.join(", ") || `${first.size} delegates prompted` },
 		];
 		const numbers = PORTS.map((_, i) => i + 1);
-		const closers = numbers.filter(n => n % 2 === 1), leavers = numbers.filter(n => n % 2 === 0);
-		// omp 18.17 fails every model call a worker-thread subagent makes through an extension's provider (the scripted
-		// one), so only a real model gets worker delegates past their first turn.
-		const onMain = numbers.filter(n => first.get(`Port${n}`)?.mainThread);
-		if (!store.live) return [...checks,
-			{ name: "every delegate on the main thread closed its own plan task", ok: onMain.length > 0 && onMain.every(n => taskOf(n)?.status === "closed"), detail: onMain.filter(n => taskOf(n)?.status !== "closed").map(n => `Port${n}: ${taskOf(n)?.status}`).join(", ") || `${onMain.length} closed` },
-			{ name: "no stray issue", ok: issues.length === PORTS.length + 1, detail: `${issues.length} issues` },
-			{ name: "none carries needs-review", ok: !issues.some(labelled), detail: issues.filter(labelled).map(i => i.ref).join(", ") },
-		];
 		const tools = store.tools();
+		const notified = (i?: Issue) => Object.keys(i?.metadata ?? {}).some(key => key.startsWith("notify."));
+		// Hand back: a delegate that ran a tool and left its task open; one whose tool use never reached the lead is rolled back instead, unlabelled.
+		const handedBack = (n: number) => {
+			const task = taskOf(n);
+			return labelled(task) && task?.metadata["work.attention"] === "needs-human" && notified(task) && tools.some(t => t.agent === `Port${n}` && t.tool === "bash");
+		};
+		const rolledBack = (n: number) => {
+			const task = taskOf(n);
+			return task?.status === "open" && !task.metadata["omp.subagent_id"] && !labelled(task) && !notified(task);
+		};
 		// A delegate that ran init twice has two steps of that title; the one it finished is the one closed as done.
 		const doneClose = (i: Issue) => i.events.some(e => e.type === "issue.closed" && e.payload?.reason === "done");
 		const stepOf = (n: number) => {
 			const steps = issues.filter(i => i.title === `Verify ${PORTS[n - 1]}`);
 			return steps.find(doneClose) ?? steps[0];
 		};
+		const describe = (ns: number[], ok: (n: number) => boolean) => ns.filter(n => !ok(n)).map(n => `Port${n}${onWorker.includes(`Port${n}`) ? " (worker)" : ""}: ${taskOf(n)?.status}, step ${stepOf(n)?.status ?? "none"}, tools ${JSON.stringify(tools.filter(t => t.agent === `Port${n}`).map(t => `${t.tool}${t.op ? `:${t.op}` : ""}${t.isError ? "!" : ""}`))}`).join("; ");
+		const onWorkerOf = (ns: number[]) => ns.filter(n => onWorker.includes(`Port${n}`));
+		if (!store.live) {
+			const outcome = { close: (n: number) => taskOf(n)?.status === "closed" && !labelled(taskOf(n)), handBack: handedBack, rollback: rolledBack };
+			const asScripted = (n: number) => outcome[workerRole(n)](n);
+			const roles = ["close", "handBack", "rollback"] as const;
+			const uncovered = roles.filter(role => onWorkerOf(numbers.filter(n => workerRole(n) === role)).length === 0);
+			return [...checks,
+				{ name: "every role (close, hand back, rollback) has a delegate on a worker thread", ok: uncovered.length === 0, detail: `missing ${uncovered.join(", ")}; worker delegates ${onWorker.join(", ")}` },
+				{ name: "every delegate's task ended as its script directs: closed, handed back or rolled back", ok: numbers.every(asScripted), detail: describe(numbers, asScripted) },
+				{ name: "no stray issue", ok: issues.length === PORTS.length + 1, detail: `${issues.length} issues` },
+			];
+		}
+		const closers = numbers.filter(n => n % 2 === 1), leavers = numbers.filter(n => n % 2 === 0);
 		const used = (n: number, op: string) => tools.some(t => t.agent === `Port${n}` && t.tool === "todo" && t.op === op && !t.isError);
 		const workedThroughTodo = (n: number) => used(n, "init") && used(n, "done") && stepOf(n)?.status === "closed" && taskOf(n)?.status === "closed";
 		const sessionOf = (i?: Issue) => i?.events.find(e => e.type === "issue.closed")?.payload?.transcript?.session_id;
 		// The todo close and the bash close of one delegate both carry that delegate's own session; without its record, the lead's.
 		const ownSession = (n: number) => !!sessionOf(stepOf(n)) && sessionOf(stepOf(n)) === sessionOf(taskOf(n)) && sessionOf(taskOf(n)) !== parent?.metadata["omp.session_id"];
-		// Hand back: a delegate that ran a tool and left its task open; one whose tool use never reached the lead is rolled back instead, unlabelled.
-		const handedBack = (n: number) => {
-			const task = taskOf(n);
-			return labelled(task) && task?.metadata["work.attention"] === "needs-human" && Object.keys(task?.metadata ?? {}).some(key => key.startsWith("notify.")) && tools.some(t => t.agent === `Port${n}` && t.tool === "bash");
-		};
-		const describe = (ns: number[], ok: (n: number) => boolean) => ns.filter(n => !ok(n)).map(n => `Port${n}${onWorker.includes(`Port${n}`) ? " (worker)" : ""}: ${taskOf(n)?.status}, step ${stepOf(n)?.status ?? "none"}, tools ${JSON.stringify(tools.filter(t => t.agent === `Port${n}`).map(t => `${t.tool}${t.op ? `:${t.op}` : ""}${t.isError ? "!" : ""}`))}`).join("; ");
-		const onWorkerOf = (ns: number[]) => ns.filter(n => onWorker.includes(`Port${n}`));
-		// A real model under prewalk tends to add steps and work of its own, so live checks hold the worker delegates to
-		// what the plugin owes them, not every delegate to the script.
 		return [...checks,
 			{ name: "a delegate on a worker thread planned, finished and closed through its own todo and kata close", ok: onWorkerOf(closers).length > 0 && onWorkerOf(closers).every(workedThroughTodo), detail: `worker delegates ${onWorker.join(", ")}; ${describe(onWorkerOf(closers), workedThroughTodo)}` },
 			{ name: "a worker delegate's todo close and kata close record its own omp session, not the lead's", ok: onWorkerOf(closers).length > 0 && onWorkerOf(closers).every(ownSession), detail: onWorkerOf(closers).filter(n => !ownSession(n)).map(n => `Port${n}: step ${sessionOf(stepOf(n)) ?? "none"}, issue ${sessionOf(taskOf(n)) ?? "none"}, lead ${parent?.metadata["omp.session_id"]}`).join("; ") },
