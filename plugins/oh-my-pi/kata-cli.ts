@@ -58,7 +58,7 @@ export function createKata(env: {
 		const plain = args[0] === "agent-contract-hook";
 		const teammate = env.teammate();
 		// Options end at `--`: what follows (a title, an item) is data, even when it reads `--json`.
-		const end = args.indexOf("--") < 0 ? args.length : args.indexOf("--");
+		const at = args.indexOf("--"), end = at < 0 ? args.length : at;
 		const flags = [...(plain || args.slice(0, end).includes("--json") ? [] : ["--json"]), ...(teammate !== undefined && !plain ? ["--teammate", teammate] : []), ...(workspace ? ["--workspace", path.resolve(cwd)] : [])];
 		args = [...args.slice(0, end), ...flags, ...args.slice(end)];
 		let result: ExecResult;
