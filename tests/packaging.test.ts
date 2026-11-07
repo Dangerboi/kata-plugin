@@ -6,22 +6,18 @@ assertIsolated();
 const root = path.resolve(import.meta.dir, "..");
 const json = (name: string) => JSON.parse(readFileSync(path.join(root, name), "utf8"));
 
-test("vendored core and OMP adapter are current", async () => {
-  const check = Bun.spawn([process.execPath, "scripts/vendor-core.ts", "--check"], { cwd: root, stdout: "pipe", stderr: "pipe" });
-  expect(await check.exited).toBe(0);
-});
-
 test("host manifests expose only the intended host and declare pi's supplied peers", () => {
-  for (const file of ["plugins/oh-my-pi/package.json"]) {
-    const manifest = json(file);
-    expect(manifest.pi).toBeUndefined(); expect(manifest.omp.extensions).toEqual(["./kata.ts"]);
-  }
+  const omp = json("plugins/oh-my-pi/package.json");
+  expect(omp.pi).toBeUndefined();
+  expect(omp.omp.extensions).toEqual(["./kata.ts"]);
   expect(json("package.json").pi.extensions).toEqual(["./plugins/pi/kata.ts"]);
+  const pi = json("plugins/pi/package.json");
+  expect(pi.pi.extensions).toEqual(["./kata.ts"]);
   expect(json("package.json").keywords).toContain("pi-package");
-  const manifest = json("plugins/pi/package.json");
-  expect(manifest.keywords).toContain("pi-package"); expect(manifest.pi.extensions).toEqual(["./kata.ts"]);
-  expect(manifest.peerDependencies).toMatchObject({ "@earendil-works/pi-coding-agent": "*", typebox: "*" });
-  expect(manifest.dependencies).toBeUndefined();
+  expect(pi.keywords).toContain("pi-package");
+  // pi supplies these at run time; bundling them would load a second copy.
+  expect(pi.peerDependencies).toMatchObject({ "@earendil-works/pi-coding-agent": "*", typebox: "*" });
+  expect(pi.dependencies).toBeUndefined();
 });
 
 test("each distributable keeps its complete local import graph inside its folder", () => {

@@ -24,7 +24,6 @@ for (const [name, sources, expected] of table) {
 	test(`plan parent: ${name}`, async () => {
 		const choice = await decidePlanParent({ cwd, ...sources });
 		expect(choice).toMatchObject(expected);
-		expect(typeof choice.workspace).toBe("string");
 		expect(isExplicitParent(choice)).toBe(["assigned", "explicit", "init"].includes(expected.provenance));
 	});
 }

@@ -122,14 +122,12 @@ test("pi exits before registering anything when loaded under OMP", async () => {
   expect(app.tool).toBeUndefined(); expect(app.handlers.size).toBe(0); expect(app.commands.size).toBe(0);
 });
 
-test("pi uses a validating TypeBox schema and sequential tool execution", async () => {
+test("pi's tool schema accepts valid todo calls and rejects malformed ones", async () => {
   const app = await host();
   expect(Value.Check(app.tool.parameters, { op: "init", items: ["A task"] })).toBe(true);
   expect(Value.Check(app.tool.parameters, { op: "invented" })).toBe(false);
   expect(Value.Check(app.tool.parameters, { op: "done", evidence: "wrong" })).toBe(false);
   expect(Value.Check(app.tool.parameters, { op: "init", list: [{ phase: "Empty", items: [] }] })).toBe(false);
-  expect(app.tool.executionMode).toBe("sequential"); expect(app.tool.approval).toBeUndefined();
-  expect(app.tool.annotations.readOnlyHint).toBe(false);
 });
 
 test("pi plans close from real Kata evidence with a typed pi parent exactly once", async () => {

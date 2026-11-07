@@ -1,4 +1,3 @@
-// Generated from root kata.ts by bun run build:plugins.
 // omp-kata: Kata replaces oh-my-pi's todo tracker.
 //
 // Installing the plugin is the whole setup: omp lets an extension re-register a
@@ -20,13 +19,14 @@ import { execFile, spawn } from "node:child_process";
 import { BroadcastChannel, isMainThread, threadId } from "node:worker_threads";
 import { closeSync, openSync, readSync } from "node:fs";
 import { createInterface } from "node:readline";
-import { createKataCore, DESCRIPTION, sessionKey, kataCommands as parseKataCommands, teammateFor, ticketAutocomplete, delegateCommand } from "./kata-core";
-import { FINAL } from "./delegates";
-import type { DelegateEvent, DelegateRecord, DelegateStore, Reservation } from "./delegates";
+import { createKataCore, DESCRIPTION, sessionKey, TODO_OPS, TODO_PARAMS } from "./kata-core";
+import { delegateCommand, kataCommands as parseKataCommands } from "./shell";
+import { FINAL, teammateFor } from "./delegates";
+import type { DelegateRecord, Delegates, DelegateStore, Reservation } from "./delegates";
 import type { InboxStream } from "./inbox";
 
 // What the lead's Delegates takes from an adapter other than the lead itself: a delegate's next use runs in the lead's queue.
-type DelegateEvents = { apply(event: DelegateEvent): Promise<void> };
+type DelegateEvents = Pick<Delegates, "apply">;
 
 const EXECUTABLE = process.env.KATA_OMP_EXECUTABLE || "kata";
 const EXECUTABLE_VARS = ["KATA_OMP_EXECUTABLE"];
@@ -152,7 +152,6 @@ export default function ompKata(pi: any) {
 	// The context of the latest event: the lifecycle bus carries none. A sub identity that reaches a main-session handler (omp's advisor) never replaces the main one.
 	let seen: any;
 	const see = (ctx: any) => { if (main(ctx) || !seen || !main(seen)) seen = ctx; };
-	// The lead session the assignments below belong to.
 	let assignmentsLead: string | undefined;
 	const assignments = new Map<string, Assignment>();
 	const leadSession = () => seen && main(seen) ? sessionId(seen) : undefined;
@@ -207,7 +206,6 @@ export default function ompKata(pi: any) {
 			void core.delegates.apply({ type: "exited", id: record.id, outcome: job.status === "cancelled" ? "aborted" : job.status });
 		}
 	}
-	// A handler's entry: remember the context and bring delegate state up to date.
 	const enter = async (ctx: any) => { see(ctx); await syncJobs(ctx); };
 
 	pi.registerTool({
@@ -216,16 +214,16 @@ export default function ompKata(pi: any) {
 		description: DESCRIPTION,
 		approval: "read",
 		parameters: z.object({
-			op: z.enum(["init", "start", "done", "rm", "drop", "block", "unblock", "append", "view"]),
-			list: z.array(z.object({ phase: z.string(), items: z.array(z.string()).min(1) })).optional().describe("phases for init"),
-			task: z.string().optional().describe("verbatim task content or Kata ref"),
+			op: z.enum(TODO_OPS),
+			list: z.array(z.object({ phase: z.string(), items: z.array(z.string()).min(1) })).optional().describe(TODO_PARAMS.list),
+			task: z.string().optional().describe(TODO_PARAMS.task),
 			phase: z.string().optional(),
-			items: z.array(z.string()).optional().describe("tasks for flat init or append"),
-			reason: z.string().optional().describe("blocker note for block"),
-			ref: z.string().optional().describe("existing Kata issue this plan serves (init)"),
-			replace: z.boolean().optional().describe("init: replace a plan that still has open tasks (they close as wontfix); without it init refuses"),
-			message: z.string().optional().describe("done: what changed and how it was verified (40+ chars); drop/rm: reason; init without ref: title for the new Kata parent"),
-			evidence: z.array(z.string()).optional().describe("required for done: commit:<sha>, test:<cmd>, pr:<url>, reviewed-paths:<path>"),
+			items: z.array(z.string()).optional().describe(TODO_PARAMS.items),
+			reason: z.string().optional().describe(TODO_PARAMS.reason),
+			ref: z.string().optional().describe(TODO_PARAMS.ref),
+			replace: z.boolean().optional().describe(TODO_PARAMS.replace),
+			message: z.string().optional().describe(TODO_PARAMS.message),
+			evidence: z.array(z.string()).optional().describe(TODO_PARAMS.evidence),
 		}),
 		async execute(_id: string, params: any, signal: AbortSignal | undefined, onUpdate: any, ctx: any) {
 			await enter(ctx);
@@ -288,7 +286,7 @@ export default function ompKata(pi: any) {
 			const index = event.index ?? 0;
 			const assignment = main(ctx) ? assignments.get(event.parentToolCallId) : undefined;
 			const reserved = assignment?.reserved?.[index];
-			if (assignment?.reserved) assignment.reserved[index] = undefined; // the record holds it now
+			if (assignment?.reserved) assignment.reserved[index] = undefined;
 			if (assignment) {
 				assignment.started.add(index);
 				if (assignment.started.size >= assignment.texts.length) assignments.delete(event.parentToolCallId);
@@ -390,19 +388,10 @@ export default function ompKata(pi: any) {
 		return { systemPrompt: [...base, out.join("\n\n")] };
 	});
 
-	// One provider per editor: omp rebuilds its stack from every registered factory,
-	// and begin runs again on every session switch.
-	const typeahead = new WeakSet<object>();
-	function offerTickets(ctx: any) {
-		if (!ctx.ui?.addAutocompleteProvider || typeahead.has(ctx.ui)) return;
-		typeahead.add(ctx.ui);
-		ctx.ui.addAutocompleteProvider((current: any) => ticketAutocomplete(current, core.tickets, { defaultProject: process.env.KATA_DEFAULT_PROJECT?.trim() || undefined }));
-	}
-
 	async function begin(ctx: any) {
 		await enter(ctx);
 		if (!main(ctx)) { await core.session.start(ctx, { after: nextUseOf(ctx) }); return; }
-		offerTickets(ctx);
+		core.offerTickets(ctx.ui);
 		const id = sessionId(ctx);
 		// Inherited by bash-tool and plugin closes so Kata records this omp session.
 		if (id) { process.env.KATA_TRANSCRIPT_AGENT = "omp"; process.env.KATA_TRANSCRIPT_SESSION_ID = id; }

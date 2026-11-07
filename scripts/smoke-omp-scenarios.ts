@@ -168,7 +168,6 @@ export const SCENARIOS: Scenario[] = [{
 		const copies = (mark: string) => main().at(-1)?.users.filter(u => u.includes(mark)).length ?? 0;
 		checks.push({ name: "the idle request was delivered once", ok: copies("smoke-idle-marker") === 1, detail: `${copies("smoke-idle-marker")} copies` });
 
-		// A cleared request is not delivered, and leaves the section.
 		clear();
 		await new Promise(r => setTimeout(r, 1500));
 		const afterClear = main().length;
@@ -417,7 +416,6 @@ export const SCENARIOS: Scenario[] = [{
 		const issues = await store.issues();
 		const children = issues.filter(i => i.metadata["todo.phase"]);
 		const parent = issues.find(i => i.metadata["omp.session_id"] && !i.metadata["todo.phase"]);
-		// Each delegate's first prompt, by the name the task call gave it.
 		const first = new Map<string, Prompt>();
 		for (const prompt of store.prompts()) if (/^Port\d+$/.test(prompt.agent) && !first.has(prompt.agent)) first.set(prompt.agent, prompt);
 		const taskOf = (n: number) => children.find(c => c.title === PORTS[n - 1]);
@@ -450,7 +448,6 @@ export const SCENARIOS: Scenario[] = [{
 			return steps.find(doneClose) ?? steps[0];
 		};
 		const used = (n: number, op: string) => tools.some(t => t.agent === `Port${n}` && t.tool === "todo" && t.op === op && !t.isError);
-		// Its todo planned and closed a step under its own issue, and its kata close closed the issue.
 		const workedThroughTodo = (n: number) => used(n, "init") && used(n, "done") && stepOf(n)?.status === "closed" && taskOf(n)?.status === "closed";
 		const sessionOf = (i?: Issue) => i?.events.find(e => e.type === "issue.closed")?.payload?.transcript?.session_id;
 		// The todo close and the bash close of one delegate both carry that delegate's own session; without its record, the lead's.
@@ -471,3 +468,9 @@ export const SCENARIOS: Scenario[] = [{
 		];
 	},
 }];
+
+// The same delegation with every Kata call the lead's plugin makes starting late, as on a loaded machine. Delegates are
+// assigned one after another, so the last one's first prompt waits for all fourteen assignments. Scripted only.
+const workers = SCENARIOS.find(s => s.name === "workers")!;
+SCENARIOS.push({ ...workers, name: "workers-slow-kata", livePrompt: undefined,
+	env: { KATA_OMP_EXECUTABLE: new URL("./smoke-slow-kata.sh", import.meta.url).pathname, KATA_SMOKE_DELAY: "0.025" } });

@@ -4,8 +4,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "bun";
 import { assertIsolated } from "./isolation";
-import { kataCommands } from "../kata";
-import { delegateCommand, kataCommands as coreCommands } from "../core/kata-core";
+import { kataCommands } from "../plugins/oh-my-pi/kata";
+import { delegateCommand, kataCommands as coreCommands } from "../core/shell";
 assertIsolated();
 
 test("only command positions are Kata invocations", () => {

@@ -1,6 +1,8 @@
 import path from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { createKataCore, DESCRIPTION, kataCommands, quote, delegateCommand, ticketAutocomplete, type Lead, type ChildParent } from "./kata-core";
+import { createKataCore, DESCRIPTION, TODO_OPS, TODO_PARAMS, type Lead, type ChildParent } from "./kata-core";
+import { delegateCommand, kataCommands } from "./shell";
+import { quote } from "./model";
 import type { DelegateRecord, DelegateStore } from "./delegates";
 
 // Match the native adapter's capability/scope selection, including a project
@@ -98,16 +100,16 @@ export default async function piKata(pi: ExtensionAPI) {
 		executionMode: "sequential",
 		annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: true },
 		parameters: Type.Object({
-			op: Type.Union(["init", "start", "done", "rm", "drop", "block", "unblock", "append", "view"].map(op => Type.Literal(op))),
-			list: Type.Optional(Type.Array(Type.Object({ phase: Type.String(), items: Type.Array(Type.String(), { minItems: 1 }) }), { description: "phases for init" })),
-			task: Type.Optional(Type.String({ description: "verbatim task content or Kata ref" })),
+			op: Type.Union(TODO_OPS.map(op => Type.Literal(op))),
+			list: Type.Optional(Type.Array(Type.Object({ phase: Type.String(), items: Type.Array(Type.String(), { minItems: 1 }) }), { description: TODO_PARAMS.list })),
+			task: Type.Optional(Type.String({ description: TODO_PARAMS.task })),
 			phase: Type.Optional(Type.String()),
-			items: Type.Optional(Type.Array(Type.String(), { description: "tasks for flat init or append" })),
-			reason: Type.Optional(Type.String({ description: "blocker note for block" })),
-			ref: Type.Optional(Type.String({ description: "existing Kata issue this plan serves (init)" })),
-			replace: Type.Optional(Type.Boolean({ description: "init: replace a plan that still has open tasks (they close as wontfix); without it init refuses" })),
-			message: Type.Optional(Type.String({ description: "done: changes and verification (40+ characters); drop/rm: reason; init without ref: title for the automatic parent" })),
-			evidence: Type.Optional(Type.Array(Type.String(), { description: "required for done: commit:<sha>, test:<cmd>, pr:<url>, reviewed-paths:<path>" })),
+			items: Type.Optional(Type.Array(Type.String(), { description: TODO_PARAMS.items })),
+			reason: Type.Optional(Type.String({ description: TODO_PARAMS.reason })),
+			ref: Type.Optional(Type.String({ description: TODO_PARAMS.ref })),
+			replace: Type.Optional(Type.Boolean({ description: TODO_PARAMS.replace })),
+			message: Type.Optional(Type.String({ description: TODO_PARAMS.message })),
+			evidence: Type.Optional(Type.Array(Type.String(), { description: TODO_PARAMS.evidence })),
 		}),
 		async execute(_id, params, _signal, _onUpdate, ctx) {
 			if (inherited && current) await core.delegates.apply({ type: "nextUse", id: current.id });
@@ -182,7 +184,6 @@ export default async function piKata(pi: ExtensionAPI) {
 		};
 	});
 
-	const typeahead = new WeakSet<object>();
 	pi.on("session_start", async (_event, ctx) => {
 		// Closes from this process (or its bash tool) record this pi session; a child replaces the pair it inherited.
 		process.env.KATA_TRANSCRIPT_AGENT = "pi";
@@ -206,10 +207,7 @@ export default async function piKata(pi: ExtensionAPI) {
 			if (switched && inherit.thinking && inherited.thinking) pi.setThinkingLevel(inherited.thinking as any);
 		}
 		// Only the interactive main session has an editor; session_start fires again per session.
-		if (!inherited && ctx.hasUI && ctx.ui.addAutocompleteProvider && !typeahead.has(ctx.ui)) {
-			typeahead.add(ctx.ui);
-			ctx.ui.addAutocompleteProvider(current => ticketAutocomplete(current, core.tickets, { defaultProject: process.env.KATA_DEFAULT_PROJECT?.trim() || undefined }));
-		}
+		if (!inherited && ctx.hasUI) core.offerTickets(ctx.ui);
 		follow(next, ctx);
 	}); // startup/reload/new/resume/fork
 	pi.on("session_tree", async (_event, ctx) => {

@@ -44,3 +44,12 @@ export async function later<T>(fn: () => Promise<T>): Promise<T> {
 	setSystemTime(new Date(Date.now() + 120_000));
 	try { return await fn(); } finally { setSystemTime(); }
 }
+
+/** Polls `condition` until it holds or `ms` pass; returns its final value. */
+export async function until(condition: () => boolean, ms = 8000): Promise<boolean> {
+  const end = Date.now() + ms;
+  while (!condition() && Date.now() < end) await new Promise(resolve => setTimeout(resolve, 25));
+  return condition();
+}
+// Against a real event stream, "nothing was delivered" can only be observed by waiting out the stream's latency.
+export const settle = (ms = 700) => new Promise(resolve => setTimeout(resolve, ms));

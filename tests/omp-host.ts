@@ -1,4 +1,4 @@
-import ompKata from "../kata";
+import ompKata from "../plugins/oh-my-pi/kata";
 
 type Exec = (args: string[], opts: any) => Promise<any>;
 export interface OmpHostOptions {

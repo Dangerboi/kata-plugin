@@ -51,7 +51,6 @@ export function trustedInbox(requests: unknown, mine: string, recipient: string)
 		if (size(out) + size(lines[shown]!.text) > INBOX_BUDGET) { omitted = lines.length - shown; break; }
 		out += lines[shown]!.text;
 	}
-	// The note names truncation only for rows that are still shown.
 	const footer = () => {
 		const truncated = lines.slice(0, shown).some(l => l.truncated);
 		return omitted || truncated ? `[${omitted ? `${omitted} request(s) omitted${truncated ? " and request text was truncated" : ""}` : "request text was truncated"}; run kata inbox without --context using the same --for and scope flags for the full inbox.]\n` : "";
@@ -112,7 +111,7 @@ function toSlot(value: unknown): Slot | undefined {
 }
 
 /** The leading `"event_id":<n>` of a stream line: cheap enough to run on every line of a replay. */
-export const eventIdOf = (line: string) => { const m = /^\{"event_id":(\d+),/.exec(line); return m ? Number(m[1]) : undefined; };
+const eventIdOf = (line: string) => { const m = /^\{"event_id":(\d+),/.exec(line); return m ? Number(m[1]) : undefined; };
 
 /**
  * One stream line for a slot key, a reset frame, or a delete/restore (which change what `kata inbox` lists

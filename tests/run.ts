@@ -3,6 +3,9 @@ import os from "node:os";
 import path from "node:path";
 import { assertIsolated, assertUnchanged, snapshot } from "./isolation";
 
+// The adapter suites load the vendored copies in plugins/*, not core/: refuse to test a stale copy.
+if (Bun.spawnSync([process.execPath, "scripts/vendor-core.ts", "--check"], { stdout: "ignore", stderr: "inherit" }).exitCode !== 0) process.exit(1);
+
 const root = mkdtempSync(path.join(os.tmpdir(), "omp-kata-tests-"));
 writeFileSync(path.join(root, ".omp-kata-test"), "throwaway\n");
 const env = { ...process.env, KATA_TEST_ROOT: root, KATA_HOME: path.join(root, "home") };

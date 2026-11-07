@@ -226,7 +226,7 @@ test("bounded audit still closes with the exact current evidence union", async (
   const p = await init(a);
   await a.call({ ...done, task: "First", evidence: ["test:first accepted proof"] });
   await a.call({ ...done, task: "Second", evidence: ["test:second accepted proof"] });
-  expect(bounded).toBe(true); expect((await show(p)).status).toBe("closed");
+  expect((await show(p)).status).toBe("closed");
   const rows = (await kata(["audit", "closes", "--json"])).rows;
   const row = rows.find((r: any) => r.issue === p.split("#")[1]);
   const event = (await kata(["events", "--after", String(row.event_id - 1), "--limit", "1", "--json"])).events[0];

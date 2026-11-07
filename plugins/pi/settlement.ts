@@ -1,4 +1,5 @@
-import { isUnusable, qualifiedRef, type Binding, type Change, type KataIssue, type KataShow, type Status, type Task } from "./kata-core";
+import { isUnusable, type Kata } from "./kata-cli";
+import { projectOf, qualifiedRef, type Binding, type Change, type KataIssue, type KataShow, type Status, type Task } from "./model";
 
 // Settlement: the closes the plugin still owes a session. Throttled task closes,
 // ticket closes waiting on open children, and the automatic parent's close are
@@ -21,9 +22,8 @@ export type SettlementSnapshot = {
 
 export interface SettlementDeps {
 	namespace: string;
-	kata(args: string[], cwd: string): Promise<string>;
+	kata: Pick<Kata, "run" | "show" | "projects">;
 	owned(ref: string, cwd: string, mayClaim?: boolean | "check", allowClosed?: boolean, revision?: number): Promise<KataIssue>;
-	projectList(cwd: string): Promise<{ id: number; name: string }[]>;
 	clock(): number;
 	// Calls `fire` once after `ms` and returns what cancels it.
 	timer(fire: () => void, ms: number): () => void;
@@ -63,8 +63,6 @@ export interface Settlement {
 	restore(saved: SettlementSnapshot | undefined): void;
 }
 
-// An automatic parent whose children left no close evidence stays open and flagged needs-review.
-class NoEvidence extends Error {}
 const codeOf = (error: unknown) => (error as { code?: string } | undefined)?.code;
 // Qualified refs of a ticket's open children.
 export const openChildren = (view: KataShow, ticket: string): string[] => (view.children ?? []).filter(c => c.status !== "closed").map(c => qualifiedRef(c, ticket));
@@ -118,7 +116,7 @@ export function createSettlement(deps: SettlementDeps): Settlement {
 		for (const [ref, pending] of retries) {
 			if (pending.at > clock()) continue;
 			try {
-				const current: KataIssue = JSON.parse(await kata(["show", ref, "--json"], pending.cwd)).issue;
+				const current: KataIssue = (await kata.show(ref, pending.cwd)).issue;
 				if (pending.task.revision === undefined || current.status !== "open" || current.revision !== pending.task.revision) { dropTask(ref); continue; }
 				await deps.performTask(pending);
 				if (retries.get(ref) === pending) retries.delete(ref);
@@ -134,7 +132,7 @@ export function createSettlement(deps: SettlementDeps): Settlement {
 	async function drainTickets() {
 		for (const [ticket, pending] of pendingCloses) {
 			try {
-				const view: KataShow = JSON.parse(await kata(["show", ticket, "--json"], pending.cwd));
+				const view: KataShow = await kata.show(ticket, pending.cwd);
 				if (view.issue.status !== "open" || deps.itemsOpen(ticket)) { pendingCloses.delete(ticket); failures.delete(`ticket:${ticket}`); continue; }
 				if (openChildren(view, ticket).length) continue;
 				await deps.performTicket(ticket, pending);
@@ -152,8 +150,7 @@ export function createSettlement(deps: SettlementDeps): Settlement {
 			let decision: KataIssue | undefined, initial: KataShow | undefined;
 			try {
 				if (deps.delegatesRunning()) return;
-				// `as` narrows `initial`, which the catch below also reads, to the parsed view.
-				initial = JSON.parse(await kata(["show", parent, "--json"], workspace)) as KataShow;
+				initial = await kata.show(parent, workspace);
 				const children = initial.children ?? [];
 				if (initial.issue.status === "closed" || initial.issue.metadata?.[`${namespace}.auto_parent`] !== true || initial.issue.metadata?.[`${namespace}.session_id`] !== binding.sessionId) continue;
 				if (!children.length || children.some(c => c.status !== "closed")) continue;
@@ -164,41 +161,37 @@ export function createSettlement(deps: SettlementDeps): Settlement {
 				const since = closedTimes.length ? new Date(Math.min(...closedTimes)).toISOString() : undefined;
 				const evidence: any[] = [];
 				const audits = new Map<string, any[]>();
-				let projects: { id: number; name: string }[] | undefined;
 				for (const child of children) {
 					if (child.closed_reason === "wontfix") continue;
-					let project = child.qualified_id?.split("#")[0];
-					if (!project && child.project_id === initial.issue.project_id) project = parent.split("#")[0];
-					if (!project) {
-						projects ??= await deps.projectList(workspace);
-						project = projects.find(p => p.id === child.project_id)?.name;
-					}
+					let project = child.qualified_id ? projectOf(child.qualified_id) : undefined;
+					if (!project && child.project_id === initial.issue.project_id) project = projectOf(parent);
+					project ??= (await kata.projects(workspace)).find(p => p.id === child.project_id)?.name;
 					if (!project) throw new Error("Kata child project unavailable");
-					if (!audits.has(project)) audits.set(project, JSON.parse(await kata(["audit", "closes", "--project", project, "--since", since!, "--json"], workspace)).rows);
+					if (!audits.has(project)) audits.set(project, JSON.parse(await kata.run(["audit", "closes", "--project", project, "--since", since!], workspace)).rows);
 					const rows = audits.get(project)!;
 					const row = rows.filter((r: any) => r.issue === child.short_id).sort((a: any, b: any) => b.event_id - a.event_id)[0];
 					if (!row?.event_id) throw new Error("Kata child close event unavailable");
-					const page = JSON.parse(await kata(["events", "--project", project, "--after", String(row.event_id - 1), "--limit", "1", "--json"], workspace));
+					const page = JSON.parse(await kata.run(["events", "--project", project, "--after", String(row.event_id - 1), "--limit", "1"], workspace));
 					const event = page.events?.[0];
 					if (page.reset_required || event?.event_id !== row.event_id || event.type !== "issue.closed" || event.issue_uid !== child.uid || Date.parse(event.payload?.closed_at) !== Date.parse(child.closed_at ?? "") || !Array.isArray(event.payload?.evidence) || !event.payload.evidence.length) throw new Error("Kata current child evidence unavailable");
 					evidence.push(...event.payload.evidence);
 				}
 				const proof = proofArgs(evidence);
-				if (!proof.length) throw new NoEvidence("Kata child close evidence union is empty");
-				const final: KataShow = JSON.parse(await kata(["show", parent, "--json"], workspace));
+				if (!proof.length) throw new Error("Kata child close evidence union is empty");
+				const final: KataShow = await kata.show(parent, workspace);
 				const finalChildren = final.children ?? [];
 				if (final.issue.status === "closed" || deps.delegatesRunning()) continue;
 				if (final.issue.revision !== initial.issue.revision || finalChildren.length !== children.length || finalChildren.some(c => c.status !== "closed" || !children.some(old => old.uid === c.uid && old.revision === c.revision))) continue;
-				await kata(["close", parent, "--done", "--if-match", String(final.issue.revision), "--idempotency-key", `${namespace}-parent-close:${parent}:${final.issue.revision}`, "--message", `${namespace.toUpperCase()} session ${binding.sessionId}: all ${finalChildren.length} child issues are closed in Kata and delegated work has settled. Evidence is the union of their current Kata-recorded close events.`, ...proof], workspace);
+				await kata.run(["close", parent, "--done", "--if-match", String(final.issue.revision), "--idempotency-key", `${namespace}-parent-close:${parent}:${final.issue.revision}`, "--message", `${namespace.toUpperCase()} session ${binding.sessionId}: all ${finalChildren.length} child issues are closed in Kata and delegated work has settled. Evidence is the union of their current Kata-recorded close events.`, ...proof], workspace);
 			} catch (error) {
 				debug(error);
 				if (codeOf(error) === "sibling_throttle") { schedule(); continue; }
 				try {
 					const live = await owned(parent, workspace);
 					if (decision && live.revision !== decision.revision) continue;
-					await kata(["label", "add", parent, "needs-review"], workspace);
+					await kata.run(["label", "add", parent, "needs-review"], workspace);
 					if (initial && !isUnusable(error)) {
-						const current: KataShow = JSON.parse(await kata(["show", parent, "--json"], workspace));
+						const current: KataShow = await kata.show(parent, workspace);
 						flagged.set(parent, verdictKey(initial, current.issue.revision));
 					}
 				} catch (error) { debug(error); }

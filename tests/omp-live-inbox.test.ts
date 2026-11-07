@@ -2,7 +2,7 @@ import { afterAll, afterEach, beforeAll, beforeEach, expect, test } from "bun:te
 import { mkdirSync, mkdtempSync } from "node:fs";
 import path from "node:path";
 import { assertIsolated } from "./isolation";
-import { adoptIsolatedKata, isolatedKata } from "./kata-fixture";
+import { adoptIsolatedKata, isolatedKata, settle, until } from "./kata-fixture";
 import { ompHost } from "./omp-host";
 assertIsolated();
 
@@ -23,9 +23,6 @@ async function kata(args: string[], extraEnv: NodeJS.ProcessEnv = {}): Promise<a
 }
 let sequence = 0;
 const issue = async () => (await kata(["create", `Live inbox ${++sequence}`, "--force-new", "--json"])).issue.short_id;
-const until = async (condition: () => boolean, ms = 8000) => { const end = Date.now() + ms; while (!condition() && Date.now() < end) await new Promise(resolve => setTimeout(resolve, 25)); return condition(); };
-// Integration tests against a real stream: "nothing was delivered" can only be observed by waiting out the stream's latency.
-const settle = (ms = 700) => new Promise(resolve => setTimeout(resolve, ms));
 
 function host(options: { agent?: object } = {}) {
 	const sid = `live-${++sequence}`, sent: any[][] = [];

@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { ticketAutocomplete, type Ticket } from "../core/kata-core";
+import { ticketAutocomplete, type Ticket } from "../core/autocomplete";
 
 // Fixture project and ids; none of these exist in any Kata store.
 const issue = (short_id: string, title: string, project = "demo"): Ticket => ({ short_id, title, qualified_id: `${project}#${short_id}` });

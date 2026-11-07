@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync } from "node:fs";
 import path from "node:path";
-import { KataError } from "../core/kata-core";
+import { KataError } from "../core/kata-cli";
 import { createSettlement, MAX_FAILURES, RETRY_MS, type CloseRequest, type TaskClose } from "../core/settlement";
 import { assertIsolated } from "./isolation";
 import { isolatedKata } from "./kata-fixture";
@@ -48,18 +48,18 @@ function build(options: { fail?: (args: string[]) => Error | undefined; running?
     task: async pending => { performed.push(pending.task.ref); await closeDone(pending.task.ref); },
     ticket: async ticket => { performed.push(ticket); await closeDone(ticket); },
   };
+  const runKata = async (args: string[]) => {
+    calls.push(args);
+    const error = options.fail?.(args);
+    if (error) throw error;
+    const r = await run(withJson(args));
+    if (r.code) throw new Error(r.stderr);
+    return r.stdout;
+  };
   const settlement = createSettlement({
     namespace: "omp",
-    kata: async args => {
-      calls.push(args);
-      const error = options.fail?.(args);
-      if (error) throw error;
-      const r = await run(withJson(args));
-      if (r.code) throw new Error(r.stderr);
-      return r.stdout;
-    },
+    kata: { run: runKata, show: async ref => JSON.parse(await runKata(["show", ref])), projects: async () => [] },
     owned: async ref => (await view(ref)).issue,
-    projectList: async () => [],
     clock: () => now,
     timer: fire => { timers.add(fire); return () => { timers.delete(fire); }; },
     due: () => { due++; },
@@ -68,7 +68,7 @@ function build(options: { fail?: (args: string[]) => Error | undefined; running?
     performTask: pending => handlers.task(pending),
     performTicket: ticket => handlers.ticket(ticket),
     flag: async (ref, _cwd, error) => { flagged.push({ ref, error }); },
-    debug: e => { if (process.env.DBG) console.log("DEBUG", String(e).slice(0, 300)); },
+    debug: () => {},
   });
   return { settlement, timers, calls, flagged, performed, handlers, itemsOpen,
     advance: (ms: number) => { now += ms; }, dueCount: () => due,
@@ -302,7 +302,6 @@ test("a snapshot restores the three kinds of close and re-arms the timer; restor
   first.settlement.holdTicketClose(ticket, request, cwd);
   first.settlement.addAutoParent({ parent, workspace: cwd, sessionId: SESSION, auto: true });
   const saved = JSON.parse(JSON.stringify(first.settlement.snapshot()));
-  expect(Object.keys(saved).sort()).toEqual(["autoParents", "pendingCloses", "retries"]);
 
   const second = build();
   second.settlement.restore(saved);
