@@ -381,7 +381,7 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 	let requestedRef: string | undefined;
 	let sessionTeammate: string | undefined;
 	let boundAgent: string | undefined;
-	// An automatic parent a person deleted: every todo result says so until a new plan parent replaces it.
+	// An automatic parent a person deleted: todo results say so until a new plan starts. Saved in the session snapshot.
 	let deletedParent: string | undefined;
 	const agentKey = (ctx: any) => JSON.stringify([ctx?.agent?.kind, ctx?.agent?.id]);
 	let currentCtx: any;
@@ -426,7 +426,7 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 		if (!currentId || !main(currentCtx)) return;
 		const data = { version: 1, sessionId: currentId,
 			plan: structuredClone({ ...plan, tasks: plan.tasks.filter(t => !t.ticket) }), ...settlement.snapshot(),
-			...(named.length ? { named: structuredClone(named) } : {}) };
+			...(named.length ? { named: structuredClone(named) } : {}), ...(deletedParent ? { deletedParent } : {}) };
 		const encoded = JSON.stringify(data);
 		if (encoded === lastSnapshot) return;
 		host.appendEntry(SNAPSHOT_ENTRY, data);
@@ -632,7 +632,8 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 		deletedParent = parent;
 	}
 
-	// Prefixes a todo result with the deleted parent's notice until a new plan starts; the result that starts it carries it once more.
+	// Prefixes a todo result with the deleted parent's notice until a new plan starts: a new plan parent, whose first result
+	// still carries it, or a successful init without one. A restored parent bound again ends it silently.
 	function withDeletionNotice(text: string, started = false): string {
 		if (!deletedParent) return text;
 		const restored = plan.parent === deletedParent;
@@ -819,6 +820,8 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 			named = structuredClone(snapshot.named ?? []);
 			stamp = Math.max(0, ...named.map(t => t.at || 0));
 			plan.tasks = withNamed(plan.tasks);
+			// A deletion noticed without a todo result (shutdown, a drain, a pi launch) is still reported after a resume.
+			if (typeof snapshot.deletedParent === "string") deletedParent = snapshot.deletedParent;
 		}
 		let stored: any = snapshot?.plan?.parent ? snapshot.plan : undefined;
 		for (const entry of branch) {
@@ -1193,8 +1196,8 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 	// Creates the session's automatic parent. Once a person deleted it, Kata refuses its idempotency key: `idempotency_deleted`,
 	// or `idempotency_mismatch` when this create's title or body differs from the deleted one's. The new parent takes a key
 	// derived from the deleted one, so a retry, the lead and its pi children all reach the same issue.
-	async function createAutomaticParent(sessionId: string, title: string, where: { project?: string; label?: string }, workspace: string, extra: string[] = []): Promise<any> {
-		const args = [...(where.project ? ["--project", where.project] : []), ...(where.label ? ["--label", where.label] : []), "--body", `Todo plan from ${namespace} session ${sessionId}.`, ...extra,
+	async function createAutomaticParent(sessionId: string, title: string, where: { project?: string; label?: string }, workspace: string, teammate?: string): Promise<any> {
+		const args = [...(where.project ? ["--project", where.project] : []), ...(where.label ? ["--label", where.label] : []), "--body", `Todo plan from ${namespace} session ${sessionId}.`, ...(teammate !== undefined ? ["--teammate", teammate] : []),
 			"--meta", `${namespace}.session_id=${sessionId}`, "--meta", `${namespace}.workspace=${workspace}`, "--label", `${namespace}-session`, "--force-new", "--json", "--", title];
 		let key = `${namespace}-session:${sessionId}`;
 		for (const spent = new Set<string>(); ;) {
@@ -1300,7 +1303,8 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 		await kata(["comment", ref, "--body", `The plugin gave up closing ${ref} after ${MAX_FAILURES} failed attempts (Kata error code: ${code ?? "none, not a Kata error"}): ${(error as Error)?.message ?? error}. Review it and close it yourself.`], cwd);
 	}
 
-	// The one settlement pass: exited delegates settle first, then the session's local plan replays, then pending closes and the automatic parent.
+	// The one settlement pass: a deleted automatic parent is forgotten first, then exited delegates settle, the session's
+	// local plan replays, and pending closes and the automatic parent's close run.
 	async function drain() {
 		// A deleted automatic parent takes its plan tasks' pending closes with it: the load forgets it before they run.
 		if (plan.parent && plan.auto && settlement.hasPlanCloses(plan.parent)) await load(plan.workspace).catch(debug);
@@ -1740,7 +1744,7 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 				// Establish only parent identity; the child never writes lead work.*.
 				const where = await destination(workspace);
 				parent.label ??= where.label;
-				const out = await createAutomaticParent(parent.sessionId, "Todo plan: tasks", where, workspace, ["--teammate", parent.teammate]);
+				const out = await createAutomaticParent(parent.sessionId, "Todo plan: tasks", where, workspace, parent.teammate);
 				parent.ref = createdParentRef(out);
 				if (!out.issue.owner) await kata(["claim", parent.ref!, "--if-unowned", "--teammate", parent.teammate], workspace);
 				await kata(["meta", "set", parent.ref!, `${namespace}.auto_parent`, "true", "--json-value"], workspace);

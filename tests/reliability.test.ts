@@ -581,6 +581,8 @@ test("a deleted automatic parent is reported on every op beside ticket items, un
   expect(restarted.content[0].text).toContain(`${parent} was deleted`);
   expect((await a.call({ op: "view" })).content[0].text).not.toContain("was deleted");
 });
+// The session's automatic parents Kata still has (a deleted one is left out).
+const sessionParents = async (a: { ctx: any }) => (await kata(["list", "--status", "all", "--meta", `omp.session_id=${a.ctx.sessionManager.getSessionId()}`, "--label", "omp-session", "--json"])).issues;
 test("a session resumed after its automatic parent was deleted reports it and starts a new plan on init", async () => {
   const a = app(); const parent = await init(a);
   await deleteIssue(parent);
@@ -590,14 +592,22 @@ test("a session resumed after its automatic parent was deleted reports it and st
   expect(resumed.content[0].text).toContain(`${parent} was deleted`);
   expect(await init(b, ["Fresh"])).not.toBe(parent);
 });
-test("append after the automatic parent is deleted asks for init and creates nothing", async () => {
+test("a deletion noticed at shutdown is still reported after a resume, in todo and /todo", async () => {
   const a = app(); const parent = await init(a);
   await deleteIssue(parent);
-  const creates = a.calls.filter(args => args[0] === "create").length;
+  await a.core.session.shutdown(a.ctx);
+  const b = app({ entries: a.entries, sid: a.ctx.sessionManager.getSessionId() });
+  expect(await b.core.todo.command(b.ctx, "")).toContain(`${parent} was deleted`);
+  expect((await b.call({ op: "view" })).content[0].text).toContain(`${parent} was deleted`);
+});
+test("append after the automatic parent is deleted asks for init and creates no parent", async () => {
+  const a = app(); const parent = await init(a);
+  await deleteIssue(parent);
   const appended = await a.call({ op: "append", items: ["Later"] });
   expect(appended.isError).toBe(true);
   expect(appended.content[0].text).toContain(`${parent} was deleted`);
-  expect(a.calls.filter(args => args[0] === "create")).toHaveLength(creates);
+  expect(appended.content[0].text).toContain("op=init");
+  expect(await sessionParents(a)).toEqual([]);
 });
 test("init refuses to drop the open tasks of a deleted parent that was restored meanwhile", async () => {
   const a = app(); const parent = await init(a); const first = await child(parent, "First");
@@ -612,10 +622,9 @@ test("a deleted explicit parent stays an error and no automatic parent replaces 
   const a = app();
   expect((await a.call({ op: "init", ref, items: ["First"] })).isError).toBeUndefined();
   await deleteIssue(ref);
-  const creates = a.calls.filter(args => args[0] === "create").length;
   expect((await a.call({ op: "view" })).isError).toBe(true);
   expect((await a.call({ op: "init", items: ["Fresh"] })).isError).toBe(true);
-  expect(a.calls.filter(args => args[0] === "create")).toHaveLength(creates);
+  expect(await sessionParents(a)).toEqual([]);
 });
 test("a deleted automatic parent's pending task closes never run, also when the retry timer fires first", async () => {
   let throttle = true;
