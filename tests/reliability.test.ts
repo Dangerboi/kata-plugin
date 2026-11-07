@@ -552,3 +552,32 @@ test("a refusal without data falls back to the folder name", async () => {
   const a = app({ cwd: outside, before: refuseList(notInitializedNoData()) });
   expect(await init(a)).toMatch(/^outside#/);
 });
+
+// A person can delete the automatic parent (Kata 0.22's TUI does it with X). The plan goes with it; its tasks stay.
+const deleteIssue = (ref: string) => kata(["delete", ref, "--force", "--confirm", `DELETE ${ref}`, "--json"]);
+test("after the automatic parent is deleted, init creates a new parent and leaves the old tasks alone", async () => {
+  const a = app(); const parent = await init(a); const first = await child(parent, "First");
+  await deleteIssue(parent);
+  const fresh = await a.call({ op: "init", items: ["Fresh"] });
+  expect(fresh.isError).toBeFalsy();
+  const next = fresh.details.kata.parent;
+  expect(next).not.toBe(parent);
+  expect((await kata(["show", next, "--json"])).children.map((c: any) => c.title)).toEqual(["Fresh"]);
+  expect((await show(first)).status).toBe("open");
+});
+test("a deleted automatic parent is reported as gone, also to a resumed session, which can start a new plan", async () => {
+  const a = app(); const parent = await init(a);
+  await deleteIssue(parent);
+  const finished = await a.call({ ...done, task: "First" });
+  expect(finished.isError).toBe(true);
+  expect(finished.content[0].text).toContain(`${parent} was deleted`);
+  const view = await a.call({ op: "view" });
+  expect(view.isError).toBeFalsy();
+  expect(view.content[0].text).toContain(`${parent} was deleted`);
+  const b = app({ entries: a.entries, sid: a.ctx.sessionManager.getSessionId() });
+  const resumed = await b.call({ op: "view" });
+  expect(resumed.isError).toBeFalsy();
+  expect(resumed.content[0].text).toContain(`${parent} was deleted`);
+  const next = await init(b, ["Fresh"]);
+  expect(next).not.toBe(parent);
+});

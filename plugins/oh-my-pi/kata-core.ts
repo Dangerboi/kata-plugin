@@ -61,7 +61,8 @@ export type Status = "pending" | "in_progress" | "completed" | "abandoned" | "bl
 export const openTaskStatus = (value: unknown): Status => value === "in_progress" || value === "blocked" ? value : "pending";
 export type Task = { ref: string; content: string; phase: string; status: Status; ticket?: string; at?: number; blocker?: string; delegated?: boolean; review?: boolean; revision?: number; proof?: { message?: string; evidence?: string[] } };
 export type Binding = { parent: string; workspace: string; sessionId?: string; auto?: boolean; label?: string };
-export type Plan = Partial<Binding> & { workspace: string; tasks: Task[]; local?: boolean; error?: string };
+// `gone`: the parent a person deleted; the plan went with it.
+export type Plan = Partial<Binding> & { workspace: string; tasks: Task[]; local?: boolean; error?: string; gone?: string };
 export type Change = { message?: string; evidence?: string[]; reason?: string; many?: boolean; remove?: boolean };
 // An issue as `kata show --json` prints it, and each of its children; only the fields the plugin reads.
 // `qualified_id` is printed on children, not on the shown issue itself. Labels are strings (Kata 0.21); the object form is older output.
@@ -274,7 +275,9 @@ export function phasesOf(tasks: Task[]): { name: string; tasks: Task[] }[] {
 
 export function render(plan: Plan): string {
 	if (plan.error) return `Kata state unavailable${plan.parent ? ` for ${plan.parent}` : ""}: ${plan.error}. Use todo op=view to refresh.`;
-	if (!plan.parent && !plan.local && plan.tasks.length === 0) return "No todo plan. Use todo op=init.";
+	if (!plan.parent && !plan.local && plan.tasks.length === 0) return plan.gone
+		? `Kata parent ${plan.gone} was deleted, and this session's plan with it. Its tasks stay in Kata as they were. Use todo op=init to start a new plan.`
+		: "No todo plan. Use todo op=init.";
 	if (plan.tasks.length === 0) return `Kata parent ${plan.parent}: no tasks.`;
 	const done = plan.tasks.filter(t => t.status === "completed").length;
 	const lines = [`${plan.local ? "Session-local plan (Kata is unreachable; it replays into Kata when Kata returns)" : plan.parent ? `Kata parent ${plan.parent}` : "Kata tickets (no parent issue)"}: ${done}/${plan.tasks.length} done`];
@@ -602,8 +605,8 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 	async function load(cwd: string): Promise<KataIssue[]> {
 		if (plan.local) { delete plan.error; plan.tasks = withNamed(plan.tasks); return []; }
 		if (!plan.parent) { if (named.length) { delete plan.error; await followTickets(cwd); } plan.tasks = withNamed([]); return []; }
+		const ref = plan.parent;
 		try {
-			const ref = plan.parent;
 			const shown = await showParent(ref, cwd);
 			await rehome(shown, ref, cwd);
 			const children = shown.children ?? [];
@@ -612,9 +615,18 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 			delete plan.error;
 			return children;
 		} catch (error) {
+			if (isKataCode(error, "issue_not_found") && plan.parent === ref) { forget(ref); return load(cwd); }
 			plan.error = (error as Error).message;
 			throw error;
 		}
+	}
+
+	// A person deleted the plan parent (Kata 0.22's TUI does it with X): the plan goes with it. Its tasks stay in Kata
+	// untouched, and the next init creates a new parent.
+	function forget(parent: string) {
+		settlement.dropAutoParent(parent);
+		aliases.clear();
+		plan = { tasks: [], workspace: plan.workspace, gone: parent };
 	}
 
 	function refresh(ctx: any) {
@@ -815,13 +827,21 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 		const saved = choice.saved;
 		if (choice.parent) {
 			const workspace = choice.workspace;
-			const qualified = await pin(choice.parent, workspace);
-			const issue: KataIssue = JSON.parse(await kata(["show", qualified, "--json"], workspace)).issue;
-			const marker = issue.metadata?.[`${namespace}.auto_parent`];
-			const owner = saved?.auto && typeof saved.sessionId === "string" && saved.sessionId !== id ? saved.sessionId : id;
-			const auto = !isExplicitParent(choice) && saved?.auto !== false && (marker === true || (saved?.auto === true && marker === undefined)) && issue.metadata?.[`${namespace}.session_id`] === owner;
-			setParent({ parent: qualified, workspace, sessionId: owner, auto, label: saved?.label });
-			await load(workspace);
+			const shown = await pin(choice.parent, workspace)
+				.then(async qualified => ({ qualified, issue: JSON.parse(await kata(["show", qualified, "--json"], workspace)).issue as KataIssue }))
+				.catch(error => {
+					// A saved parent a person deleted is gone; a parent named explicitly must exist.
+					if (isExplicitParent(choice) || !isKataCode(error, "issue_not_found")) throw error;
+					forget(choice.parent!);
+				});
+			if (shown) {
+				const { qualified, issue } = shown;
+				const marker = issue.metadata?.[`${namespace}.auto_parent`];
+				const owner = saved?.auto && typeof saved.sessionId === "string" && saved.sessionId !== id ? saved.sessionId : id;
+				const auto = !isExplicitParent(choice) && saved?.auto !== false && (marker === true || (saved?.auto === true && marker === undefined)) && issue.metadata?.[`${namespace}.session_id`] === owner;
+				setParent({ parent: qualified, workspace, sessionId: owner, auto, label: saved?.label });
+				await load(workspace);
+			}
 		}
 		if (replay) await drain();
 		bound = true;
@@ -1152,6 +1172,27 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 		stored: plan.parent ? { parent: plan.parent, workspace: plan.workspace } : undefined,
 	});
 
+	// Creates the session's automatic parent. Once a person deleted it, Kata refuses its idempotency key: `idempotency_deleted`,
+	// or `idempotency_mismatch` when this create's title or body differs from the deleted one's. The new parent takes a key
+	// derived from the deleted one, so a retry, the lead and its pi children all reach the same issue.
+	async function createSessionParent(sessionId: string, args: string[], cwd: string): Promise<any> {
+		let key = `${namespace}-session:${sessionId}`;
+		for (const deleted = new Set<string>(); ;) {
+			try { return JSON.parse(await kata(["create", "--idempotency-key", key, ...args], cwd)); }
+			catch (error) {
+				const uid = (error as KataError).info?.data?.uid;
+				if (typeof uid !== "string" || deleted.has(uid) || !(isKataCode(error, "idempotency_deleted") || isKataCode(error, "idempotency_mismatch") && await isDeleted(uid, cwd))) throw error;
+				deleted.add(uid);
+				key = `${namespace}-session:${sessionId}:after:${uid}`;
+			}
+		}
+	}
+
+	async function isDeleted(uid: string, cwd: string): Promise<boolean> {
+		try { await kata(["show", uid, "--json"], cwd); return false; }
+		catch (error) { if (isKataCode(error, "issue_not_found")) return true; throw error; }
+	}
+
 	async function ensureParent(params: any, ctx: any): Promise<string | undefined> {
 		let down = false;
 		const choice = await decidePlanParent({
@@ -1182,7 +1223,7 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 		let where: Awaited<ReturnType<typeof destination>>, out: any;
 		try {
 			where = await destination(cwd);
-			out = JSON.parse(await kata(["create", ...(where.project ? ["--project", where.project] : []), ...(where.label ? ["--label", where.label] : []), "--body", `Todo plan from ${namespace} session ${sessionId}.`, "--meta", `${namespace}.session_id=${sessionId}`, "--meta", `${namespace}.workspace=${cwd}`, "--label", `${namespace}-session`, "--idempotency-key", `${namespace}-session:${sessionId}`, "--force-new", "--json", "--", title], cwd));
+			out = await createSessionParent(sessionId, [...(where.project ? ["--project", where.project] : []), ...(where.label ? ["--label", where.label] : []), "--body", `Todo plan from ${namespace} session ${sessionId}.`, "--meta", `${namespace}.session_id=${sessionId}`, "--meta", `${namespace}.workspace=${cwd}`, "--label", `${namespace}-session`, "--force-new", "--json", "--", title], cwd);
 		} catch (error) {
 			// A folder with no git ancestor is refused client-side, so the probe never reached the daemon.
 			if (!isUnusable(error)) throw error;
@@ -1277,6 +1318,8 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 			if (desired.some(d => !d.content.trim() || !d.phase.trim())) throw new Error("Task and phase names must not be blank.");
 			const wanted = new Set(desired.map(itemKey));
 			const resolved = await resolveNamed(desired, plan.workspace, d => !named.some(t => t.phase === d.phase && t.content === d.content));
+			// A parent deleted since the last op is forgotten before init picks one.
+			if (plan.parent) await load(plan.workspace);
 			const choice = await decidePlanParent(planParentSources(params, ctx));
 			const target = choice.parent;
 			if (target) {
@@ -1417,8 +1460,8 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 				const text = await apply(params, ctx);
 				return { content: [{ type: "text" as const, text }], details: details(params.op) };
 			} catch (err) {
-				// A failed initial binding has no authoritative plan to render yet.
-				if (!bound || !plan.parent && !plan.local && !named.length) plan.error = (err as Error).message;
+				// A failed initial binding has no authoritative plan to render yet; a deleted parent's notice is one.
+				if (!bound || !plan.parent && !plan.local && !named.length && !plan.gone) plan.error = (err as Error).message;
 				// Kata may have applied part of a batch. A failed reload marks the
 				// cached tasks unavailable instead of presenting them as current.
 				if (plan.parent || named.length) await load(plan.workspace).catch(debug);
@@ -1667,10 +1710,10 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 				// Establish only parent identity; the child never writes lead work.*.
 				const where = await destination(workspace);
 				parent.label ??= where.label;
-				const out = JSON.parse(await kata(["create", "Todo plan: tasks", ...(where.project ? ["--project", where.project] : []), ...(where.label ? ["--label", where.label] : []), "--body", `Todo plan from ${namespace} session ${parent.sessionId}.`,
+				const out = await createSessionParent(parent.sessionId, ["Todo plan: tasks", ...(where.project ? ["--project", where.project] : []), ...(where.label ? ["--label", where.label] : []), "--body", `Todo plan from ${namespace} session ${parent.sessionId}.`,
 					"--teammate", parent.teammate,
 					"--meta", `${namespace}.session_id=${parent.sessionId}`, "--meta", `${namespace}.workspace=${workspace}`, "--label", `${namespace}-session`,
-					"--idempotency-key", `${namespace}-session:${parent.sessionId}`, "--force-new", "--json"], workspace));
+					"--force-new", "--json"], workspace);
 				parent.ref = createdParentRef(out);
 				if (!out.issue.owner) await kata(["claim", parent.ref!, "--if-unowned", "--teammate", parent.teammate], workspace);
 				await kata(["meta", "set", parent.ref!, `${namespace}.auto_parent`, "true", "--json-value"], workspace);
