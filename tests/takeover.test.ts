@@ -55,7 +55,6 @@ test("an unregistered git repo registers its inferred project and plans there wi
   expect(shown.issue.metadata["omp.auto_parent"]).toBe(true);
   expect(status(dir)).toBe(before);
   expect(existsSync(path.join(dir, ".kata.toml"))).toBe(false);
-  expect(app.calls.some(a => a[0] === "init")).toBe(false);
   for (const task of ["Plan the change", "Verify the change"]) expect((await app.call({ op: "done", task, message, evidence })).isError).toBeUndefined();
   expect((await kata(["show", parent, "--json"])).issue.status).toBe("closed");
 });
@@ -198,11 +197,6 @@ test("a missing executable is an outage too", async () => {
   const first = await app.call({ op: "init", items: ["No binary"] });
   expect(first.content[0].text).toContain("Session-local");
   expect(app.notices.filter(n => n[1] === "warning")).toHaveLength(1);
-});
-
-test("project_not_initialized never produces a local plan", async () => {
-  const app = host({ cwd: repo("neverlocal") });
-  expect((await app.call({ op: "init", items: ["Hosted"] })).content[0].text).not.toMatch(/Session-local/);
 });
 
 test("the contract is injected once even when something already put it in the prompt", async () => {

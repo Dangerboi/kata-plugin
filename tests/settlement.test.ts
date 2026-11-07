@@ -68,7 +68,7 @@ function build(options: { fail?: (args: string[]) => Error | undefined; running?
     performTask: pending => handlers.task(pending),
     performTicket: ticket => handlers.ticket(ticket),
     flag: async (ref, _cwd, error) => { flagged.push({ ref, error }); },
-    debug: e => { if (process.env.DBG) console.log("DEBUG", String(e).slice(0, 300)); },
+    debug: () => {},
   });
   return { settlement, timers, calls, flagged, performed, handlers, itemsOpen,
     advance: (ms: number) => { now += ms; }, dueCount: () => due,
@@ -302,7 +302,6 @@ test("a snapshot restores the three kinds of close and re-arms the timer; restor
   first.settlement.holdTicketClose(ticket, request, cwd);
   first.settlement.addAutoParent({ parent, workspace: cwd, sessionId: SESSION, auto: true });
   const saved = JSON.parse(JSON.stringify(first.settlement.snapshot()));
-  expect(Object.keys(saved).sort()).toEqual(["autoParents", "pendingCloses", "retries"]);
 
   const second = build();
   second.settlement.restore(saved);

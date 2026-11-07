@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { assertIsolated } from "./isolation";
 assertIsolated();
@@ -11,17 +11,19 @@ test("vendored core and OMP adapter are current", async () => {
   expect(await check.exited).toBe(0);
 });
 
-test("host manifests expose only the intended host and declare pi's supplied peers", () => {
-  for (const file of ["plugins/oh-my-pi/package.json"]) {
-    const manifest = json(file);
-    expect(manifest.pi).toBeUndefined(); expect(manifest.omp.extensions).toEqual(["./kata.ts"]);
-  }
-  expect(json("package.json").pi.extensions).toEqual(["./plugins/pi/kata.ts"]);
+test("each host manifest points at an extension file that exists, and only the intended host loads it", () => {
+  const exists = (dir: string, entry: string) => existsSync(path.join(root, dir, entry));
+  const omp = json("plugins/oh-my-pi/package.json");
+  expect(omp.pi).toBeUndefined();
+  for (const entry of omp.omp.extensions) expect(exists("plugins/oh-my-pi", entry)).toBe(true);
+  for (const entry of json("package.json").pi.extensions) expect(exists(".", entry)).toBe(true);
+  const pi = json("plugins/pi/package.json");
+  for (const entry of pi.pi.extensions) expect(exists("plugins/pi", entry)).toBe(true);
   expect(json("package.json").keywords).toContain("pi-package");
-  const manifest = json("plugins/pi/package.json");
-  expect(manifest.keywords).toContain("pi-package"); expect(manifest.pi.extensions).toEqual(["./kata.ts"]);
-  expect(manifest.peerDependencies).toMatchObject({ "@earendil-works/pi-coding-agent": "*", typebox: "*" });
-  expect(manifest.dependencies).toBeUndefined();
+  expect(pi.keywords).toContain("pi-package");
+  // pi supplies these at run time; bundling them would load a second copy.
+  expect(pi.peerDependencies).toMatchObject({ "@earendil-works/pi-coding-agent": "*", typebox: "*" });
+  expect(pi.dependencies).toBeUndefined();
 });
 
 test("each distributable keeps its complete local import graph inside its folder", () => {

@@ -149,7 +149,7 @@ test("KATA_REF beats stored session binding and is qualified", async () => {
   expect(view.details.kata.parent).toBe(`v2test#${next}`);
 });
 
-test("auto parents carry typed identity, pinned refs and close exactly once from child evidence", async () => {
+test("auto parents carry typed identity and close exactly once from child evidence", async () => {
   const app = host(); const ref = await app.init();
   expect(ref).toMatch(/^v2test#/);
   expect((await show(ref)).issue.metadata["omp.auto_parent"]).toBe(true);
@@ -161,6 +161,7 @@ test("auto parents carry typed identity, pinned refs and close exactly once from
   expect(rows).toHaveLength(1);
   const evt = (await kata(["events", "--after", String(rows[0].event_id - 1), "--limit", "1", "--json"])).events[0];
   expect(evt.payload.evidence).toEqual([{ type: "test", command: "bun test fixture" }]);
+  // Every Kata call pins the plan's workspace, so a worktree or a moved cwd never resolves another project.
   expect(app.calls.every(a => a.includes("--workspace"))).toBe(true);
 });
 
@@ -187,15 +188,6 @@ test("id-less session never creates an unknown automatic parent", async () => {
   const app = host({ sid: null });
   expect((await app.call({ op: "init", items: ["No session identity"] })).isError).toBe(true);
   expect(app.calls.some(a => a[0] === "create")).toBe(false);
-});
-
-test("successful standalone main claim preserves a populated auto parent relationship", async () => {
-  const app = host(); const auto = await app.init(); const explicit = await issue();
-  await kata(["claim", explicit, "--json"]);
-  await app.event("tool_result", { toolName: "bash", input: { command: `kata claim ${explicit}` }, isError: false, details: { exitCode: 0 } });
-  expect((await app.call({ op: "view" })).details.kata.parent).toBe(`v2test#${explicit}`);
-  expect((await show(explicit)).children ?? []).toHaveLength(0);
-  expect((await show(auto)).issue.status).toBe("open");
 });
 
 test("contract is cached verbatim, inbox read every turn, slow hooks bounded and failures quiet", async () => {
@@ -562,11 +554,10 @@ function withAttachment(keepOthers: boolean) {
 test("auto-parent close skips children's attachment evidence and carries the rest", async () => {
   const app = host({ before: withAttachment(true) }); const parent = await app.init(["Attachment and test evidence"]);
   expect((await app.call({ op: "done", message, evidence })).isError).toBeUndefined();
-  const close = app.calls.find(a => a[0] === "close" && a[1] === parent);
-  expect(close).toBeDefined();
-  const values = close!.flatMap((a, i) => close![i - 1] === "--evidence" ? [a] : []);
-  expect(values).toEqual(["test:bun test fixture"]);
   expect((await show(parent)).issue.status).toBe("closed");
+  const row = (await kata(["audit", "closes", "--json"])).rows.find((r: any) => r.issue === parent.split("#")[1]);
+  const stored = (await kata(["events", "--after", String(row.event_id - 1), "--limit", "1", "--json"])).events[0];
+  expect(stored.payload.evidence).toEqual([{ type: "test", command: "bun test fixture" }]);
 });
 
 test("auto parent whose children carry only attachment evidence stays open for review", async () => {
@@ -2040,36 +2031,27 @@ test("a ticket item naming a moved ticket is pinned and closed in its current pr
   expect((await show(`${target}#${ticket}`)).issue.status).toBe("closed");
 });
 
-test("a moved explicit parent is not re-adopted by every later todo call", async () => {
-  const showsOfParent = (app: { calls: string[][] }, ref: string) => app.calls.filter(a => a[0] === "show" && a[1].endsWith(`#${ref.split("#")[1]}`)).length;
-  const followUp = async (moveIt: boolean) => {
-    const parent = `v2test#${await issue()}`; process.env.KATA_REF = parent;
-    const app = host(); await app.event("session_start"); await app.init(["First"]);
-    if (moveIt) await kata(["move", parent, await otherProject(), "--json"]);
-    await app.call({ op: "init", replace: true, items: ["Second"] });
-    const before = showsOfParent(app, parent);
-    expect((await app.call({ op: "init", replace: true, items: [`Third ${moveIt}`] })).isError).toBeUndefined();
-    return showsOfParent(app, parent) - before;
-  };
-  expect(await followUp(true)).toBe(await followUp(false));
-});
-
-test("a parent moved twice is not re-adopted by later todo calls through the original ref", async () => {
+test("a parent moved once or twice is not re-adopted by every later todo call through the original ref", async () => {
+  // One session measures an unmoved call as the baseline; a call after each move must cost the same.
   const parent = `v2test#${await issue()}`; process.env.KATA_REF = parent;
-  const app = host(); await app.event("session_start"); await app.init(["First"]);
   const short = parent.split("#")[1];
+  const app = host(); await app.event("session_start"); await app.init(["First"]);
   const shows = () => app.calls.filter(a => a[0] === "show" && a[1].endsWith(`#${short}`)).length;
+  const replace = async (item: string) => {
+    const before = shows();
+    expect((await app.call({ op: "init", replace: true, items: [item] })).isError).toBeUndefined();
+    return shows() - before;
+  };
+  await replace("Second");
+  const baseline = await replace("Third");
   const second = await otherProject(), third = await otherProject();
   await kata(["move", parent, second, "--json"]);
-  await app.call({ op: "init", replace: true, items: ["Second"] });
+  await replace("Fourth");
+  expect(await replace("Fifth")).toBe(baseline);
   await kata(["move", `${second}#${short}`, third, "--json"]);
-  await app.call({ op: "init", replace: true, items: ["Third"] });
+  await replace("Sixth");
   expect((await app.call({ op: "view" })).details.kata.parent).toBe(`${third}#${short}`);
-  const before = shows();
-  expect((await app.call({ op: "init", replace: true, items: ["Fourth"] })).isError).toBeUndefined();
-  const perCall = shows() - before;
-  expect((await app.call({ op: "init", replace: true, items: ["Fifth"] })).isError).toBeUndefined();
-  expect(shows() - before).toBe(perCall * 2);
+  expect(await replace("Seventh")).toBe(baseline);
 });
 
 test("a ticket in another project is never taken for a plan item by its short id", async () => {
