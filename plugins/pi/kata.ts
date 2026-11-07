@@ -1,6 +1,8 @@
 import path from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { createKataCore, DESCRIPTION, kataCommands, quote, delegateCommand, ticketAutocomplete, type Lead, type ChildParent } from "./kata-core";
+import { createKataCore, DESCRIPTION, type Lead, type ChildParent } from "./kata-core";
+import { delegateCommand, kataCommands } from "./shell";
+import { quote } from "./model";
 import type { DelegateRecord, DelegateStore } from "./delegates";
 
 // Match the native adapter's capability/scope selection, including a project
@@ -182,7 +184,6 @@ export default async function piKata(pi: ExtensionAPI) {
 		};
 	});
 
-	const typeahead = new WeakSet<object>();
 	pi.on("session_start", async (_event, ctx) => {
 		// Closes from this process (or its bash tool) record this pi session; a child replaces the pair it inherited.
 		process.env.KATA_TRANSCRIPT_AGENT = "pi";
@@ -206,10 +207,7 @@ export default async function piKata(pi: ExtensionAPI) {
 			if (switched && inherit.thinking && inherited.thinking) pi.setThinkingLevel(inherited.thinking as any);
 		}
 		// Only the interactive main session has an editor; session_start fires again per session.
-		if (!inherited && ctx.hasUI && ctx.ui.addAutocompleteProvider && !typeahead.has(ctx.ui)) {
-			typeahead.add(ctx.ui);
-			ctx.ui.addAutocompleteProvider(current => ticketAutocomplete(current, core.tickets, { defaultProject: process.env.KATA_DEFAULT_PROJECT?.trim() || undefined }));
-		}
+		if (!inherited && ctx.hasUI) core.offerTickets(ctx.ui);
 		follow(next, ctx);
 	}); // startup/reload/new/resume/fork
 	pi.on("session_tree", async (_event, ctx) => {

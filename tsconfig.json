@@ -11,7 +11,7 @@
     ]
   },
   "include": [
-    "kata.ts",
+    "plugins/oh-my-pi/kata.ts",
     "core/**/*.ts",
     "plugins/oh-my-pi/*.ts",
     "plugins/pi/*.ts"

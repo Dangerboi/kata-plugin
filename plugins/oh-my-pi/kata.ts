@@ -1,4 +1,3 @@
-// Generated from root kata.ts by bun run build:plugins.
 // omp-kata: Kata replaces oh-my-pi's todo tracker.
 //
 // Installing the plugin is the whole setup: omp lets an extension re-register a
@@ -20,8 +19,9 @@ import { execFile, spawn } from "node:child_process";
 import { BroadcastChannel, isMainThread, threadId } from "node:worker_threads";
 import { closeSync, openSync, readSync } from "node:fs";
 import { createInterface } from "node:readline";
-import { createKataCore, DESCRIPTION, sessionKey, kataCommands as parseKataCommands, teammateFor, ticketAutocomplete, delegateCommand } from "./kata-core";
-import { FINAL } from "./delegates";
+import { createKataCore, DESCRIPTION, sessionKey } from "./kata-core";
+import { delegateCommand, kataCommands as parseKataCommands } from "./shell";
+import { FINAL, teammateFor } from "./delegates";
 import type { DelegateEvent, DelegateRecord, DelegateStore, Reservation } from "./delegates";
 import type { InboxStream } from "./inbox";
 
@@ -390,19 +390,10 @@ export default function ompKata(pi: any) {
 		return { systemPrompt: [...base, out.join("\n\n")] };
 	});
 
-	// One provider per editor: omp rebuilds its stack from every registered factory,
-	// and begin runs again on every session switch.
-	const typeahead = new WeakSet<object>();
-	function offerTickets(ctx: any) {
-		if (!ctx.ui?.addAutocompleteProvider || typeahead.has(ctx.ui)) return;
-		typeahead.add(ctx.ui);
-		ctx.ui.addAutocompleteProvider((current: any) => ticketAutocomplete(current, core.tickets, { defaultProject: process.env.KATA_DEFAULT_PROJECT?.trim() || undefined }));
-	}
-
 	async function begin(ctx: any) {
 		await enter(ctx);
 		if (!main(ctx)) { await core.session.start(ctx, { after: nextUseOf(ctx) }); return; }
-		offerTickets(ctx);
+		core.offerTickets(ctx.ui);
 		const id = sessionId(ctx);
 		// Inherited by bash-tool and plugin closes so Kata records this omp session.
 		if (id) { process.env.KATA_TRANSCRIPT_AGENT = "omp"; process.env.KATA_TRANSCRIPT_SESSION_ID = id; }

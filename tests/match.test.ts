@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { itemTicket, qualifiedRefs, type Status, type Task } from "../core/kata-core";
+import { itemTicket, qualifiedRefs, type Status, type Task } from "../core/model";
 import { matchDelegation, namedTargets, namedTasks, taskTokens } from "../core/delegates";
 
 const task = (ref: string, content: string, status: Status = "pending", extra: Partial<Task> = {}): Task => ({ ref, content, phase: "Tasks", status, ...extra });
