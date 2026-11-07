@@ -11,7 +11,8 @@ export const MAX_FAILURES = 3;
 
 export type CloseRequest = { key: string; message: string; evidence: string[] };
 export type PendingClose = CloseRequest & { cwd: string };
-export type TaskClose = { task: Task; to: Status; change: Change; cwd: string; at: number };
+// `parent`: the plan parent of a plan task's close; none for a ticket item's.
+export type TaskClose = { task: Task; to: Status; change: Change; cwd: string; at: number; parent?: string };
 export type SettlementSnapshot = {
 	autoParents: Binding[];
 	retries: [string, TaskClose][];
@@ -41,7 +42,7 @@ export interface SettlementDeps {
 }
 
 export interface Settlement {
-	pendTaskClose(task: Task, to: Status, change: Change, cwd: string): string;
+	pendTaskClose(task: Task, to: Status, change: Change, cwd: string, parent?: string): string;
 	cancelTaskClose(ref: string): void;
 	hasTaskClose(ref: string): boolean;
 	// Drop the task's pending removal and its failure count; a pending completion stays.
@@ -49,6 +50,8 @@ export interface Settlement {
 	holdTicketClose(ticket: string, request: CloseRequest, cwd: string): void;
 	addAutoParent(binding: Binding): void;
 	dropAutoParent(parent: string): void;
+	// The plan parent was deleted: drop its automatic close and its plan tasks' pending closes.
+	dropPlan(parent: string): void;
 	renameAutoParent(old: string, current: string): void;
 	// Arm the timer (the core's local plan retries on it too).
 	schedule(): void;
@@ -186,8 +189,6 @@ export function createSettlement(deps: SettlementDeps): Settlement {
 				await kata(["close", parent, "--done", "--if-match", String(final.issue.revision), "--idempotency-key", `${namespace}-parent-close:${parent}:${final.issue.revision}`, "--message", `${namespace.toUpperCase()} session ${binding.sessionId}: all ${finalChildren.length} child issues are closed in Kata and delegated work has settled. Evidence is the union of their current Kata-recorded close events.`, ...proof], workspace);
 			} catch (error) {
 				debug(error);
-				// A person deleted the parent: nothing is left to close or flag.
-				if (!initial && codeOf(error) === "issue_not_found") { autoParents.delete(parent); continue; }
 				if (codeOf(error) === "sibling_throttle") { schedule(); continue; }
 				try {
 					const live = await owned(parent, workspace);
@@ -203,8 +204,8 @@ export function createSettlement(deps: SettlementDeps): Settlement {
 	}
 
 	return {
-		pendTaskClose(task, to, change, cwd) {
-			retries.set(task.ref, { task: { ...task }, to, change: { ...change }, cwd, at: clock() + RETRY_MS });
+		pendTaskClose(task, to, change, cwd, parent) {
+			retries.set(task.ref, { task: { ...task }, to, change: { ...change }, cwd, at: clock() + RETRY_MS, ...(parent ? { parent } : {}) });
 			failures.delete(`task:${task.ref}`);
 			schedule();
 			return `Kata deferred closing "${task.content}" under its sibling throttle. It remains open and will retry after 60 seconds.`;
@@ -215,10 +216,15 @@ export function createSettlement(deps: SettlementDeps): Settlement {
 		holdTicketClose(ticket, request, cwd) { pendingCloses.set(ticket, { ...request, cwd }); failures.delete(`ticket:${ticket}`); },
 		addAutoParent(binding) { autoParents.set(binding.parent, binding); },
 		dropAutoParent(parent) { autoParents.delete(parent); },
+		dropPlan(parent) {
+			autoParents.delete(parent);
+			for (const [ref, pending] of retries) if (pending.parent === parent) dropTask(ref);
+		},
 		renameAutoParent(old, current) {
 			const marker = autoParents.get(old);
 			autoParents.delete(old);
 			if (marker) autoParents.set(current, { ...marker, parent: current });
+			for (const pending of retries.values()) if (pending.parent === old) pending.parent = current;
 		},
 		schedule,
 		// Never throws. A running delegate pauses only the automatic-parent audit.

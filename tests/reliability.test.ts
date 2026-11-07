@@ -555,18 +555,20 @@ test("a refusal without data falls back to the folder name", async () => {
 
 // A person can delete the automatic parent (Kata 0.22's TUI does it with X). The plan goes with it; its tasks stay.
 const deleteIssue = (ref: string) => kata(["delete", ref, "--force", "--confirm", `DELETE ${ref}`, "--json"]);
-test("after the automatic parent is deleted, init creates a new parent and leaves the old tasks alone", async () => {
+test("after the automatic parent is deleted, init says so, creates a new parent and leaves the old tasks alone", async () => {
   const a = app(); const parent = await init(a); const first = await child(parent, "First");
   await deleteIssue(parent);
   const fresh = await a.call({ op: "init", items: ["Fresh"] });
   expect(fresh.isError).toBeFalsy();
+  expect(fresh.content[0].text).toContain(`${parent} was deleted`);
   const next = fresh.details.kata.parent;
   expect(next).not.toBe(parent);
   expect((await kata(["show", next, "--json"])).children.map((c: any) => c.title)).toEqual(["Fresh"]);
   expect((await show(first)).status).toBe("open");
 });
-test("a deleted automatic parent is reported as gone, also to a resumed session, which can start a new plan", async () => {
-  const a = app(); const parent = await init(a);
+test("a deleted automatic parent is reported on every op, beside ticket items and to a resumed session; append starts no plan", async () => {
+  const ticket = `reliability-test#${(await kata(["create", "Deletion notice ticket", "--force-new", "--json"])).issue.short_id}`;
+  const a = app(); const parent = await init(a, ["First", `${ticket}: check it`]);
   await deleteIssue(parent);
   const finished = await a.call({ ...done, task: "First" });
   expect(finished.isError).toBe(true);
@@ -578,6 +580,28 @@ test("a deleted automatic parent is reported as gone, also to a resumed session,
   const resumed = await b.call({ op: "view" });
   expect(resumed.isError).toBeFalsy();
   expect(resumed.content[0].text).toContain(`${parent} was deleted`);
-  const next = await init(b, ["Fresh"]);
-  expect(next).not.toBe(parent);
+  const c = app(); const other = await init(c);
+  await deleteIssue(other);
+  const appended = await c.call({ op: "append", items: ["Later"] });
+  expect(appended.isError).toBe(true);
+  expect(appended.content[0].text).toContain(`${other} was deleted`);
+  expect(c.calls.filter(args => args[0] === "create")).toHaveLength(3);
+});
+test("a deleted explicit parent stays an error and no automatic parent replaces it", async () => {
+  const ref = `reliability-test#${(await kata(["create", "Explicit parent to delete", "--force-new", "--json"])).issue.short_id}`;
+  const a = app();
+  expect((await a.call({ op: "init", ref, items: ["First"] })).isError).toBeUndefined();
+  await deleteIssue(ref);
+  const creates = a.calls.filter(args => args[0] === "create").length;
+  expect((await a.call({ op: "view" })).isError).toBe(true);
+  expect((await a.call({ op: "init", items: ["Fresh"] })).isError).toBe(true);
+  expect(a.calls.filter(args => args[0] === "create")).toHaveLength(creates);
+});
+test("a deleted automatic parent takes its plan tasks' pending closes with it", async () => {
+  const a = app({ before: (args: string[]) => args[0] === "close" ? siblingThrottle() : undefined });
+  const parent = await init(a);
+  expect((await a.call({ ...done, task: "First" })).content[0].text).toContain("retry after 60 seconds");
+  await deleteIssue(parent);
+  await a.call({ op: "view" });
+  expect(a.entries.filter(e => e.customType === "io.kata.omp.state").at(-1).data.retries).toEqual([]);
 });

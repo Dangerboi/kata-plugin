@@ -676,18 +676,32 @@ test("Pi child recovers an automatic parent from a replay create envelope", asyn
   leaveChild();
 });
 
-test("Pi child creates a new automatic parent when a person deleted the lead's", async () => {
-  const sessionId = `deleted-lead-${++sequence}`;
-  const old = (await kata(["create", "Todo plan: tasks", "--meta", `pi.session_id=${sessionId}`, "--label", "pi-session", "--idempotency-key", `pi-session:${sessionId}`, "--force-new", "--json"])).issue.short_id;
-  await kata(["delete", old, "--force", "--confirm", `DELETE pitest#${old}`, "--json"]);
-  process.env.KATA_PI_PARENT = JSON.stringify({ pid: process.pid + 1, sessionId, workspace: cwd, teammate: "lead" });
-  const child = await host();
-  await child.event("session_start", { reason: "startup" });
+test("after a person deletes the lead's automatic parent, launching a pi child creates a new one the child joins", async () => {
+  const lead = await host(); await lead.event("session_start", { reason: "startup" });
+  const old = await lead.init(["Lead work before the deletion"]);
+  await kata(["delete", old, "--force", "--confirm", `DELETE ${old}`, "--json"]);
+  await lead.event("tool_call", { toolName: "bash", input: { command: "pi -p 'write tests'" } });
+  const ref = JSON.parse(process.env.KATA_PI_PARENT!).ref;
+  expect(ref).toMatch(/^pitest#/);
+  expect(ref).not.toBe(old);
+  const child = await childOf(lead);
   await child.event("before_agent_start", { prompt: "An independent child task after a deletion", systemPromptOptions: { sections: {} } });
   expect(delegateRecord(child)).toBeDefined();
-  const parents = (await kata(["list", "--status", "all", "--meta", `pi.session_id=${sessionId}`, "--label", "pi-session", "--json"])).issues;
+  leaveChild();
+});
+
+test("Pi child creates a new automatic parent when the lead's was deleted before the child started", async () => {
+  const lead = await host(); await lead.event("session_start", { reason: "startup" });
+  const old = await lead.init(["Lead work before an early child"]);
+  await kata(["delete", old, "--force", "--confirm", `DELETE ${old}`, "--json"]);
+  process.env.KATA_PI_PARENT = JSON.stringify({ pid: process.pid + 1, sessionId: lead.sid, workspace: cwd, teammate: "lead" });
+  const child = await host();
+  await child.event("session_start", { reason: "startup" });
+  await child.event("before_agent_start", { prompt: "An independent early child task", systemPromptOptions: { sections: {} } });
+  expect(delegateRecord(child)).toBeDefined();
+  const parents = (await kata(["list", "--status", "all", "--meta", `pi.session_id=${lead.sid}`, "--label", "pi-session", "--json"])).issues;
   expect(parents).toHaveLength(1);
-  expect(parents[0].short_id).not.toBe(old);
+  expect(parents[0].qualified_id).not.toBe(old);
   expect(parents[0].metadata["pi.auto_parent"]).toBe(true);
   leaveChild();
 });
