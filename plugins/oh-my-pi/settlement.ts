@@ -150,8 +150,7 @@ export function createSettlement(deps: SettlementDeps): Settlement {
 			let decision: KataIssue | undefined, initial: KataShow | undefined;
 			try {
 				if (deps.delegatesRunning()) return;
-				// `as` narrows `initial`, which the catch below also reads, to the parsed view.
-				initial = await kata.show(parent, workspace) as KataShow;
+				initial = await kata.show(parent, workspace);
 				const children = initial.children ?? [];
 				if (initial.issue.status === "closed" || initial.issue.metadata?.[`${namespace}.auto_parent`] !== true || initial.issue.metadata?.[`${namespace}.session_id`] !== binding.sessionId) continue;
 				if (!children.length || children.some(c => c.status !== "closed")) continue;

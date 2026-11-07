@@ -566,7 +566,7 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 		if (choice.parent) {
 			const workspace = choice.workspace;
 			const shown = await kata.pin(choice.parent, workspace)
-				.then(async qualified => ({ qualified, issue: (await kata.show(qualified, workspace)).issue as KataIssue }))
+				.then(async qualified => ({ qualified, issue: (await kata.show(qualified, workspace)).issue }))
 				.catch(error => {
 					if (isExplicitParent(choice) || choice.saved?.auto !== true || !isKataCode(error, "issue_not_found")) throw error;
 					forget(choice.parent!);

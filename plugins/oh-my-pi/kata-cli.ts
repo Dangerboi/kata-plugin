@@ -1,5 +1,5 @@
 import path from "node:path";
-import type { KataIssue, KataShow } from "./model";
+import { projectOf, type KataIssue, type KataShow } from "./model";
 
 // Running the Kata CLI: every call, its error envelope, and the registered projects it reads refs against.
 
@@ -94,7 +94,7 @@ export function createKata(env: {
 
 	// A project name the list lacks means the project was renamed since it was read.
 	async function qualify(issue: KataIssue, cwd: string, ref?: string): Promise<string> {
-		const asked = ref?.includes("#") ? ref.split("#")[0] : undefined;
+		const asked = ref?.includes("#") ? projectOf(ref) : undefined;
 		const known = await projects(cwd);
 		const stale = asked !== undefined && !known.some(p => p.name === asked);
 		const project = (stale ? undefined : known.find(p => p.id === issue.project_id)) ?? (await projects(cwd, true)).find(p => p.id === issue.project_id);

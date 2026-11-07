@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 
-// The plan vocabulary every core module shares: tasks, bindings, Kata's issue shape and refs.
+// The plan vocabulary every core module shares: tasks, plan parents, Kata's issue shape and refs.
 
 export type Status = "pending" | "in_progress" | "completed" | "abandoned" | "blocked";
 export const OPEN: ReadonlySet<Status> = new Set(["pending", "in_progress", "blocked"]);
