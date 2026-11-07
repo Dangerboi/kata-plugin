@@ -57,9 +57,10 @@ export function createKata(env: {
 		// --json makes every failure carry Kata's error code; the contract hook prints its own format.
 		const plain = args[0] === "agent-contract-hook";
 		const teammate = env.teammate();
-		const flags = [...(plain || args.includes("--json") ? [] : ["--json"]), ...(teammate !== undefined && !plain ? ["--teammate", teammate] : []), ...(workspace ? ["--workspace", path.resolve(cwd)] : [])];
-		const end = args.indexOf("--");
-		args = [...args.slice(0, end < 0 ? args.length : end), ...flags, ...(end < 0 ? [] : args.slice(end))];
+		// Options end at `--`: what follows (a title, an item) is data, even when it reads `--json`.
+		const end = args.indexOf("--") < 0 ? args.length : args.indexOf("--");
+		const flags = [...(plain || args.slice(0, end).includes("--json") ? [] : ["--json"]), ...(teammate !== undefined && !plain ? ["--teammate", teammate] : []), ...(workspace ? ["--workspace", path.resolve(cwd)] : [])];
+		args = [...args.slice(0, end), ...flags, ...args.slice(end)];
 		let result: ExecResult;
 		try { result = await env.exec(env.executable, args, { cwd, timeout, ctx: env.ctx() }); }
 		catch (error) {

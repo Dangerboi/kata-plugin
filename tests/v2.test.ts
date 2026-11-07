@@ -2054,6 +2054,14 @@ test("a parent moved once or twice is not re-adopted by every later todo call th
   expect(await replace("Seventh")).toBe(baseline);
 });
 
+test("an item or plan title that reads like a flag is data, not a Kata option", async () => {
+  const app = host(); await app.event("session_start");
+  const result = await app.call({ op: "init", items: ["--json"], message: "--json" });
+  expect(result.isError, result.content[0].text).toBeUndefined();
+  expect(result.details.kata.phases[0].tasks.map((t: any) => t.content)).toEqual(["--json"]);
+  expect((await show(result.details.kata.parent)).issue.title).toBe("--json");
+});
+
 test("a ticket in another project is never taken for a plan item by its short id", async () => {
   const app = host(); await app.event("session_start");
   const foreign = await otherProject();
