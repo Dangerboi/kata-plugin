@@ -451,11 +451,9 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 		uiOf(ctx)?.notify?.(`Kata is unreachable${outage ? ` (${outage})` : ""}. todo keeps a local plan and replays it into Kata when Kata returns.`, "warning");
 	}
 
-	// Kata is back: create the parent and tasks the local plan accumulated.
 	async function replayLocal(ctx: any) {
 		if (!plan.local || !await probe(ctx.cwd)) return;
 		const local = plan.tasks.filter(t => !t.ticket);
-		// Nothing was planned offline: create nothing.
 		if (!local.length) { delete plan.local; return; }
 		plan = { tasks: [], workspace: plan.workspace };
 		try {
@@ -572,7 +570,6 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 			const shown = await kata.pin(choice.parent, workspace)
 				.then(async qualified => ({ qualified, issue: (await kata.show(qualified, workspace)).issue as KataIssue }))
 				.catch(error => {
-					// A saved automatic parent a person deleted is gone; an explicit parent must exist.
 					if (isExplicitParent(choice) || choice.saved?.auto !== true || !isKataCode(error, "issue_not_found")) throw error;
 					forget(choice.parent!);
 				});
@@ -648,7 +645,6 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 		}
 	}
 
-	// The attention and status writes for a task that starts, returns to pending, or blocks.
 	async function mark(ref: string, task: Task, from: Status, to: "in_progress" | "pending" | "blocked", change: Change, cwd: string, decision: KataIssue): Promise<KataIssue> {
 		if (to === "blocked") {
 			const reason = change.reason || "Blocked in the todo plan.";
@@ -830,7 +826,6 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 		return `${verb} from the todo plan under ${plan.parent}: "${task.content}". Reason: ${why}. This task was intentionally retired from the plan without asserting completion.`;
 	}
 
-	// A delegated task is the subagent's; it never occupies the lead's slot.
 	const leads = (t: Task) => !t.delegated && !delegates.holds(t.ticket ?? t.ref);
 
 	async function remove(task: Task, change: Change, cwd: string): Promise<void> {
@@ -856,7 +851,6 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 		return phasesOf(tasks).flatMap(p => p.tasks).find(t => t.status === "pending" && leads(t));
 	}
 
-	// With no active task, start the earliest pending one (phase order).
 	async function advance(cwd: string): Promise<void> {
 		const next = nextTask(plan.tasks);
 		if (next) await transition(next, "in_progress", {}, cwd);
@@ -997,7 +991,6 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 		}
 	}
 
-	// Re-run a throttled close, then reload and start the next task.
 	async function performTask(pending: { task: Task; to: Status; change: Change; cwd: string }) {
 		const { task, change, cwd } = pending;
 		if (change.remove) await remove(task, change, cwd);
@@ -1005,7 +998,6 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 		if (plan.tasks.some(t => t.ref === task.ref)) { await load(plan.workspace); await advance(plan.workspace); }
 	}
 
-	// The plugin gave up on a close: the issue needs a human.
 	async function flagDropped(ref: string, cwd: string, error: unknown) {
 		const code = (error as KataError | undefined)?.code;
 		await kata.run(["label", "add", ref, "needs-review"], cwd);
@@ -1058,7 +1050,6 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 			if (desired.some(d => !d.content.trim() || !d.phase.trim())) throw new Error("Task and phase names must not be blank.");
 			const wanted = new Set(desired.map(itemKey));
 			const resolved = await resolveNamed(desired, plan.workspace, d => !named.some(t => t.phase === d.phase && t.content === d.content));
-			// An automatic parent deleted since the last op is forgotten before init picks one.
 			if (plan.parent && plan.auto) await load(plan.workspace);
 			const choice = await decidePlanParent(planParentSources(params, ctx));
 			const target = choice.parent;
@@ -1098,7 +1089,6 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 			return render(plan);
 		}
 		let children = await load(cwd);
-		// Nothing to work on, also once the load forgot an automatic parent a person deleted.
 		if (!plan.parent && !plan.local && !named.length) throw new Error("No todo plan yet. Call todo op=init first.");
 		switch (op) {
 			case "append": {
@@ -1124,10 +1114,8 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 				await reopenParent();
 				for (const content of items) {
 					const ticket = resolved.get(itemKey({ phase, content }));
-					// A ticket item already open in the plan is already there: it is never a child to create.
 					if (!ticket && itemTicket(content)) continue;
 					if (ticket) {
-						// A finished or dropped item comes back as a fresh one.
 						named = named.filter(t => t.phase !== phase || t.content !== content || OPEN.has(t.status));
 						if (!named.some(t => t.phase === phase && t.content === content)) addNamed(phase, content, ticket);
 					} else if (plan.local) {
@@ -1411,7 +1399,7 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 		if (!id) throw new Error("Pi child needs a real session identity before tracking work.");
 		if (!parent.ref) {
 			const workspace = parent.workspace;
-			await serial(async () => { await probe(workspace); }); // after any bind in flight
+			await serial(async () => { await probe(workspace); });
 			const existing = (await sessionParents(parent.sessionId, candidate(workspace).project, workspace)).find((issue: any) => issue.metadata?.[`${namespace}.auto_parent`] === true);
 			if (existing) parent.ref = existing.qualified_id;
 			else {
@@ -1475,9 +1463,7 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 			},
 			branch: rebind,
 			tree: rebind,
-			// The user typed a new prompt: stop reminders count again from zero.
 			input() { reminders = 0; },
-			// The agent wants to stop: the reminder text while tasks remain open.
 			stop(ctx: any, messages: any[]): Promise<string | undefined> {
 				see(ctx);
 				return remind(messages, ctx);

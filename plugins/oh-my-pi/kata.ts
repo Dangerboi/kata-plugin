@@ -152,7 +152,6 @@ export default function ompKata(pi: any) {
 	// The context of the latest event: the lifecycle bus carries none. A sub identity that reaches a main-session handler (omp's advisor) never replaces the main one.
 	let seen: any;
 	const see = (ctx: any) => { if (main(ctx) || !seen || !main(seen)) seen = ctx; };
-	// The lead session the assignments below belong to.
 	let assignmentsLead: string | undefined;
 	const assignments = new Map<string, Assignment>();
 	const leadSession = () => seen && main(seen) ? sessionId(seen) : undefined;
@@ -207,7 +206,6 @@ export default function ompKata(pi: any) {
 			void core.delegates.apply({ type: "exited", id: record.id, outcome: job.status === "cancelled" ? "aborted" : job.status });
 		}
 	}
-	// A handler's entry: remember the context and bring delegate state up to date.
 	const enter = async (ctx: any) => { see(ctx); await syncJobs(ctx); };
 
 	pi.registerTool({
@@ -288,7 +286,7 @@ export default function ompKata(pi: any) {
 			const index = event.index ?? 0;
 			const assignment = main(ctx) ? assignments.get(event.parentToolCallId) : undefined;
 			const reserved = assignment?.reserved?.[index];
-			if (assignment?.reserved) assignment.reserved[index] = undefined; // the record holds it now
+			if (assignment?.reserved) assignment.reserved[index] = undefined;
 			if (assignment) {
 				assignment.started.add(index);
 				if (assignment.started.size >= assignment.texts.length) assignments.delete(event.parentToolCallId);

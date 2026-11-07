@@ -223,13 +223,11 @@ export function createDelegates(env: DelegatesEnv): Delegates {
 			const shown = await env.kata.show(scope.parent, workspace);
 			const actor = await env.actor(workspace, scope.parent);
 			const lead = scope.leadTeammate ?? "", mate = scope.teammate ?? "";
-			// Another delegate's issue, or one another writer owns, is never a candidate.
 			const foreign = (c: KataIssue) => heldByDelegate(ns, c.metadata) || (!!c.owner && (c.owner !== actor || ![lead, mate].includes((c.metadata?.teammate as string | undefined) || "")));
 			const all: Task[] = (shown.children ?? []).filter(c => c.status === "open").map(c => ({ ref: qualifiedRef(c, scope.parent!), content: c.title,
 				phase: (c.metadata?.["todo.phase"] as string | undefined) ?? "", status: openTaskStatus(c.metadata?.["todo.status"]), delegated: foreign(c) }));
 			return { all, parent: scope.parent, workspace, label: scope.label, auto: false, local: false, planned: true };
 		}
-		// Items that name a ticket are bindable without a plan parent.
 		const first = env.plan();
 		const planned = (!!first.parent && !first.local) || first.tasks.some(t => t.ticket);
 		if (planned || loadAlways) await env.load(first.workspace || env.cwd());
@@ -305,7 +303,6 @@ export function createDelegates(env: DelegatesEnv): Delegates {
 		const ref = r.planRef, cwd = binding.workspace;
 		let issue: KataIssue = (await env.kata.show(ref, cwd)).issue;
 		r.restore ??= capture(issue);
-		// Retry an interrupted transfer only if it is already ours.
 		if (issue.metadata?.teammate !== r.teammate || issue.owner !== await env.actor(cwd)) {
 			issue = await env.owned(ref, cwd, true, false, undefined, { teammate: r.leadTeammate });
 			await env.kata.run(["meta", "set", ref, "teammate", r.teammate, "--if-match", String(issue.revision)], cwd);
@@ -400,7 +397,7 @@ export function createDelegates(env: DelegatesEnv): Delegates {
 		const r = env.store.get(event.id);
 		switch (event.type) {
 			case "started": {
-				let record = r && !FINAL.has(r.state) ? r : undefined; // a reused id starts over
+				let record = r && !FINAL.has(r.state) ? r : undefined;
 				if (!record) {
 					const { type: _type, reserved, untracked, ...fields } = event;
 					record = { ...fields, state: untracked ? "untracked" : "started", planRef: reserved?.ref, ticket: !!reserved?.ticket };
@@ -416,7 +413,6 @@ export function createDelegates(env: DelegatesEnv): Delegates {
 				if (r && !r.exited) { r.exited = event.outcome; env.store.put(r); }
 				return r;
 			case "nextUse":
-				// A resumed child whose settle never finished is working again.
 				if (r?.exited && !FINAL.has(r.state)) { r.exited = undefined; env.store.put(r); }
 				return r;
 			default:

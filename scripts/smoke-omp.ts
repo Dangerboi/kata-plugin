@@ -133,7 +133,6 @@ async function run(scenario: Scenario) {
 		env.KATA_SMOKE_VARS = JSON.stringify(vars);
 		// Scripted runs need no login, so omp gets a throwaway agent directory; live runs use yours (inherited PI_CODING_AGENT_DIR, else omp's default).
 		if (!live) env.PI_CODING_AGENT_DIR = agentDir;
-		// A scenario's omp settings go in as an overlay for this run, never into an agent directory's config.yml.
 		if (scenario.ompConfig) writeFileSync(ompConfig, scenario.ompConfig);
 		// The smoke extension also records each agent's system prompt, so it loads after the plugin in live runs too.
 		const args = ["--no-extensions", "--no-skills", "--no-rules", "--no-context-files", "--no-lsp", "--no-title", ...(scenario.persist ? [] : ["--no-session"]),

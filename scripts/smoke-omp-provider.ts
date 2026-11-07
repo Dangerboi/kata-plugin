@@ -38,7 +38,6 @@ export default function (pi: any) {
 			const turnIndex = messages.filter(m => m.role === "assistant").length;
 			const turn = key ? scenario.scripts[key][turnIndex] : undefined;
 			const ctx: TurnContext = { texts: messages.map(textOf), system: [context.systemPrompt].flat().filter(Boolean).join("\n") };
-			// The driver reads this to see what the agent was actually shown.
 			if (process.env.KATA_SMOKE_RECORD) appendFileSync(process.env.KATA_SMOKE_RECORD, JSON.stringify({ agent: key ?? "", system: ctx.system, users: messages.filter(m => m.role === "user").map(textOf), roles: messages.map(m => m.role) }) + "\n");
 			const blocks: Block[] = turn ? (typeof turn === "function" ? turn(ctx) : turn) : [`(smoke script has no turn ${turnIndex} for ${key ?? "this agent"})`];
 			const content = blocks.map(block => typeof block === "string" ? { type: "text" as const, text: block }
