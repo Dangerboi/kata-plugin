@@ -19,14 +19,14 @@ import { execFile, spawn } from "node:child_process";
 import { BroadcastChannel, isMainThread, threadId } from "node:worker_threads";
 import { closeSync, openSync, readSync } from "node:fs";
 import { createInterface } from "node:readline";
-import { createKataCore, DESCRIPTION, sessionKey } from "./kata-core";
+import { createKataCore, DESCRIPTION, sessionKey, TODO_OPS, TODO_PARAMS } from "./kata-core";
 import { delegateCommand, kataCommands as parseKataCommands } from "./shell";
 import { FINAL, teammateFor } from "./delegates";
-import type { DelegateEvent, DelegateRecord, DelegateStore, Reservation } from "./delegates";
+import type { DelegateRecord, Delegates, DelegateStore, Reservation } from "./delegates";
 import type { InboxStream } from "./inbox";
 
 // What the lead's Delegates takes from an adapter other than the lead itself: a delegate's next use runs in the lead's queue.
-type DelegateEvents = { apply(event: DelegateEvent): Promise<void> };
+type DelegateEvents = Pick<Delegates, "apply">;
 
 const EXECUTABLE = process.env.KATA_OMP_EXECUTABLE || "kata";
 const EXECUTABLE_VARS = ["KATA_OMP_EXECUTABLE"];
@@ -216,16 +216,16 @@ export default function ompKata(pi: any) {
 		description: DESCRIPTION,
 		approval: "read",
 		parameters: z.object({
-			op: z.enum(["init", "start", "done", "rm", "drop", "block", "unblock", "append", "view"]),
-			list: z.array(z.object({ phase: z.string(), items: z.array(z.string()).min(1) })).optional().describe("phases for init"),
-			task: z.string().optional().describe("verbatim task content or Kata ref"),
+			op: z.enum(TODO_OPS),
+			list: z.array(z.object({ phase: z.string(), items: z.array(z.string()).min(1) })).optional().describe(TODO_PARAMS.list),
+			task: z.string().optional().describe(TODO_PARAMS.task),
 			phase: z.string().optional(),
-			items: z.array(z.string()).optional().describe("tasks for flat init or append"),
-			reason: z.string().optional().describe("blocker note for block"),
-			ref: z.string().optional().describe("existing Kata issue this plan serves (init)"),
-			replace: z.boolean().optional().describe("init: replace a plan that still has open tasks (they close as wontfix); without it init refuses"),
-			message: z.string().optional().describe("done: what changed and how it was verified (40+ chars); drop/rm: reason; init without ref: title for the new Kata parent"),
-			evidence: z.array(z.string()).optional().describe("required for done: commit:<sha>, test:<cmd>, pr:<url>, reviewed-paths:<path>"),
+			items: z.array(z.string()).optional().describe(TODO_PARAMS.items),
+			reason: z.string().optional().describe(TODO_PARAMS.reason),
+			ref: z.string().optional().describe(TODO_PARAMS.ref),
+			replace: z.boolean().optional().describe(TODO_PARAMS.replace),
+			message: z.string().optional().describe(TODO_PARAMS.message),
+			evidence: z.array(z.string()).optional().describe(TODO_PARAMS.evidence),
 		}),
 		async execute(_id: string, params: any, signal: AbortSignal | undefined, onUpdate: any, ctx: any) {
 			await enter(ctx);

@@ -1,6 +1,6 @@
 # Oh-my-pi reference
 
-Plugin ID: `kata@kata-plugin`; package: `kata-omp`. The canonical adapter is root `kata.ts`; the portable entry is `plugins/oh-my-pi/kata.ts`.
+Plugin ID: `kata@kata-plugin`; package: `kata-omp`; entry: `plugins/oh-my-pi/kata.ts`.
 
 Session start exports `KATA_TRANSCRIPT_AGENT=omp` and `KATA_TRANSCRIPT_SESSION_ID`; shutdown leaves them for the next session start to overwrite, as in pi. omp's `exec` does not see later environment changes, so the plugin spawns its own `kata close` calls directly, with no shell and no `env` program, and the pair in the child's environment. The adapter uses session start/shutdown, tree navigation, input, prompt/stop hooks, tool calls/results, and `task:subagent:lifecycle`. A shared coordinator joins final subagent IDs to child sessions. Only `ctx.agent.kind === "main"` can bind the main plan, draw its progress widget, or change main session attention. omp strips any tool named `todo` from `task` subagents, the plugin's included, except under prewalk; a prewalk worker can use todo under its own assigned issue and teammate, and cannot reuse the coordinator’s adapter context or inherited parent reference. Other subagents work their assigned issue through `kata` commands.
 

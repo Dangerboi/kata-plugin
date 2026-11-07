@@ -112,7 +112,7 @@ function toSlot(value: unknown): Slot | undefined {
 }
 
 /** The leading `"event_id":<n>` of a stream line: cheap enough to run on every line of a replay. */
-export const eventIdOf = (line: string) => { const m = /^\{"event_id":(\d+),/.exec(line); return m ? Number(m[1]) : undefined; };
+const eventIdOf = (line: string) => { const m = /^\{"event_id":(\d+),/.exec(line); return m ? Number(m[1]) : undefined; };
 
 /**
  * One stream line for a slot key, a reset frame, or a delete/restore (which change what `kata inbox` lists

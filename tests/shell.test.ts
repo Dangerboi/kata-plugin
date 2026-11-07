@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { spawnSync } from "bun";
 import { assertIsolated } from "./isolation";
 import { kataCommands } from "../plugins/oh-my-pi/kata";
-import { delegateCommand, kataCommands as coreCommands } from "../core/kata-core";
+import { delegateCommand, kataCommands as coreCommands } from "../core/shell";
 assertIsolated();
 
 test("only command positions are Kata invocations", () => {
