@@ -50,9 +50,12 @@ export interface Settlement {
 	holdTicketClose(ticket: string, request: CloseRequest, cwd: string): void;
 	addAutoParent(binding: Binding): void;
 	dropAutoParent(parent: string): void;
-	// The plan parent was deleted: drop its automatic close and its plan tasks' pending closes.
+	// The plan parent was deleted: drop its automatic parent's close and its plan tasks' pending closes.
 	dropPlan(parent: string): void;
-	renameAutoParent(old: string, current: string): void;
+	// Whether a plan task of this plan parent has a pending close.
+	hasPlanCloses(parent: string): boolean;
+	// The plan parent moved: its automatic parent's close and its plan tasks' pending closes follow it.
+	renamePlan(old: string, current: string): void;
 	// Arm the timer (the core's local plan retries on it too).
 	schedule(): void;
 	drain(): Promise<void>;
@@ -220,7 +223,8 @@ export function createSettlement(deps: SettlementDeps): Settlement {
 			autoParents.delete(parent);
 			for (const [ref, pending] of retries) if (pending.parent === parent) dropTask(ref);
 		},
-		renameAutoParent(old, current) {
+		hasPlanCloses: parent => [...retries.values()].some(pending => pending.parent === parent),
+		renamePlan(old, current) {
 			const marker = autoParents.get(old);
 			autoParents.delete(old);
 			if (marker) autoParents.set(current, { ...marker, parent: current });

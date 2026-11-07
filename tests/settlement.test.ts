@@ -318,7 +318,7 @@ test("an automatic parent follows a rehomed ref and can be dropped", async () =>
   await closeDone(await create("Only task", { parent }));
   const s = build();
   s.settlement.addAutoParent({ parent: "old#aaaa", workspace: cwd, sessionId: SESSION, auto: true });
-  s.settlement.renameAutoParent("old#aaaa", parent);
+  s.settlement.renamePlan("old#aaaa", parent);
   expect(s.settlement.snapshot().autoParents.map(b => b.parent)).toEqual([parent]);
   await s.settlement.drain();
   expect((await view(parent)).issue.status).toBe("closed");

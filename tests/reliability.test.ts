@@ -566,7 +566,7 @@ test("after the automatic parent is deleted, init says so, creates a new parent 
   expect((await kata(["show", next, "--json"])).children.map((c: any) => c.title)).toEqual(["Fresh"]);
   expect((await show(first)).status).toBe("open");
 });
-test("a deleted automatic parent is reported on every op, beside ticket items and to a resumed session; append starts no plan", async () => {
+test("a deleted automatic parent is reported on every op beside ticket items, until a ticket-only init starts a new plan", async () => {
   const ticket = `reliability-test#${(await kata(["create", "Deletion notice ticket", "--force-new", "--json"])).issue.short_id}`;
   const a = app(); const parent = await init(a, ["First", `${ticket}: check it`]);
   await deleteIssue(parent);
@@ -576,16 +576,36 @@ test("a deleted automatic parent is reported on every op, beside ticket items an
   const view = await a.call({ op: "view" });
   expect(view.isError).toBeFalsy();
   expect(view.content[0].text).toContain(`${parent} was deleted`);
+  expect(tasksOf(view).map(t => t.content)).toEqual([`${ticket}: check it`]);
+  const restarted = await a.call({ op: "init", items: [`${ticket}: check it`] });
+  expect(restarted.content[0].text).toContain(`${parent} was deleted`);
+  expect((await a.call({ op: "view" })).content[0].text).not.toContain("was deleted");
+});
+test("a session resumed after its automatic parent was deleted reports it and starts a new plan on init", async () => {
+  const a = app(); const parent = await init(a);
+  await deleteIssue(parent);
   const b = app({ entries: a.entries, sid: a.ctx.sessionManager.getSessionId() });
   const resumed = await b.call({ op: "view" });
   expect(resumed.isError).toBeFalsy();
   expect(resumed.content[0].text).toContain(`${parent} was deleted`);
-  const c = app(); const other = await init(c);
-  await deleteIssue(other);
-  const appended = await c.call({ op: "append", items: ["Later"] });
+  expect(await init(b, ["Fresh"])).not.toBe(parent);
+});
+test("append after the automatic parent is deleted asks for init and creates nothing", async () => {
+  const a = app(); const parent = await init(a);
+  await deleteIssue(parent);
+  const creates = a.calls.filter(args => args[0] === "create").length;
+  const appended = await a.call({ op: "append", items: ["Later"] });
   expect(appended.isError).toBe(true);
-  expect(appended.content[0].text).toContain(`${other} was deleted`);
-  expect(c.calls.filter(args => args[0] === "create")).toHaveLength(3);
+  expect(appended.content[0].text).toContain(`${parent} was deleted`);
+  expect(a.calls.filter(args => args[0] === "create")).toHaveLength(creates);
+});
+test("init refuses to drop the open tasks of a deleted parent that was restored meanwhile", async () => {
+  const a = app(); const parent = await init(a); const first = await child(parent, "First");
+  await deleteIssue(parent);
+  await a.call({ op: "view" });
+  await kata(["restore", parent, "--json"]);
+  expect((await a.call({ op: "init", items: ["Fresh"] })).isError).toBe(true);
+  expect((await show(first)).status).toBe("open");
 });
 test("a deleted explicit parent stays an error and no automatic parent replaces it", async () => {
   const ref = `reliability-test#${(await kata(["create", "Explicit parent to delete", "--force-new", "--json"])).issue.short_id}`;
@@ -597,11 +617,16 @@ test("a deleted explicit parent stays an error and no automatic parent replaces 
   expect((await a.call({ op: "init", items: ["Fresh"] })).isError).toBe(true);
   expect(a.calls.filter(args => args[0] === "create")).toHaveLength(creates);
 });
-test("a deleted automatic parent takes its plan tasks' pending closes with it", async () => {
-  const a = app({ before: (args: string[]) => args[0] === "close" ? siblingThrottle() : undefined });
-  const parent = await init(a);
+test("a deleted automatic parent's pending task closes never run, also when the retry timer fires first", async () => {
+  let throttle = true;
+  const a = app({ before: (args: string[]) => args[0] === "close" && throttle ? siblingThrottle() : undefined });
+  const fires: (() => void)[] = [];
+  Object.assign(a.ctx, { setTimeout: (fire: () => void) => fires.push(fire), clearTimer: () => {} });
+  const parent = await init(a); const first = await child(parent, "First");
   expect((await a.call({ ...done, task: "First" })).content[0].text).toContain("retry after 60 seconds");
   await deleteIssue(parent);
-  await a.call({ op: "view" });
-  expect(a.entries.filter(e => e.customType === "io.kata.omp.state").at(-1).data.retries).toEqual([]);
+  throttle = false;
+  // The timer's drain runs in the serial queue; the view after it waits for it.
+  await later(async () => { fires.at(-1)!(); await a.call({ op: "view" }); });
+  expect((await show(first)).status).toBe("open");
 });
