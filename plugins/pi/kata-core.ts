@@ -506,14 +506,14 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 		return name.endsWith(".jsonl") ? name.slice(name.indexOf("_") + 1, -".jsonl".length) || undefined : parentSession;
 	}
 
-	async function bind(ctx: any, explicit = configuredRef(), replay = true, initRef?: string) {
+	async function bind(ctx: any, replay = true, initRef?: string) {
 		let assigned: DelegateAssignment | undefined;
 		if (!main(ctx)) { assigned = delegates.assignment(ctx); if (!assigned) return; }
 		bound = false;
 		boundAgent = agentKey(ctx);
 		sessionTeammate = assigned?.teammate;
 		assignedRef = assigned?.ref;
-		const sources = { cwd: ctx.cwd, assigned, explicit, initRef };
+		const sources = { cwd: ctx.cwd, assigned, explicit: configuredRef(), initRef };
 		const requested = explicitParent(sources)?.parent;
 		requestedRef = requested;
 		const id = sid(ctx);
@@ -1027,7 +1027,7 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 	}
 
 	async function apply(params: any, ctx: any): Promise<string> {
-		if (!bound || currentId !== sid(ctx)) await bind(ctx, configuredRef(), params.op === "view", params.ref ?? (!bound ? requestedRef : undefined));
+		if (!bound || currentId !== sid(ctx)) await bind(ctx, params.op === "view", params.ref ?? (!bound ? requestedRef : undefined));
 		currentCtx = ctx;
 		currentId ||= sid(ctx);
 		if (plan.local) {
@@ -1421,10 +1421,10 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 		const teammate = chosen && chosen !== parent.teammate && chosen !== parent.via && CHILD_TEAMMATE.test(chosen) ? chosen : teammateFor(`${parent.teammate || namespace}:${parent.sessionId}:${id}`);
 		process.env.KATA_TEAMMATE = teammate;
 		process.env.KATA_INBOX_USER = `${await actor(binding.workspace, binding.parent)}/${teammate}`;
-		const scope = { parent: binding.parent, workspace: binding.workspace, label: binding.label, leadTeammate: parent.teammate, teammate };
+		const delegateScope = { parent: binding.parent, workspace: binding.workspace, label: binding.label, leadTeammate: parent.teammate, teammate };
 		// A prompt the assignment rules refuse (two tickets, a taken task) tracks nothing.
 		let reserved: Reservation | undefined, untracked = false;
-		try { reserved = (await delegates.check([{ text: prompt }], [], scope))[0]; }
+		try { reserved = (await delegates.check([{ text: prompt }], [], delegateScope))[0]; }
 		catch (error) { debug(error); untracked = true; }
 		await delegates.apply({ type: "started", id, sessionId: id, leadSessionId: parent.sessionId, leadTeammate: parent.teammate, teammate, text: prompt, single: true,
 			parent: binding.parent, workspace: binding.workspace, parentLabel: binding.label, reserved, untracked });
@@ -1452,7 +1452,7 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 				prefetch(ctx);
 				if (live) startFollower(ctx, user!);
 				await bounded(serial(async () => {
-					await bind(ctx, explicit);
+					await bind(ctx);
 					reminders = 0;
 					if (!options.attentionHarness || !id || previous?.id === id) return;
 					if (previous) await attention("end", previous);

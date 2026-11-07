@@ -10,7 +10,6 @@ export class KataError extends Error {
 	constructor(message: string, readonly info: {
 		exit: number;
 		code?: string; // the envelope's error code, e.g. project_not_initialized
-		detail?: string; // Kata's own message
 		data?: Record<string, unknown>; // the envelope's structured data, e.g. {alias} or {project} on project_not_initialized
 		killed?: boolean; // our timeout killed it
 		notRun?: boolean; // Kata never ran: missing executable
@@ -75,7 +74,7 @@ export function createKata(env: {
 			const notRun = !result.killed && !envelope && !detail;
 			// A renamed project's old name no longer resolves: drop the cached list so the next lookup reloads it.
 			if (envelope?.code === "project_not_initialized") registered = undefined;
-			throw new KataError(`kata ${args[0]} ${result.killed ? `timed out after ${timeout}ms` : notRun ? "could not run" : "failed"}${detail ? `: ${detail}` : ""}`, { exit: result.code, code: envelope?.code, detail, data: envelope?.data && typeof envelope.data === "object" ? envelope.data : undefined, killed: result.killed, notRun });
+			throw new KataError(`kata ${args[0]} ${result.killed ? `timed out after ${timeout}ms` : notRun ? "could not run" : "failed"}${detail ? `: ${detail}` : ""}`, { exit: result.code, code: envelope?.code, data: envelope?.data && typeof envelope.data === "object" ? envelope.data : undefined, killed: result.killed, notRun });
 		}
 		return result.stdout;
 	}
@@ -95,8 +94,9 @@ export function createKata(env: {
 	// A project name the list lacks means the project was renamed since it was read.
 	async function qualify(issue: KataIssue, cwd: string, ref?: string): Promise<string> {
 		const asked = ref?.includes("#") ? ref.split("#")[0] : undefined;
-		const stale = asked !== undefined && !(await projects(cwd)).some(p => p.name === asked);
-		const project = (stale ? undefined : (await projects(cwd)).find(p => p.id === issue.project_id)) ?? (await projects(cwd, true)).find(p => p.id === issue.project_id);
+		const known = await projects(cwd);
+		const stale = asked !== undefined && !known.some(p => p.name === asked);
+		const project = (stale ? undefined : known.find(p => p.id === issue.project_id)) ?? (await projects(cwd, true)).find(p => p.id === issue.project_id);
 		if (!project) throw new Error("Kata issue project could not be pinned.");
 		return `${project.name}#${issue.short_id}`;
 	}
