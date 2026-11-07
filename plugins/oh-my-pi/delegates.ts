@@ -415,8 +415,6 @@ export function createDelegates(env: DelegatesEnv): Delegates {
 			case "nextUse":
 				if (r?.exited && !FINAL.has(r.state)) { r.exited = undefined; env.store.put(r); }
 				return r;
-			default:
-				return r;
 		}
 	}
 

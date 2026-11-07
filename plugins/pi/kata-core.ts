@@ -537,9 +537,7 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 		const parentOwner = source ?? id;
 		settlement.restore(snapshot && !source ? snapshot : undefined);
 		if (snapshot) {
-			if (!source) {
-				if (snapshot.plan?.local && !requested) plan = { ...structuredClone(snapshot.plan), workspace: plan.workspace };
-			}
+			if (!source && snapshot.plan?.local && !requested) plan = { ...structuredClone(snapshot.plan), workspace: plan.workspace };
 			named = structuredClone(snapshot.named ?? []);
 			stamp = Math.max(0, ...named.map(t => t.at || 0));
 			plan.tasks = withNamed(plan.tasks);
@@ -1144,7 +1142,6 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 			case "done":
 			case "drop": {
 				const tasks = (await resolve(params.task, params.phase, "active")).filter(t => OPEN.has(t.status));
-				change.many = tasks.length > 1;
 				for (const task of tasks) await transition(task, op === "done" ? "completed" : "abandoned", change, cwd);
 				break;
 			}
@@ -1225,7 +1222,7 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 		};
 		const params = supported[sub];
 		if (!params) return `/todo ${sub} is not available with Kata. Use /todo [start|done|drop|rm|append|block|unblock], or kata tui.`;
-		const text = await serial(async () => {
+		return serial(async () => {
 			try {
 				return withDeletionNotice(await apply(params, ctx));
 			} catch (err) {
@@ -1235,7 +1232,6 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 				refresh(ctx);
 			}
 		});
-		return text;
 	}
 
 	async function observeToolResult(event: any, ctx: any) {

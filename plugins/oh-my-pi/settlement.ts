@@ -63,8 +63,6 @@ export interface Settlement {
 	restore(saved: SettlementSnapshot | undefined): void;
 }
 
-// An automatic parent whose children left no close evidence stays open and flagged needs-review.
-class NoEvidence extends Error {}
 const codeOf = (error: unknown) => (error as { code?: string } | undefined)?.code;
 // Qualified refs of a ticket's open children.
 export const openChildren = (view: KataShow, ticket: string): string[] => (view.children ?? []).filter(c => c.status !== "closed").map(c => qualifiedRef(c, ticket));
@@ -180,7 +178,7 @@ export function createSettlement(deps: SettlementDeps): Settlement {
 					evidence.push(...event.payload.evidence);
 				}
 				const proof = proofArgs(evidence);
-				if (!proof.length) throw new NoEvidence("Kata child close evidence union is empty");
+				if (!proof.length) throw new Error("Kata child close evidence union is empty");
 				const final: KataShow = await kata.show(parent, workspace);
 				const finalChildren = final.children ?? [];
 				if (final.issue.status === "closed" || deps.delegatesRunning()) continue;

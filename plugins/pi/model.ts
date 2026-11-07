@@ -10,7 +10,7 @@ export const openTaskStatus = (value: unknown): Status => value === "in_progress
 export type Task = { ref: string; content: string; phase: string; status: Status; ticket?: string; at?: number; blocker?: string; delegated?: boolean; review?: boolean; revision?: number; proof?: { message?: string; evidence?: string[] } };
 export type Binding = { parent: string; workspace: string; sessionId?: string; auto?: boolean; label?: string };
 export type Plan = Partial<Binding> & { workspace: string; tasks: Task[]; local?: boolean; error?: string };
-export type Change = { message?: string; evidence?: string[]; reason?: string; many?: boolean; remove?: boolean };
+export type Change = { message?: string; evidence?: string[]; reason?: string; remove?: boolean };
 
 // An issue as `kata show --json` prints it, and each of its children; only the fields the plugin reads.
 // `qualified_id` is printed on children, not on the shown issue itself. Labels are strings (Kata 0.21); the object form is older output.
