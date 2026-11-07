@@ -1,4 +1,5 @@
 import { afterAll, beforeAll, beforeEach, expect, test } from "bun:test";
+import fc from "fast-check";
 import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, realpathSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
@@ -80,11 +81,10 @@ async function host(options: any = {}) {
     },
   };
 }
-// `kata agent-hook install pi` (the native pi adapter) exists on kenn-io/kata main
-// since #466/#475 but in no release yet (v0.18.0 lacks it). Tests that load the
-// native adapter run only when the Kata under test has it; they never fake it.
+// Use Kata 0.21 or later for native pi attention coexistence. Tests that load
+// the native adapter run only when Kata can install it; they never fake it.
 const nativeHelp = await run(["agent-hook", "install", "--help"]);
-const nativeMissing = nativeHelp.code ? "Kata under test lacks `agent-hook install` (unreleased; kenn-io/kata main after #475)" : undefined;
+const nativeMissing = nativeHelp.code ? "Kata under test lacks `agent-hook install`; use Kata 0.21 or later" : undefined;
 if (nativeMissing) console.warn(`Skipping real native pi adapter tests: ${nativeMissing}`);
 beforeAll(async () => {
   const out = await run(["init", "--project", "pitest"]); if (out.code) throw new Error(out.stderr);
@@ -203,6 +203,30 @@ test("pi never performs session attention or registers OMP lifecycle handlers", 
   for (const name of ["session_stop", "session_switch", "session_branch", "before_subagent_spawn"]) expect(app.handlers.has(name)).toBe(false);
 });
 
+test("pi leaves native attention baselines and the main ref to the native adapter", async () => {
+  const ref = (await kata(["create", "Native-owned pi attention", "--force-new", "--json"])).issue.short_id;
+  // Regression: startup with a user adapter and no baseline used to preseed it.
+  await fc.assert(fc.asyncProperty(
+    fc.constantFrom("startup", "reload", "new", "resume", "fork"),
+    fc.constantFrom("user", "project"),
+    fc.constantFrom("absent", "live", "ended"),
+    async (reason, scope, previous) => {
+      process.env.KATA_REF = ref;
+      delete process.env.KATA_PI_PARENT;
+      const active = new Map();
+      const baseline = { id: "native-session", ref, ended: previous === "ended" };
+      if (previous !== "absent") active.set(cwd, baseline);
+      globalRegistry[nativeKey] = { adapters: new Map([["native", { options: { scope, workspace: cwd, attention: true, executable: binary } }]]), active };
+      const app = await host(); await app.event("session_start", { reason });
+      expect(process.env.KATA_REF).toBe(ref);
+      expect(active.size).toBe(previous === "absent" ? 0 : 1);
+      expect(active.get(cwd)).toBe(previous === "absent" ? undefined : baseline);
+      expect(baseline).toEqual({ id: "native-session", ref, ended: previous === "ended" });
+      await app.event("session_shutdown", { reason: "quit" });
+    },
+  ), { numRuns: 12, examples: [["startup", "user", "absent"]] });
+});
+
 test("pi resumes matching session state and reconciles after tree navigation", async () => {
   const app = await host(); const ref = await app.init(["Task across resume"]);
   const resumed = await host({ sid: app.sid, entries: app.entries });
@@ -316,7 +340,8 @@ for (const order of ["plugin-first", "native-first"]) test.skipIf(!!nativeMissin
   const nativeCwd = realpathSync(cwd);
   const app = await host({nativeOrder:order, cwd:nativeCwd}); await app.event("session_start", {reason:"startup"});
   expect(globalRegistry[nativeKey].active.get(nativeCwd).ref).toBe(`pitest#${ref}`);
-  expect(process.env.KATA_REF).toBeUndefined();
+  expect(process.env.KATA_REF).toBe(`pitest#${ref}`);
+  expect(globalRegistry[nativeKey].active.get(nativeCwd).startAttempted).toBe(true);
   const baseline = (await show(ref)).issue.metadata;
   expect(baseline["work.attention"]).toBe("ok");
   const marker=JSON.parse(process.env.KATA_PI_PARENT!);
@@ -384,12 +409,12 @@ test("startup-spawned child establishes the lead session parent without lead wor
   expect((await show(parentRef)).children).toHaveLength(1);
 });
 
-test("clearing child KATA_REF preserves explicit main binding precedence", async () => {
+test("retaining main KATA_REF preserves explicit binding precedence", async () => {
   const first=(await kata(["create","Pinned Pi explicit parent","--force-new","--json"])).issue.short_id;
   const second=(await kata(["create","Different Pi requested parent","--force-new","--json"])).issue.short_id;
   process.env.KATA_REF=first;
   const app=await host(); await app.event("session_start",{reason:"startup"});
-  expect(process.env.KATA_REF).toBeUndefined();
+  expect(process.env.KATA_REF).toBe(first);
   const result=await app.call({op:"init",ref:second,items:["Remain with explicit binding"]});
   expect(result.isError).toBe(true); expect(result.details.kata.parent).toBe(`pitest#${first}`);
   expect((await show(first)).children ?? []).toHaveLength(0);
