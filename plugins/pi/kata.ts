@@ -33,29 +33,6 @@ export function inheritsModel(argv: string[]): { model: boolean; thinking: boole
 const PI_LAUNCH = /(?:^|[;&|(`\n]|\$\(|\b(?:ba|z|da|k)?sh\s+(?:-[a-z]+\s+)*-[a-z]*c\s+['"])\s*(?:(?:env|nohup|exec|command|time|setsid|caffeinate)\s+|[A-Za-z_][A-Za-z0-9_]*=(?:'[^']*'|"[^"]*"|[^\s;&|]*)\s+)*(?:[^\s;&|()'"`]*\/)?pi(?=$|[\s;&|)])/;
 export const launchesPi = (command: string) => PI_LAUNCH.test(command);
 
-// The native adapter reuses this exact baseline on session_start. Preseed it
-// when we run first; leave its captured baseline alone when we run second.
-// Clearing KATA_REF is then independent of extension ordering.
-export function isolateChildAttention(ctx: ExtensionContext, explicit?: string) {
-	const registry = (globalThis as any)[Symbol.for("kata.pi.native.v1")];
-	const cwd = path.resolve(ctx.cwd), id = ctx.sessionManager.getSessionId();
-	let selected: any;
-	for (const adapter of registry?.adapters?.values?.() ?? []) {
-		const o = adapter.options;
-		if (!o?.attention) continue;
-		if (o.scope === "project") {
-			const relative = path.relative(o.workspace, cwd);
-			if (relative !== "" && (relative === ".." || relative.startsWith(".." + path.sep) || path.isAbsolute(relative))) continue;
-			if (!selected || selected.options.scope !== "project" || o.workspace.length > selected.options.workspace.length) selected = adapter;
-		} else if (!selected) selected = adapter;
-	}
-	const previous = registry?.active?.get(cwd);
-	if (selected && id && (!previous || previous.id !== id || previous.ended)) {
-		registry.active.set(cwd, { id, cwd, executable: selected.options.executable, ref: explicit || "", started: false, ended: false, startAttempted: false });
-	}
-	delete process.env.KATA_REF;
-}
-
 export default async function piKata(pi: ExtensionAPI) {
 	// OMP also discovers legacy pi manifests. Do not register a second todo
 	// tool there, or even ask its loader to resolve pi's TypeBox dependency.
@@ -66,6 +43,8 @@ export default async function piKata(pi: ExtensionAPI) {
 		if (marker && Number.isInteger(marker.pid) && marker.pid !== process.pid && typeof marker.sessionId === "string" && typeof marker.workspace === "string" && typeof marker.teammate === "string") inherited = marker;
 	} catch { /* An invalid marker grants no parent binding. */ }
 	const explicit = inherited ? undefined : process.env.KATA_REF;
+	// An inherited lead ref is not the child's assigned issue. Keep this binding
+	// isolation separate from the native adapter's session-attention ownership.
 	if (inherited) delete process.env.KATA_REF;
 	// A child keeps its delegate record in its session branch, so resuming the session keeps its assignment.
 	const DELEGATE_ENTRY = "io.kata.pi.delegate";
@@ -216,7 +195,6 @@ export default async function piKata(pi: ExtensionAPI) {
 			process.env.KATA_TEAMMATE = saved.teammate;
 			delete process.env.KATA_REF;
 		}
-		isolateChildAttention(ctx, inherited ? undefined : explicit);
 		let next = await core.session.start(ctx, { child: inherited && !inherited.ref ? inherited.workspace : undefined });
 		if (!next) { inherited = undefined; next = await core.session.start(ctx) as Lead; } // Kata does not answer from the child's workspace
 		if (inherited?.provider && inherited.model) {

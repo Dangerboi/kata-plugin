@@ -14,7 +14,7 @@
 | Duplicate todo tool | Disable OMP's native todo or remove another pi todo extension. |
 | No visible error | Hooks are deliberately quiet. Enable `KATA_OMP_DEBUG`, or `KATA_PI_DEBUG`. |
 | Git install cannot find pi subdirectory | Install the repository root shim or clone and install the local `plugins/pi` directory. |
-| Pi child changed lead attention | Kata 0.21's pi hook also ignores child sessions once regenerated with `kata agent-hook install pi`. The plugin keeps clearing `KATA_REF` because it cannot see which Kata version generated the installed hook. Avoid inheriting the lead's `KATA_REF` into other tools. |
+| Pi child changed lead attention | The installed pi hook predates Kata 0.21. Rerun `kata agent-hook install pi --attention` to regenerate it, then restart pi. Kata's `KATA_ATTENTION_HOST` guard keeps child sessions off the lead's attention; the plugin no longer clears the lead's `KATA_REF`. |
 
 ## Skillshare snapshot ownership conflict
 
