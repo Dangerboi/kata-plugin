@@ -72,6 +72,9 @@ const itemKey = (item: { phase: string; content: string }) => `${item.phase}\u00
 
 // How long a main session's shutdown waits for Kata before the host may exit: closing an automatic parent takes six or more spawns, and an exit mid-way leaves the parent open.
 const SHUTDOWN_BOUND_MS = 10_000;
+// How long a delegate's first prompt waits for its issue binding, which it cannot learn later. The lead assigns delegates
+// one at a time, about fifteen Kata calls each, so with many at once the last one waits for all the others.
+const DELEGATE_BIND_MS = 15_000;
 
 // The todo tool's ops and parameter descriptions; each host builds its schema from them.
 export const TODO_OPS = ["init", "start", "done", "rm", "drop", "block", "unblock", "append", "view"] as const;
@@ -1388,7 +1391,7 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 			process.env.KATA_TEAMMATE = known.teammate;
 			process.env.KATA_INBOX_USER = `${await actor(known.binding?.workspace ?? parent.workspace, known.ref ?? parent.ref)}/${known.teammate}`;
 			await delegates.apply({ type: "nextUse", id: known.id });
-			if (currentId !== sid(ctx)) await bounded(serial(() => bind(ctx)), 3000);
+			if (currentId !== sid(ctx)) await bounded(serial(() => bind(ctx)), DELEGATE_BIND_MS);
 			return;
 		}
 		const id = sid(ctx);
@@ -1424,7 +1427,7 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 		catch (error) { debug(error); untracked = true; }
 		await delegates.apply({ type: "started", id, sessionId: id, leadSessionId: parent.sessionId, leadTeammate: parent.teammate, teammate, text: prompt, single: true,
 			parent: binding.parent, workspace: binding.workspace, parentLabel: binding.label, reserved, untracked });
-		if (currentId !== sid(ctx)) await bounded(serial(() => bind(ctx)), 3000); // a delegate cannot learn its issue later
+		if (currentId !== sid(ctx)) await bounded(serial(() => bind(ctx)), DELEGATE_BIND_MS);
 	}
 
 	return {
@@ -1488,7 +1491,7 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 				await bounded(Promise.all([
 					main(ctx) && currentId !== sid(ctx) ? serial(() => bind(ctx)) : undefined,
 					(async () => { await prompt.after; if (context) await warmFor(ctx); })(),
-				]), main(ctx) ? 250 : 3000); // a delegate cannot learn its issue later
+				]), main(ctx) ? 250 : DELEGATE_BIND_MS);
 				const sections: PromptSections = {};
 				if (context) {
 					if (cache.contract) sections.contract = cache.contract;

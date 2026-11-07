@@ -468,3 +468,9 @@ export const SCENARIOS: Scenario[] = [{
 		];
 	},
 }];
+
+// The same delegation with every Kata call the lead's plugin makes starting late, as on a loaded machine. Delegates are
+// assigned one after another, so the last one's first prompt waits for all fourteen assignments. Scripted only.
+const workers = SCENARIOS.find(s => s.name === "workers")!;
+SCENARIOS.push({ ...workers, name: "workers-slow-kata", livePrompt: undefined,
+	env: { KATA_OMP_EXECUTABLE: new URL("./smoke-slow-kata.sh", import.meta.url).pathname, KATA_SMOKE_DELAY: "0.025" } });
