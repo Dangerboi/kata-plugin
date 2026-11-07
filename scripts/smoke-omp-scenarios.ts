@@ -17,10 +17,20 @@ export type Issue = {
 	events: { type: string; payload: any }[];
 };
 /** One model request as the scripted provider saw it. */
-export type Request = { agent: string; system: string };
+export type Request = { agent: string; system: string; /** Text of every user-role message in the request. */ users: string[]; /** Role of every message in the request, in order. */ roles: string[] };
+/** One agent prompt: the system prompt the plugin left, and whether the agent ran on omp's main thread. */
+export type Prompt = { agent: string; system: string; mainThread: boolean };
+/** One finished tool call of an agent; `op` is a todo call's operation. */
+export type ToolUse = { agent: string; tool: string; op?: string; isError: boolean; mainThread: boolean };
 export type Store = {
 	/** Requests recorded by the scripted provider, oldest first. */
 	requests(): Request[];
+	/** Every agent prompt, oldest first (live runs too). */
+	prompts(): Prompt[];
+	/** Every finished tool call, oldest first (live runs too). */
+	tools(): ToolUse[];
+	/** A real model did the work (--live). */
+	live: boolean;
 	/** Every issue in the project except the ones filtered out by `parent`. */
 	issues(): Promise<Issue[]>;
 };
@@ -33,7 +43,7 @@ export type Session = {
 	/** Forks the conversation (RPC `fork`): the process moves onto a new session with the same transcript. */
 	fork(): Promise<void>;
 	/** Runs kata against the throwaway store, from outside omp. */
-	kata(args: string[]): string;
+	kata(args: string[], env?: NodeJS.ProcessEnv): string;
 	/** Requests recorded so far. */
 	requests(): Request[];
 };
@@ -48,6 +58,10 @@ export type Scenario = {
 	drive?(session: Session): Promise<Check[]>;
 	/** Keeps the session file on disk (omp's `--no-session` is dropped); RPC `fork` needs one. */
 	persist?: boolean;
+	/** Contents of the throwaway KATA_HOME/config.toml, written before the store is initialised. */
+	config?: string;
+	/** omp settings for this run, in config.yml form, passed as a `--config` overlay. */
+	ompConfig?: string;
 	/** Environment for the omp child. */
 	env?: Record<string, string>;
 	/** Scripted turns keyed by a marker that appears in the agent's first user message. */
@@ -61,6 +75,10 @@ export type Scenario = {
 const MAIN = "[smoke:main]";
 const SUB = "[smoke:sub]";
 const SCOUT = "[smoke:scout]";
+const WORKER = "[smoke:worker]";
+// omp 18.17 runs a subagent on a worker thread once nine or more run at once (its docs say four); fourteen puts
+// several on a worker, so the live run gets odd and even ones there.
+const PORTS = ["lexer", "parser", "printer", "checker", "linker", "loader", "emitter", "resolver", "formatter", "bundler", "planner", "scheduler", "tracer", "profiler"].map(part => `Port ${part} module`);
 const vars = (): Record<string, string> => JSON.parse(process.env.KATA_SMOKE_VARS ?? "{}");
 const lastRef = (ctx: TurnContext, pattern: RegExp) => ctx.texts.join("\n").match(pattern)?.[0];
 
@@ -70,6 +88,8 @@ const message = "Verified the smoke scenario by running it end to end against a 
 
 export const SCENARIOS: Scenario[] = [{
 	name: "default",
+	config: "[close.transcript]\nenabled = true\n",
+	setup: create => ({ bashClosed: create("Close from the main agent's bash") }),
 	prompt: `${MAIN} Plan the parser work, delegate the first item, close the second, then stop.`,
 	livePrompt: () => `Use the todo tool to plan two items, 'Implement parser module' and 'Write parser tests'. Delegate 'Implement parser module' to a task subagent (name it ImplementParser) and tell it to close its Kata issue with evidence ${evidence} and a 40+ character message. Then mark 'Write parser tests' done through the todo tool with evidence ${evidence} and a 40+ character message. Change no files. Stop when both are closed.`,
 	scripts: {
@@ -77,6 +97,7 @@ export const SCENARIOS: Scenario[] = [{
 			[{ tool: "todo", args: { op: "init", list: [{ phase: "Parser", items: ["Implement parser module", "Write parser tests"] }], message: "Smoke parser session" } }],
 			[{ tool: "task", args: { name: "ImplementParser", agent: "task", task: `${SUB} Implement parser module`, solutionSpace: "one fix: nothing to change, just close the issue" } }],
 			[{ tool: "todo", args: { op: "done", task: "Write parser tests", message, evidence: [evidence] } }],
+			[{ tool: "bash", args: { command: `kata close ${vars().bashClosed} --done --message '${message}' --evidence '${evidence}'` } }],
 			["All parser work is finished."],
 			// omp wakes the main agent when the background delegate reports back.
 			["The delegate has reported back."],
@@ -91,27 +112,96 @@ export const SCENARIOS: Scenario[] = [{
 			["Parser module done."],
 		],
 	},
-	async check(store) {
+	async check(store, ids) {
 		const issues = await store.issues();
+		const bashClosed = issues.find(i => i.ref.endsWith(ids.bashClosed));
 		const children = issues.filter(i => i.metadata["todo.phase"]);
 		const parent = issues.find(i => i.metadata["omp.session_id"] && !i.metadata["omp.subagent_id"] && !i.metadata["todo.phase"]);
 		const parser = children.find(i => i.title === "Implement parser module");
 		const tests = children.find(i => i.title === "Write parser tests");
 		const hasRecorded = (e: any) => e?.type === recorded.type && e?.command === recorded.command;
+		const transcript = (i?: Issue) => i?.events.find(e => e.type === "issue.closed")?.payload?.transcript;
 		const closeEvidence = (i?: Issue) => i?.events.find(e => e.type === "issue.closed")?.payload?.evidence ?? [];
 		return [
 			{ name: "todo init creates the automatic parent", ok: !!parent, detail: parent?.title },
 			{ name: "todo init creates both plan tasks", ok: children.length === 2 && !!parser && !!tests, detail: children.map(c => c.title).join(", ") },
 			{ name: "task delegation binds to its plan task (omp.subagent_id)", ok: !!parser?.metadata["omp.subagent_id"], detail: JSON.stringify(parser?.metadata) },
-			{ name: "no stray issue was created for the delegation", ok: issues.length === 3, detail: `${issues.length} issues` },
+			{ name: "no stray issue was created for the delegation", ok: issues.length === 4, detail: `${issues.length} issues` },
 			{ name: "todo done closes with the evidence", ok: tests?.status === "closed" && closeEvidence(tests).some(hasRecorded), detail: `${tests?.status} ${JSON.stringify(closeEvidence(tests))}` },
 			{ name: "delegate closed its own task with evidence", ok: parser?.status === "closed" && closeEvidence(parser).some(hasRecorded), detail: `${parser?.status} ${JSON.stringify(closeEvidence(parser))}` },
+			{ name: "the plugin's todo done close records the omp session", ok: transcript(tests)?.agent === "omp" && !!transcript(tests)?.session_id, detail: JSON.stringify(transcript(tests)) },
+			{ name: "the automatic parent's close records the same omp session as todo done", ok: transcript(parent)?.agent === "omp" && transcript(parent)?.session_id === transcript(tests)?.session_id, detail: JSON.stringify(transcript(parent)) },
+			{ name: "the main agent's bash close inherits the omp session", ok: bashClosed?.status === "closed" && transcript(bashClosed)?.agent === "omp" && transcript(bashClosed)?.session_id === transcript(tests)?.session_id, detail: `${bashClosed?.status} ${JSON.stringify(transcript(bashClosed))}` },
+			{ name: "the delegate's bash close records the omp session", ok: transcript(parser)?.agent === "omp" && !!transcript(parser)?.session_id, detail: JSON.stringify(transcript(parser)) },
 			{ name: "session shutdown closed the automatic parent", ok: parent?.status === "closed", detail: parent?.status },
 		];
 	},
 }, {
 	name: "inbox",
-	env: { KATA_INBOX_USER: "smoke-user" },
+	// The notify sender and the session share this actor, so the trust rule accepts the requests.
+	env: { KATA_INBOX_USER: "smoke-user/lead", KATA_AUTHOR: "smoke-user" },
+	// A prompt containing "slow-work" runs a slow bash step; every other turn just answers.
+	scripts: { [MAIN]: Array.from({ length: 60 }, () => (ctx: TurnContext) => ctx.texts.at(-1)?.includes("slow-work") ? [{ tool: "bash", args: { command: "sleep 4" } }] : ["noted"]) },
+	async drive(session) {
+		const checks: Check[] = [];
+		const target = JSON.parse(session.kata(["create", "Inbox target", "--json"])).issue.short_id;
+		const main = () => session.requests().filter(r => r.agent === MAIN);
+		const carrying = (mark: string) => main().filter(r => r.users.some(u => u.includes(mark)));
+		const shows = (mark: string) => (main().at(-1)?.system ?? "").includes(`<kata_inbox>`) && (main().at(-1)?.system ?? "").includes(mark);
+		const until = async (condition: () => boolean, ms = 20_000) => { for (const end = Date.now() + ms; !condition() && Date.now() < end;) await new Promise(r => setTimeout(r, 100)); return condition(); };
+		const notify = (message: string) => session.kata(["notify", target, "--to", "smoke-user/lead", "--message", message]);
+		const clear = () => session.kata(["notify", target, "--to", "smoke-user/lead", "--clear"]);
+		await session.prompt(`${MAIN} start`);
+		checks.push({ name: "no inbox section before any notify", ok: !shows("smoke-") });
+
+		// An idle agent: nobody types, yet a turn starts on the request.
+		notify("smoke-idle-marker");
+		const idle = await until(() => carrying("smoke-idle-marker").length > 0);
+		checks.push({ name: "a notify to an idle agent starts a turn carrying it", ok: idle, detail: "no request carried the message" });
+		const text = carrying("smoke-idle-marker")[0]?.users.find(u => u.includes("smoke-idle-marker")) ?? "";
+		checks.push({ name: "the delivered message names the sender, the issue and how to clear it", ok: text.includes("smoke-user") && text.includes(`omp-smoke#${target}`) && text.includes(`kata notify omp-smoke#${target} --to smoke-user/lead --clear`), detail: text });
+		// Let the turn the request started finish before the next prompt.
+		await new Promise(r => setTimeout(r, 1500));
+		await session.prompt("after the idle delivery");
+		checks.push({ name: "the inbox section shows the request on the next prompt", ok: shows("smoke-idle-marker") });
+		// Later requests keep the delivered message in their history, so a second delivery shows as a second copy there.
+		const copies = (mark: string) => main().at(-1)?.users.filter(u => u.includes(mark)).length ?? 0;
+		checks.push({ name: "the idle request was delivered once", ok: copies("smoke-idle-marker") === 1, detail: `${copies("smoke-idle-marker")} copies` });
+
+		// A cleared request is not delivered, and leaves the section.
+		clear();
+		await new Promise(r => setTimeout(r, 1500));
+		const afterClear = main().length;
+		await session.prompt("after the clear");
+		checks.push({ name: "clearing delivers nothing", ok: main().length === afterClear + 1, detail: `${main().length - afterClear} requests after the clear` });
+		checks.push({ name: "the cleared request leaves the section", ok: !shows("smoke-idle-marker") });
+
+		// A request another actor wrote for this session never starts a turn nor reaches a prompt.
+		const before = main().length;
+		session.kata(["notify", target, "--to", "smoke-user/lead", "--message", "smoke-forged-marker"], { KATA_AUTHOR: "mallory" });
+		await new Promise(r => setTimeout(r, 2500));
+		checks.push({ name: "a request from another actor starts no turn", ok: main().length === before, detail: `${main().length - before} new requests` });
+		await session.prompt("after the forged request");
+		const everywhere = session.requests().filter(r => r.system.includes("smoke-forged-marker") || r.users.some(u => u.includes("smoke-forged-marker")));
+		checks.push({ name: "its marker is in no system prompt or user message", ok: everywhere.length === 0, detail: `${everywhere.length} requests` });
+		session.kata(["notify", target, "--to", "smoke-user/lead", "--clear"], { KATA_AUTHOR: "mallory" });
+
+		// A working agent: the request waits for the step boundary, behind the tool result.
+		const running = session.prompt("slow-work please");
+		await new Promise(r => setTimeout(r, 1500));
+		notify("smoke-working-marker");
+		await running;
+		const working = carrying("smoke-working-marker");
+		checks.push({ name: "a notify to a working agent arrives within the same run, once", ok: working.length > 0 && copies("smoke-working-marker") === 1, detail: `${working.length} requests carried it, ${copies("smoke-working-marker")} copies` });
+		const roles = working[0]?.roles ?? [];
+		checks.push({ name: "it arrives after the slow tool step finished, not by interrupting it", ok: roles.slice(-3).join() === "assistant,toolResult,user", detail: roles.join() });
+		clear();
+		return checks;
+	},
+}, {
+	name: "inbox-per-turn",
+	// KATA_OMP_LIVE_INBOX=0 is what tern-kata sets for the agents it starts: it delivers there itself.
+	env: { KATA_INBOX_USER: "smoke-user/lead", KATA_AUTHOR: "smoke-user", KATA_OMP_LIVE_INBOX: "0" },
 	scripts: { [MAIN]: Array.from({ length: 12 }, () => ["noted"]) },
 	async drive(session) {
 		const MARK = "smoke-inbox-marker";
@@ -126,14 +216,17 @@ export const SCENARIOS: Scenario[] = [{
 		const checks: Check[] = [];
 		await session.prompt(`${MAIN} start`);
 		checks.push({ name: "no inbox section before any notify", ok: !seen() });
-		session.kata(["notify", target, "--to", "smoke-user", "--message", MARK]);
+		session.kata(["notify", target, "--to", "smoke-user/lead", "--message", MARK]);
+		await new Promise(r => setTimeout(r, 2000));
+		checks.push({ name: "with live delivery off, a notify starts no turn", ok: !session.requests().some(r => r.users.some(u => u.includes(MARK))) && session.requests().length === 1, detail: `${session.requests().length} requests` });
 		const shown = await within(2, true);
 		checks.push({ name: "notify sent mid-session reaches the system prompt within two turns", ok: shown > 0, detail: "never appeared" });
-		session.kata(["notify", target, "--to", "smoke-user", "--clear"]);
+		session.kata(["notify", target, "--to", "smoke-user/lead", "--clear"]);
 		const cleared = await within(2, false);
 		checks.push({ name: "clearing the request removes the section within two turns", ok: cleared > 0, detail: "still present" });
 		await session.prompt("one more turn");
 		checks.push({ name: "the cleared request stays gone", ok: !seen() });
+		checks.push({ name: "no message was delivered live at any point", ok: !session.requests().some(r => r.users.some(u => u.includes(MARK))) });
 		return checks;
 	},
 }, {
@@ -284,6 +377,97 @@ export const SCENARIOS: Scenario[] = [{
 			{ name: "no issue carries needs-review", ok: labelled.length === 0, detail: labelled.map(i => i.ref).join(", ") },
 			{ name: "the lead got no inbox request", ok: requests.length === 0, detail: requests.join(", ") },
 			{ name: "session shutdown closed the automatic parent", ok: parent?.status === "closed", detail: parent?.status },
+		];
+	},
+}, {
+	name: "workers",
+	config: "[close.transcript]\nenabled = true\n",
+	// omp strips its todo tool from subagents unless prewalk is armed for their agent; a prewalk target lets delegates
+	// call todo. It hands off at a delegate's first edit; the target is a subscription model, and must differ from the
+	// --model of a live run in model or thinking level, or omp skips prewalk. Scripted runs skip it: no login.
+	ompConfig: "task:\n  agentPrewalk:\n    task: anthropic/claude-haiku-5-5:low\n",
+	prompt: `${MAIN} Plan the ports, delegate all of them at once, then stop.`,
+	// Live: odd delegates plan one step under their own issue with the todo tool, finish it, then close their issue; even
+	// ones run a tool and leave their task open, so the lead hands it back.
+	livePrompt: () => [
+		`Use the todo tool to plan these items in one phase: ${PORTS.map(p => `'${p}'`).join(", ")}.`,
+		`Then delegate all of them in ONE task call with exactly ${PORTS.length} tasks, named Port1 to Port${PORTS.length} in that order, task N working item N. Copy each task's instructions exactly, with <item> replaced by its item:`,
+		`- Port1, Port3, Port5 and every other odd-numbered task: "Work '<item>'. Change no files. First call the todo tool with op init and items ['Verify <item>']. Then call the todo tool with op done, task 'Verify <item>', evidence ['${evidence}'] and a message of at least 40 characters. Then close your own Kata issue with the kata close command your Kata binding gives, with evidence '${evidence}'. Do nothing else: no exploring, no tests, no other todo items or files. If a step fails twice, report the error and stop."`,
+		`- Port2, Port4, Port6 and every other even-numbered task: "Work '<item>'. Change no files. Run the bash command ls exactly once, then stop. Do nothing else: do not close or change your Kata issue, do not call the todo tool, do not run tests."`,
+		`After the task call, do not close, change or re-plan any task yourself, even when reminded; just stop.`,
+	].join("\n"),
+	scripts: {
+		[MAIN]: [
+			[{ tool: "todo", args: { op: "init", list: [{ phase: "Ports", items: PORTS }], message: "Smoke worker-thread session" } }],
+			[{ tool: "task", args: { context: "Smoke port work: nothing to change, just close your Kata issue.", tasks: PORTS.map((port, i) => ({ name: `Port${i + 1}`, agent: "task", task: `${WORKER} ${port}`, solutionSpace: "one fix: nothing to change, just close the issue" })) } }],
+			["The ports are delegated."],
+			// omp wakes the main agent as background delegates report back.
+			...PORTS.map(() => ["A delegate has reported back."]),
+		],
+		[WORKER]: [
+			ctx => {
+				const ref = ctx.system.match(/Your Kata issue is ([\w#-]+)/)?.[1];
+				if (!ref) return ["No Kata binding in system prompt."];
+				return [{ tool: "bash", args: { command: `kata close ${ref} --done --message '${message}' --evidence '${evidence}'` } }];
+			},
+			["Port done."],
+		],
+	},
+	async check(store) {
+		const issues = await store.issues();
+		const children = issues.filter(i => i.metadata["todo.phase"]);
+		const parent = issues.find(i => i.metadata["omp.session_id"] && !i.metadata["todo.phase"]);
+		// Each delegate's first prompt, by the name the task call gave it.
+		const first = new Map<string, Prompt>();
+		for (const prompt of store.prompts()) if (/^Port\d+$/.test(prompt.agent) && !first.has(prompt.agent)) first.set(prompt.agent, prompt);
+		const taskOf = (n: number) => children.find(c => c.title === PORTS[n - 1]);
+		const wrong = PORTS.map((_, i) => {
+			const ref = first.get(`Port${i + 1}`)?.system.match(/Your Kata issue is [\w-]+#([\w]+)/)?.[1];
+			const task = taskOf(i + 1);
+			return !task || ref !== task.ref ? `Port${i + 1}: ${ref ?? "none"} for ${task?.ref ?? "no task"}` : undefined;
+		}).filter(Boolean);
+		const labelled = (i?: Issue) => !!i?.events.some(e => /label/.test(e.type) && JSON.stringify(e.payload).includes("needs-review"));
+		const onWorker = [...first.values()].filter(p => !p.mainThread).map(p => p.agent);
+		const checks: Check[] = [
+			{ name: "omp ran at least one delegate on a worker thread", ok: onWorker.length > 0, detail: `${onWorker.length} of ${first.size} delegates off the main thread` },
+			{ name: "every delegate, on a worker or not, saw its own plan task in its system prompt", ok: first.size === PORTS.length && wrong.length === 0, detail: wrong.join(", ") || `${first.size} delegates prompted` },
+		];
+		const numbers = PORTS.map((_, i) => i + 1);
+		const closers = numbers.filter(n => n % 2 === 1), leavers = numbers.filter(n => n % 2 === 0);
+		// omp 18.17 fails every model call a worker-thread subagent makes through an extension's provider (the scripted
+		// one), so only a real model gets worker delegates past their first turn.
+		const onMain = numbers.filter(n => first.get(`Port${n}`)?.mainThread);
+		if (!store.live) return [...checks,
+			{ name: "every delegate on the main thread closed its own plan task", ok: onMain.length > 0 && onMain.every(n => taskOf(n)?.status === "closed"), detail: onMain.filter(n => taskOf(n)?.status !== "closed").map(n => `Port${n}: ${taskOf(n)?.status}`).join(", ") || `${onMain.length} closed` },
+			{ name: "no stray issue", ok: issues.length === PORTS.length + 1, detail: `${issues.length} issues` },
+			{ name: "none carries needs-review", ok: !issues.some(labelled), detail: issues.filter(labelled).map(i => i.ref).join(", ") },
+		];
+		const tools = store.tools();
+		// A delegate that ran init twice has two steps of that title; the one it finished is the one closed as done.
+		const doneClose = (i: Issue) => i.events.some(e => e.type === "issue.closed" && e.payload?.reason === "done");
+		const stepOf = (n: number) => {
+			const steps = issues.filter(i => i.title === `Verify ${PORTS[n - 1]}`);
+			return steps.find(doneClose) ?? steps[0];
+		};
+		const used = (n: number, op: string) => tools.some(t => t.agent === `Port${n}` && t.tool === "todo" && t.op === op && !t.isError);
+		// Its todo planned and closed a step under its own issue, and its kata close closed the issue.
+		const workedThroughTodo = (n: number) => used(n, "init") && used(n, "done") && stepOf(n)?.status === "closed" && taskOf(n)?.status === "closed";
+		const sessionOf = (i?: Issue) => i?.events.find(e => e.type === "issue.closed")?.payload?.transcript?.session_id;
+		// The todo close and the bash close of one delegate both carry that delegate's own session; without its record, the lead's.
+		const ownSession = (n: number) => !!sessionOf(stepOf(n)) && sessionOf(stepOf(n)) === sessionOf(taskOf(n)) && sessionOf(taskOf(n)) !== parent?.metadata["omp.session_id"];
+		// Hand back: a delegate that ran a tool and left its task open; one whose tool use never reached the lead is rolled back instead, unlabelled.
+		const handedBack = (n: number) => {
+			const task = taskOf(n);
+			return labelled(task) && task?.metadata["work.attention"] === "needs-human" && Object.keys(task?.metadata ?? {}).some(key => key.startsWith("notify.")) && tools.some(t => t.agent === `Port${n}` && t.tool === "bash");
+		};
+		const describe = (ns: number[], ok: (n: number) => boolean) => ns.filter(n => !ok(n)).map(n => `Port${n}${onWorker.includes(`Port${n}`) ? " (worker)" : ""}: ${taskOf(n)?.status}, step ${stepOf(n)?.status ?? "none"}, tools ${JSON.stringify(tools.filter(t => t.agent === `Port${n}`).map(t => `${t.tool}${t.op ? `:${t.op}` : ""}${t.isError ? "!" : ""}`))}`).join("; ");
+		const onWorkerOf = (ns: number[]) => ns.filter(n => onWorker.includes(`Port${n}`));
+		// A real model under prewalk tends to add steps and work of its own, so live checks hold the worker delegates to
+		// what the plugin owes them, not every delegate to the script.
+		return [...checks,
+			{ name: "a delegate on a worker thread planned, finished and closed through its own todo and kata close", ok: onWorkerOf(closers).length > 0 && onWorkerOf(closers).every(workedThroughTodo), detail: `worker delegates ${onWorker.join(", ")}; ${describe(onWorkerOf(closers), workedThroughTodo)}` },
+			{ name: "a worker delegate's todo close and kata close record its own omp session, not the lead's", ok: onWorkerOf(closers).length > 0 && onWorkerOf(closers).every(ownSession), detail: onWorkerOf(closers).filter(n => !ownSession(n)).map(n => `Port${n}: step ${sessionOf(stepOf(n)) ?? "none"}, issue ${sessionOf(taskOf(n)) ?? "none"}, lead ${parent?.metadata["omp.session_id"]}`).join("; ") },
+			{ name: "a delegate on a worker thread that ran a tool and left its task open was handed back", ok: onWorkerOf(leavers).length > 0 && onWorkerOf(leavers).every(handedBack), detail: `worker delegates ${onWorker.join(", ")}; ${describe(onWorkerOf(leavers), handedBack)}` },
 		];
 	},
 }];

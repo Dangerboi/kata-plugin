@@ -6,13 +6,15 @@
 | Plan lands in a project you did not expect | A folder with no Kata project uses `KATA_DEFAULT_PROJECT`, else registers its inferred project. Bind explicitly with `init ref` or `KATA_REF`, or run `kata init --project <name>` in the folder. |
 | `todo` says the default project is missing | `KATA_DEFAULT_PROJECT` must name an existing project; create it with `kata projects create <name>`. |
 | Todo state unavailable | Read the reported Kata error. Once the service recovers, call `view`; failed bindings and reads are retried without presenting cached tasks as current. |
-| Close succeeds with “transcript: current session unavailable or invalid” | Kata 0.20.0 supports only Claude/Codex transcript identities. OMP requires upstream transcript support; do not relabel its UUID as Codex or suppress the diagnostic. |
+| Close succeeds with “transcript: current session unavailable or invalid” | Transcripts are on, but this close carried no session pair. The omp and pi plugins export it at session start, so this is a close run outside the harness (a plain terminal, or after the session ended) or with the variables unset; see [Record agent sessions on closes](record-session-transcripts.md). The close itself succeeded. |
+| Close succeeds with “transcript: ambiguous current session” | More than one `[close.transcript.session_id_env]` variable is set, for example `pi` and `omp` both mapped to `PI_SESSION_ID`. The omp and pi plugins need no mapping: remove it. |
+| AgentsView says the linked session is not found | The close recorded another agent name, usually from a `[close.transcript.session_id_env]` mapping that names the wrong harness (`PI_SESSION_ID` mapped to `pi` while you use oh-my-pi), or the AgentsView address is wrong. Remove the mapping: the plugin sets the right agent itself. |
 | Close refused | Inspect the actual Kata error, evidence, owner, teammate, and current children. Do not force a completed display state. |
 | Parent stays open | Check all current children, pending/running delegates, lead settlement, and `needs-review`. Explicit parents stay open by design. |
 | Duplicate todo tool | Disable OMP's native todo or remove another pi todo extension. |
 | No visible error | Hooks are deliberately quiet. Enable `KATA_OMP_DEBUG`, or `KATA_PI_DEBUG`. |
 | Git install cannot find pi subdirectory | Install the repository root shim or clone and install the local `plugins/pi` directory. |
-| Pi child changed lead attention | The pi plugin requires Kata 0.21 or later. Upgrade Kata, rerun `kata agent-hook install pi --attention` to refresh the generated adapter, and restart pi. Kata's native `KATA_ATTENTION_HOST` guard owns child session-attention isolation. |
+| Pi child changed lead attention | The installed pi hook predates Kata 0.21. Rerun `kata agent-hook install pi --attention` to regenerate it, then restart pi. Kata's `KATA_ATTENTION_HOST` guard keeps child sessions off the lead's attention; the plugin no longer clears the lead's `KATA_REF`. |
 
 ## Skillshare snapshot ownership conflict
 

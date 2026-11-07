@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
-import { itemTicket, matchDelegation, namedTargets, namedTasks, qualifiedRefs, taskTokens, type Status, type Task } from "../core/kata-core";
+import { itemTicket, qualifiedRefs, type Status, type Task } from "../core/kata-core";
+import { matchDelegation, namedTargets, namedTasks, taskTokens } from "../core/delegates";
 
 const task = (ref: string, content: string, status: Status = "pending", extra: Partial<Task> = {}): Task => ({ ref, content, phase: "Tasks", status, ...extra });
 const pick = (tasks: Task[], text: string, unavailable: string[] = [], single = true) => matchDelegation(tasks, text, { unavailable: new Set(unavailable), single })?.ref;
