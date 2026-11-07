@@ -2,19 +2,9 @@
 
 ## oh-my-pi 2.5.1 / pi 1.5.1 — 2026-11-07
 
-**Requires Kata 0.21.0**; 0.22.0 tested.
+**Requires Kata 0.21.0** (was 0.19; 0.20 and 0.22.0 tested). The CLI and the daemon both need 0.21.0.
 
 - **A deleted automatic parent no longer locks up the todo tool.** Kata 0.22's TUI deletes an issue with `X`. After a person deleted the session's automatic parent, every `todo` call, `view` and `init` included, failed with `issue not found` and pointed at `view`, a resumed session failed the same way, and a pi lead could not launch a pi child; only `kata restore` got it working again. Now the plan goes with the parent, together with its pending closes: every `todo` result (and `/todo`) says the parent was deleted until a new plan starts, its tasks stay in Kata as they were, `append` with no plan left asks for an `init`, and `init` (or a pi lead launching a child) creates a new parent. Kata refuses the session's old idempotency key for that create, so the new parent takes a key derived from the deleted one, which a pi child that starts before the lead reaches too. A deleted explicit parent (`KATA_REF`, an init `ref`, an adopted issue) is still an error.
-- Development: the pi close-transcript test reads every event in its store, not only the first 500, so tests added before it no longer break it.
-
-Upgrade notes:
-
-- Kata 0.22.0's schema 46 is one-way. Older binaries can't open the upgraded store; rolling back needs the pre-upgrade backup plus its matching binary.
-
-## oh-my-pi 2.5.0 / pi 1.5.0 — 2026-11-05
-
-**Requires Kata 0.21.0** (was 0.19; 0.20 tested). The CLI and the daemon both need 0.21.0.
-
 - **Close transcripts record omp and pi sessions.** Once `[close.transcript] enabled = true` is in Kata's `config.toml`, the plugin's own closes and the agent's `kata close` calls record `omp <id>` or `pi <id>`. `session_id_env` is no longer needed for omp or pi. omp delegates record their own session on every close they run, a `kata close` in `bash` and their own `todo done`, `drop` and `rm`. Another harness launched from omp's or pi's bash tool inherits the pair, so its closes link the launching session.
 - **Moved issues stay together.** After `kata move`, new plan tasks, delegated work and ticket items follow the issue to the project it now lives in, instead of landing in the old project.
 - **Attachment evidence no longer stalls the automatic parent.** A child closed with Kata 0.21 `attachment` evidence used to leave the parent `needs-review`. The parent now closes with the children's other evidence, and stays open for review only if none remains.
@@ -36,11 +26,12 @@ Upgrade notes:
 - A close that keeps failing for a reason other than Kata's sibling throttle is retried on up to three settlement passes, then dropped and labelled `needs-review` with a comment naming Kata's error code, instead of being retried for the rest of the session. Passes while Kata is unreachable don't count, so an outage never drops a close.
 - In a plan of only ticket items, a `todo` target shaped like an issue id that names no issue reports Kata's error instead of a Node `TypeError`.
 - Development: run the suite against the installed Kata with `KATA_TEST_EXECUTABLE="$(readlink -f "$(command -v kata)")" bun run test`. Error fixtures are re-captured from Kata 0.21.0. The default `smoke:omp` scenario turns transcripts on and checks that the plugin's close and a delegate's close record omp sessions. The `workers` scenario delegates fourteen plan tasks at once and checks that every delegate, those on worker threads included, sees its own task; with `--live`, that worker delegates plan and close through their own `todo` and `kata close`, and are handed back after using a tool.
+- Development: the pi close-transcript test reads every event in its store, not only the first 500, so tests added before it no longer break it.
 
 Upgrade notes:
 
 - Tested with oh-my-pi 18.17.0.
-- Kata 0.21.0's schema 43 is one-way. Older binaries can't open the upgraded store; rolling back needs the pre-upgrade backup plus its matching binary.
+- Kata 0.21.0's schema 43 and 0.22.0's schema 46 are one-way. Older binaries can't open an upgraded store; rolling back needs the pre-upgrade backup plus its matching binary.
 - Re-run `kata agent-hook install pi` so the installed pi hook includes the child-session guard.
 - Session transcripts for agents other than Claude Code and Codex need daemon API 0.34.0. An older daemon warns and closes without the transcript.
 
