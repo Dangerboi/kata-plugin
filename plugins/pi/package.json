@@ -1,6 +1,6 @@
 {
-  "name": "kata-pi",
-  "version": "1.7.0",
+  "name": "@dangerboi/kata-pi",
+  "version": "1.7.1",
   "type": "module",
   "description": "Kata-backed plans and evidence-checked completion for stock pi",
   "license": "MIT",
@@ -30,5 +30,8 @@
   "peerDependencies": {
     "@earendil-works/pi-coding-agent": "*",
     "typebox": "*"
+  },
+  "publishConfig": {
+    "access": "public"
   }
 }

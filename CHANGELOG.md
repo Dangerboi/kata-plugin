@@ -1,8 +1,19 @@
 # Changelog
 
-All notable changes to kata-plugin are listed here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project uses [semantic versioning](https://semver.org/spec/v2.0.0.html). A release carries the root version, which kata-pi shares, and names both plugin versions on its first line.
+All notable changes to kata-plugin are listed here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project uses [semantic versioning](https://semver.org/spec/v2.0.0.html). A release carries the root version, which the pi package shares, and names both plugin versions on its first line.
 
 ## [Unreleased]
+
+## [1.7.1] - 2026-11-08
+
+kata-omp 2.7.0 and @dangerboi/kata-pi 1.7.1.
+
+### Changed
+
+#### Install and update
+
+- pi: the npm package is `@dangerboi/kata-pi`; install it with `pi install npm:@dangerboi/kata-pi`.
+  - npm refused the name `kata-pi` as too close to an existing package, so 1.7.0 never reached npm.
 
 ## [1.7.0] - 2026-11-08
 
@@ -12,7 +23,7 @@ kata-omp 2.7.0 and kata-pi 1.7.0.
 
 #### Install and update
 
-- pi: `kata-pi` is on npm and in the [Pi package gallery](https://pi.dev/packages); install it with `pi install npm:kata-pi`.
+- pi: the pi package is ready for npm and the [Pi package gallery](https://pi.dev/packages).
   - The package carries the license and this changelog, so pi shows the new entries after an update.
   - Its manifest points the gallery at a preview image and a short silent video in `docs/media/`.
 
@@ -361,7 +372,8 @@ kata-omp 2.2.0 and kata-pi 1.2.0.
 
 - omp: the plugin skips its Kata contract when the system prompt already carries it.
 
-[Unreleased]: https://github.com/Dangerboi/kata-plugin/compare/v1.7.0...HEAD
+[Unreleased]: https://github.com/Dangerboi/kata-plugin/compare/v1.7.1...HEAD
+[1.7.1]: https://github.com/Dangerboi/kata-plugin/compare/v1.7.0...v1.7.1
 [1.7.0]: https://github.com/Dangerboi/kata-plugin/compare/v1.6.1...v1.7.0
 [1.6.1]: https://github.com/Dangerboi/kata-plugin/compare/v1.6.0...v1.6.1
 [1.6.0]: https://github.com/Dangerboi/kata-plugin/compare/v1.5.1...v1.6.0

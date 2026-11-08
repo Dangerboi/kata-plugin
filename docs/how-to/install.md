@@ -30,7 +30,7 @@ Tested with oh-my-pi 18.18.1. To check another omp release, run `bun run smoke:o
 ## Pi
 
 ```sh
-pi install npm:kata-pi
+pi install npm:@dangerboi/kata-pi
 # or, from a checkout:
 pi install /path/to/kata-plugin/plugins/pi
 ```
