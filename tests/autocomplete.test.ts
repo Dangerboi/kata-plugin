@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { ticketAutocomplete, type Ticket } from "../core/autocomplete";
+import { createTicketCompletion, ticketAutocomplete, type Ticket } from "../core/autocomplete";
 
 // Fixture project and ids; none of these exist in any Kata store.
 const issue = (short_id: string, title: string, project = "demo"): Ticket => ({ short_id, title, qualified_id: `${project}#${short_id}` });
@@ -105,4 +105,21 @@ test("pi-style options object: abort is honoured and '#' becomes a trigger chara
 	expect(await pending).toEqual(inner);
 	const live = ticketAutocomplete(wrapped(), source({ "": bound })) as any;
 	expect((await live.getSuggestions(["#bc"], 0, 3, { signal: new AbortController().signal })).items.map((i: any) => i.value)).toEqual(["demo#bc7q"]);
+});
+
+test("a session switch registers again, yet each ticket is offered once", async () => {
+	// omp keeps every factory for the life of the process and stacks them in registration order.
+	const factories: ((current: any) => any)[] = [];
+	const ui = () => ({ addAutocompleteProvider: (factory: (current: any) => any) => { factories.push(factory); } });
+	const kata = { run: async () => JSON.stringify({ issues: bound }) } as any;
+	const scope = () => ({ cwd: "/fixture" });
+	createTicketCompletion(kata, scope, () => {})(ui());
+	// Another extension's provider between the two registrations.
+	factories.push(current => ({ getSuggestions: (...args: any[]) => current.getSuggestions(...args), applyCompletion: (...args: any[]) => current.applyCompletion(...args) }));
+	// The next session: a new UI context, and a reloaded module.
+	createTicketCompletion(kata, scope, () => {})(ui());
+	const editor = factories.reduce((provider, factory) => factory(provider), wrapped());
+	const result = await ask(editor, "see #bc");
+	expect(result.items.map((i: any) => i.value)).toEqual(["demo#bc7q"]);
+	expect(editor.applyCompletion(["see #bc"], 0, 7, result.items[0], result.prefix).lines).toEqual(["see demo#bc7q "]);
 });
