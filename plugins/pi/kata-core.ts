@@ -7,8 +7,8 @@ import { createDelegates, heldByDelegate as heldBy, teammateFor, type DelegateAs
 import { createSettlement, MAX_FAILURES, openChildren, type PendingClose } from "./settlement";
 import { createKata, isKataCode, isUnusable, KataError, type Exec } from "./kata-cli";
 import { createTicketCompletion } from "./autocomplete";
-import { kataCommands, shellOptions } from "./shell";
-import { digest, itemTicket, OPEN, openTaskStatus, projectOf, QUALIFIED_REF_ONLY, qualifiedRef, quote, slug, WORKING, type Binding, type Change, type KataIssue, type KataShow, type Plan, type Status, type Task } from "./model";
+import { kataCommands, quote, shellOptions } from "./shell";
+import { digest, itemTicket, OPEN, openTaskStatus, projectOf, QUALIFIED_REF_ONLY, qualifiedRef, slug, WORKING, type Binding, type Change, type KataIssue, type KataShow, type Plan, type Status, type Task } from "./model";
 
 // Canonical shared source. scripts/vendor-core.ts copies this file into each
 // self-contained plugin; host adapters own their event/schema/identity APIs.
@@ -71,9 +71,10 @@ const MARK: Record<Status, string> = { pending: "[ ]", in_progress: "[/]", compl
 // A plan item's identity: init keeps, refuses and closes by this same key.
 const itemKey = (item: { phase: string; content: string }) => `${item.phase}\u0000${item.content}`;
 
-// How long a main session's shutdown waits for Kata before the host may exit: closing an automatic parent takes six or more spawns, and an exit mid-way leaves the parent open.
+// How long a main session's shutdown waits for Kata: closing an automatic parent takes six or more spawns, and an exit mid-way leaves the parent open.
+// pi waits for the handler; omp stops waiting after 2 s whatever this says (docs/explanation/limits.md, Shutdown budget).
 const SHUTDOWN_BOUND_MS = 10_000;
-// How long a delegate's first prompt waits for its issue binding, which it cannot learn later. The lead assigns delegates
+// How long a delegate's first prompt waits for its assignment, which it cannot learn later. The lead assigns delegates
 // one at a time, about fifteen Kata calls each, so with many at once the last one waits for all the others.
 const DELEGATE_BIND_MS = 15_000;
 
@@ -1491,10 +1492,13 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 			async beforePrompt(ctx: any, prompt: { after?: Promise<unknown>; context?: boolean } = {}): Promise<{ sections: PromptSections; lead: Lead }> {
 				see(ctx);
 				const context = prompt.context !== false;
+				// A delegate cannot learn its assignment later, so its prompt waits for it (`after`) up to DELEGATE_BIND_MS. The
+				// contract and inbox reads keep their usual budget; a slower read lands in the cache for the next turn.
+				if (!main(ctx)) await bounded(Promise.resolve(prompt.after), DELEGATE_BIND_MS);
 				await bounded(Promise.all([
 					main(ctx) && currentId !== sid(ctx) ? serial(() => bind(ctx)) : undefined,
-					(async () => { await prompt.after; if (context) await warmFor(ctx); })(),
-				]), main(ctx) ? 250 : DELEGATE_BIND_MS);
+					context ? warmFor(ctx) : undefined,
+				]), main(ctx) ? 250 : 3000);
 				const sections: PromptSections = {};
 				if (context) {
 					if (cache.contract) sections.contract = cache.contract;

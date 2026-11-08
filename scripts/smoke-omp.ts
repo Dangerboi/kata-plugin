@@ -13,7 +13,8 @@ import { spawn, spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { linesIn, SCENARIOS, type Check, type Issue, type Prompt, type Request, type ToolUse, type Scenario, type Session, type Store } from "./smoke-omp-scenarios";
+import { SCENARIOS, type Check, type Issue, type Prompt, type Request, type ToolUse, type Scenario, type Session, type Store } from "./smoke-omp-scenarios";
+import { linesIn } from "./smoke-jsonl";
 
 const root = path.resolve(import.meta.dir, "..");
 const argv = process.argv.slice(2);

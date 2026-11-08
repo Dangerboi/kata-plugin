@@ -1,8 +1,7 @@
 import path from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { createKataCore, DESCRIPTION, TODO_OPS, TODO_PARAMS, type Lead, type ChildParent } from "./kata-core";
-import { delegateCommand, kataCommands } from "./shell";
-import { quote } from "./model";
+import { delegateCommand, kataCommands, quote } from "./shell";
 import type { DelegateRecord, DelegateStore } from "./delegates";
 
 // Match the native adapter's capability/scope selection, including a project

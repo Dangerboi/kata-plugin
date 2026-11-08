@@ -7,7 +7,8 @@
 import { appendFileSync } from "node:fs";
 import { isMainThread } from "node:worker_threads";
 import { AssistantMessageEventStream } from "@oh-my-pi/pi-ai";
-import { SCENARIOS, type Block, type TurnContext } from "./smoke-omp-scenarios";
+import { SCENARIOS, type Block, type Prompt, type TurnContext } from "./smoke-omp-scenarios";
+import { linesIn } from "./smoke-jsonl";
 
 export const PROVIDER = "kata-smoke";
 export const MODEL = "scripted";
@@ -37,7 +38,7 @@ export default function (pi: any) {
 			const key = Object.keys(scenario.scripts).find(k => first.includes(k));
 			const turnIndex = messages.filter(m => m.role === "assistant").length;
 			const turn = key ? scenario.scripts[key][turnIndex] : undefined;
-			const ctx: TurnContext = { texts: messages.map(textOf), system: [context.systemPrompt].flat().filter(Boolean).join("\n") };
+			const ctx: TurnContext = { texts: messages.map(textOf), system: [context.systemPrompt].flat().filter(Boolean).join("\n"), prompts: () => linesIn<Prompt>(process.env.KATA_SMOKE_PROMPTS) };
 			if (process.env.KATA_SMOKE_RECORD) appendFileSync(process.env.KATA_SMOKE_RECORD, JSON.stringify({ agent: key ?? "", system: ctx.system, users: messages.filter(m => m.role === "user").map(textOf), roles: messages.map(m => m.role) }) + "\n");
 			const blocks: Block[] = turn ? (typeof turn === "function" ? turn(ctx) : turn) : [`(smoke script has no turn ${turnIndex} for ${key ?? "this agent"})`];
 			const content = blocks.map(block => typeof block === "string" ? { type: "text" as const, text: block }

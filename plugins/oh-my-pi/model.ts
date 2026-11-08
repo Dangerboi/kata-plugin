@@ -58,5 +58,3 @@ export function slug(text: string | undefined, keepCase = false): string | undef
 export function digest(...parts: string[]): string {
 	return createHash("sha256").update(parts.join("\u0000")).digest("hex").slice(0, 24);
 }
-
-export function quote(value: string): string { return `'${value.replace(/'/g, "'\\''")}'`; }

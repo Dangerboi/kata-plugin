@@ -971,54 +971,44 @@ async function closeSessions(shortId: string) {
   return closed.map((e: any) => e.payload?.transcript?.session_id);
 }
 
-test("an assigned delegate's own todo close records the delegate's session, not the lead's", async () => {
+// A lead assigns one delegate, whose session header names `<name>-delegate`; with close transcripts on, the delegate plans
+// one step and closes it through `todo done`. `midCall` runs once, inside the first Kata call of that done. Returns the
+// sessions the step's closes recorded.
+async function delegateStepCloseSessions(name: string, midCall?: (delegate: ReturnType<typeof host>) => void) {
   const config = path.join(env.KATA_HOME, "config.toml");
   writeFileSync(config, "[close.transcript]\nenabled = true\n");
   try {
-    const lead = host({ sid: "transcript-lead", transcript: true });
+    const lead = host({ sid: `${name}-lead`, transcript: true });
     await lead.event("session_start");
-    const ref = await lead.init(["Delegated transcript task", "Lead transcript step"]);
-    const sessionFile = `${scratch}/delegate-transcript.jsonl`;
-    writeFileSync(sessionFile, '{"type":"session","version":3,"id":"transcript-delegate"}\n');
-    lead.emit("task:subagent:lifecycle", { id: "Transcript.Delegate", status: "started", sessionFile, description: "Delegated transcript task" });
+    const ref = await lead.init([`Delegated ${name} task`, `Lead ${name} step`]);
+    const sessionFile = `${scratch}/delegate-${name}.jsonl`, id = `${name}.Delegate`;
+    writeFileSync(sessionFile, `{"type":"session","version":3,"id":"${name}-delegate"}\n`);
+    lead.emit("task:subagent:lifecycle", { id, status: "started", sessionFile, description: `Delegated ${name} task` });
     await lead.call({ op: "view" });
-    const assigned = (await show(ref)).children.find((c: any) => c.metadata?.["omp.subagent_id"] === "Transcript.Delegate");
-    const worker = host({ sessionFile, agent: { kind: "sub", id: "Transcript.Delegate", parentId: lead.ctx.agent.id }, transcript: true });
-    await worker.event("session_start");
-    expect((await worker.call({ op: "init", items: ["Delegate transcript step"] })).isError).toBeUndefined();
-    const done = await worker.call({ op: "done", task: "Delegate transcript step", message, evidence });
+    const assigned = (await show(ref)).children.find((c: any) => c.metadata?.["omp.subagent_id"] === id);
+    let armed = false;
+    const delegate: ReturnType<typeof host> = host({ sessionFile, agent: { kind: "sub", id, parentId: lead.ctx.agent.id }, transcript: true,
+      before: () => { if (armed) { armed = false; midCall?.(delegate); } } });
+    await delegate.event("session_start");
+    expect((await delegate.call({ op: "init", items: [`Delegate ${name} step`] })).isError).toBeUndefined();
+    armed = true;
+    const done = await delegate.call({ op: "done", task: `Delegate ${name} step`, message, evidence });
     expect(done.isError, done.content?.[0]?.text).toBeUndefined();
-    const step = (await show(`v2test#${assigned.short_id}`)).children.find((c: any) => c.title === "Delegate transcript step");
+    expect(armed).toBe(false);
+    const step = (await show(`v2test#${assigned.short_id}`)).children.find((c: any) => c.title === `Delegate ${name} step`);
     expect(step.status).toBe("closed");
-    expect(await closeSessions(step.short_id)).toEqual(["transcript-delegate"]);
+    return await closeSessions(step.short_id);
   } finally { writeFileSync(config, ""); }
+}
+
+test("an assigned delegate's own todo close records the delegate's session, not the lead's", async () => {
+  expect(await delegateStepCloseSessions("transcript")).toEqual(["transcript-delegate"]);
 });
 
 test("a delegate's todo close keeps the delegate's session when another identity reaches its handlers mid-call", async () => {
-  const config = path.join(env.KATA_HOME, "config.toml");
-  writeFileSync(config, "[close.transcript]\nenabled = true\n");
-  try {
-    const lead = host({ sid: "swap-lead", transcript: true });
-    await lead.event("session_start");
-    const ref = await lead.init(["Swapped context task", "Lead swap step"]);
-    const sessionFile = `${scratch}/delegate-swap.jsonl`;
-    writeFileSync(sessionFile, '{"type":"session","version":3,"id":"swap-delegate"}\n');
-    lead.emit("task:subagent:lifecycle", { id: "Swap.Delegate", status: "started", sessionFile, description: "Swapped context task" });
-    await lead.call({ op: "view" });
-    const assigned = (await show(ref)).children.find((c: any) => c.metadata?.["omp.subagent_id"] === "Swap.Delegate");
-    // omp's advisor runs as its own sub identity inside the session it advises.
-    let armed = false;
-    const worker: ReturnType<typeof host> = host({ sessionFile, agent: { kind: "sub", id: "Swap.Delegate", parentId: lead.ctx.agent.id }, transcript: true,
-      before: () => { if (armed) { armed = false; void worker.event("tool_call", { toolName: "read", input: { path: "README.md" } }, { ...worker.ctx, agent: { kind: "sub", id: "Advisor" } }); } } });
-    await worker.event("session_start");
-    expect((await worker.call({ op: "init", items: ["Delegate swap step"] })).isError).toBeUndefined();
-    armed = true;
-    const done = await worker.call({ op: "done", task: "Delegate swap step", message, evidence });
-    expect(done.isError, done.content?.[0]?.text).toBeUndefined();
-    expect(armed).toBe(false);
-    const step = (await show(`v2test#${assigned.short_id}`)).children.find((c: any) => c.title === "Delegate swap step");
-    expect(await closeSessions(step.short_id)).toEqual(["swap-delegate"]);
-  } finally { writeFileSync(config, ""); }
+  // omp's advisor runs as its own sub identity inside the session it advises.
+  const advisor = (delegate: ReturnType<typeof host>) => { void delegate.event("tool_call", { toolName: "read", input: { path: "README.md" } }, { ...delegate.ctx, agent: { kind: "sub", id: "Advisor" } }); };
+  expect(await delegateStepCloseSessions("swap", advisor)).toEqual(["swap-delegate"]);
 });
 
 test("delegate teammates differ across sessions that reuse an agent name", async () => {
