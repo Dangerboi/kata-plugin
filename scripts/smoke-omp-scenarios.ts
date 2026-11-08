@@ -3,6 +3,8 @@
 // Add a scenario by appending an entry to SCENARIOS; the driver and the scripted
 // provider need no changes.
 
+import { existsSync, readFileSync } from "node:fs";
+
 export type Block = string | { tool: string; args: Record<string, unknown> };
 export type TurnContext = {
 	/** Text of every message so far (tool results included), oldest first. */
@@ -76,9 +78,21 @@ const MAIN = "[smoke:main]";
 const SUB = "[smoke:sub]";
 const SCOUT = "[smoke:scout]";
 const WORKER = "[smoke:worker]";
-// omp 18.17 runs a subagent on a worker thread once nine or more run at once (its docs say four); fourteen puts
-// several on a worker, so the live run gets odd and even ones there.
+// omp runs a subagent on a worker thread once nine or more run at once (its docs say four); fourteen puts several on a
+// worker.
 const PORTS = ["lexer", "parser", "printer", "checker", "linker", "loader", "emitter", "resolver", "formatter", "bundler", "planner", "scheduler", "tracer", "profiler"].map(part => `Port ${part} module`);
+const ROLES = ["close", "handBack", "rollback"] as const;
+// A scripted worker closes its issue, runs a tool and leaves it open (hand back), or answers without a tool (rollback).
+// Delegates on a worker thread take the roles in turn, in the order they started, so any three of them cover every role
+// wherever omp places them; main-thread delegates go by number.
+const workerRole = (n: number, prompts: Prompt[]) => {
+	const onWorker = [...new Set(prompts.filter(p => /^Port\d+$/.test(p.agent) && !p.mainThread).map(p => p.agent))];
+	const turn = onWorker.indexOf(`Port${n}`);
+	return ROLES[(turn >= 0 ? turn : n) % ROLES.length];
+};
+export function linesIn<T>(file: string | undefined): T[] {
+	return file && existsSync(file) ? readFileSync(file, "utf8").split("\n").filter(Boolean).map(line => JSON.parse(line)) : [];
+}
 const vars = (): Record<string, string> => JSON.parse(process.env.KATA_SMOKE_VARS ?? "{}");
 const lastRef = (ctx: TurnContext, pattern: RegExp) => ctx.texts.join("\n").match(pattern)?.[0];
 
@@ -400,13 +414,17 @@ export const SCENARIOS: Scenario[] = [{
 			[{ tool: "todo", args: { op: "init", list: [{ phase: "Ports", items: PORTS }], message: "Smoke worker-thread session" } }],
 			[{ tool: "task", args: { context: "Smoke port work: nothing to change, just close your Kata issue.", tasks: PORTS.map((port, i) => ({ name: `Port${i + 1}`, agent: "task", task: `${WORKER} ${port}`, solutionSpace: "one fix: nothing to change, just close the issue" })) } }],
 			["The ports are delegated."],
-			// omp wakes the main agent as background delegates report back.
-			...PORTS.map(() => ["A delegate has reported back."]),
+			// omp wakes the main agent as background delegates report back. Each wake reads the plan; the todo call queues
+			// behind the hand backs and rollbacks, so the run cannot end before they are written.
+			...Array.from({ length: 2 * PORTS.length }, () => (ctx: TurnContext): Block[] => ctx.texts.at(-2)?.includes(`"op":"view"`) ? ["Noted."] : [{ tool: "todo", args: { op: "view" } }]),
 		],
 		[WORKER]: [
 			ctx => {
 				const ref = ctx.system.match(/Your Kata issue is ([\w#-]+)/)?.[1];
 				if (!ref) return ["No Kata binding in system prompt."];
+				const role = workerRole(PORTS.findIndex(port => ctx.texts.some(text => text.includes(port))) + 1, linesIn<Prompt>(process.env.KATA_SMOKE_PROMPTS));
+				if (role === "rollback") return ["Nothing to change for this port."];
+				if (role === "handBack") return [{ tool: "bash", args: { command: "ls" } }];
 				return [{ tool: "bash", args: { command: `kata close ${ref} --done --message '${message}' --evidence '${evidence}'` } }];
 			},
 			["Port done."],
@@ -431,36 +449,42 @@ export const SCENARIOS: Scenario[] = [{
 			{ name: "every delegate, on a worker or not, saw its own plan task in its system prompt", ok: first.size === PORTS.length && wrong.length === 0, detail: wrong.join(", ") || `${first.size} delegates prompted` },
 		];
 		const numbers = PORTS.map((_, i) => i + 1);
-		const closers = numbers.filter(n => n % 2 === 1), leavers = numbers.filter(n => n % 2 === 0);
-		// omp 18.17 fails every model call a worker-thread subagent makes through an extension's provider (the scripted
-		// one), so only a real model gets worker delegates past their first turn.
-		const onMain = numbers.filter(n => first.get(`Port${n}`)?.mainThread);
-		if (!store.live) return [...checks,
-			{ name: "every delegate on the main thread closed its own plan task", ok: onMain.length > 0 && onMain.every(n => taskOf(n)?.status === "closed"), detail: onMain.filter(n => taskOf(n)?.status !== "closed").map(n => `Port${n}: ${taskOf(n)?.status}`).join(", ") || `${onMain.length} closed` },
-			{ name: "no stray issue", ok: issues.length === PORTS.length + 1, detail: `${issues.length} issues` },
-			{ name: "none carries needs-review", ok: !issues.some(labelled), detail: issues.filter(labelled).map(i => i.ref).join(", ") },
-		];
 		const tools = store.tools();
+		const notified = (i?: Issue) => Object.keys(i?.metadata ?? {}).some(key => key.startsWith("notify."));
+		// Hand back: a delegate that ran a tool and left its task open; one whose tool use never reached the lead is rolled back instead, unlabelled.
+		const handedBack = (n: number) => {
+			const task = taskOf(n);
+			return labelled(task) && task?.metadata["work.attention"] === "needs-human" && notified(task) && tools.some(t => t.agent === `Port${n}` && t.tool === "bash");
+		};
+		const rolledBack = (n: number) => {
+			const task = taskOf(n);
+			return task?.status === "open" && !task.metadata["omp.subagent_id"] && !labelled(task) && !notified(task);
+		};
 		// A delegate that ran init twice has two steps of that title; the one it finished is the one closed as done.
 		const doneClose = (i: Issue) => i.events.some(e => e.type === "issue.closed" && e.payload?.reason === "done");
 		const stepOf = (n: number) => {
 			const steps = issues.filter(i => i.title === `Verify ${PORTS[n - 1]}`);
 			return steps.find(doneClose) ?? steps[0];
 		};
+		const describe = (ns: number[], ok: (n: number) => boolean) => ns.filter(n => !ok(n)).map(n => `Port${n}${onWorker.includes(`Port${n}`) ? " (worker)" : ""}: ${taskOf(n)?.status}, step ${stepOf(n)?.status ?? "none"}, tools ${JSON.stringify(tools.filter(t => t.agent === `Port${n}`).map(t => `${t.tool}${t.op ? `:${t.op}` : ""}${t.isError ? "!" : ""}`))}`).join("; ");
+		const onWorkerOf = (ns: number[]) => ns.filter(n => onWorker.includes(`Port${n}`));
+		if (!store.live) {
+			const outcome = { close: (n: number) => taskOf(n)?.status === "closed" && !labelled(taskOf(n)), handBack: handedBack, rollback: rolledBack };
+			const prompts = store.prompts(), roleOf = (n: number) => workerRole(n, prompts);
+			const asScripted = (n: number) => outcome[roleOf(n)](n);
+			const uncovered = ROLES.filter(role => onWorkerOf(numbers.filter(n => roleOf(n) === role)).length === 0);
+			return [...checks,
+				{ name: "every role (close, hand back, rollback) has a delegate on a worker thread", ok: uncovered.length === 0, detail: `missing ${uncovered.join(", ")}; worker delegates ${onWorker.join(", ")}` },
+				{ name: "every delegate's task ended as its script directs: closed, handed back or rolled back", ok: numbers.every(asScripted), detail: describe(numbers, asScripted) },
+				{ name: "no stray issue", ok: issues.length === PORTS.length + 1, detail: `${issues.length} issues` },
+			];
+		}
+		const closers = numbers.filter(n => n % 2 === 1), leavers = numbers.filter(n => n % 2 === 0);
 		const used = (n: number, op: string) => tools.some(t => t.agent === `Port${n}` && t.tool === "todo" && t.op === op && !t.isError);
 		const workedThroughTodo = (n: number) => used(n, "init") && used(n, "done") && stepOf(n)?.status === "closed" && taskOf(n)?.status === "closed";
 		const sessionOf = (i?: Issue) => i?.events.find(e => e.type === "issue.closed")?.payload?.transcript?.session_id;
 		// The todo close and the bash close of one delegate both carry that delegate's own session; without its record, the lead's.
 		const ownSession = (n: number) => !!sessionOf(stepOf(n)) && sessionOf(stepOf(n)) === sessionOf(taskOf(n)) && sessionOf(taskOf(n)) !== parent?.metadata["omp.session_id"];
-		// Hand back: a delegate that ran a tool and left its task open; one whose tool use never reached the lead is rolled back instead, unlabelled.
-		const handedBack = (n: number) => {
-			const task = taskOf(n);
-			return labelled(task) && task?.metadata["work.attention"] === "needs-human" && Object.keys(task?.metadata ?? {}).some(key => key.startsWith("notify.")) && tools.some(t => t.agent === `Port${n}` && t.tool === "bash");
-		};
-		const describe = (ns: number[], ok: (n: number) => boolean) => ns.filter(n => !ok(n)).map(n => `Port${n}${onWorker.includes(`Port${n}`) ? " (worker)" : ""}: ${taskOf(n)?.status}, step ${stepOf(n)?.status ?? "none"}, tools ${JSON.stringify(tools.filter(t => t.agent === `Port${n}`).map(t => `${t.tool}${t.op ? `:${t.op}` : ""}${t.isError ? "!" : ""}`))}`).join("; ");
-		const onWorkerOf = (ns: number[]) => ns.filter(n => onWorker.includes(`Port${n}`));
-		// A real model under prewalk tends to add steps and work of its own, so live checks hold the worker delegates to
-		// what the plugin owes them, not every delegate to the script.
 		return [...checks,
 			{ name: "a delegate on a worker thread planned, finished and closed through its own todo and kata close", ok: onWorkerOf(closers).length > 0 && onWorkerOf(closers).every(workedThroughTodo), detail: `worker delegates ${onWorker.join(", ")}; ${describe(onWorkerOf(closers), workedThroughTodo)}` },
 			{ name: "a worker delegate's todo close and kata close record its own omp session, not the lead's", ok: onWorkerOf(closers).length > 0 && onWorkerOf(closers).every(ownSession), detail: onWorkerOf(closers).filter(n => !ownSession(n)).map(n => `Port${n}: step ${sessionOf(stepOf(n)) ?? "none"}, issue ${sessionOf(taskOf(n)) ?? "none"}, lead ${parent?.metadata["omp.session_id"]}`).join("; ") },

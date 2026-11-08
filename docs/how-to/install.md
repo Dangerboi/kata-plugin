@@ -25,7 +25,7 @@ To try it without installing:
 omp --no-extensions -e /path/to/kata-plugin/plugins/oh-my-pi/kata.ts
 ```
 
-Tested with oh-my-pi 18.17.0. To check another omp release, run `bun run smoke:omp` from a checkout (see [development](../development.md#smoke-test-against-a-real-omp)).
+Tested with oh-my-pi 18.18.0. To check another omp release, run `bun run smoke:omp` from a checkout (see [development](../development.md#smoke-test-against-a-real-omp)).
 
 ## Pi
 
