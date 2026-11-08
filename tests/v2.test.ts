@@ -493,6 +493,38 @@ test("a missed delegate exit found at a prompt does not wait for the settlement"
   } finally { gate.resolve(); }
 });
 
+// Real delays, like the neighbouring tests: the hook races real Kata processes, which fake timers cannot order.
+test("a lead turn with no exited delegate ends within the short bound even when Kata is slow", async () => {
+  let slow = false;
+  const app = host({ before: async (args: string[]) => { if (slow) await Bun.sleep(1500); return undefined; } });
+  await app.event("session_start"); await app.init(["Slow Kata, nothing exited"]);
+  app.emit("task:subagent:lifecycle", { id: "still-running", agent: "task", status: "started", sessionFile: `${scratch}/still-running.jsonl`, description: "Slow Kata, nothing exited" });
+  await app.call({ op: "view" });
+  slow = true;
+  const start = performance.now();
+  await app.event("session_stop", { messages: [] });
+  expect(performance.now() - start).toBeLessThan(1000);
+  slow = false; await app.call({ op: "view" }); // drain the background hook
+});
+
+test("a lead turn with an exited delegate waits for its slow hand back before the turn ends", async () => {
+  let recent: any[] = [], slow = false;
+  const app = host({ snapshot: () => ({ running: [], recent }), before: async (args: string[]) => {
+    if (slow && ["show", "label", "close", "comment", "meta", "notify"].includes(args[0])) await Bun.sleep(150);
+    return undefined;
+  } });
+  await app.event("session_start"); const parent = await app.init(["Slow hand back at turn end"]);
+  app.emit("task:subagent:lifecycle", { id: "slow-hand-back", agent: "task", status: "started", sessionFile: `${scratch}/slow-hand-back.jsonl`, description: "Slow hand back at turn end" });
+  await app.call({ op: "view" });
+  await ran(app, "slow-hand-back", `${scratch}/slow-hand-back.jsonl`);
+  recent = [{ id: "slow-hand-back", type: "task", status: "cancelled" }]; slow = true;
+  const start = performance.now();
+  await app.event("session_stop", { messages: [] });
+  expect(performance.now() - start).toBeGreaterThan(250);
+  const task = (await show(parent)).children.find((c: any) => c.title === "Slow hand back at turn end");
+  expect((await show(`v2test#${task.short_id}`)).labels.some((l: any) => l.label === "needs-review")).toBe(true);
+});
+
 test("relative lifecycle session paths join the child's absolute session path", async () => {
   const app = host(); await app.event("session_start"); const parent = await app.init(["Relative child path"]);
   app.emit("task:subagent:lifecycle", { id: "relative-child", agent: "task", status: "started", sessionFile: "../relative-session.jsonl", description: "Relative child path" });
