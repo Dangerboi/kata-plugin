@@ -525,6 +525,72 @@ test("a lead turn with an exited delegate waits for its slow hand back before th
   expect((await show(`v2test#${task.short_id}`)).labels.some((l: any) => l.label === "needs-review")).toBe(true);
 });
 
+test("a lead turn does not wait out the deadline for a hand back that keeps failing", async () => {
+  let recent: any[] = [], failing = false;
+  const app = host({ snapshot: () => ({ running: [], recent }), before: async (args: string[]) => {
+    if (failing && args[0] === "label") return { code: 1, stdout: "", stderr: "permission denied" };
+    return undefined;
+  } });
+  await app.event("session_start"); await app.init(["Failing hand back at turn end"]);
+  app.emit("task:subagent:lifecycle", { id: "failing-hand-back", agent: "task", status: "started", sessionFile: `${scratch}/failing-hand-back.jsonl`, description: "Failing hand back at turn end" });
+  await app.call({ op: "view" });
+  await ran(app, "failing-hand-back", `${scratch}/failing-hand-back.jsonl`);
+  recent = [{ id: "failing-hand-back", type: "task", status: "cancelled" }]; failing = true;
+  const start = performance.now();
+  await app.event("session_stop", { messages: [] });
+  expect(performance.now() - start).toBeLessThan(2000);
+  failing = false; await app.call({ op: "view" }); // drain the cleanup now that Kata answers
+});
+
+test("a lead turn also waits for a delegate that exits while the first one's hand back runs", async () => {
+  let recent: any[] = [], slow = false, fired = false;
+  const app = host({ snapshot: () => ({ running: [], recent }), before: async (args: string[]) => {
+    if (!slow) return undefined;
+    // The first hand back's first write: the cleanup pass already holds its list, so the second exit is not on it.
+    if (args[0] === "label" && !fired) { fired = true; app.emit("task:subagent:lifecycle", { id: "late-exit", status: "completed", sessionFile: `${scratch}/late-exit.jsonl` }); }
+    if (["show", "label", "close", "comment", "meta", "notify"].includes(args[0])) await Bun.sleep(150);
+    return undefined;
+  } });
+  await app.event("session_start"); const parent = await app.init(["Early exit at turn end", "Late exit at turn end"]);
+  for (const [id, description] of [["early-exit", "Early exit at turn end"], ["late-exit", "Late exit at turn end"]]) {
+    app.emit("task:subagent:lifecycle", { id, agent: "task", status: "started", sessionFile: `${scratch}/${id}.jsonl`, description });
+    await app.call({ op: "view" });
+    await ran(app, id, `${scratch}/${id}.jsonl`);
+  }
+  recent = [{ id: "early-exit", type: "task", status: "cancelled" }]; slow = true;
+  await app.event("session_stop", { messages: [] });
+  expect(fired).toBe(true);
+  const children = (await show(parent)).children;
+  for (const title of ["Early exit at turn end", "Late exit at turn end"]) {
+    const task = children.find((c: any) => c.title === title);
+    expect((await show(`v2test#${task.short_id}`)).labels.some((l: any) => l.label === "needs-review")).toBe(true);
+  }
+});
+
+test("an aborted turn-end wait returns at once and leaves the reminder state alone", async () => {
+  let recent: any[] = [], slow = false;
+  const app = host({ snapshot: () => ({ running: [], recent }), before: async (args: string[]) => {
+    if (slow && ["show", "label", "close", "comment", "meta", "notify"].includes(args[0])) await Bun.sleep(150);
+    return undefined;
+  } });
+  await app.event("session_start"); const parent = await app.init(["Aborted hand back", "Lead keeps working"]);
+  app.emit("task:subagent:lifecycle", { id: "aborted-wait", agent: "task", status: "started", sessionFile: `${scratch}/aborted-wait.jsonl`, description: "Aborted hand back" });
+  await app.call({ op: "view" });
+  await ran(app, "aborted-wait", `${scratch}/aborted-wait.jsonl`);
+  recent = [{ id: "aborted-wait", type: "task", status: "cancelled" }]; slow = true;
+  const controller = new AbortController(), start = performance.now();
+  setTimeout(() => controller.abort(), 400);
+  const aborted = await app.event("session_stop", { messages: [], signal: controller.signal });
+  expect(performance.now() - start).toBeLessThan(900);
+  expect(aborted).toBeUndefined();
+  // The hand back keeps running in the background; the next stop still gets the first reminder.
+  slow = false;
+  const next = await app.event("session_stop", { messages: [] });
+  expect(next.additionalContext).toContain("reminder 1/");
+  const task = (await show(parent)).children.find((c: any) => c.title === "Aborted hand back");
+  expect((await show(`v2test#${task.short_id}`)).labels.some((l: any) => l.label === "needs-review")).toBe(true);
+});
+
 test("relative lifecycle session paths join the child's absolute session path", async () => {
   const app = host(); await app.event("session_start"); const parent = await app.init(["Relative child path"]);
   app.emit("task:subagent:lifecycle", { id: "relative-child", agent: "task", status: "started", sessionFile: "../relative-session.jsonl", description: "Relative child path" });

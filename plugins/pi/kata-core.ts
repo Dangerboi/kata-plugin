@@ -3,7 +3,7 @@ import { appendFileSync, realpathSync } from "node:fs";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { decidePlanParent, explicitParent, isExplicitParent, namesPlanParent } from "./plan-parent";
 import { createInboxFollower, knownProjectHead, trustedInbox, type InboxFollower, type LiveInbox } from "./inbox";
-import { createDelegates, heldByDelegate as heldBy, teammateFor, type DelegateAssignment, type DelegateStore, type Reservation, type Spawn, type Who } from "./delegates";
+import { createDelegates, heldByDelegate as heldBy, teammateFor, type DelegateAssignment, type DelegateRecord, type DelegateStore, type Reservation, type SavedDelegate, type Spawn, type Who } from "./delegates";
 import { createSettlement, MAX_FAILURES, openChildren, type PendingClose } from "./settlement";
 import { createKata, isKataCode, isUnusable, KataError, type Exec } from "./kata-cli";
 import { createTicketCompletion } from "./autocomplete";
@@ -212,7 +212,8 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 	const nextStamp = () => (stamp = Math.max(Date.now(), stamp + 1));
 	// The plan's tasks: Kata children (or the local plan) merged with named items by creation time.
 	const withNamed = (base: Task[]) => named.length ? [...base.filter(t => !t.ticket), ...named].sort((a, b) => (a.at || 0) - (b.at || 0)) : base;
-	const store = host.delegateStore;
+	// Every record change is saved with the lead's snapshot, so a cleanup the process never finished survives it.
+	const store: DelegateStore = { ...host.delegateStore, put: record => { host.delegateStore.put(record); persist(); } };
 	const delegates = createDelegates({
 		namespace, store, kata,
 		actor: (cwd, ref) => actor(cwd, ref), owned, work, serial, plan: () => plan,
@@ -220,8 +221,11 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 	});
 	function persist() {
 		if (!currentId || !main(currentCtx)) return;
+		// A record with no binding wrote nothing to Kata, so the snapshot leaves it out (see Delegates.saved).
+		const open = delegates.saved(currentId);
 		const data = { version: 1, sessionId: currentId,
 			plan: structuredClone({ ...plan, tasks: plan.tasks.filter(t => !t.ticket) }), ...settlement.snapshot(),
+			...(open.length ? { delegates: structuredClone(open) } : {}),
 			...(named.length ? { named: structuredClone(named) } : {}), ...(deletedParent ? { deletedParent } : {}) };
 		const encoded = JSON.stringify(data);
 		if (encoded === lastSnapshot) return;
@@ -528,6 +532,8 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 		const requested = explicitParent(sources)?.parent;
 		requestedRef = requested;
 		const id = sid(ctx);
+		// Only a bind that starts a session this core did not already hold restores delegates: /tree and a branch switch keep the same one.
+		const newSession = currentId !== id;
 		currentId = id;
 		lastSnapshot = undefined;
 		currentCtx = ctx;
@@ -547,6 +553,12 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 		// A forked session keeps the source id as the parent's owner: the parent's session_id metadata names it.
 		const parentOwner = source ?? id;
 		settlement.restore(snapshot && !source ? snapshot : undefined);
+		// Delegate records are in memory only: a resumed lead takes back the ones a past run left unfinished. A fork leaves them to the source.
+		const unsettled: SavedDelegate[] = newSession && !source && Array.isArray(snapshot?.delegates) ? snapshot.delegates : [];
+		// They settle in the background on the lead's queue, so the bind does not wait for Kata.
+		if (unsettled.length && main(ctx)) void serial(async () => {
+			if (delegates.restore(unsettled)) await drain();
+		}).catch(debug);
 		if (snapshot) {
 			if (!source && snapshot.plan?.local && !requested) plan = { ...structuredClone(snapshot.plan), workspace: plan.workspace };
 			named = structuredClone(snapshot.named ?? []);
@@ -1265,12 +1277,32 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 		}
 	}
 
-	async function remind(messages: any[], ctx: any): Promise<string | undefined> {
+	async function remind(messages: any[], ctx: any, signal?: AbortSignal): Promise<string | undefined> {
 		if (!main(ctx)) return;
+		const deadline = Date.now() + TURN_SETTLE_MS;
+		// An abort (Esc) ends the wait only; the queued cleanups keep running and are safe to repeat.
+		let onAbort: (() => void) | undefined;
+		const aborted = new Promise<undefined>(resolve => {
+			if (signal?.aborted) return resolve(undefined);
+			onAbort = () => resolve(undefined);
+			signal?.addEventListener("abort", onAbort, { once: true });
+		});
+		const until = <T>(promise: Promise<T | undefined>) => Promise.race([promise, aborted]);
 		const refresh = serial(async () => { await load(plan.workspace); await drain(); return true; });
-		// Checked after the short bound, not before queuing: a delegate that exited while the queue was busy still counts.
-		let refreshed = await bounded(refresh);
-		if (!refreshed && delegates.waiting()) refreshed = await bounded(refresh, TURN_SETTLE_MS);
+		let refreshed: boolean | undefined;
+		try {
+			// Checked after the short bound, not before queuing: a delegate that exited while the queue was busy still counts.
+			refreshed = await until(bounded(refresh));
+			if (!refreshed && delegates.cleanupPending()) refreshed = await until(bounded(refresh, deadline - Date.now()));
+			// A delegate that exits during the wait queues its own cleanup after the refresh: wait for those too. Stop when a pass
+			// leaves the same cleanups pending (Kata unreachable, a step failing), so an outage does not hold every turn end.
+			while (refreshed && !signal?.aborted && delegates.cleanupPending() && Date.now() < deadline) {
+				const seen = delegates.pendingIds().join();
+				await until(bounded(serial(async () => { await drain(); return true; }), deadline - Date.now()));
+				if (delegates.pendingIds().join() === seen) break;
+			}
+		} finally { if (onAbort) signal?.removeEventListener("abort", onAbort); }
+		if (signal?.aborted) return;
 		if (!refreshed || plan.error) return;
 		const open = plan.tasks.filter(t => t.status === "pending" || t.status === "in_progress");
 		if (open.length === 0 || reminders >= MAX_REMINDERS || !progressed) return;
@@ -1474,9 +1506,9 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 			branch: rebind,
 			tree: rebind,
 			input() { reminders = 0; },
-			stop(ctx: any, messages: any[]): Promise<string | undefined> {
+			stop(ctx: any, messages: any[], signal?: AbortSignal): Promise<string | undefined> {
 				see(ctx);
-				return remind(messages, ctx);
+				return remind(messages, ctx, signal);
 			},
 			// A delegate that ends with its session passes `delegate`; `ended` makes this call report its exit.
 			async shutdown(ctx: any, closing: { delegate?: { id: string; ended: boolean } } = {}): Promise<void> {
