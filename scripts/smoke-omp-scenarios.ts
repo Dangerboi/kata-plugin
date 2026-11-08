@@ -102,6 +102,8 @@ const workerRole = (n: number, prompts: Prompt[]) => {
 };
 const vars = (): Record<string, string> => JSON.parse(process.env.KATA_SMOKE_VARS ?? "{}");
 const lastRef = (ctx: TurnContext, pattern: RegExp) => ctx.texts.join("\n").match(pattern)?.[0];
+const labelled = (i?: Issue) => !!i?.events.some(e => /label/.test(e.type) && JSON.stringify(e.payload).includes("needs-review"));
+const notified = (i?: Issue) => Object.keys(i?.metadata ?? {}).some(key => key.startsWith("notify."));
 
 const evidence = "test:bun smoke scenario ran";
 const recorded = { type: "test", command: "bun smoke scenario ran" }; // how Kata stores it
@@ -449,7 +451,6 @@ export const SCENARIOS: Scenario[] = [{
 			const task = taskOf(i + 1);
 			return !task || ref !== task.ref ? `Port${i + 1}: ${ref ?? "none"} for ${task?.ref ?? "no task"}` : undefined;
 		}).filter(Boolean);
-		const labelled = (i?: Issue) => !!i?.events.some(e => /label/.test(e.type) && JSON.stringify(e.payload).includes("needs-review"));
 		const onWorker = [...first.values()].filter(p => !p.mainThread).map(p => p.agent);
 		const checks: Check[] = [
 			{ name: "omp ran at least one delegate on a worker thread", ok: onWorker.length > 0, detail: `${onWorker.length} of ${first.size} delegates off the main thread` },
@@ -457,7 +458,6 @@ export const SCENARIOS: Scenario[] = [{
 		];
 		const numbers = PORTS.map((_, i) => i + 1);
 		const tools = store.tools();
-		const notified = (i?: Issue) => Object.keys(i?.metadata ?? {}).some(key => key.startsWith("notify."));
 		// Hand back: a delegate that ran a tool and left its task open; one whose tool use never reached the lead is rolled back instead, unlabelled.
 		const handedBack = (n: number) => {
 			const task = taskOf(n);
@@ -537,8 +537,6 @@ export const SCENARIOS: Scenario[] = [{
 	async check(store) {
 		const issues = await store.issues();
 		const handBack = issues.find(i => i.title === RESUME_HAND_BACK), rollBack = issues.find(i => i.title === RESUME_ROLL_BACK);
-		const labelled = (i?: Issue) => !!i?.events.some(e => /label/.test(e.type) && JSON.stringify(e.payload).includes("needs-review"));
-		const notified = (i?: Issue) => Object.keys(i?.metadata ?? {}).some(key => key.startsWith("notify."));
 		const tools = store.tools();
 		return [
 			{ name: "the cut delegates ran as scripted: ResumeOne finished a bash call, ResumeTwo none", ok: tools.some(t => t.agent === "ResumeOne" && t.tool === "bash") && !tools.some(t => t.agent === "ResumeTwo"), detail: JSON.stringify(tools.filter(t => /^Resume(One|Two)$/.test(t.agent)).map(t => [t.agent, t.tool])) },
