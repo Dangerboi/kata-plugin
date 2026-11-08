@@ -4,6 +4,12 @@ All notable changes to kata-plugin are listed here. The format follows [Keep a C
 
 ## [Unreleased]
 
+### Changed
+
+#### Development
+
+- Pushing a release tag publishes the pi package from GitHub Actions through npm trusted publishing, so a release no longer needs an npm login or a one-time code; see [development](docs/development.md#releases).
+
 ## [1.7.2] - 2026-11-08
 
 kata-omp 2.7.1 and @dangerboi/kata-pi 1.7.2.
