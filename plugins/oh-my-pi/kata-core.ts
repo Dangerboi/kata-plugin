@@ -221,7 +221,8 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 	});
 	function persist() {
 		if (!currentId || !main(currentCtx)) return;
-		const open = store.records().filter(r => !FINAL.has(r.state) && r.leadSessionId === currentId);
+		// A prompt is only read to decide an assignment, which a restored record never does, so the snapshot leaves it out.
+		const open = store.records().filter(r => !FINAL.has(r.state) && r.leadSessionId === currentId).map(({ text: _text, ...r }) => r);
 		const data = { version: 1, sessionId: currentId,
 			plan: structuredClone({ ...plan, tasks: plan.tasks.filter(t => !t.ticket) }), ...settlement.snapshot(),
 			...(open.length ? { delegates: structuredClone(open) } : {}),
@@ -531,6 +532,8 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 		const requested = explicitParent(sources)?.parent;
 		requestedRef = requested;
 		const id = sid(ctx);
+		// Only a bind that starts a session this core did not already hold restores delegates: /tree and a branch switch keep the same one.
+		const resumed = currentId !== id;
 		currentId = id;
 		lastSnapshot = undefined;
 		currentCtx = ctx;
@@ -552,12 +555,12 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 		settlement.restore(snapshot && !source ? snapshot : undefined);
 		// Delegate records are in memory only: a resumed lead takes back the ones a past run left unfinished and settles them in
 		// the background. A fork leaves them to the source. Records still in memory are live or already settled; keep those.
-		const unsettled: DelegateRecord[] = !source && Array.isArray(snapshot?.delegates) ? snapshot.delegates : [];
+		const unsettled: DelegateRecord[] = resumed && !source && Array.isArray(snapshot?.delegates) ? snapshot.delegates : [];
 		if (unsettled.length && main(ctx)) void serial(async () => {
 			const fresh = unsettled.filter(r => !store.get(r.id));
 			if (!fresh.length) return;
 			// A record without an exit belonged to a process that is gone.
-			for (const r of fresh) store.put({ ...r, exited: r.exited ?? "aborted" });
+			for (const r of fresh) store.put({ ...r, text: "", exited: r.exited ?? "aborted" });
 			await drain();
 		}).catch(debug);
 		if (snapshot) {

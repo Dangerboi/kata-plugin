@@ -58,7 +58,7 @@ function lead(from?: { entries: any[]; id: string; fork?: boolean }) {
     const result = await core.todo.apply(ctx, "start", { task: title });
     return !!result.isError && /delegate/.test(result.content[0].text);
   };
-  return { core, ctx, id, entries, plan, view, delegate, started, delegated, delegates: core.delegates };
+  return { core, ctx, id, entries, store, plan, view, delegate, started, delegated, delegates: core.delegates };
 }
 
 beforeAll(async () => { expect((await run(["init", "--project", "delegates-test"])).code).toBe(0); });
@@ -217,9 +217,14 @@ test("a resumed delegate whose settle never finished keeps its issue instead of 
   expect(await a.delegated("Build the kappa widget")).toBe(true);
 });
 
-// A resumed lead settles in the background, so the checks wait for Kata to show it.
-async function until(check: () => Promise<boolean>) { for (let i = 0; i < 100 && !await check(); i++) await Bun.sleep(100); }
+// Resuming settles in the background on the lead's queue, so a todo view returns only after the settle is done.
 const savedDelegates = (entries: any[]) => entries.filter(e => e.customType === "io.kata.omp.state").at(-1)?.data.delegates;
+// The newest saved snapshot with `change` applied to its first delegate, as a process that died at that point would have left it.
+const withSnapshot = (entries: any[], change: (record: any) => void) => {
+  const data = structuredClone(entries.filter(e => e.customType === "io.kata.omp.state").at(-1).data);
+  change(data.delegates[0]);
+  return [...structuredClone(entries), { type: "custom", customType: "io.kata.omp.state", data }];
+};
 
 test("a lead resumed with a delegate's hand back unfinished finishes it: needs-review, needs-human, a request to the lead", async () => {
   const a = lead(); const parent = await a.plan(["Build the xi widget", "Lead step"]);
@@ -233,13 +238,12 @@ test("a lead resumed with a delegate's hand back unfinished finishes it: needs-r
   expect(labels(await show(ref))).not.toContain("needs-review");
   const b = lead({ entries: a.entries, id: a.id });
   await b.core.session.start(b.ctx);
-  await until(async () => labels(await show(ref)).includes("needs-review"));
+  await b.view();
   const view = await show(ref);
   expect(labels(view)).toContain("needs-review");
   expect(view.issue.metadata).toMatchObject({ teammate: LEAD, "work.attention": "needs-human", "omp.status": "completed" });
   expect(view.issue.metadata["omp.subagent_id"]).toBeUndefined();
   expect((await kata(["inbox", "--for", `lead-actor/${LEAD}`, "--json"])).requests.some((r: any) => r.ref.endsWith(task.short_id))).toBe(true);
-  await until(async () => !savedDelegates(b.entries));
   expect(savedDelegates(b.entries)).toBeUndefined();
 });
 
@@ -255,7 +259,7 @@ test("a lead resumed with a delegate that ran no tool rolls its assignment back"
   expect(savedDelegates(a.entries)[0].ranTool).toBeFalsy();
   const b = lead({ entries: a.entries, id: a.id });
   await b.core.session.start(b.ctx);
-  await until(async () => (await show(ref)).issue.metadata["omp.status"] === undefined);
+  await b.view();
   const view = await show(ref);
   expect(labels(view)).not.toContain("needs-review");
   expect(view.issue.owner).toBe(before.issue.owner);
@@ -272,7 +276,7 @@ test("a saved delegate with no exit is settled as aborted when the lead is resum
   expect(savedDelegates(a.entries)[0].exited).toBeUndefined();
   const b = lead({ entries: a.entries, id: a.id });
   await b.core.session.start(b.ctx);
-  await until(async () => labels(await show(ref)).includes("needs-review"));
+  await b.view();
   const view = await show(ref);
   expect(labels(view)).toContain("needs-review");
   expect(view.issue.metadata["omp.status"]).toBe("aborted");
@@ -286,12 +290,66 @@ test("a fork does not settle the source's delegates", async () => {
   await a.delegates.apply({ type: "ranTool", id: "rho" });
   const f = lead({ entries: a.entries, id: a.id, fork: true });
   await f.core.session.start(f.ctx);
-  // Nothing to await: a fork that wrongly settled would do so in the background, so give it time to show.
-  await Bun.sleep(1000);
+  // A fork that wrongly settled would queue it in the background; the view returns only after that queue.
+  await f.view();
   const view = await show(ref);
   expect(labels(view)).not.toContain("needs-review");
   expect(view.issue.metadata).toMatchObject({ teammate: "mate-rho", "omp.subagent_id": "rho", "omp.status": "running" });
   expect(savedDelegates(f.entries.slice(a.entries.length))).toBeUndefined();
+});
+
+test("a /tree back to an older snapshot does not settle an already settled delegate again", async () => {
+  const a = lead(); const parent = await a.plan(["Build the tau widget", "Lead step"]);
+  const task = await taskOf(parent, "Build the tau widget"), ref = `delegates-test#${task.short_id}`;
+  await a.delegates.apply(a.started("tau", "Build the tau widget"));
+  const older = a.entries.length;
+  const b = lead({ entries: a.entries, id: a.id });
+  await b.core.session.start(b.ctx);
+  await b.view();
+  expect(labels(await show(ref))).not.toContain("needs-review");
+  // A later holder takes the task; a second rollback or hand back would clear its keys or re-flag it.
+  await kata(["assign", ref, "later-actor", "--json"]);
+  for (const [key, value] of [["teammate", "mate-later"], ["omp.subagent_id", "later"], ["omp.status", "running"]]) await kata(["meta", "set", ref, key, value, "--json"]);
+  b.entries.splice(older);
+  expect(savedDelegates(b.entries)).toMatchObject([{ id: "tau", state: "assigned" }]);
+  // Empty memory again, as if the record had never been held: only the `resumed` check keeps /tree from restoring it.
+  b.store.drop("tau");
+  await b.core.session.tree(b.ctx);
+  await b.view();
+  expect(b.store.get("tau")).toBeUndefined();
+  const view = await show(ref);
+  expect(labels(view)).not.toContain("needs-review");
+  expect(view.issue.owner).toBe("later-actor");
+  expect(view.issue.metadata).toMatchObject({ teammate: "mate-later", "omp.subagent_id": "later", "omp.status": "running" });
+});
+
+test("a lead resumed with a delegate whose assignment was cut off after its first writes rolls the issue back", async () => {
+  const a = lead(); const parent = await a.plan(["Build the upsilon widget", "Lead step"]);
+  const task = await taskOf(parent, "Build the upsilon widget"), ref = `delegates-test#${task.short_id}`;
+  const before = await show(ref);
+  await a.delegates.apply(a.started("upsilon", "Build the upsilon widget"));
+  // The saved record never reached `assigned`: it has its restore point and binding but no ref.
+  const cut = withSnapshot(a.entries, record => { record.state = "started"; delete record.ref; });
+  expect(savedDelegates(cut)).toMatchObject([{ id: "upsilon", state: "started" }]);
+  const b = lead({ entries: cut, id: a.id });
+  await b.core.session.start(b.ctx);
+  await b.view();
+  const view = await show(ref);
+  expect(labels(view)).not.toContain("needs-review");
+  expect(view.issue.owner).toBe(before.issue.owner);
+  for (const key of ["omp.subagent_id", "omp.session_id", "omp.status", "omp.parent_agent_id"]) expect(view.issue.metadata[key]).toBeUndefined();
+  for (const key of ["teammate", "work.attention", "todo.status"]) expect(view.issue.metadata[key]).toEqual(before.issue.metadata[key]);
+});
+
+test("a delegate whose issue was deleted settles instead of waiting forever", async () => {
+  const a = lead(); const parent = await a.plan(["Build the chi widget", "Lead step"]);
+  const task = await taskOf(parent, "Build the chi widget"), ref = `delegates-test#${task.short_id}`;
+  await a.delegates.apply(a.started("chi", "Build the chi widget"));
+  await a.delegates.apply({ type: "ranTool", id: "chi" });
+  await kata(["delete", ref, "--force", "--confirm", `DELETE ${ref}`, "--json"]);
+  await a.delegates.apply({ type: "exited", id: "chi", outcome: "completed" });
+  // The public delegates API has no `waiting`: a settled record no longer appears in the saved snapshot.
+  expect(savedDelegates(a.entries)).toBeUndefined();
 });
 
 test("a delegate that exits with its issue closed leaves it closed and releases it", async () => {

@@ -6,10 +6,12 @@ import { promisify } from "node:util";
 import { assertIsolated } from "./isolation";
 import type { DelegateRecord, DelegateStore } from "../core/delegates";
 
-export function memoryDelegateStore(): DelegateStore {
+export function memoryDelegateStore(): DelegateStore & { drop(id: string): void } {
   const records = new Map<string, DelegateRecord>();
   return { records: () => [...records.values()], get: key => records.get(key), put: record => { records.set(record.id, record); },
-    of: ctx => [...records.values()].find(record => record.sessionId === ctx.sessionManager.getSessionId()) };
+    of: ctx => [...records.values()].find(record => record.sessionId === ctx.sessionManager.getSessionId()),
+    // Forgets a record, as a process whose memory never held it.
+    drop: id => { records.delete(id); } };
 }
 
 const exec = promisify(execFile);

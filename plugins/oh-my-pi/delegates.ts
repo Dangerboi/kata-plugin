@@ -1,5 +1,5 @@
 import { digest, OPEN, openTaskStatus, qualifiedRef, qualifiedRefs, type Binding, type KataIssue, type Plan, type Task } from "./model";
-import type { Kata } from "./kata-cli";
+import { isKataCode, type Kata } from "./kata-cli";
 
 // The delegate lifecycle, shared by the omp lead and the pi child (see GLOSSARY.md: Delegate,
 // Assignment, Untracked delegate, Hand back). Adapters translate host events into DelegateEvents;
@@ -305,6 +305,8 @@ export function createDelegates(env: DelegatesEnv): Delegates {
 		const ref = r.planRef, cwd = binding.workspace;
 		let issue: KataIssue = (await env.kata.show(ref, cwd)).issue;
 		r.restore ??= capture(issue);
+		// Saved before the first write, so an assignment cut off by a crash is rolled back on resume.
+		env.store.put(r);
 		if (issue.metadata?.teammate !== r.teammate || issue.owner !== await env.actor(cwd)) {
 			issue = await env.owned(ref, cwd, true, false, undefined, { teammate: r.leadTeammate });
 			await env.kata.run(["meta", "set", ref, "teammate", r.teammate, "--if-match", String(issue.revision)], cwd);
@@ -330,7 +332,7 @@ export function createDelegates(env: DelegatesEnv): Delegates {
 	// A delegate that exited having run no tool did nothing: put the issue back as it was.
 	// `issue` is the current state: each step runs only while it is still undone, so a rollback that failed partway finishes on the next settle.
 	async function rollback(r: DelegateRecord, issue: KataIssue) {
-		const { restore } = r, ref = r.ref!, cwd = r.binding!.workspace;
+		const { restore } = r, ref = refOf(r)!, cwd = r.binding!.workspace;
 		if (!restore) throw new Error(`Delegate ${r.id} has nothing to restore.`);
 		const set = (key: string) => restore.meta[key] === undefined ? ["meta", "unset", ref, key] : ["meta", "set", ref, key, String(restore.meta[key])];
 		if (issue.metadata?.teammate === r.teammate) {
@@ -339,12 +341,12 @@ export function createDelegates(env: DelegatesEnv): Delegates {
 			for (const key of ["todo.status", "teammate"]) await env.kata.run(set(key), cwd);
 		}
 		if (restore.claimed && issue.owner) await env.kata.run(["unassign", ref], cwd);
-		// The subagent id goes last: a partial rollback leaves the task marked delegated.
+		// The subagent id goes last: a partial rollback leaves the task marked delegated, and its absence marks a finished one.
 		for (const key of [keySession, ...ompKeys, keySubagent]) await env.kata.run(set(key), cwd);
 	}
 
 	// A plan task returns to the lead (pending, the lead's teammate) only while it still carries the delegate's teammate;
-	// the subagent id goes last, so a partial failure leaves it marked delegated rather than free and foreign.
+	// the subagent id goes last, so a partial failure leaves it marked delegated and a finished hand back no longer carries it.
 	async function handBack(r: DelegateRecord, ref: string, cwd: string) {
 		const lead = r.leadTeammate;
 		const issue: KataIssue = (await env.kata.show(ref, cwd)).issue;
@@ -353,10 +355,10 @@ export function createDelegates(env: DelegatesEnv): Delegates {
 				await env.kata.run(lead ? ["meta", "set", ref, "teammate", lead, "--if-match", String(issue.revision)] : ["meta", "unset", ref, "teammate", "--if-match", String(issue.revision)], cwd);
 				await env.kata.run(["meta", "set", ref, "todo.status", "pending"], cwd);
 			}
-			if (issue.metadata?.[keySubagent] === r.id) await env.kata.run(["meta", "unset", ref, keySubagent], cwd);
 		}
 		await env.kata.run(["label", "add", ref, "needs-review"], cwd);
 		await env.kata.run(["notify", ref, "--to", `${await env.actor(cwd, ref)}${lead ? `/${lead}` : ""}`, "--message", `Subagent ${r.id} ${r.exited} without closing ${ref}; review it, then close or reassign it.`], cwd);
+		if (issue.status === "open" && issue.metadata?.[keySubagent] === r.id) await env.kata.run(["meta", "unset", ref, keySubagent], cwd);
 	}
 
 	// One exited delegate: closed issue settles it; a delegate that never acted is rolled back; otherwise the open issue
@@ -365,11 +367,21 @@ export function createDelegates(env: DelegatesEnv): Delegates {
 		const ref = refOf(r);
 		if (!ref || !r.binding) { r.state = "settled"; env.store.put(r); return; }
 		const cwd = r.binding.workspace;
-		const issue: KataIssue = (await env.kata.show(ref, cwd)).issue;
+		let issue: KataIssue;
+		try { issue = (await env.kata.show(ref, cwd)).issue; }
+		catch (error) {
+			// A deleted issue has nothing left to hand back.
+			if (isKataCode(error, "issue_not_found")) { r.state = "settled"; env.store.put(r); return; }
+			throw error;
+		}
 		if (issue.status === "closed") { r.state = "settled"; env.store.put(r); return; }
-		// A failed assignment the issue's holder refused (another delegate holds it) has nothing to hand back.
-		if (r.state === "failed" && heldByDelegate(ns, issue.metadata) && issue.metadata?.[keySubagent] !== r.id) { r.state = "settled"; env.store.put(r); return; }
-		if (r.state === "assigned" && !r.ranTool) {
+		// A delegate whose assignment was written ends by dropping its subagent id (rollback and hand back both write it last),
+		// so an id that is no longer its own means the cleanup already ran, maybe in another session.
+		if (r.state === "assigned" && issue.metadata?.[keySubagent] !== r.id) { r.state = "settled"; env.store.put(r); return; }
+		// A failed or cut-off assignment the issue's holder refused (another delegate holds it) has nothing to hand back.
+		if ((r.state === "failed" || r.state === "started") && heldByDelegate(ns, issue.metadata) && issue.metadata?.[keySubagent] !== r.id) { r.state = "settled"; env.store.put(r); return; }
+		// An assignment cut off after its first writes also did nothing: it still carries its restore point.
+		if ((r.state === "assigned" || r.state === "started" && r.restore) && !r.ranTool) {
 			await rollback(r, issue);
 			r.state = "settled"; env.store.put(r);
 			return;
