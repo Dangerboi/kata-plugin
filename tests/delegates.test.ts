@@ -19,7 +19,7 @@ async function kata(args: string[]) { const r = await run(args); if (r.code) thr
 const show = (ref: string) => kata(["show", ref, "--json"]);
 const labels = (view: any) => (view.labels ?? []).map((l: any) => l.label);
 const LEAD = "lead-mate";
-let seq = 0, failing: ((args: string[]) => boolean) | undefined;
+let seq = 0, failing: ((args: string[]) => boolean) | undefined, holding: ((args: string[]) => Promise<void> | undefined) | undefined;
 
 // A lead session and its delegates: each is an agent with its own core, as in omp, sharing the one delegate store.
 function lead() {
@@ -27,7 +27,7 @@ function lead() {
   const store = memoryDelegateStore();
   const agent = () => createKataCore({
     appendEntry: (customType, data) => entries.push({ type: "custom", customType, data }),
-    exec: async (_file, args, opts) => failing?.(args) ? { code: 1, stdout: "", stderr: "delegation service permission denied" } : run(args, opts.cwd),
+    exec: async (_file, args, opts) => { await holding?.(args); return failing?.(args) ? { code: 1, stdout: "", stderr: "delegation service permission denied" } : run(args, opts.cwd); },
     isMain: ctx => ctx.agent?.kind === "main",
     delegateStore: store,
   }, { namespace: "omp", executable: binary, executableVars: ["KATA_OMP_EXECUTABLE"] });
@@ -60,7 +60,7 @@ function lead() {
 }
 
 beforeAll(async () => { expect((await run(["init", "--project", "delegates-test"])).code).toBe(0); });
-beforeEach(() => { process.env.KATA_AUTHOR = "lead-actor"; process.env.KATA_TEAMMATE = LEAD; delete process.env.KATA_REF; failing = undefined; });
+beforeEach(() => { process.env.KATA_AUTHOR = "lead-actor"; process.env.KATA_TEAMMATE = LEAD; delete process.env.KATA_REF; failing = undefined; holding = undefined; });
 afterAll(async () => { await run(["daemon", "stop"]); });
 
 const taskOf = async (parent: string, title: string) => (await show(parent)).children.find((c: any) => c.title === title);
@@ -142,6 +142,31 @@ test("a failed assignment is a named state; the delegate's next use retries it",
   await a.delegates.apply({ type: "nextUse", id: "zeta" });
   expect(await delegate.assignment()).toContain(ref);
   expect((await show(ref)).issue.metadata["omp.subagent_id"]).toBe("zeta");
+});
+
+test("a delegate's next use waits for its own assignment, not for the ones queued behind it", async () => {
+  const a = lead(); const parent = await a.plan(["Build the iota widget", "Build the kappa gadget"]);
+  const later = await taskOf(parent, "Build the kappa gadget");
+  const gate = Promise.withResolvers<void>();
+  holding = args => args.some(arg => arg.includes(later.short_id)) ? gate.promise : undefined;
+  const first = a.delegates.apply(a.started("iota", "Build the iota widget"));
+  const second = a.delegates.apply(a.started("kappa-gadget", "Build the kappa gadget"));
+  // Resolves while the later assignment is still held; queued behind it, this call would never return.
+  await a.delegates.apply({ type: "nextUse", id: "iota" });
+  expect(await a.delegate("iota").assignment()).toContain((await taskOf(parent, "Build the iota widget")).short_id);
+  gate.resolve();
+  await Promise.all([first, second]);
+});
+
+test("a next use that joins a still-queued assignment retries it once if that attempt fails", async () => {
+  const a = lead(); const parent = await a.plan(["Build the lambda widget", "Lead step"]);
+  const task = await taskOf(parent, "Build the lambda widget");
+  let failures = 1;
+  failing = args => args[0] === "meta" && args[3] === "omp.subagent_id" && failures-- > 0;
+  const start = a.delegates.apply(a.started("lambda", "Build the lambda widget"));
+  await a.delegates.apply({ type: "nextUse", id: "lambda" });
+  await start;
+  expect(await a.delegate("lambda").assignment()).toContain(task.short_id);
 });
 
 test("a delegate whose assignment failed is handed back when it exits, even with no tool run", async () => {

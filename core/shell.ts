@@ -1,7 +1,9 @@
 import path from "node:path";
-import { projectOf, quote, type Binding } from "./model";
+import { projectOf, type Binding } from "./model";
 
 // Kata invocations inside a bash command, and the rewrite that pins a delegate's to its teammate.
+
+export function quote(value: string): string { return `'${value.replace(/'/g, "'\\''")}'`; }
 
 type ShellWord = { value: string; start: number; end: number };
 // Inspect command positions only. Quoted arguments and heredoc bodies are data;
@@ -22,13 +24,13 @@ export function kataCommands(command: string, configuredExecutable = "kata", exe
 		if (";&|()".includes(command[i])) { segments.push([]); i++; continue; }
 		if (command.slice(i, i + 2) === "<<") { i += command[i + 2] === "-" ? 3 : 2; wantDelimiter = true; continue; }
 		const start = i;
-		let value = "", quote = "";
+		let value = "", open = "";
 		while (i < command.length) {
 			const char = command[i];
-			if (!quote && /[\s;&|()]/.test(char)) break;
-			if (char === "\\" && quote !== "'") { value += command[i + 1] || ""; i += 2; continue; }
-			if (char === quote) { quote = ""; i++; continue; }
-			if (!quote && (char === "'" || char === '"')) { quote = char; i++; continue; }
+			if (!open && /[\s;&|()]/.test(char)) break;
+			if (char === "\\" && open !== "'") { value += command[i + 1] || ""; i += 2; continue; }
+			if (char === open) { open = ""; i++; continue; }
+			if (!open && (char === "'" || char === '"')) { open = char; i++; continue; }
 			value += char; i++;
 		}
 		if (wantDelimiter) { heredoc = value; wantDelimiter = false; continue; }

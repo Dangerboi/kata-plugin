@@ -3,7 +3,7 @@
 // Add a scenario by appending an entry to SCENARIOS; the driver and the scripted
 // provider need no changes.
 
-import { existsSync, readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 
 export type Block = string | { tool: string; args: Record<string, unknown> };
 export type TurnContext = {
@@ -11,6 +11,8 @@ export type TurnContext = {
 	texts: string[];
 	/** System prompt text. */
 	system: string;
+	/** Every agent prompt recorded so far, oldest first. */
+	prompts(): Prompt[];
 };
 export type Turn = Block[] | ((ctx: TurnContext) => Block[]);
 
@@ -82,7 +84,7 @@ const WORKER = "[smoke:worker]";
 // worker.
 const PORTS = ["lexer", "parser", "printer", "checker", "linker", "loader", "emitter", "resolver", "formatter", "bundler", "planner", "scheduler", "tracer", "profiler"].map(part => `Port ${part} module`);
 const ROLES = ["close", "handBack", "rollback"] as const;
-// A scripted worker closes its issue, runs a tool and leaves it open (hand back), or answers without a tool (rollback).
+// A scripted delegate closes its issue, runs a tool and leaves it open (hand back), or answers without a tool (rollback).
 // Delegates on a worker thread take the roles in turn, in the order they started, so any three of them cover every role
 // wherever omp places them; main-thread delegates go by number.
 const workerRole = (n: number, prompts: Prompt[]) => {
@@ -90,9 +92,6 @@ const workerRole = (n: number, prompts: Prompt[]) => {
 	const turn = onWorker.indexOf(`Port${n}`);
 	return ROLES[(turn >= 0 ? turn : n) % ROLES.length];
 };
-export function linesIn<T>(file: string | undefined): T[] {
-	return file && existsSync(file) ? readFileSync(file, "utf8").split("\n").filter(Boolean).map(line => JSON.parse(line)) : [];
-}
 const vars = (): Record<string, string> => JSON.parse(process.env.KATA_SMOKE_VARS ?? "{}");
 const lastRef = (ctx: TurnContext, pattern: RegExp) => ctx.texts.join("\n").match(pattern)?.[0];
 
@@ -422,7 +421,7 @@ export const SCENARIOS: Scenario[] = [{
 			ctx => {
 				const ref = ctx.system.match(/Your Kata issue is ([\w#-]+)/)?.[1];
 				if (!ref) return ["No Kata binding in system prompt."];
-				const role = workerRole(PORTS.findIndex(port => ctx.texts.some(text => text.includes(port))) + 1, linesIn<Prompt>(process.env.KATA_SMOKE_PROMPTS));
+				const role = workerRole(PORTS.findIndex(port => ctx.texts.some(text => text.includes(port))) + 1, ctx.prompts());
 				if (role === "rollback") return ["Nothing to change for this port."];
 				if (role === "handBack") return [{ tool: "bash", args: { command: "ls" } }];
 				return [{ tool: "bash", args: { command: `kata close ${ref} --done --message '${message}' --evidence '${evidence}'` } }];
@@ -497,4 +496,4 @@ export const SCENARIOS: Scenario[] = [{
 // assigned one after another, so the last one's first prompt waits for all fourteen assignments. Scripted only.
 const workers = SCENARIOS.find(s => s.name === "workers")!;
 SCENARIOS.push({ ...workers, name: "workers-slow-kata", livePrompt: undefined,
-	env: { KATA_OMP_EXECUTABLE: new URL("./smoke-slow-kata.sh", import.meta.url).pathname, KATA_SMOKE_DELAY: "0.025" } });
+	env: { KATA_OMP_EXECUTABLE: fileURLToPath(new URL("./smoke-slow-kata.sh", import.meta.url)) } });
