@@ -959,6 +959,18 @@ test("a delegate whose assignment failed is handed back when it exits, and the a
   expect((await show(ref)).issue.status).toBe("closed");
 });
 
+// The transcript session each close of an issue recorded; the store holds every earlier test's events, so page through all.
+async function closeSessions(shortId: string) {
+  const closed: any[] = [];
+  for (let after = 0;;) {
+    const page = await kata(["events", "--after", String(after), "--limit", "500", "--json"]);
+    closed.push(...page.events.filter((e: any) => e.type === "issue.closed" && e.issue_short_id === shortId));
+    if (page.events.length < 500) break;
+    after = page.next_after_id;
+  }
+  return closed.map((e: any) => e.payload?.transcript?.session_id);
+}
+
 test("an assigned delegate's own todo close records the delegate's session, not the lead's", async () => {
   const config = path.join(env.KATA_HOME, "config.toml");
   writeFileSync(config, "[close.transcript]\nenabled = true\n");
@@ -978,14 +990,34 @@ test("an assigned delegate's own todo close records the delegate's session, not 
     expect(done.isError, done.content?.[0]?.text).toBeUndefined();
     const step = (await show(`v2test#${assigned.short_id}`)).children.find((c: any) => c.title === "Delegate transcript step");
     expect(step.status).toBe("closed");
-    const closed: any[] = [];
-    for (let after = 0;;) {
-      const page = await kata(["events", "--after", String(after), "--limit", "500", "--json"]);
-      closed.push(...page.events.filter((e: any) => e.type === "issue.closed" && e.issue_short_id === step.short_id));
-      if (page.events.length < 500) break;
-      after = page.next_after_id;
-    }
-    expect(closed.map((e: any) => e.payload?.transcript?.session_id)).toEqual(["transcript-delegate"]);
+    expect(await closeSessions(step.short_id)).toEqual(["transcript-delegate"]);
+  } finally { writeFileSync(config, ""); }
+});
+
+test("a delegate's todo close keeps the delegate's session when another identity reaches its handlers mid-call", async () => {
+  const config = path.join(env.KATA_HOME, "config.toml");
+  writeFileSync(config, "[close.transcript]\nenabled = true\n");
+  try {
+    const lead = host({ sid: "swap-lead", transcript: true });
+    await lead.event("session_start");
+    const ref = await lead.init(["Swapped context task", "Lead swap step"]);
+    const sessionFile = `${scratch}/delegate-swap.jsonl`;
+    writeFileSync(sessionFile, '{"type":"session","version":3,"id":"swap-delegate"}\n');
+    lead.emit("task:subagent:lifecycle", { id: "Swap.Delegate", status: "started", sessionFile, description: "Swapped context task" });
+    await lead.call({ op: "view" });
+    const assigned = (await show(ref)).children.find((c: any) => c.metadata?.["omp.subagent_id"] === "Swap.Delegate");
+    // omp's advisor runs as its own sub identity inside the session it advises.
+    let armed = false;
+    const worker: ReturnType<typeof host> = host({ sessionFile, agent: { kind: "sub", id: "Swap.Delegate", parentId: lead.ctx.agent.id }, transcript: true,
+      before: () => { if (armed) { armed = false; void worker.event("tool_call", { toolName: "read", input: { path: "README.md" } }, { ...worker.ctx, agent: { kind: "sub", id: "Advisor" } }); } } });
+    await worker.event("session_start");
+    expect((await worker.call({ op: "init", items: ["Delegate swap step"] })).isError).toBeUndefined();
+    armed = true;
+    const done = await worker.call({ op: "done", task: "Delegate swap step", message, evidence });
+    expect(done.isError, done.content?.[0]?.text).toBeUndefined();
+    expect(armed).toBe(false);
+    const step = (await show(`v2test#${assigned.short_id}`)).children.find((c: any) => c.title === "Delegate swap step");
+    expect(await closeSessions(step.short_id)).toEqual(["swap-delegate"]);
   } finally { writeFileSync(config, ""); }
 });
 
