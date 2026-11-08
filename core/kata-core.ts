@@ -72,11 +72,15 @@ const MARK: Record<Status, string> = { pending: "[ ]", in_progress: "[/]", compl
 const itemKey = (item: { phase: string; content: string }) => `${item.phase}\u0000${item.content}`;
 
 // How long a main session's shutdown waits for Kata: closing an automatic parent takes six or more spawns, and an exit mid-way leaves the parent open.
-// pi waits for the handler; omp stops waiting after 2 s whatever this says (docs/explanation/limits.md, Shutdown budget).
+// omp stops waiting for the handler after 2 s whatever this says (docs/explanation/limits.md, Shutdown budget); pi
+// waits for it with no limit of its own, so this only keeps a stuck Kata call from holding pi's exit forever.
 const SHUTDOWN_BOUND_MS = 10_000;
 // How long a delegate's first prompt waits for its assignment, which it cannot learn later. The lead assigns delegates
 // one at a time, about fifteen Kata calls each, so with many at once the last one waits for all the others.
 const DELEGATE_BIND_MS = 15_000;
+// How long the end of a lead turn waits for exited delegates to be handed back or rolled back. omp gives the stop hook
+// 30 s; the cleanups queue behind each other, about ten Kata calls each, so a burst of exits needs a good part of it.
+const TURN_SETTLE_MS = 15_000;
 
 // The todo tool's ops and parameter descriptions; each host builds its schema from them.
 export const TODO_OPS = ["init", "start", "done", "rm", "drop", "block", "unblock", "append", "view"] as const;
@@ -1263,7 +1267,10 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 
 	async function remind(messages: any[], ctx: any): Promise<string | undefined> {
 		if (!main(ctx)) return;
-		const refreshed = await bounded(serial(async () => { await load(plan.workspace); await drain(); return true; }));
+		const refresh = serial(async () => { await load(plan.workspace); await drain(); return true; });
+		// Checked after the short bound, not before queuing: a delegate that exited while the queue was busy still counts.
+		let refreshed = await bounded(refresh);
+		if (!refreshed && delegates.waiting()) refreshed = await bounded(refresh, TURN_SETTLE_MS);
 		if (!refreshed || plan.error) return;
 		const open = plan.tasks.filter(t => t.status === "pending" || t.status === "in_progress");
 		if (open.length === 0 || reminders >= MAX_REMINDERS || !progressed) return;

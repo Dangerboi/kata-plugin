@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- **Delegate hand backs and rollbacks survive a busy turn end.** When a lead turn ends while delegates have exited and are not yet handed back or rolled back, the plugin now waits up to 15 s for those cleanups (was 0.25 s) before the turn ends. Before, with many delegates, omp's 2 s shutdown limit cut off cleanups still queued at exit: the issue kept the delegate's teammate and `omp.status running`, with no `needs-review` and no inbox request. A turn with nothing to clean up still ends within 0.25 s. Exiting with `/exit` or Ctrl+C while delegates run is still cut off after 2 s on omp; see [Limits](docs/explanation/limits.md) (Shutdown budget).
+- Development: the scripted `workers` scenario no longer reads the plan after each delegate report to wait for cleanups; it relies on the end-of-turn wait.
+
 ## oh-my-pi 2.6.0 / pi 1.6.0 — 2026-11-08
 
 **Requires Kata 0.21.0** (0.22.0 tested).

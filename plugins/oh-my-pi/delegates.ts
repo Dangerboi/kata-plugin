@@ -203,6 +203,8 @@ export interface Delegates {
 	holds(ref: string): boolean;
 	// Started and not exited, tracked or not.
 	running(): boolean;
+	// Exited and not yet handed back or settled.
+	waiting(): boolean;
 	// Settles every exited delegate not yet settled. Runs inside the serial queue.
 	settle(): Promise<void>;
 }
@@ -455,6 +457,7 @@ export function createDelegates(env: DelegatesEnv): Delegates {
 		},
 		holds: ref => unfinished().some(r => refOf(r) === ref),
 		running: () => env.store.records().some(r => !r.exited),
+		waiting: () => unfinished().some(r => !!r.exited),
 		settle,
 	};
 }

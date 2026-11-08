@@ -413,9 +413,9 @@ export const SCENARIOS: Scenario[] = [{
 			[{ tool: "todo", args: { op: "init", list: [{ phase: "Ports", items: PORTS }], message: "Smoke worker-thread session" } }],
 			[{ tool: "task", args: { context: "Smoke port work: nothing to change, just close your Kata issue.", tasks: PORTS.map((port, i) => ({ name: `Port${i + 1}`, agent: "task", task: `${WORKER} ${port}`, solutionSpace: "one fix: nothing to change, just close the issue" })) } }],
 			["The ports are delegated."],
-			// omp wakes the main agent as background delegates report back. Each wake reads the plan; the todo call queues
-			// behind the hand backs and rollbacks, so the run cannot end before they are written.
-			...Array.from({ length: 2 * PORTS.length }, () => (ctx: TurnContext): Block[] => ctx.texts.at(-2)?.includes(`"op":"view"`) ? ["Noted."] : [{ tool: "todo", args: { op: "view" } }]),
+			// omp wakes the main agent as background delegates report back. Each turn only acknowledges; the end of the turn
+			// waits for the hand backs and rollbacks, so the run cannot end before they are written.
+			...Array.from({ length: 2 * PORTS.length }, () => ["Noted."]),
 		],
 		[WORKER]: [
 			ctx => {
