@@ -21,10 +21,12 @@ const TICKET_LIMIT = 10;
 
 /**
  * Wraps the host's provider: it always runs, and tickets from `source` whose short
- * id starts with the token or whose title has a word starting with it are appended
- * to its items. A digits-only `#1234` stays GitHub's; `#project#1234` reaches an
- * all-digit Kata id. `source(undefined)` is the folder's bound project. Typing never
- * waits on Kata: an abort, a timeout or a failing source leaves the wrapped items.
+ * id starts with the token or whose title has a word starting with it come first,
+ * before its items: omp's prompt actions match almost any token, and Tab/Enter
+ * accepts the first item. A digits-only `#1234` stays GitHub's; `#project#1234`
+ * reaches an all-digit Kata id. `source(undefined)` is the folder's bound project.
+ * Typing never waits on Kata: an abort, a timeout or a failing source leaves the
+ * wrapped items.
  */
 export function ticketAutocomplete(current: TicketAutocompleteProvider, source: (project?: string) => Promise<Ticket[]>, options: { defaultProject?: string; timeout?: number } = {}): TicketAutocompleteProvider {
 	const ours = new Set<string>();
@@ -62,7 +64,8 @@ export function ticketAutocomplete(current: TicketAutocompleteProvider, source: 
 			const prefix = match[0].startsWith("#") ? match[0] : match[0].slice(1);
 			if (base?.items.length && base.prefix !== prefix) return base; // one list needs one prefix
 			for (const t of tickets) ours.add(t.qualified_id);
-			return { prefix, items: [...(base?.items ?? []), ...tickets.map(t => ({ value: t.qualified_id, label: `${t.short_id} ${t.title}`, description: t.qualified_id }))] };
+			// pi's and omp's menus cap the label column at 32 cells and give the description the rest of the row.
+			return { prefix, items: [...tickets.map(t => ({ value: t.qualified_id, label: t.qualified_id, description: t.title })), ...(base?.items ?? [])] };
 		},
 		applyCompletion(lines, cursorLine, cursorCol, item, prefix) {
 			if (!ours.has(item.value)) return current.applyCompletion(lines, cursorLine, cursorCol, item, prefix);

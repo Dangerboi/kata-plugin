@@ -469,6 +469,18 @@ test("check refuses a task naming two plan items, an already delegated task, and
   await expect(a.delegates.check([{ text: `Work delegates-test#${foreign}` }])).rejects.toThrow(/cannot be delegated/);
 });
 
+test("check refuses to delegate a ticket that other open plan items name, and allows it once it is the last one", async () => {
+  const a = lead();
+  const ref = `delegates-test#${(await kata(["create", "Shared ticket", "--force-new", "--json"])).issue.short_id}`;
+  await a.plan([`${ref}: write the omicron parser`, `${ref}: test the omicron parser`]);
+  // The delegate would close the ticket and strand the lead's other item on it.
+  await expect(a.delegates.check([{ text: `Do "${ref}: test the omicron parser"` }])).rejects.toThrow(/other open plan items name it/);
+  await expect(a.delegates.check([{ text: `Work ${ref}` }])).rejects.toThrow(/other open plan items name it/);
+  const done = await a.core.todo.apply(a.ctx, "done", { task: `${ref}: write the omicron parser`, message: "Wrote the omicron parser and verified it against the fixture.", evidence: ["test:delegates fixture"] });
+  expect(done.isError).toBeUndefined();
+  expect(await a.delegates.check([{ text: `Do "${ref}: test the omicron parser"` }])).toEqual([{ ref, ticket: true }]);
+});
+
 test("a spawn naming a ticket outside the plan is reserved as that ticket and assigned it", async () => {
   const a = lead(); await a.plan(["Build the lambda widget"]);
   const ticket = (await kata(["create", "Outside ticket", "--force-new", "--json"])).issue.short_id, ref = `delegates-test#${ticket}`;

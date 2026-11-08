@@ -7,7 +7,8 @@
 //   - the `todo` tool (same ops as omp's: init, start, done, drop, rm, block,
 //     unblock, append, view), with every task stored as a Kata child issue;
 //   - `/todo`, intercepted on input before omp's built-in command;
-//   - a progress widget and a stop reminder while tasks remain open;
+//   - a progress widget and a stop reminder while tasks remain open (in Tern, tsp.ts draws the result and widget
+//     as omp's own todo card and dock pill);
 //   - cached Kata contracts, guarded main-session attention, and delegate identity.
 //
 // Plan items are children carrying `todo.phase`; other children participate in
@@ -24,6 +25,7 @@ import { delegateCommand, kataCommands as parseKataCommands } from "./shell";
 import { FINAL, teammateFor } from "./delegates";
 import type { DelegateRecord, Delegates, DelegateStore, Reservation } from "./delegates";
 import type { InboxStream } from "./inbox";
+import { describeTodoCall, describeTodoResult, todoWidget } from "./tsp";
 
 // What the lead's Delegates takes from an adapter other than the lead itself: a delegate's next use runs in the lead's queue.
 type DelegateEvents = Pick<Delegates, "apply">;
@@ -183,7 +185,9 @@ export default function ompKata(pi: any) {
 			if (process.env.KATA_OMP_LIVE_INBOX === "0" || typeof pi.sendUserMessage !== "function") return undefined;
 			return { spawn: spawnEvents, deliver: (text: string) => pi.sendUserMessage(text, { deliverAs: "aside", attribution: "agent" }) };
 		},
-	}, { namespace: "omp", executable: EXECUTABLE, executableVars: EXECUTABLE_VARS, debugFile: process.env.KATA_OMP_DEBUG, attentionHarness: "pi", prefetch: true });
+	}, { namespace: "omp", executable: EXECUTABLE, executableVars: EXECUTABLE_VARS, debugFile: process.env.KATA_OMP_DEBUG, attentionHarness: "pi", prefetch: true,
+		// RPC and print modes take string widgets only: a component is for the interactive TUI.
+		widget: (line, view, ctx) => todoWidget(ctx?.mode === "tui" ? pi.pi?.Text : undefined, line, view) });
 	// /tan runs a side conversation in a sub session whose agent id omp mints as
 	// `Tan-<snowflake>`; task spawns get ids from the task name or a generated name,
 	// never that prefix. The id is known at the very first todo call, unlike a
@@ -232,6 +236,10 @@ export default function ompKata(pi: any) {
 			if ((untrackedTan(ctx) || record?.state === "untracked") && typeof ctx.invokeTool === "function") return ctx.invokeTool(params, { signal, onUpdate });
 			return core.todo.apply(ctx, params.op, params);
 		},
+		// Tern and other TSP terminals draw the call and its result as omp's own todo card.
+		describeCall: describeTodoCall,
+		describeResult: describeTodoResult,
+		mergeCallAndResult: true,
 	});
 
 	// OMP reserves built-in command names; intercept /todo before its dispatcher.

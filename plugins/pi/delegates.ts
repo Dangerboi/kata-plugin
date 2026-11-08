@@ -260,9 +260,10 @@ export function createDelegates(env: DelegatesEnv): Delegates {
 				const { tasks: named, tickets: others } = namedTargets(tasks, `${label}\n${spawn.text}`, projects, src.parent);
 				const targets = [...new Set([...named.map(t => t.ticket ?? t.ref), ...others])];
 				if (targets.length > 1) throw new Error(`Task ${index + 1} names more than one ticket or plan item (${targets.join(", ")}). Name one ticket per task and split the work across tasks.`);
-				let ticket: string;
+				let ticket: string, item: Task | undefined;
 				const direct = others[0] ?? named[0]?.ticket;
-				if (direct) ticket = direct;
+				// Items naming one ticket share its ref, so the delegated one is the item whose text the prompt quotes.
+				if (direct) { ticket = direct; item = named.find(t => `${label}\n${spawn.text}`.toLowerCase().includes(t.content.toLowerCase())) ?? (named.length === 1 ? named[0] : undefined); }
 				else {
 					if (named[0] && (taken.has(named[0].ref) || named[0].delegated)) throw new Error(`Plan task ${named[0].ref} is already delegated.`);
 					const selected = src.planned ? matchDelegation(tasks, spawn.text, { unavailable: taken, single: spawns.length === 1, label }) : undefined;
@@ -271,9 +272,12 @@ export function createDelegates(env: DelegatesEnv): Delegates {
 						reservations.push({ ref: selected?.ref });
 						continue;
 					}
-					ticket = selected.ticket;
+					ticket = selected.ticket; item = selected;
 				}
 				if (taken.has(ticket)) throw new Error(`Ticket ${ticket} is already delegated.`);
+				// The delegate closes the whole ticket, which would strand the lead's other open items on it.
+				const siblings = tasks.filter(t => t !== item && t.ticket === ticket && OPEN.has(t.status));
+				if (siblings.length) throw new Error(`Task ${index + 1} would delegate ${ticket}, but other open plan items name it (${siblings.map(t => `"${t.content}"`).join(", ")}). A delegate closes its whole ticket. Delegate the ticket only when no other open item names it, or plan the work as child issues (todo init with ref ${ticket}) and delegate one of those.`);
 				try { await env.owned(ticket, src.workspace, "check", false, undefined, as); }
 				catch (error) { throw new Error(`Task ${index + 1} names ${ticket}, which cannot be delegated: ${failure(error)}`); }
 				taken.add(ticket);

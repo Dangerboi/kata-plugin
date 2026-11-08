@@ -21,8 +21,9 @@ Kata inbox requests reach a session when `KATA_INBOX_USER` names a session addre
 Pi:
 
 ```sh
+pi install npm:kata-pi
+# or from Git, or a local clone:
 pi install git:github.com/Dangerboi/kata-plugin
-# or, from a local clone:
 pi install ./kata-plugin/plugins/pi
 ```
 

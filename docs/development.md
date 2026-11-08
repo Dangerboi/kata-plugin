@@ -49,10 +49,21 @@ Scenarios are data in `scripts/smoke-omp-scenarios.ts`: scripted turns per agent
 
 `--live` has the real model do the work from a plain-language prompt, so it needs a login. Scripted runs give omp a throwaway `PI_CODING_AGENT_DIR`; live runs use your own (an inherited `PI_CODING_AGENT_DIR`, else `~/.omp/agent`) with its logins and settings, so a subscription login works and refreshes in place, and omp may update that directory as in any run. The Kata store stays a throwaway one. Prefer a subscription model for `--model` over a pay-per-use API key. A scenario's omp settings (`ompConfig`) go in as a `--config` overlay for the run, never into your `config.yml`. Live runs spend tokens or subscription quota and can fail on model behaviour rather than plugin behaviour; the `workers` scenario runs 14 delegates and can take the full 10 minutes.
 
+## Changelog
+
+`CHANGELOG.md` follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and its release sections are the release notes.
+
+- **When:** in the commit that makes a change a user can notice. The entry goes under `## [Unreleased]`, in `### Added`, `### Changed`, `### Removed` or `### Fixed` (that order); add the subsection when it is missing.
+- **Area:** inside each type, entries sit under a `####` area heading, in this order: Requirements (Kata and host versions), Install and update, Plans (the `todo` tool, parents, ticket items, closes), Delegates, Inbox and attention, Display (the `#` menu, widgets, Tern), Development. Add a heading only when the type has an entry for that area; a new area joins this list first.
+- **Shape:** one feature or fix per top-level bullet, a sentence that names the thing that changed. Detail goes in sub-bullets of a line or two each. A change that only one host gets starts with `omp:` or `pi:`. A change that breaks an upgrade starts with `**Breaking:**` and says what to do.
+- **Reader:** someone who installs and uses the plugins. Write in the present tense, and name the behaviour, not ticket ids or commit hashes.
+- **Superseded:** when later work replaces something already under Unreleased, rewrite that entry in its final form.
+
 ## Releases
 
-Installs come from the marketplace (`kata@kata-plugin`) and Git; nothing is published to npm.
+Installs come from the marketplace (`kata@kata-plugin`), Git, and npm for pi (`kata-pi`, listed in the [Pi package gallery](https://pi.dev/packages) through its `pi-package` keyword). `kata-omp` is not published.
 
 1. Bump `version` by hand in each changed plugin's `plugins/*/package.json`. Keep the root `package.json` version equal to pi's: the root manifest is what `pi install git:…` installs.
-2. Add a `CHANGELOG.md` heading naming each plugin version and the date, for example `## oh-my-pi 2.2.0 / pi 1.2.0 — 2026-10-31`.
+2. In `CHANGELOG.md`, rename `## [Unreleased]` to `## [<root version>] - YYYY-MM-DD`, start the section with a line naming both plugin versions (`kata-omp 2.6.1 and kata-pi 1.6.1.`), and put a new empty `## [Unreleased]` above it. At the end of the file, point `[Unreleased]` at `compare/v<root version>...HEAD` and add a link for the new version comparing the previous tag. Pi shows a package's new changelog entries after an update and reads only `##` headings that start with a version, brackets allowed; it compares that version with `kata-pi`'s.
 3. After the change merges, tag `main` as `v<root version>` and publish a GitHub release from that tag with the changelog section as its notes.
+4. If `kata-pi` changed, run `npm publish` in `plugins/pi` (logged in to npm as an owner of `kata-pi`). Its `prepack` copies the root `LICENSE` and `CHANGELOG.md` into the package and `postpack` removes them again; `npm pack --dry-run` lists the files without publishing. The gallery preview, `pi.image` (and `pi.video`, if set), points at `docs/media/` on `main`, so a new preview shows once it is merged.

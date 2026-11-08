@@ -37,10 +37,17 @@ export interface CoreOptions {
 	attentionHarness?: string;
 	// Start the contract and inbox reads at session start, not at the first prompt (a host whose context another extension may supply waits for the prompt).
 	prefetch?: boolean;
+	// The progress widget's content for this host and the event's context. Absent: the summary line alone.
+	widget?(line: string, view: PlanView, ctx: any): unknown;
 }
 
 // Where the session's plan lives: the host hands it to child processes it starts.
 export type Lead = { parent?: string; workspace: string; label?: string };
+// The plan as todo results (`details.kata`) and the widget hand it to the host. `ref` is the task's issue or named ticket.
+export type PlanView = {
+	parent?: string; workspace?: string; label?: string; local?: true;
+	phases: { name: string; tasks: { content: string; status: Status; ref: string; blocker?: string }[] }[];
+};
 // What a prompt gets from the core, as text: the host formats each section for its prompt.
 export type PromptSections = { contract?: string; inbox?: string; todo?: string; assignment?: string };
 // A pi child's view of the session that started it.
@@ -105,6 +112,8 @@ Kata specifics:
 - An item that works an existing ticket starts with its qualified ref: \`<project>#<short_id>: <action>\` (for example \`myproj#a1b2: write the smoke script\`). It creates no issue: start claims the ticket and marks it in progress, done comments on it, and the last item of a ticket to be done closes it with that item's evidence (a ticket with open children stays open and gets a comment), drop/rm only comment and never close it. A ref that does not resolve, or a closed ticket, is an error. Only that prefix names a ticket; a bare id is text. A plan whose items all name tickets creates no parent issue.
 - Every other task is a Kata child issue of one parent issue. On init pass \`ref\` with the Kata issue this plan serves (search first: kata search "<terms>" --agent); an explicit KATA_REF or a delegate's assignment must match it. Without a ref, use that issue, the session's existing parent, or a new parent titled by \`message\`.
 - done closes the issue (an item naming a ticket: see above). Kata requires \`evidence\` (commit:<sha>, test:<cmd>, pr:<url>, reviewed-paths:<path>) and a \`message\` of 40+ characters saying what changed and how it was verified. Unverified work: block it instead.
+- The tool does the Kata bookkeeping for its tasks and ticket items: it claims them, sets \`work.attention\` (block: stuck with the reason; start/unblock: ok) and closes them on done. Do not run \`kata claim\`, \`kata meta set ... work.attention\` or \`kata close\` for them yourself, and never add such bookkeeping as a plan item.
+- A delegate bound to a plan item or ticket (an omp \`task\` subagent, or a pi started from this session) is told to close that issue itself, with its own evidence, once its work is verified. That close is expected: the item then shows done without your \`done\`, and a later \`done\` on it changes nothing. A delegate that exits with its issue still open hands it back to you, labeled \`needs-review\`.
 - init whose new list leaves out open tasks changes nothing and returns an error listing the missing ones; pass \`replace: true\` only to deliberately drop them (they close as wontfix).
 - drop/rm take the reason in \`message\`.
 - drop and rm close those tasks as wontfix (Kata never deletes). Automatic session parents close from their children’s Kata-recorded evidence once all work has settled. Explicit/claimed parents remain yours to close. Folders with no Kata project use KATA_DEFAULT_PROJECT (labeled with the repo) or register their inferred project; the plan is session-local only while Kata is unreachable and replays when it returns.`;
@@ -424,7 +433,7 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 		const active = plan.tasks.find(t => t.status === "in_progress");
 		const blocked = plan.tasks.filter(t => t.status === "blocked").length;
 		const line = `Kata ${plan.parent ?? "tickets"} · ${done}/${plan.tasks.length} done${blocked ? ` · ${blocked} blocked` : ""}${active ? ` · ▶ ${active.content}` : ""}`;
-		ui.setWidget(WIDGET, [line]);
+		ui.setWidget(WIDGET, options.widget ? options.widget(line, view(), ctx) : [line]);
 	}
 
 	// True while Kata answers. An unregistered cwd is not an outage: it resolves
@@ -1186,39 +1195,46 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 		return render(plan);
 	}
 
-	function details(op: string) {
+	function view(): PlanView {
 		return {
-			op,
-			// Not a top-level `phases`: omp's native todo tracker reads that key from
-			// any result named `todo` and would add its own reminders, nudges and HUD.
-			kata: {
-				parent: plan.parent, workspace: plan.workspace, label: plan.label,
-				phases: phasesOf(plan.error ? [] : plan.tasks).map(p => ({
-					name: p.name,
-					tasks: p.tasks.map(t => (t.blocker ? { content: t.content, status: t.status, blocker: t.blocker } : { content: t.content, status: t.status })),
-				})),
-			},
+			parent: plan.parent, workspace: plan.workspace, label: plan.label, ...(plan.local ? { local: true as const } : {}),
+			phases: phasesOf(plan.error ? [] : plan.tasks).map(p => ({
+				name: p.name,
+				tasks: p.tasks.map(t => ({ content: t.content, status: t.status, ref: t.ticket ?? t.ref, ...(t.blocker ? { blocker: t.blocker } : {}) })),
+			})),
 		};
 	}
+
+	// `notice` is the result text before the plan: an error, a pending close or a deleted parent.
+	function details(op: string, notice: string) {
+		// Not a top-level `phases`: omp's native todo tracker reads that key from
+		// any result named `todo` and would add its own reminders, nudges and HUD.
+		return { op, kata: { ...view(), ...(notice ? { notice } : {}) } };
+	}
+	const noticeOf = (text: string, planText: string) => text.slice(0, text.length - planText.length).trim();
 
 	async function execute(params: any, ctx: any) {
 		return callCtx.run(ctx, () => serial(async () => {
 			if (boundAgent && boundAgent !== agentKey(ctx)) {
-				return { content: [{ type: "text" as const, text: "Kata agent identity changed; use this worker's own extension context." }], details: { op: params.op, kata: {} }, isError: true };
+				const text = "Kata agent identity changed; use this worker's own extension context.";
+				return { content: [{ type: "text" as const, text }], details: { op: params.op, kata: { notice: text } }, isError: true };
 			}
 			try {
 				if (!main(ctx) && !delegates.assignment(ctx)) throw new Error(delegates.unassigned(ctx));
-				const text = withDeletionNotice(await apply(params, ctx), params.op === "init");
-				return { content: [{ type: "text" as const, text }], details: details(params.op) };
+				const planText = await apply(params, ctx);
+				const text = withDeletionNotice(planText, params.op === "init");
+				return { content: [{ type: "text" as const, text }], details: details(params.op, noticeOf(text, planText)) };
 			} catch (err) {
 				// A failed initial binding has no authoritative plan to render yet; a deleted parent's notice is one.
 				if (!bound || !plan.parent && !plan.local && !named.length && !deletedParent) plan.error = (err as Error).message;
 				// Kata may have applied part of a batch. A failed reload marks the
 				// cached tasks unavailable instead of presenting them as current.
 				if (plan.parent || named.length) await load(plan.workspace).catch(debug);
+				const planText = render(plan);
+				const text = withDeletionNotice(`${(err as Error).message}\n\n${planText}`);
 				return {
-					content: [{ type: "text" as const, text: withDeletionNotice(`${(err as Error).message}\n\n${render(plan)}`) }],
-					details: details(params.op),
+					content: [{ type: "text" as const, text }],
+					details: details(params.op, noticeOf(text, planText)),
 					isError: err instanceof ClosePending ? undefined : true,
 				};
 			} finally {
@@ -1292,8 +1308,10 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 		let refreshed: boolean | undefined;
 		try {
 			// Checked after the short bound, not before queuing: a delegate that exited while the queue was busy still counts.
+			const pendingAtStop = delegates.cleanupPending();
 			refreshed = await until(bounded(refresh));
-			if (!refreshed && delegates.cleanupPending()) refreshed = await until(bounded(refresh, deadline - Date.now()));
+			// A cleanup that finished during the short bound leaves the refresh queued behind it, so what was pending at the stop counts too.
+			if (!refreshed && (pendingAtStop || delegates.cleanupPending())) refreshed = await until(bounded(refresh, deadline - Date.now()));
 			// A delegate that exits during the wait queues its own cleanup after the refresh: wait for those too. Stop when a pass
 			// leaves the same cleanups pending (Kata unreachable, a step failing), so an outage does not hold every turn end.
 			while (refreshed && !signal?.aborted && delegates.cleanupPending() && Date.now() < deadline) {

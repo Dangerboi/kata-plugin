@@ -3,13 +3,29 @@
   "version": "1.6.1",
   "type": "module",
   "description": "Kata-backed plans and evidence-checked completion for stock pi",
+  "license": "MIT",
+  "author": "Dangerboi",
+  "homepage": "https://github.com/Dangerboi/kata-plugin/blob/main/docs/reference/pi.md",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Dangerboi/kata-plugin.git",
+    "directory": "plugins/pi"
+  },
+  "bugs": "https://github.com/Dangerboi/kata-plugin/issues",
   "keywords": [
-    "pi-package"
+    "pi-package",
+    "kata"
   ],
+  "scripts": {
+    "prepack": "cp ../../LICENSE ../../CHANGELOG.md .",
+    "postpack": "rm -f LICENSE CHANGELOG.md"
+  },
   "pi": {
     "extensions": [
       "./kata.ts"
-    ]
+    ],
+    "image": "https://raw.githubusercontent.com/Dangerboi/kata-plugin/main/docs/media/kata-pi.png",
+    "video": "https://github.com/Dangerboi/kata-plugin/raw/refs/heads/main/docs/media/kata-pi.mp4"
   },
   "peerDependencies": {
     "@earendil-works/pi-coding-agent": "*",
