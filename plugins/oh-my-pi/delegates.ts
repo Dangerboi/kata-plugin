@@ -380,9 +380,9 @@ export function createDelegates(env: DelegatesEnv): Delegates {
 		if (r.state === "assigned" && issue.metadata?.[keySubagent] !== r.id) { r.state = "settled"; env.store.put(r); return; }
 		// A failed or cut-off assignment the issue's holder refused (another delegate holds it) has nothing to hand back.
 		if ((r.state === "failed" || r.state === "started") && heldByDelegate(ns, issue.metadata) && issue.metadata?.[keySubagent] !== r.id) { r.state = "settled"; env.store.put(r); return; }
-		// An assignment cut off after its first writes also did nothing: it still carries its restore point.
-		if ((r.state === "assigned" || r.state === "started" && r.restore) && !r.ranTool) {
-			await rollback(r, issue);
+		// An assignment that never got to a tool did nothing: roll back what it wrote. A started record without a restore point wrote nothing.
+		if ((r.state === "assigned" || r.state === "started") && !r.ranTool) {
+			if (r.restore) await rollback(r, issue);
 			r.state = "settled"; env.store.put(r);
 			return;
 		}

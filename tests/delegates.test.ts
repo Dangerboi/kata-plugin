@@ -341,6 +341,59 @@ test("a lead resumed with a delegate whose assignment was cut off after its firs
   for (const key of ["teammate", "work.attention", "todo.status"]) expect(view.issue.metadata[key]).toEqual(before.issue.metadata[key]);
 });
 
+test("a new process resuming from an older snapshot leaves an issue a later holder took untouched", async () => {
+  const a = lead(); const parent = await a.plan(["Build the phi widget", "Lead step"]);
+  const task = await taskOf(parent, "Build the phi widget"), ref = `delegates-test#${task.short_id}`;
+  await a.delegates.apply(a.started("phi", "Build the phi widget"));
+  const older = a.entries.length;
+  await a.delegates.apply({ type: "exited", id: "phi", outcome: "ended" });
+  await kata(["assign", ref, "later-actor", "--json"]);
+  for (const [key, value] of [["teammate", "mate-later"], ["omp.subagent_id", "later"], ["omp.status", "running"], ["omp.session_id", "later-session"]]) await kata(["meta", "set", ref, key, value, "--json"]);
+  const inbox = async () => (await kata(["inbox", "--for", `lead-actor/${LEAD}`, "--json"])).requests.filter((r: any) => r.ref.endsWith(task.short_id)).length;
+  const notified = await inbox();
+  // The older snapshot still lists phi as assigned: a settle that finished elsewhere never updated it.
+  const c = lead({ entries: a.entries.slice(0, older), id: a.id });
+  expect(savedDelegates(c.entries)).toMatchObject([{ id: "phi", state: "assigned" }]);
+  await c.core.session.start(c.ctx);
+  await c.view();
+  const view = await show(ref);
+  expect(labels(view)).not.toContain("needs-review");
+  expect(await inbox()).toBe(notified);
+  expect(view.issue.owner).toBe("later-actor");
+  expect(view.issue.metadata).toMatchObject({ teammate: "mate-later", "omp.subagent_id": "later", "omp.status": "running", "omp.session_id": "later-session" });
+});
+
+test("a started delegate saved before its restore point existed leaves the issue alone on resume", async () => {
+  const a = lead(); const parent = await a.plan(["Build the psi widget", "Lead step"]);
+  const task = await taskOf(parent, "Build the psi widget"), ref = `delegates-test#${task.short_id}`;
+  await a.delegates.apply(a.started("psi", "Build the psi widget"));
+  const before = await show(ref);
+  const inbox = async () => (await kata(["inbox", "--for", `lead-actor/${LEAD}`, "--json"])).requests.filter((r: any) => r.ref.endsWith(task.short_id)).length;
+  const notified = await inbox();
+  // A sibling's save during the first show: the record has its binding but nothing was written or captured yet.
+  const cut = withSnapshot(a.entries, record => { record.state = "started"; delete record.ref; delete record.restore; });
+  expect(savedDelegates(cut)).toMatchObject([{ id: "psi", state: "started", binding: {} }]);
+  const b = lead({ entries: cut, id: a.id });
+  await b.core.session.start(b.ctx);
+  await b.view();
+  const view = await show(ref);
+  expect(labels(view)).not.toContain("needs-review");
+  expect(await inbox()).toBe(notified);
+  expect(view.issue.metadata).toEqual(before.issue.metadata);
+  expect(view.issue.owner).toBe(before.issue.owner);
+});
+
+test("an assignment saves its restore point before its first write", async () => {
+  const a = lead(); await a.plan(["Build the omega widget", "Lead step"]);
+  const gate = Promise.withResolvers<void>(), reached = Promise.withResolvers<void>();
+  holding = args => args[0] === "meta" && args[1] === "set" && args[3] === "teammate" ? (reached.resolve(), gate.promise) : undefined;
+  const start = a.delegates.apply(a.started("omega", "Build the omega widget"));
+  await reached.promise;
+  expect(savedDelegates(a.entries)).toMatchObject([{ id: "omega", state: "started", restore: { meta: {} } }]);
+  gate.resolve();
+  await start;
+});
+
 test("a delegate whose issue was deleted settles instead of waiting forever", async () => {
   const a = lead(); const parent = await a.plan(["Build the chi widget", "Lead step"]);
   const task = await taskOf(parent, "Build the chi widget"), ref = `delegates-test#${task.short_id}`;

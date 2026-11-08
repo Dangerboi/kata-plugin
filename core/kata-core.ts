@@ -222,7 +222,8 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 	function persist() {
 		if (!currentId || !main(currentCtx)) return;
 		// A prompt is only read to decide an assignment, which a restored record never does, so the snapshot leaves it out.
-		const open = store.records().filter(r => !FINAL.has(r.state) && r.leadSessionId === currentId).map(({ text: _text, ...r }) => r);
+		// A record with no binding wrote nothing to Kata and settles without effect, so it is left out too.
+		const open = store.records().filter(r => !FINAL.has(r.state) && r.leadSessionId === currentId && r.binding).map(({ text: _text, ...r }) => r);
 		const data = { version: 1, sessionId: currentId,
 			plan: structuredClone({ ...plan, tasks: plan.tasks.filter(t => !t.ticket) }), ...settlement.snapshot(),
 			...(open.length ? { delegates: structuredClone(open) } : {}),
