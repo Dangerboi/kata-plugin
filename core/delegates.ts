@@ -424,9 +424,9 @@ export function createDelegates(env: DelegatesEnv): Delegates {
 		const r = note(event);
 		if (!r || event.type === "ranTool") return Promise.resolve();
 		if (event.type === "nextUse") {
-			// A queued attempt that leaves the record unassigned gets one retry before this use goes on.
+			// A queued attempt that leaves a running delegate unassigned gets one retry before this use goes on.
 			const queued = assigning.get(r.id);
-			if (queued) return queued.then(() => r.state === "started" || r.state === "failed" ? apply(event) : undefined);
+			if (queued) return queued.then(() => !r.exited && (r.state === "started" || r.state === "failed") ? apply(event) : undefined);
 			if (r.state !== "started" && r.state !== "failed") return Promise.resolve();
 		}
 		const work = env.serial(async () => {
