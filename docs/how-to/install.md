@@ -11,6 +11,15 @@ omp plugin install kata@kata-plugin
 
 Restart omp. There is no `todo.enabled` step: the plugin's `todo` replaces the built-in one, and omp's own todo reminders, nudges and HUD have nothing to track. A `todo.enabled: false` you set earlier keeps working.
 
+To update, refresh the marketplace first: `upgrade` reads plugin versions from omp's cached copy of the marketplace, which it does not fetch, so without the first line it reports the version you already have.
+
+```sh
+omp plugin marketplace update kata-plugin
+omp plugin upgrade kata@kata-plugin
+```
+
+Then restart omp.
+
 Optional: send the plans of repos that have no Kata project to one Kata project, labeled with the repo name, by exporting it where omp runs:
 
 ```sh
@@ -39,4 +48,4 @@ The root manifest supports `pi install git:github.com/Dangerboi/kata-plugin`. Pi
 
 For one run: `pi --no-extensions -e /path/to/kata-plugin/plugins/pi/kata.ts`. Remove any other todo extension first. Keep each plugin directory intact: every `.ts` file next to its `kata.ts` is a required core module. Do not overwrite the native adapter at the user extension path `kata.ts`.
 
-The omp marketplace identifies the plugin as `kata@kata-plugin`. The same catalog lists `kata-pi` (source `plugins/pi`) so tools that read the catalog, such as Skillshare, can install the pi build from the Git URL; it is for pi, and under omp its entry exits without loading. `kata-pi` is also the npm package that `pi install npm:kata-pi` installs; `kata-omp` names the OMP package and is not published. The root pi shim does not make the OMP package a pi extension.
+The omp marketplace identifies the plugin as `kata@kata-plugin`. The same catalog lists `kata-pi` (source `plugins/pi`) so tools that read the catalog, such as Skillshare, can install the pi build from the Git URL; it is for pi, and under omp its entry exits without loading. On npm the pi build is `@dangerboi/kata-pi`; `kata-omp` names the OMP package and is not published. The root pi shim does not make the OMP package a pi extension.
