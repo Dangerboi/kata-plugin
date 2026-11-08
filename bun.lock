@@ -14,11 +14,11 @@
     },
     "plugins/oh-my-pi": {
       "name": "kata-omp",
-      "version": "2.5.1",
+      "version": "2.6.0",
     },
     "plugins/pi": {
       "name": "kata-pi",
-      "version": "1.5.1",
+      "version": "1.6.0",
       "peerDependencies": {
         "@earendil-works/pi-coding-agent": "*",
         "typebox": "*",
