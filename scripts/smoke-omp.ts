@@ -10,10 +10,10 @@
 // logins (prefer a subscription), so omp may update it as in any run. KATA_HOME is
 // a throwaway store either way; your live Kata store is never written.
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { SCENARIOS, type Check, type Issue, type Prompt, type Request, type ToolUse, type Scenario, type Session, type Store } from "./smoke-omp-scenarios";
+import { linesIn, SCENARIOS, type Check, type Issue, type Prompt, type Request, type ToolUse, type Scenario, type Session, type Store } from "./smoke-omp-scenarios";
 
 const root = path.resolve(import.meta.dir, "..");
 const argv = process.argv.slice(2);
@@ -40,10 +40,6 @@ function kata(env: NodeJS.ProcessEnv, cwd: string, args: string[], extra: NodeJS
 	const out = spawnSync("kata", args, { env: { ...env, ...extra }, cwd, encoding: "utf8", timeout: 15_000 });
 	if (out.status !== 0) throw new Error(`kata ${args.join(" ")}: ${out.stderr || out.error}`);
 	return out.stdout;
-}
-
-function linesIn<T>(file: string): T[] {
-	return existsSync(file) ? readFileSync(file, "utf8").split("\n").filter(Boolean).map(line => JSON.parse(line)) : [];
 }
 
 function store(env: NodeJS.ProcessEnv, cwd: string, records: string, prompts: string, tools: string): Store {

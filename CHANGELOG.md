@@ -7,7 +7,7 @@
 - Internal restructure: the shared core is split by job (`model.ts`, `kata-cli.ts`, `shell.ts`, `autocomplete.ts` next to `kata-core.ts`), and the oh-my-pi adapter's source now lives in `plugins/oh-my-pi/kata.ts` instead of a generated copy of a root file. Both plugin folders gain these modules; keep each folder intact when installing by hand. Visible differences: both hosts show the same todo parameter descriptions, and a task completed while Kata was unreachable replays blocked unless its message has 40 characters after runs of whitespace are collapsed, the same rule `done` applies.
 - Development: every test runner refuses to start while a vendored copy in `plugins/*` is older than `core/`; run `bun run build:plugins` after a `core/` edit.
 - Development: the `workers-slow-kata` smoke scenario reruns `workers` with every plugin Kata call 25 ms late (`scripts/smoke-slow-kata.sh`), so the delegate wait is checked on a slow Kata.
-- Development: the scripted `workers` scenario checks every delegate, those on worker threads included, to the end of its task: some close their issue, some run a tool and are handed back, some answer without a tool and are rolled back. It needs omp 18.18.0, which fixed scripted worker delegates failing at their first model call; tested omp moves to 18.18.0.
+- Development: the scripted `workers` scenario checks every delegate, those on worker threads included, to the end of its task: some close their issue, some run a tool and are handed back, some answer without a tool and are rolled back, and every role has a delegate on a worker thread. It needs omp 18.18.0, which fixed scripted worker delegates failing at their first model call; tested omp moves to 18.18.0.
 
 ## oh-my-pi 2.5.1 / pi 1.5.1 — 2026-11-07
 

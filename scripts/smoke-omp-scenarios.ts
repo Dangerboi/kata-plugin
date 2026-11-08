@@ -3,6 +3,8 @@
 // Add a scenario by appending an entry to SCENARIOS; the driver and the scripted
 // provider need no changes.
 
+import { existsSync, readFileSync } from "node:fs";
+
 export type Block = string | { tool: string; args: Record<string, unknown> };
 export type TurnContext = {
 	/** Text of every message so far (tool results included), oldest first. */
@@ -77,11 +79,20 @@ const SUB = "[smoke:sub]";
 const SCOUT = "[smoke:scout]";
 const WORKER = "[smoke:worker]";
 // omp runs a subagent on a worker thread once nine or more run at once (its docs say four); fourteen puts several on a
-// worker, so each run has delegates of every role there.
+// worker.
 const PORTS = ["lexer", "parser", "printer", "checker", "linker", "loader", "emitter", "resolver", "formatter", "bundler", "planner", "scheduler", "tracer", "profiler"].map(part => `Port ${part} module`);
-// Scripted workers: Port1, Port4, ... close their issue, Port2, Port5, ... run a tool and leave it open (hand back), Port3,
-// Port6, ... answer without a tool (rollback). Cycling by number spreads every role over the delegates omp puts on a worker.
-const workerRole = (n: number) => (["rollback", "close", "handBack"] as const)[n % 3];
+const ROLES = ["close", "handBack", "rollback"] as const;
+// A scripted worker closes its issue, runs a tool and leaves it open (hand back), or answers without a tool (rollback).
+// Delegates on a worker thread take the roles in turn, in the order they started, so any three of them cover every role
+// wherever omp places them; main-thread delegates go by number.
+const workerRole = (n: number, prompts: Prompt[]) => {
+	const onWorker = [...new Set(prompts.filter(p => /^Port\d+$/.test(p.agent) && !p.mainThread).map(p => p.agent))];
+	const turn = onWorker.indexOf(`Port${n}`);
+	return ROLES[(turn >= 0 ? turn : n) % ROLES.length];
+};
+export function linesIn<T>(file: string | undefined): T[] {
+	return file && existsSync(file) ? readFileSync(file, "utf8").split("\n").filter(Boolean).map(line => JSON.parse(line)) : [];
+}
 const vars = (): Record<string, string> => JSON.parse(process.env.KATA_SMOKE_VARS ?? "{}");
 const lastRef = (ctx: TurnContext, pattern: RegExp) => ctx.texts.join("\n").match(pattern)?.[0];
 
@@ -403,14 +414,15 @@ export const SCENARIOS: Scenario[] = [{
 			[{ tool: "todo", args: { op: "init", list: [{ phase: "Ports", items: PORTS }], message: "Smoke worker-thread session" } }],
 			[{ tool: "task", args: { context: "Smoke port work: nothing to change, just close your Kata issue.", tasks: PORTS.map((port, i) => ({ name: `Port${i + 1}`, agent: "task", task: `${WORKER} ${port}`, solutionSpace: "one fix: nothing to change, just close the issue" })) } }],
 			["The ports are delegated."],
-			// omp wakes the main agent as background delegates report back.
-			...PORTS.map(() => ["A delegate has reported back."]),
+			// omp wakes the main agent as background delegates report back. Each wake reads the plan; the todo call queues
+			// behind the hand backs and rollbacks, so the run cannot end before they are written.
+			...Array.from({ length: 2 * PORTS.length }, () => (ctx: TurnContext): Block[] => ctx.texts.at(-2)?.includes(`"op":"view"`) ? ["Noted."] : [{ tool: "todo", args: { op: "view" } }]),
 		],
 		[WORKER]: [
 			ctx => {
 				const ref = ctx.system.match(/Your Kata issue is ([\w#-]+)/)?.[1];
 				if (!ref) return ["No Kata binding in system prompt."];
-				const role = workerRole(PORTS.findIndex(port => ctx.texts.some(text => text.includes(port))) + 1);
+				const role = workerRole(PORTS.findIndex(port => ctx.texts.some(text => text.includes(port))) + 1, linesIn<Prompt>(process.env.KATA_SMOKE_PROMPTS));
 				if (role === "rollback") return ["Nothing to change for this port."];
 				if (role === "handBack") return [{ tool: "bash", args: { command: "ls" } }];
 				return [{ tool: "bash", args: { command: `kata close ${ref} --done --message '${message}' --evidence '${evidence}'` } }];
@@ -458,9 +470,9 @@ export const SCENARIOS: Scenario[] = [{
 		const onWorkerOf = (ns: number[]) => ns.filter(n => onWorker.includes(`Port${n}`));
 		if (!store.live) {
 			const outcome = { close: (n: number) => taskOf(n)?.status === "closed" && !labelled(taskOf(n)), handBack: handedBack, rollback: rolledBack };
-			const asScripted = (n: number) => outcome[workerRole(n)](n);
-			const roles = ["close", "handBack", "rollback"] as const;
-			const uncovered = roles.filter(role => onWorkerOf(numbers.filter(n => workerRole(n) === role)).length === 0);
+			const prompts = store.prompts(), roleOf = (n: number) => workerRole(n, prompts);
+			const asScripted = (n: number) => outcome[roleOf(n)](n);
+			const uncovered = ROLES.filter(role => onWorkerOf(numbers.filter(n => roleOf(n) === role)).length === 0);
 			return [...checks,
 				{ name: "every role (close, hand back, rollback) has a delegate on a worker thread", ok: uncovered.length === 0, detail: `missing ${uncovered.join(", ")}; worker delegates ${onWorker.join(", ")}` },
 				{ name: "every delegate's task ended as its script directs: closed, handed back or rolled back", ok: numbers.every(asScripted), detail: describe(numbers, asScripted) },
