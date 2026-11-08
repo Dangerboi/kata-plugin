@@ -30,6 +30,8 @@ Tested with oh-my-pi 18.18.1. To check another omp release, run `bun run smoke:o
 ## Pi
 
 ```sh
+pi install npm:kata-pi
+# or, from a checkout:
 pi install /path/to/kata-plugin/plugins/pi
 ```
 
@@ -37,4 +39,4 @@ The root manifest supports `pi install git:github.com/Dangerboi/kata-plugin`. Pi
 
 For one run: `pi --no-extensions -e /path/to/kata-plugin/plugins/pi/kata.ts`. Remove any other todo extension first. Keep each plugin directory intact: every `.ts` file next to its `kata.ts` is a required core module. Do not overwrite the native adapter at the user extension path `kata.ts`.
 
-The omp marketplace identifies the plugin as `kata@kata-plugin`. The same catalog lists `kata-pi` (source `plugins/pi`) so tools that read the catalog, such as Skillshare, can install the pi build from the Git URL; it is for pi, and under omp its entry exits without loading. The npm package names `kata-omp` and `kata-pi` identify the portable packages. The root pi shim does not make the OMP package a pi extension.
+The omp marketplace identifies the plugin as `kata@kata-plugin`. The same catalog lists `kata-pi` (source `plugins/pi`) so tools that read the catalog, such as Skillshare, can install the pi build from the Git URL; it is for pi, and under omp its entry exits without loading. `kata-pi` is also the npm package that `pi install npm:kata-pi` installs; `kata-omp` names the OMP package and is not published. The root pi shim does not make the OMP package a pi extension.

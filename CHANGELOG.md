@@ -1,6 +1,12 @@
 # Changelog
 
-## oh-my-pi 2.6.1 / pi 1.6.1 — 2026-11-08
+## Unreleased
+
+- pi: `kata-pi` is published to npm and listed in the [Pi package gallery](https://pi.dev/packages); install it with `pi install npm:kata-pi`. The package carries the license, this changelog (pi shows new entries after an update) and a gallery preview image.
+- Changelog headings now start with the root (pi) version, `## 1.6.1 — oh-my-pi 2.6.1 / pi 1.6.1 — 2026-11-08`, because pi reads a package's changelog only from headings that start with a version.
+- Development: releases add an `npm publish` from `plugins/pi`; see [development](docs/development.md#releases).
+
+## 1.6.1 — oh-my-pi 2.6.1 / pi 1.6.1 — 2026-11-08
 
 **Requires Kata 0.21.0** (0.22.0 tested).
 
@@ -17,7 +23,7 @@ Upgrade notes:
 - omp: resume a lead session only after the omp that had it open has exited; a second omp on the same session hands back the first one's running delegates.
 - Known limit: a lead session that is never resumed still leaves cut-off delegate cleanups undone. See [Limits](docs/explanation/limits.md) (Shutdown budget).
 
-## oh-my-pi 2.6.0 / pi 1.6.0 — 2026-11-08
+## 1.6.0 — oh-my-pi 2.6.0 / pi 1.6.0 — 2026-11-08
 
 **Requires Kata 0.21.0** (0.22.0 tested).
 
@@ -36,7 +42,7 @@ Upgrade notes:
 - Installing by hand: copy each plugin folder whole; both gain `model.ts`, `kata-cli.ts`, `shell.ts` and `autocomplete.ts`.
 - Known limit: omp gives an extension's shutdown 2 s, so delegate hand backs, pending closes and the automatic parent's close still queued when omp exits can be cut off. See [Limits](docs/explanation/limits.md) (Shutdown budget).
 
-## oh-my-pi 2.5.1 / pi 1.5.1 — 2026-11-07
+## 1.5.1 — oh-my-pi 2.5.1 / pi 1.5.1 — 2026-11-07
 
 **Requires Kata 0.21.0** (was 0.19; 0.20 and 0.22.0 tested). The CLI and the daemon both need 0.21.0.
 
@@ -71,12 +77,12 @@ Upgrade notes:
 - Re-run `kata agent-hook install pi` so the installed pi hook includes the child-session guard.
 - Session transcripts for agents other than Claude Code and Codex need daemon API 0.34.0. An older daemon warns and closes without the transcript.
 
-## oh-my-pi 2.4.0 / pi 1.4.0 — 2026-11-03
+## 1.4.0 — oh-my-pi 2.4.0 / pi 1.4.0 — 2026-11-03
 
 - omp: a `task` that matches no plan item and names no ticket gets no Kata issue. It used to get a `Subagent` issue that an agent without `bash` (the `scout`) could not close, which left an open issue, a `needs-review` label, a `kata notify` and a parent that never closed. Now only a delegation matched to a plan item or naming a ticket binds an issue; any other subagent gets a short note instead of a binding, its `todo` uses omp's own list (an error on an omp without `ctx.invokeTool`), and the automatic parent closes from the plan's own items. A delegation no longer creates the automatic parent. pi is unchanged.
 - Development: the `untracked` smoke scenario sends a `scout` that matches no plan item and checks that it leaves no issue, `needs-review` label or inbox request, and that the parent closes from the plan's own items (scripted and `--live`).
 
-## oh-my-pi 2.3.0 / pi 1.3.0 — 2026-11-03
+## 1.3.0 — oh-my-pi 2.3.0 / pi 1.3.0 — 2026-11-03
 
 The repository moved to Dangerboi/kata-plugin, and the Claude Code plugin is gone.
 
@@ -93,7 +99,7 @@ The repository moved to Dangerboi/kata-plugin, and the Claude Code plugin is gon
 - **Claude Code adapter removed.** Use Kata's own hook: `kata agent-hook install claude`. Existing Claude installs stay on adapter 0.2.0. The `test:claude` and `validate` scripts are gone.
 - Development: `bun run smoke:omp` runs the omp plugin in a real headless omp with a scripted model (default, inbox, tickets, fork and claimed scenarios); `--live --model <provider/model>` runs them with a real model through an API-key login only (OAuth logins are never copied). Tested with oh-my-pi 18.16.0, scripted and live (Claude Sonnet 4.5 via OpenRouter), and installed through the marketplace; and with pi 1.5.0, installed with `pi install` and driven by Claude Haiku 5.5 via OpenRouter (ticket items, a child pi process, a claimed ticket). The omp reference now says only prewalk subagents get `todo`; other subagents work their issue through `kata` commands.
 
-## oh-my-pi 2.2.0 / pi 1.2.0 — 2026-10-31
+## 1.2.0 — oh-my-pi 2.2.0 / pi 1.2.0 — 2026-10-31
 
 Installing the oh-my-pi plugin now makes Kata the only todo system, in every folder, with no setup.
 

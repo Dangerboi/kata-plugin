@@ -51,8 +51,9 @@ Scenarios are data in `scripts/smoke-omp-scenarios.ts`: scripted turns per agent
 
 ## Releases
 
-Installs come from the marketplace (`kata@kata-plugin`) and Git; nothing is published to npm.
+Installs come from the marketplace (`kata@kata-plugin`), Git, and npm for pi (`kata-pi`, listed in the [Pi package gallery](https://pi.dev/packages) through its `pi-package` keyword). `kata-omp` is not published.
 
 1. Bump `version` by hand in each changed plugin's `plugins/*/package.json`. Keep the root `package.json` version equal to pi's: the root manifest is what `pi install git:…` installs.
-2. Add a `CHANGELOG.md` heading naming each plugin version and the date, for example `## oh-my-pi 2.2.0 / pi 1.2.0 — 2026-10-31`.
+2. Add a `CHANGELOG.md` heading that starts with the root version, then names each plugin version and the date, for example `## 1.2.0 — oh-my-pi 2.2.0 / pi 1.2.0 — 2026-10-31`. Pi shows a package's new changelog entries after an update, and reads only `##` headings that start with a version; it compares that version with `kata-pi`'s.
 3. After the change merges, tag `main` as `v<root version>` and publish a GitHub release from that tag with the changelog section as its notes.
+4. If `kata-pi` changed, run `npm publish` in `plugins/pi` (logged in to npm as an owner of `kata-pi`). Its `prepack` copies the root `LICENSE` and `CHANGELOG.md` into the package and `postpack` removes them again; `npm pack --dry-run` lists the files without publishing. The gallery preview, `pi.image` (and `pi.video`, if set), points at `docs/media/` on `main`, so a new preview shows once it is merged.

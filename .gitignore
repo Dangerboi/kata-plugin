@@ -1,2 +1,4 @@
 node_modules/
 .vscode/
+plugins/pi/LICENSE
+plugins/pi/CHANGELOG.md
