@@ -158,6 +158,17 @@ test("a delegate's next use waits for its own assignment, not for the ones queue
   await Promise.all([first, second]);
 });
 
+test("a next use that joins a still-queued assignment retries it once if that attempt fails", async () => {
+  const a = lead(); const parent = await a.plan(["Build the lambda widget", "Lead step"]);
+  const task = await taskOf(parent, "Build the lambda widget");
+  let failures = 1;
+  failing = args => args[0] === "meta" && args[3] === "omp.subagent_id" && failures-- > 0;
+  const start = a.delegates.apply(a.started("lambda", "Build the lambda widget"));
+  await a.delegates.apply({ type: "nextUse", id: "lambda" });
+  await start;
+  expect(await a.delegate("lambda").assignment()).toContain(task.short_id);
+});
+
 test("a delegate whose assignment failed is handed back when it exits, even with no tool run", async () => {
   const a = lead(); const parent = await a.plan(["Build the eta widget", "Lead step"]);
   const task = await taskOf(parent, "Build the eta widget"), ref = `delegates-test#${task.short_id}`;

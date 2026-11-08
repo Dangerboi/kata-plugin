@@ -420,25 +420,28 @@ export function createDelegates(env: DelegatesEnv): Delegates {
 
 	// Each record's queued assignment (its start or a retry), so its next use waits for that and not for the lead's whole queue.
 	const assigning = new Map<string, Promise<void>>();
+	function apply(event: DelegateEvent): Promise<void> {
+		const r = note(event);
+		if (!r || event.type === "ranTool") return Promise.resolve();
+		if (event.type === "nextUse") {
+			// A queued attempt that leaves the record unassigned gets one retry before this use goes on.
+			const queued = assigning.get(r.id);
+			if (queued) return queued.then(() => r.state === "started" || r.state === "failed" ? apply(event) : undefined);
+			if (r.state !== "started" && r.state !== "failed") return Promise.resolve();
+		}
+		const work = env.serial(async () => {
+			if (event.type === "exited") await env.drain();
+			else if (!r.exited && (r.state === "started" || r.state === "failed")) await assign(r);
+		}).catch(env.debug);
+		if (event.type !== "exited") {
+			assigning.set(r.id, work);
+			void work.then(() => { if (assigning.get(r.id) === work) assigning.delete(r.id); });
+		}
+		return work;
+	}
+
 	return {
-		apply(event) {
-			const r = note(event);
-			if (!r || event.type === "ranTool") return Promise.resolve();
-			if (event.type === "nextUse") {
-				const queued = assigning.get(r.id);
-				if (queued) return queued;
-				if (r.state !== "started" && r.state !== "failed") return Promise.resolve();
-			}
-			const work = env.serial(async () => {
-				if (event.type === "exited") await env.drain();
-				else if (!r.exited && (r.state === "started" || r.state === "failed")) await assign(r);
-			}).catch(env.debug);
-			if (event.type !== "exited") {
-				assigning.set(r.id, work);
-				void work.then(() => { if (assigning.get(r.id) === work) assigning.delete(r.id); });
-			}
-			return work;
-		},
+		apply,
 		check,
 		assignment(ctx) {
 			const r = env.store.of(ctx);
