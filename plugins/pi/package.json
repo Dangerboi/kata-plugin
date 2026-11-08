@@ -1,6 +1,6 @@
 {
   "name": "kata-pi",
-  "version": "1.6.1",
+  "version": "1.7.0",
   "type": "module",
   "description": "Kata-backed plans and evidence-checked completion for stock pi",
   "license": "MIT",
