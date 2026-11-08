@@ -1,5 +1,6 @@
 import path from "node:path";
 import { appendFileSync, realpathSync } from "node:fs";
+import { AsyncLocalStorage } from "node:async_hooks";
 import { decidePlanParent, explicitParent, isExplicitParent, namesPlanParent } from "./plan-parent";
 import { createInboxFollower, knownProjectHead, trustedInbox, type InboxFollower, type LiveInbox } from "./inbox";
 import { createDelegates, heldByDelegate as heldBy, teammateFor, type DelegateAssignment, type DelegateStore, type Reservation, type Spawn, type Who } from "./delegates";
@@ -173,10 +174,12 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 	let deletedParent: string | undefined;
 	const agentKey = (ctx: any) => JSON.stringify([ctx?.agent?.kind, ctx?.agent?.id]);
 	let currentCtx: any;
+	// The context of the todo call a Kata call serves: another identity's event can move currentCtx while the call awaits.
+	const callCtx = new AsyncLocalStorage<any>();
 	let reminders = 0;
 	let progressed = true;
 	let cache: { id?: string; contract?: string; inbox?: string; actor?: Promise<string>; pending?: Promise<void>; inboxPending?: Promise<void>; personInbox?: boolean } = {};
-	const kata = createKata({ exec: (...args) => host.exec(...args), executable: options.executable, teammate: () => sessionTeammate, ctx: () => currentCtx, session: () => currentId, debug });
+	const kata = createKata({ exec: (...args) => host.exec(...args), executable: options.executable, teammate: () => sessionTeammate, ctx: () => callCtx.getStore() ?? currentCtx, session: () => currentId, debug });
 	// Throttled closes, ticket closes waiting on children and the automatic parent's close (see settlement.ts).
 	// The timer is omp's ctx timer (contained, cleared on session_shutdown) when the host has one; pi has none.
 	const settlement = createSettlement({
@@ -1182,7 +1185,7 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 	}
 
 	async function execute(params: any, ctx: any) {
-		return serial(async () => {
+		return callCtx.run(ctx, () => serial(async () => {
 			if (boundAgent && boundAgent !== agentKey(ctx)) {
 				return { content: [{ type: "text" as const, text: "Kata agent identity changed; use this worker's own extension context." }], details: { op: params.op, kata: {} }, isError: true };
 			}
@@ -1205,7 +1208,7 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 				persist();
 				refresh(ctx);
 			}
-		});
+		}));
 	}
 
 	async function command(ctx: any, args: string): Promise<string> {
