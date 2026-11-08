@@ -28,7 +28,7 @@ const TICKET_LIMIT = 10;
  * Typing never waits on Kata: an abort, a timeout or a failing source leaves the
  * wrapped items.
  */
-export function ticketAutocomplete(current: TicketAutocompleteProvider, source: (project?: string) => Promise<Ticket[]>, options: { defaultProject?: string; timeout?: number } = {}): TicketAutocompleteProvider {
+export function ticketAutocomplete(current: TicketAutocompleteProvider, source: (project?: string) => Promise<Ticket[]>, options: { defaultProject?: string; timeout?: number; active?: () => boolean } = {}): TicketAutocompleteProvider {
 	const ours = new Set<string>();
 	async function search(project: string | undefined, token: string, signal: AbortSignal | undefined): Promise<Ticket[]> {
 		let resolve!: (value: undefined) => void;
@@ -55,7 +55,7 @@ export function ticketAutocomplete(current: TicketAutocompleteProvider, source: 
 			const signal = hostOptions instanceof AbortSignal ? hostOptions : hostOptions?.signal;
 			const match = (lines[cursorLine] ?? "").slice(0, cursorCol).match(TICKET_TOKEN);
 			const project = match?.[1], token = match?.[2] ?? "";
-			if (!match || (!project && (!token || /^\d+$/.test(token)))) return inner;
+			if (!match || (!project && (!token || /^\d+$/.test(token))) || options.active?.() === false) return inner;
 			const projects = project ? [project] : [undefined, ...(options.defaultProject ? [options.defaultProject] : [])];
 			const [base, ...found] = await Promise.all([inner, ...projects.map(p => search(p, token, signal))]);
 			const seen = new Set<string>();
@@ -68,7 +68,7 @@ export function ticketAutocomplete(current: TicketAutocompleteProvider, source: 
 			return { prefix, items: [...tickets.map(t => ({ value: t.qualified_id, label: t.qualified_id, description: t.title })), ...(base?.items ?? [])] };
 		},
 		applyCompletion(lines, cursorLine, cursorCol, item, prefix) {
-			if (!ours.has(item.value)) return current.applyCompletion(lines, cursorLine, cursorCol, item, prefix);
+			if (!ours.has(item.value) || options.active?.() === false) return current.applyCompletion(lines, cursorLine, cursorCol, item, prefix);
 			const line = lines[cursorLine] ?? "";
 			const start = cursorCol - prefix.length;
 			const inserted = `${item.value} `;
@@ -82,6 +82,12 @@ export function ticketAutocomplete(current: TicketAutocompleteProvider, source: 
 // from cache and refreshed in the background. Only the first load, or a load
 // after a failure, is awaited; the caller bounds that wait.
 const TICKET_STALE = 30_000, TICKET_RETRY = 5_000;
+
+// omp keeps every registered factory for the life of the process, and each session switch (/new, /resume)
+// registers again from a new UI context, at times from a reloaded copy of this module. Only the newest
+// registration offers tickets; older layers in the stack pass through. Symbol.for spans module copies.
+const NEWEST_REGISTRATION = Symbol.for("kata.ticketCompletion.newest");
+const registry = globalThis as { [NEWEST_REGISTRATION]?: object };
 
 // Adds ticket completion to each editor once: omp rebuilds its stack from every registered factory, and a
 // session start runs again on every session switch.
@@ -113,6 +119,9 @@ export function createTicketCompletion(kata: Kata, scope: () => { session?: stri
 	return (ui: { addAutocompleteProvider?(factory: (current: any) => TicketAutocompleteProvider): void } | undefined) => {
 		if (!ui?.addAutocompleteProvider || offered.has(ui)) return;
 		offered.add(ui);
-		ui.addAutocompleteProvider(current => ticketAutocomplete(current, tickets, { defaultProject: process.env.KATA_DEFAULT_PROJECT?.trim() || undefined }));
+		const registration = {};
+		registry[NEWEST_REGISTRATION] = registration;
+		const active = () => registry[NEWEST_REGISTRATION] === registration;
+		ui.addAutocompleteProvider(current => ticketAutocomplete(current, tickets, { defaultProject: process.env.KATA_DEFAULT_PROJECT?.trim() || undefined, active }));
 	};
 }
