@@ -3,7 +3,7 @@
 [Kata](https://github.com/kenn-io/kata) work tracking for [pi](https://pi.dev). Pi's todo plans, and the child pi processes that work their items or name a ticket, become Kata issues with attributed ownership and evidence for completion. Kata validates each close; automatic session parents close after their children finish.
 
 ```sh
-pi install npm:kata-pi
+pi install npm:@dangerboi/kata-pi
 ```
 
 Requires Kata 0.21.0 or later and a running Kata daemon. Tested with pi 1.5.0 and Kata 0.22.0. Remove any other todo extension first.

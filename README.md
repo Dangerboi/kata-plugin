@@ -25,7 +25,7 @@ Pi:
 https://github.com/user-attachments/assets/fec1bb87-c4e1-46ad-b2ed-3ed5ff8cd2b6
 
 ```sh
-pi install npm:kata-pi
+pi install npm:@dangerboi/kata-pi
 # or from Git, or a local clone:
 pi install git:github.com/Dangerboi/kata-plugin
 pi install ./kata-plugin/plugins/pi

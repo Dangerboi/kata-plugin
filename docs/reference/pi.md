@@ -1,6 +1,6 @@
 # Pi reference
 
-Package: `kata-pi`; portable entry: `plugins/pi/kata.ts`. The repository root has a `pi.extensions` shim for Git installation. Pi supplies TypeBox and its extension API through declared peers. The entry exits under OMP before loading TypeBox. Requires Kata 0.21 or later; the minimum version is documented rather than runtime-gated, as with the existing Kata requirement.
+Package: `@dangerboi/kata-pi` on npm; portable entry: `plugins/pi/kata.ts`. The repository root has a `pi.extensions` shim for Git installation. Pi supplies TypeBox and its extension API through declared peers. The entry exits under OMP before loading TypeBox. Requires Kata 0.21 or later; the minimum version is documented rather than runtime-gated, as with the existing Kata requirement.
 
 | Event/surface | Behavior |
 | --- | --- |

@@ -1,6 +1,6 @@
 {
   "name": "kata-plugin",
-  "version": "1.7.0",
+  "version": "1.7.1",
   "private": true,
   "type": "module",
   "description": "Kata work tracking for oh-my-pi and pi",
