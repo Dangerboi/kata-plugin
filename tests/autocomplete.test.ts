@@ -23,17 +23,19 @@ test("#bc offers the matching ticket and accepting inserts the qualified ref wit
 	const result = await ask(provider, "see #bc");
 	expect(result.prefix).toBe("#bc");
 	expect(result.items.map((i: any) => i.value)).toEqual(["demo#bc7q"]);
-	expect(result.items[0].label).toBe("bc7q Tidy the sample board");
+	// The hosts truncate labels past 30 cells, so the title goes in the description column, which gets the rest of the row.
+	expect(result.items[0]).toMatchObject({ label: "demo#bc7q", description: "Tidy the sample board" });
 	const applied = provider.applyCompletion(["see #bc"], 0, 7, result.items[0], result.prefix);
 	expect(applied).toEqual({ lines: ["see demo#bc7q "], cursorLine: 0, cursorCol: 14 });
 });
 
-test("kata tickets are added to the wrapped provider's items in one list", async () => {
+test("kata tickets come first in one list with the wrapped provider's items", async () => {
 	const inner = wrapped({ items: [{ value: "#bc-action", label: "bc action" }], prefix: "#bc" });
 	const result = await ask(ticketAutocomplete(inner, source({ "": bound })), "#bc");
-	expect(result.items.map((i: any) => i.value)).toEqual(["#bc-action", "demo#bc7q"]);
+	// The first item is the one Tab/Enter accepts.
+	expect(result.items.map((i: any) => i.value)).toEqual(["demo#bc7q", "#bc-action"]);
 	// A wrapped item still applies through the wrapped provider.
-	const applied = ticketAutocomplete(inner, source({})).applyCompletion(["#bc"], 0, 3, result.items[0], "#bc");
+	const applied = ticketAutocomplete(inner, source({})).applyCompletion(["#bc"], 0, 3, result.items[1], "#bc");
 	expect(applied.lines).toEqual(["wrapped:#bc-action:#bc"]);
 });
 

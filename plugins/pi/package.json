@@ -24,7 +24,8 @@
     "extensions": [
       "./kata.ts"
     ],
-    "image": "https://raw.githubusercontent.com/Dangerboi/kata-plugin/main/docs/media/kata-pi.png"
+    "image": "https://raw.githubusercontent.com/Dangerboi/kata-plugin/main/docs/media/kata-pi.png",
+    "video": "https://github.com/Dangerboi/kata-plugin/raw/refs/heads/main/docs/media/kata-pi.mp4"
   },
   "peerDependencies": {
     "@earendil-works/pi-coding-agent": "*",

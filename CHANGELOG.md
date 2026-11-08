@@ -2,7 +2,11 @@
 
 ## Unreleased
 
-- pi: `kata-pi` is published to npm and listed in the [Pi package gallery](https://pi.dev/packages); install it with `pi install npm:kata-pi`. The package carries the license, this changelog (pi shows new entries after an update) and a gallery preview image.
+- The `#` ticket menu shows the whole title and lists Kata tickets first. A row now shows the qualified ref (what accepting inserts) with the title beside it; both hosts cut the first column at 32 characters, so titles used to stop mid-word ("Uploads fail on large fil"). On omp, prompt actions such as "Copy whole prompt" match almost any `#` token and came first, so Tab copied the prompt instead of inserting the ticket.
+- The `todo` tool description says the tool claims its tasks and ticket items, keeps their `work.attention` and closes them, and tells the model not to run `kata claim`, `kata meta set … work.attention` or `kata close` for them or plan that bookkeeping as items. Kata's agent contract asks agents to claim and set attention, so models did both by hand and sometimes planned "claim the ticket and mark work.attention ok" as a task.
+- omp: a turn end right after one you interrupted with Esc gives the open-task reminder again. When the earlier turn's delegate hand back finished during the first 250 ms of the next turn end, that turn end returned no reminder.
+- omp: a `task` that would delegate a ticket is refused while another open plan item names the same ticket. The delegate closes the whole ticket, so the lead's other items on it could no longer be marked done and the plan stayed unfinished (seen with Claude Haiku 5.5: the plan stuck at 1/3 after a delegate closed the ticket). Delegate the ticket once it is the last open item for it, or plan the work as child issues (`todo init` with the ticket as `ref`) and delegate one of those.
+- pi: `kata-pi` is published to npm and listed in the [Pi package gallery](https://pi.dev/packages); install it with `pi install npm:kata-pi`. The package carries the license and this changelog (pi shows new entries after an update), and its manifest points the gallery at a preview image and a short silent video in `docs/media/`.
 - Changelog headings now start with the root (pi) version, `## 1.6.1 — oh-my-pi 2.6.1 / pi 1.6.1 — 2026-11-08`, because pi reads a package's changelog only from headings that start with a version.
 - Development: releases add an `npm publish` from `plugins/pi`; see [development](docs/development.md#releases).
 

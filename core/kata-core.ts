@@ -105,6 +105,7 @@ Kata specifics:
 - An item that works an existing ticket starts with its qualified ref: \`<project>#<short_id>: <action>\` (for example \`myproj#a1b2: write the smoke script\`). It creates no issue: start claims the ticket and marks it in progress, done comments on it, and the last item of a ticket to be done closes it with that item's evidence (a ticket with open children stays open and gets a comment), drop/rm only comment and never close it. A ref that does not resolve, or a closed ticket, is an error. Only that prefix names a ticket; a bare id is text. A plan whose items all name tickets creates no parent issue.
 - Every other task is a Kata child issue of one parent issue. On init pass \`ref\` with the Kata issue this plan serves (search first: kata search "<terms>" --agent); an explicit KATA_REF or a delegate's assignment must match it. Without a ref, use that issue, the session's existing parent, or a new parent titled by \`message\`.
 - done closes the issue (an item naming a ticket: see above). Kata requires \`evidence\` (commit:<sha>, test:<cmd>, pr:<url>, reviewed-paths:<path>) and a \`message\` of 40+ characters saying what changed and how it was verified. Unverified work: block it instead.
+- The tool does the Kata bookkeeping for its tasks and ticket items: it claims them, sets \`work.attention\` (block: stuck with the reason; start/unblock: ok) and closes them on done. Do not run \`kata claim\`, \`kata meta set ... work.attention\` or \`kata close\` for them yourself, and never add such bookkeeping as a plan item.
 - init whose new list leaves out open tasks changes nothing and returns an error listing the missing ones; pass \`replace: true\` only to deliberately drop them (they close as wontfix).
 - drop/rm take the reason in \`message\`.
 - drop and rm close those tasks as wontfix (Kata never deletes). Automatic session parents close from their children’s Kata-recorded evidence once all work has settled. Explicit/claimed parents remain yours to close. Folders with no Kata project use KATA_DEFAULT_PROJECT (labeled with the repo) or register their inferred project; the plan is session-local only while Kata is unreachable and replays when it returns.`;
@@ -1292,8 +1293,10 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 		let refreshed: boolean | undefined;
 		try {
 			// Checked after the short bound, not before queuing: a delegate that exited while the queue was busy still counts.
+			const pendingAtStop = delegates.cleanupPending();
 			refreshed = await until(bounded(refresh));
-			if (!refreshed && delegates.cleanupPending()) refreshed = await until(bounded(refresh, deadline - Date.now()));
+			// A cleanup that finished during the short bound leaves the refresh queued behind it, so what was pending at the stop counts too.
+			if (!refreshed && (pendingAtStop || delegates.cleanupPending())) refreshed = await until(bounded(refresh, deadline - Date.now()));
 			// A delegate that exits during the wait queues its own cleanup after the refresh: wait for those too. Stop when a pass
 			// leaves the same cleanups pending (Kata unreachable, a step failing), so an outage does not hold every turn end.
 			while (refreshed && !signal?.aborted && delegates.cleanupPending() && Date.now() < deadline) {
