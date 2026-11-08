@@ -9,6 +9,8 @@ Kata work tracking for oh-my-pi and pi. Todo plans, and the delegations that wor
 
 Oh-my-pi:
 
+https://github.com/user-attachments/assets/8681b30a-9241-4a27-8deb-b3f2c17a6f85
+
 ```sh
 omp plugin marketplace add Dangerboi/kata-plugin
 omp plugin install kata@kata-plugin
@@ -19,6 +21,8 @@ That is the whole setup. The plugin replaces omp's built-in `todo` with Kata in 
 Kata inbox requests reach a session when `KATA_INBOX_USER` names a session address, `<actor>/<name>`. A bare `<actor>` is that person's own inbox, so sessions don't read it. On OMP the main session gets each new request from that actor live, even while idle or mid-run (`KATA_OMP_LIVE_INBOX=0` turns it off); Pi reads per turn.
 
 Pi:
+
+https://github.com/user-attachments/assets/fec1bb87-c4e1-46ad-b2ed-3ed5ff8cd2b6
 
 ```sh
 pi install npm:kata-pi
