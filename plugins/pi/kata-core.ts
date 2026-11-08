@@ -3,7 +3,7 @@ import { appendFileSync, realpathSync } from "node:fs";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { decidePlanParent, explicitParent, isExplicitParent, namesPlanParent } from "./plan-parent";
 import { createInboxFollower, knownProjectHead, trustedInbox, type InboxFollower, type LiveInbox } from "./inbox";
-import { createDelegates, heldByDelegate as heldBy, teammateFor, type DelegateAssignment, type DelegateStore, type Reservation, type Spawn, type Who } from "./delegates";
+import { createDelegates, FINAL, heldByDelegate as heldBy, teammateFor, type DelegateAssignment, type DelegateRecord, type DelegateStore, type Reservation, type Spawn, type Who } from "./delegates";
 import { createSettlement, MAX_FAILURES, openChildren, type PendingClose } from "./settlement";
 import { createKata, isKataCode, isUnusable, KataError, type Exec } from "./kata-cli";
 import { createTicketCompletion } from "./autocomplete";
@@ -212,7 +212,8 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 	const nextStamp = () => (stamp = Math.max(Date.now(), stamp + 1));
 	// The plan's tasks: Kata children (or the local plan) merged with named items by creation time.
 	const withNamed = (base: Task[]) => named.length ? [...base.filter(t => !t.ticket), ...named].sort((a, b) => (a.at || 0) - (b.at || 0)) : base;
-	const store = host.delegateStore;
+	// Every record change is saved with the lead's snapshot, so a cleanup the process never finished survives it.
+	const store: DelegateStore = { ...host.delegateStore, put: record => { host.delegateStore.put(record); persist(); } };
 	const delegates = createDelegates({
 		namespace, store, kata,
 		actor: (cwd, ref) => actor(cwd, ref), owned, work, serial, plan: () => plan,
@@ -220,8 +221,10 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 	});
 	function persist() {
 		if (!currentId || !main(currentCtx)) return;
+		const open = store.records().filter(r => !FINAL.has(r.state) && r.leadSessionId === currentId);
 		const data = { version: 1, sessionId: currentId,
 			plan: structuredClone({ ...plan, tasks: plan.tasks.filter(t => !t.ticket) }), ...settlement.snapshot(),
+			...(open.length ? { delegates: structuredClone(open) } : {}),
 			...(named.length ? { named: structuredClone(named) } : {}), ...(deletedParent ? { deletedParent } : {}) };
 		const encoded = JSON.stringify(data);
 		if (encoded === lastSnapshot) return;
@@ -547,6 +550,16 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 		// A forked session keeps the source id as the parent's owner: the parent's session_id metadata names it.
 		const parentOwner = source ?? id;
 		settlement.restore(snapshot && !source ? snapshot : undefined);
+		// Delegate records are in memory only: a resumed lead takes back the ones a past run left unfinished and settles them in
+		// the background. A fork leaves them to the source. Records still in memory are live or already settled; keep those.
+		const unsettled: DelegateRecord[] = !source && Array.isArray(snapshot?.delegates) ? snapshot.delegates : [];
+		if (unsettled.length && main(ctx)) void serial(async () => {
+			const fresh = unsettled.filter(r => !store.get(r.id));
+			if (!fresh.length) return;
+			// A record without an exit belonged to a process that is gone.
+			for (const r of fresh) store.put({ ...r, exited: r.exited ?? "aborted" });
+			await drain();
+		}).catch(debug);
 		if (snapshot) {
 			if (!source && snapshot.plan?.local && !requested) plan = { ...structuredClone(snapshot.plan), workspace: plan.workspace };
 			named = structuredClone(snapshot.named ?? []);

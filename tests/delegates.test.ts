@@ -22,8 +22,10 @@ const LEAD = "lead-mate";
 let seq = 0, failing: ((args: string[]) => boolean) | undefined, holding: ((args: string[]) => Promise<void> | undefined) | undefined;
 
 // A lead session and its delegates: each is an agent with its own core, as in omp, sharing the one delegate store.
-function lead() {
-  const entries: any[] = [], id = `delegates-lead-${++seq}`;
+// `from` resumes a past session (same id and entries, no records in memory) or, with `fork`, forks it (new id, parentSession in the header).
+function lead(from?: { entries: any[]; id: string; fork?: boolean }) {
+  const entries: any[] = from ? structuredClone(from.entries) : [], id = from?.fork ? `${from.id}-fork` : from?.id ?? `delegates-lead-${++seq}`;
+  const header = from?.fork ? { parentSession: from.id } : {};
   const store = memoryDelegateStore();
   const agent = () => createKataCore({
     appendEntry: (customType, data) => entries.push({ type: "custom", customType, data }),
@@ -32,7 +34,7 @@ function lead() {
     delegateStore: store,
   }, { namespace: "omp", executable: binary, executableVars: ["KATA_OMP_EXECUTABLE"] });
   const core = agent();
-  const ctx = { cwd, agent: { kind: "main", id: "lead" }, sessionManager: { getSessionId: () => id, getBranch: () => entries } };
+  const ctx = { cwd, agent: { kind: "main", id: "lead" }, sessionManager: { getSessionId: () => id, getBranch: () => entries, getHeader: () => header } };
   const plan = async (items: string[]) => {
     const result = await core.todo.apply(ctx, "init", { items });
     if (result.isError) throw new Error(result.content[0].text);
@@ -56,7 +58,7 @@ function lead() {
     const result = await core.todo.apply(ctx, "start", { task: title });
     return !!result.isError && /delegate/.test(result.content[0].text);
   };
-  return { core, ctx, id, plan, view, delegate, started, delegated, delegates: core.delegates };
+  return { core, ctx, id, entries, plan, view, delegate, started, delegated, delegates: core.delegates };
 }
 
 beforeAll(async () => { expect((await run(["init", "--project", "delegates-test"])).code).toBe(0); });
@@ -213,6 +215,83 @@ test("a resumed delegate whose settle never finished keeps its issue instead of 
   expect(view.issue.metadata["omp.subagent_id"]).toBe("kappa");
   expect(view.issue.metadata.teammate).toBe("mate-kappa");
   expect(await a.delegated("Build the kappa widget")).toBe(true);
+});
+
+// A resumed lead settles in the background, so the checks wait for Kata to show it.
+async function until(check: () => Promise<boolean>) { for (let i = 0; i < 100 && !await check(); i++) await Bun.sleep(100); }
+const savedDelegates = (entries: any[]) => entries.filter(e => e.customType === "io.kata.omp.state").at(-1)?.data.delegates;
+
+test("a lead resumed with a delegate's hand back unfinished finishes it: needs-review, needs-human, a request to the lead", async () => {
+  const a = lead(); const parent = await a.plan(["Build the xi widget", "Lead step"]);
+  const task = await taskOf(parent, "Build the xi widget"), ref = `delegates-test#${task.short_id}`;
+  await a.delegates.apply(a.started("xi", "Build the xi widget"));
+  await a.delegates.apply({ type: "ranTool", id: "xi" });
+  failing = args => args[0] === "label";
+  await a.delegates.apply({ type: "exited", id: "xi", outcome: "completed" });
+  failing = undefined;
+  expect(savedDelegates(a.entries)).toMatchObject([{ id: "xi", ranTool: true, exited: "completed", state: "assigned" }]);
+  expect(labels(await show(ref))).not.toContain("needs-review");
+  const b = lead({ entries: a.entries, id: a.id });
+  await b.core.session.start(b.ctx);
+  await until(async () => labels(await show(ref)).includes("needs-review"));
+  const view = await show(ref);
+  expect(labels(view)).toContain("needs-review");
+  expect(view.issue.metadata).toMatchObject({ teammate: LEAD, "work.attention": "needs-human", "omp.status": "completed" });
+  expect(view.issue.metadata["omp.subagent_id"]).toBeUndefined();
+  expect((await kata(["inbox", "--for", `lead-actor/${LEAD}`, "--json"])).requests.some((r: any) => r.ref.endsWith(task.short_id))).toBe(true);
+  await until(async () => !savedDelegates(b.entries));
+  expect(savedDelegates(b.entries)).toBeUndefined();
+});
+
+test("a lead resumed with a delegate that ran no tool rolls its assignment back", async () => {
+  const a = lead(); const parent = await a.plan(["Build the omicron widget", "Lead step"]);
+  const task = await taskOf(parent, "Build the omicron widget"), ref = `delegates-test#${task.short_id}`;
+  const before = await show(ref);
+  await a.delegates.apply(a.started("omicron", "Build the omicron widget"));
+  failing = args => args[0] === "meta" && args[1] === "unset" && args[3] === "omp.status";
+  await a.delegates.apply({ type: "exited", id: "omicron", outcome: "ended" });
+  failing = undefined;
+  expect(savedDelegates(a.entries)).toMatchObject([{ id: "omicron", exited: "ended" }]);
+  expect(savedDelegates(a.entries)[0].ranTool).toBeFalsy();
+  const b = lead({ entries: a.entries, id: a.id });
+  await b.core.session.start(b.ctx);
+  await until(async () => (await show(ref)).issue.metadata["omp.status"] === undefined);
+  const view = await show(ref);
+  expect(labels(view)).not.toContain("needs-review");
+  expect(view.issue.owner).toBe(before.issue.owner);
+  for (const key of ["omp.subagent_id", "omp.session_id", "omp.status", "omp.parent_agent_id"]) expect(view.issue.metadata[key]).toBeUndefined();
+  for (const key of ["teammate", "work.attention", "todo.status"]) expect(view.issue.metadata[key]).toEqual(before.issue.metadata[key]);
+});
+
+test("a saved delegate with no exit is settled as aborted when the lead is resumed", async () => {
+  const a = lead(); const parent = await a.plan(["Build the pi widget", "Lead step"]);
+  const task = await taskOf(parent, "Build the pi widget"), ref = `delegates-test#${task.short_id}`;
+  await a.delegates.apply(a.started("pi-w", "Build the pi widget"));
+  await a.delegates.apply({ type: "ranTool", id: "pi-w" });
+  expect(savedDelegates(a.entries)).toMatchObject([{ id: "pi-w", ranTool: true }]);
+  expect(savedDelegates(a.entries)[0].exited).toBeUndefined();
+  const b = lead({ entries: a.entries, id: a.id });
+  await b.core.session.start(b.ctx);
+  await until(async () => labels(await show(ref)).includes("needs-review"));
+  const view = await show(ref);
+  expect(labels(view)).toContain("needs-review");
+  expect(view.issue.metadata["omp.status"]).toBe("aborted");
+  expect(JSON.stringify(view)).toContain("aborted without closing its Kata issue");
+});
+
+test("a fork does not settle the source's delegates", async () => {
+  const a = lead(); const parent = await a.plan(["Build the rho widget", "Lead step"]);
+  const task = await taskOf(parent, "Build the rho widget"), ref = `delegates-test#${task.short_id}`;
+  await a.delegates.apply(a.started("rho", "Build the rho widget"));
+  await a.delegates.apply({ type: "ranTool", id: "rho" });
+  const f = lead({ entries: a.entries, id: a.id, fork: true });
+  await f.core.session.start(f.ctx);
+  // Nothing to await: a fork that wrongly settled would do so in the background, so give it time to show.
+  await Bun.sleep(1000);
+  const view = await show(ref);
+  expect(labels(view)).not.toContain("needs-review");
+  expect(view.issue.metadata).toMatchObject({ teammate: "mate-rho", "omp.subagent_id": "rho", "omp.status": "running" });
+  expect(savedDelegates(f.entries.slice(a.entries.length))).toBeUndefined();
 });
 
 test("a delegate that exits with its issue closed leaves it closed and releases it", async () => {
