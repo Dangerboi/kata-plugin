@@ -392,6 +392,7 @@ export function createDelegates(env: DelegatesEnv): Delegates {
 		if ((r.state === "failed" || r.state === "started") && heldByDelegate(ns, issue.metadata) && issue.metadata?.[keySubagent] !== r.id) return settled();
 		// An assignment that never got to a tool did nothing: roll back what it wrote. A started record wrote nothing without a restore
 		// point, and nothing of this delegate's once the issue carries neither its teammate nor its subagent id (someone else claimed it since).
+		// A cut right after the claim looks the same, so that claim stays, held by the lead's actor and teammate.
 		if ((r.state === "assigned" || r.state === "started") && !r.ranTool) {
 			const ours = r.state === "assigned" || issue.metadata?.teammate === r.teammate || issue.metadata?.[keySubagent] === r.id;
 			if (r.restore && ours) await rollback(r, issue, r.restore);
