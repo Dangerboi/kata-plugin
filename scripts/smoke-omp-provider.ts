@@ -41,8 +41,10 @@ export default function (pi: any) {
 			const ctx: TurnContext = { texts: messages.map(textOf), system: [context.systemPrompt].flat().filter(Boolean).join("\n"), prompts: () => linesIn<Prompt>(process.env.KATA_SMOKE_PROMPTS) };
 			if (process.env.KATA_SMOKE_RECORD) appendFileSync(process.env.KATA_SMOKE_RECORD, JSON.stringify({ agent: key ?? "", system: ctx.system, users: messages.filter(m => m.role === "user").map(textOf), roles: messages.map(m => m.role) }) + "\n");
 			const blocks: Block[] = turn ? (typeof turn === "function" ? turn(ctx) : turn) : [`(smoke script has no turn ${turnIndex} for ${key ?? "this agent"})`];
-			const content = blocks.map(block => typeof block === "string" ? { type: "text" as const, text: block }
-				: { type: "toolCall" as const, id: `smoke-${++counter}`, name: block.tool, arguments: block.args });
+			// A hanging turn leaves the model call pending: no events, so the agent stays before any tool call until omp dies.
+			if (blocks.some(block => typeof block === "object" && "hang" in block)) return stream;
+			const content = blocks.flatMap(block => typeof block === "string" ? [{ type: "text" as const, text: block }]
+				: "hang" in block ? [] : [{ type: "toolCall" as const, id: `smoke-${++counter}`, name: block.tool, arguments: block.args }]);
 			const hasTool = content.some(c => c.type === "toolCall");
 			const usage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } };
 			const message = { role: "assistant", content, api: model.api, provider: model.provider, model: model.id, usage, stopReason: hasTool ? "toolUse" : "stop", timestamp: Date.now() } as any;

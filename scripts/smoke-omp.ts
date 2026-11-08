@@ -9,8 +9,8 @@
 // --live uses a real model instead, through your own omp agent directory and its
 // logins (prefer a subscription), so omp may update it as in any run. KATA_HOME is
 // a throwaway store either way; your live Kata store is never written.
-import { spawn, spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { spawn, spawnSync, type ChildProcessWithoutNullStreams } from "node:child_process";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync, type Dirent } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { SCENARIOS, type Check, type Issue, type Prompt, type Request, type ToolUse, type Scenario, type Session, type Store } from "./smoke-omp-scenarios";
@@ -60,27 +60,35 @@ function store(env: NodeJS.ProcessEnv, cwd: string, records: string, prompts: st
 	};
 }
 
-// Runs omp as a long-lived RPC process and hands the scenario a Session.
+// Runs omp as a long-lived RPC process and hands the scenario a Session. `restart` is the generic kill point: it waits until
+// the persisted session file (under the throwaway PI_CODING_AGENT_DIR) contains `saved`, SIGKILLs omp (no shutdown hook runs),
+// and starts a new process on that same session file with `--resume <file>`.
 async function drive(scenario: Scenario, args: string[], env: NodeJS.ProcessEnv, work: string, records: string) {
-	const child = spawn("omp", ["--mode", "rpc", ...args], { env, cwd: work, stdio: ["pipe", "pipe", "pipe"] });
-	let output = "", buffer = "", sequence = 0;
+	let output = "", sequence = 0;
 	const waiting = new Map<string, (frame: any) => void>();
-	const ready = Promise.withResolvers<void>();
-	child.stderr.on("data", d => output += d);
-	child.stdout.on("data", d => {
-		output += d; buffer += d;
-		for (let at = buffer.indexOf("\n"); at >= 0; at = buffer.indexOf("\n")) {
-			const line = buffer.slice(0, at); buffer = buffer.slice(at + 1);
-			let frame: any;
-			try { frame = JSON.parse(line); } catch { continue; }
-			if (frame.type === "ready") ready.resolve();
-			if (frame.type === "response" && frame.command === "fork") waiting.get(frame.id)?.(frame);
-			if (frame.type === "prompt_result" && waiting.has(frame.id)) waiting.get(frame.id)!(frame);
-			// A prompt that finishes locally never gets a prompt_result.
-			if (frame.type === "response" && frame.command === "prompt" && frame.data?.agentInvoked === false) waiting.get(frame.id)?.(frame);
-		}
-	});
-	const closed = new Promise<number | null>(resolve => child.on("close", resolve));
+	let child!: ChildProcessWithoutNullStreams, ready!: PromiseWithResolvers<void>, closed!: Promise<number | null>;
+	const start = (extra: string[]) => {
+		const proc = spawn("omp", ["--mode", "rpc", ...args, ...extra], { env, cwd: work, stdio: ["pipe", "pipe", "pipe"] });
+		const gate = Promise.withResolvers<void>();
+		let buffer = "";
+		proc.stderr.on("data", d => output += d);
+		proc.stdout.on("data", d => {
+			output += d; buffer += d;
+			for (let at = buffer.indexOf("\n"); at >= 0; at = buffer.indexOf("\n")) {
+				const line = buffer.slice(0, at); buffer = buffer.slice(at + 1);
+				let frame: any;
+				try { frame = JSON.parse(line); } catch { continue; }
+				if (frame.type === "ready") gate.resolve();
+				if (frame.type === "response" && frame.command === "fork") waiting.get(frame.id)?.(frame);
+				if (frame.type === "prompt_result" && waiting.has(frame.id)) waiting.get(frame.id)!(frame);
+				// A prompt that finishes locally never gets a prompt_result.
+				if (frame.type === "response" && frame.command === "prompt" && frame.data?.agentInvoked === false) waiting.get(frame.id)?.(frame);
+			}
+		});
+		child = proc; ready = gate;
+		closed = new Promise<number | null>(resolve => proc.on("close", resolve));
+	};
+	start([]);
 	const timer = setTimeout(() => child.kill("SIGKILL"), TIMEOUT_MS);
 	const session: Session = {
 		kata: (args, extra) => kata(env, work, args, extra),
@@ -98,6 +106,19 @@ async function drive(scenario: Scenario, args: string[], env: NodeJS.ProcessEnv,
 			child.stdin.write(JSON.stringify({ id, type: "prompt", message: text }) + "\n");
 			const frame = await done;
 			if (frame.status === "error") throw new Error(`prompt failed: ${JSON.stringify(frame.error)}`);
+		},
+		async restart(saved) {
+			const sessions = path.join(env.PI_CODING_AGENT_DIR!, "sessions");
+			const find = () => (readdirSync(sessions, { recursive: true, withFileTypes: true }) as Dirent[])
+				.filter(e => e.isFile() && e.name.endsWith(".jsonl")).map(e => path.join(e.parentPath, e.name))
+				.find(file => readFileSync(file, "utf8").includes(saved));
+			let file: string | undefined;
+			for (const end = Date.now() + 30_000; !(file = existsSync(sessions) ? find() : undefined) && Date.now() < end;) await Bun.sleep(100);
+			if (!file) throw new Error(`no session file contains ${saved}`);
+			child.kill("SIGKILL");
+			await closed;
+			start(["--resume", file]);
+			await ready.promise;
 		},
 	};
 	let checks: Check[] = [];

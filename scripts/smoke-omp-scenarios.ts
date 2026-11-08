@@ -5,7 +5,8 @@
 
 import { fileURLToPath } from "node:url";
 
-export type Block = string | { tool: string; args: Record<string, unknown> };
+/** `{ hang: true }` never answers: the model call stays pending (no events) until omp dies, so the agent never reaches a tool call. */
+export type Block = string | { tool: string; args: Record<string, unknown> } | { hang: true };
 export type TurnContext = {
 	/** Text of every message so far (tool results included), oldest first. */
 	texts: string[];
@@ -46,6 +47,8 @@ export type Session = {
 	prompt(text: string): Promise<void>;
 	/** Forks the conversation (RPC `fork`): the process moves onto a new session with the same transcript. */
 	fork(): Promise<void>;
+	/** Waits until the persisted session file contains `saved`, SIGKILLs omp (no shutdown hook runs) and resumes that same session in a new process (`--resume <file>`). Needs `persist`. */
+	restart(saved: string): Promise<void>;
 	/** Runs kata against the throwaway store, from outside omp. */
 	kata(args: string[], env?: NodeJS.ProcessEnv): string;
 	/** Requests recorded so far. */
@@ -80,6 +83,11 @@ const MAIN = "[smoke:main]";
 const SUB = "[smoke:sub]";
 const SCOUT = "[smoke:scout]";
 const WORKER = "[smoke:worker]";
+const CUT = "[smoke:cut]";
+const IDLE = "[smoke:idle]";
+const RESUMED = "[smoke:resumed] Welcome back; look at the plan.";
+const RESUME_HAND_BACK = "Resume hand back item";
+const RESUME_ROLL_BACK = "Resume roll back item";
 // omp runs a subagent on a worker thread once nine or more run at once (its docs say four); fourteen puts several on a
 // worker.
 const PORTS = ["lexer", "parser", "printer", "checker", "linker", "loader", "emitter", "resolver", "formatter", "bundler", "planner", "scheduler", "tracer", "profiler"].map(part => `Port ${part} module`);
@@ -488,6 +496,55 @@ export const SCENARIOS: Scenario[] = [{
 			{ name: "a delegate on a worker thread planned, finished and closed through its own todo and kata close", ok: onWorkerOf(closers).length > 0 && onWorkerOf(closers).every(workedThroughTodo), detail: `worker delegates ${onWorker.join(", ")}; ${describe(onWorkerOf(closers), workedThroughTodo)}` },
 			{ name: "a worker delegate's todo close and kata close record its own omp session, not the lead's", ok: onWorkerOf(closers).length > 0 && onWorkerOf(closers).every(ownSession), detail: onWorkerOf(closers).filter(n => !ownSession(n)).map(n => `Port${n}: step ${sessionOf(stepOf(n)) ?? "none"}, issue ${sessionOf(taskOf(n)) ?? "none"}, lead ${parent?.metadata["omp.session_id"]}`).join("; ") },
 			{ name: "a delegate on a worker thread that ran a tool and left its task open was handed back", ok: onWorkerOf(leavers).length > 0 && onWorkerOf(leavers).every(handedBack), detail: `worker delegates ${onWorker.join(", ")}; ${describe(onWorkerOf(leavers), handedBack)}` },
+		];
+	},
+}, {
+	// Run 1 is cut with SIGKILL while two delegates are still running, so no cleanup runs: one has run a tool and holds a
+	// second, long bash call; the other is waiting on its first model call. Run 2 resumes the same session file; the lead's
+	// snapshot carries both records, and the resumed lead settles them in the background.
+	name: "resume",
+	persist: true,
+	scripts: {
+		[MAIN]: [
+			[{ tool: "todo", args: { op: "init", list: [{ phase: "Resume", items: [RESUME_HAND_BACK, RESUME_ROLL_BACK] }], message: "Smoke resumed session" } }],
+			[{ tool: "task", args: { context: "Smoke resume work: nothing to change.", tasks: [
+				{ name: "ResumeOne", agent: "task", task: `${CUT} ${RESUME_HAND_BACK}`, solutionSpace: "one fix: nothing to change" },
+				{ name: "ResumeTwo", agent: "task", task: `${IDLE} ${RESUME_ROLL_BACK}`, solutionSpace: "one fix: nothing to change" },
+			] } }],
+			// Stop reminders and delegate wake-ups re-prompt the lead, and the resumed run continues this script after the
+			// first run's assistant messages, so a turn chooses by what it was last told rather than by its position.
+			// The resumed lead's `todo view` runs behind the background settle in the plugin's serial queue, so its result
+			// (and the turn that follows) only arrives once the hand back and rollback are written.
+			...Array.from({ length: 24 }, () => (ctx: TurnContext) => ctx.texts.at(-1)?.includes(RESUMED) ? [{ tool: "todo", args: { op: "view" } }] : ["Noted."]),
+		],
+		// ResumeOne: one finished tool, then a bash call that outlives the process. ResumeTwo: its model call never answers,
+		// because the plugin counts a delegate's tool call (not its result) as a tool run, which would hand it back.
+		[CUT]: [[{ tool: "bash", args: { command: "ls" } }], [{ tool: "bash", args: { command: "sleep 45" } }]],
+		[IDLE]: [[{ hang: true }]],
+	},
+	async drive(session) {
+		const tasks = () => (JSON.parse(session.kata(["list", "--status", "all", "--limit", "0", "--json"])).issues as { title: string; metadata?: Record<string, string> }[])
+			.filter(i => [RESUME_HAND_BACK, RESUME_ROLL_BACK].includes(i.title));
+		await session.prompt(`${MAIN} plan the work and delegate it`);
+		let held = tasks();
+		for (let end = Date.now() + 30_000; Date.now() < end && !(held.length === 2 && held.every(i => i.metadata?.["omp.subagent_id"] && i.metadata["omp.status"] === "running")); held = tasks()) await Bun.sleep(250);
+		const holding = held.length === 2 && held.every(i => i.metadata?.["omp.subagent_id"] && i.metadata["omp.status"] === "running");
+		// The snapshot with the first delegate's tool use is the last state worth cutting at.
+		await session.restart('"ranTool":true');
+		await session.prompt(RESUMED);
+		return [{ name: "before the resume, both delegates' issues are still held by a delegate that never finished (omp.subagent_id set, omp.status running)", ok: holding, detail: JSON.stringify(held.map(i => [i.title, i.metadata?.["omp.subagent_id"], i.metadata?.["omp.status"]])) }];
+	},
+	async check(store) {
+		const issues = await store.issues();
+		const handBack = issues.find(i => i.title === RESUME_HAND_BACK), rollBack = issues.find(i => i.title === RESUME_ROLL_BACK);
+		const labelled = (i?: Issue) => !!i?.events.some(e => /label/.test(e.type) && JSON.stringify(e.payload).includes("needs-review"));
+		const notified = (i?: Issue) => Object.keys(i?.metadata ?? {}).some(key => key.startsWith("notify."));
+		const tools = store.tools();
+		return [
+			{ name: "the cut delegates ran as scripted: ResumeOne finished a bash call, ResumeTwo none", ok: tools.some(t => t.agent === "ResumeOne" && t.tool === "bash") && !tools.some(t => t.agent === "ResumeTwo"), detail: JSON.stringify(tools.filter(t => /^Resume(One|Two)$/.test(t.agent)).map(t => [t.agent, t.tool])) },
+			{ name: "the delegate that ran a tool was handed back after the resume: needs-review, needs-human, an inbox request, omp.status aborted", ok: labelled(handBack) && handBack?.metadata["work.attention"] === "needs-human" && notified(handBack) && handBack?.metadata["omp.status"] === "aborted", detail: JSON.stringify({ labelled: labelled(handBack), attention: handBack?.metadata["work.attention"], notified: notified(handBack), status: handBack?.metadata["omp.status"] }) },
+			{ name: "the delegate that ran no tool was rolled back after the resume: open, no needs-review, no omp.subagent_id", ok: rollBack?.status === "open" && !labelled(rollBack) && !rollBack.metadata["omp.subagent_id"] && !notified(rollBack), detail: JSON.stringify({ status: rollBack?.status, labelled: labelled(rollBack), subagent: rollBack?.metadata["omp.subagent_id"], notified: notified(rollBack) }) },
+			{ name: "no stray issue", ok: issues.length === 3, detail: `${issues.length} issues: ${issues.map(i => i.title).join(", ")}` },
 		];
 	},
 }];
