@@ -331,9 +331,8 @@ export function createDelegates(env: DelegatesEnv): Delegates {
 
 	// A delegate that exited having run no tool did nothing: put the issue back as it was.
 	// `issue` is the current state: each step runs only while it is still undone, so a rollback that failed partway finishes on the next settle.
-	async function rollback(r: DelegateRecord, issue: KataIssue) {
-		const { restore } = r, ref = refOf(r)!, cwd = r.binding!.workspace;
-		if (!restore) throw new Error(`Delegate ${r.id} has nothing to restore.`);
+	async function rollback(r: DelegateRecord, issue: KataIssue, restore: Restore) {
+		const ref = refOf(r)!, cwd = r.binding!.workspace;
 		const set = (key: string) => restore.meta[key] === undefined ? ["meta", "unset", ref, key] : ["meta", "set", ref, key, String(restore.meta[key])];
 		if (issue.metadata?.teammate === r.teammate) {
 			const owned = await env.owned(ref, cwd, false, false, undefined, { teammate: r.teammate, delegate: true });
@@ -382,7 +381,7 @@ export function createDelegates(env: DelegatesEnv): Delegates {
 		if ((r.state === "failed" || r.state === "started") && heldByDelegate(ns, issue.metadata) && issue.metadata?.[keySubagent] !== r.id) { r.state = "settled"; env.store.put(r); return; }
 		// An assignment that never got to a tool did nothing: roll back what it wrote. A started record without a restore point wrote nothing.
 		if ((r.state === "assigned" || r.state === "started") && !r.ranTool) {
-			if (r.restore) await rollback(r, issue);
+			if (r.restore) await rollback(r, issue, r.restore);
 			r.state = "settled"; env.store.put(r);
 			return;
 		}

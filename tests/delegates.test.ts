@@ -219,6 +219,8 @@ test("a resumed delegate whose settle never finished keeps its issue instead of 
 
 // Resuming settles in the background on the lead's queue, so a todo view returns only after the settle is done.
 const savedDelegates = (entries: any[]) => entries.filter(e => e.customType === "io.kata.omp.state").at(-1)?.data.delegates;
+// How many requests the lead's inbox holds for an issue.
+const requestsFor = async (shortId: string) => (await kata(["inbox", "--for", `lead-actor/${LEAD}`, "--json"])).requests.filter((r: any) => r.ref.endsWith(shortId)).length;
 // The newest saved snapshot with `change` applied to its first delegate, as a process that died at that point would have left it.
 const withSnapshot = (entries: any[], change: (record: any) => void) => {
   const data = structuredClone(entries.filter(e => e.customType === "io.kata.omp.state").at(-1).data);
@@ -243,7 +245,7 @@ test("a lead resumed with a delegate's hand back unfinished finishes it: needs-r
   expect(labels(view)).toContain("needs-review");
   expect(view.issue.metadata).toMatchObject({ teammate: LEAD, "work.attention": "needs-human", "omp.status": "completed" });
   expect(view.issue.metadata["omp.subagent_id"]).toBeUndefined();
-  expect((await kata(["inbox", "--for", `lead-actor/${LEAD}`, "--json"])).requests.some((r: any) => r.ref.endsWith(task.short_id))).toBe(true);
+  expect(await requestsFor(task.short_id)).toBeGreaterThan(0);
   expect(savedDelegates(b.entries)).toBeUndefined();
 });
 
@@ -349,8 +351,7 @@ test("a new process resuming from an older snapshot leaves an issue a later hold
   await a.delegates.apply({ type: "exited", id: "phi", outcome: "ended" });
   await kata(["assign", ref, "later-actor", "--json"]);
   for (const [key, value] of [["teammate", "mate-later"], ["omp.subagent_id", "later"], ["omp.status", "running"], ["omp.session_id", "later-session"]]) await kata(["meta", "set", ref, key, value, "--json"]);
-  const inbox = async () => (await kata(["inbox", "--for", `lead-actor/${LEAD}`, "--json"])).requests.filter((r: any) => r.ref.endsWith(task.short_id)).length;
-  const notified = await inbox();
+  const notified = await requestsFor(task.short_id);
   // The older snapshot still lists phi as assigned: a settle that finished elsewhere never updated it.
   const c = lead({ entries: a.entries.slice(0, older), id: a.id });
   expect(savedDelegates(c.entries)).toMatchObject([{ id: "phi", state: "assigned" }]);
@@ -358,7 +359,7 @@ test("a new process resuming from an older snapshot leaves an issue a later hold
   await c.view();
   const view = await show(ref);
   expect(labels(view)).not.toContain("needs-review");
-  expect(await inbox()).toBe(notified);
+  expect(await requestsFor(task.short_id)).toBe(notified);
   expect(view.issue.owner).toBe("later-actor");
   expect(view.issue.metadata).toMatchObject({ teammate: "mate-later", "omp.subagent_id": "later", "omp.status": "running", "omp.session_id": "later-session" });
 });
@@ -367,18 +368,20 @@ test("a started delegate saved before its restore point existed leaves the issue
   const a = lead(); const parent = await a.plan(["Build the psi widget", "Lead step"]);
   const task = await taskOf(parent, "Build the psi widget"), ref = `delegates-test#${task.short_id}`;
   await a.delegates.apply(a.started("psi", "Build the psi widget"));
-  const before = await show(ref);
-  const inbox = async () => (await kata(["inbox", "--for", `lead-actor/${LEAD}`, "--json"])).requests.filter((r: any) => r.ref.endsWith(task.short_id)).length;
-  const notified = await inbox();
   // A sibling's save during the first show: the record has its binding but nothing was written or captured yet.
   const cut = withSnapshot(a.entries, record => { record.state = "started"; delete record.ref; delete record.restore; });
   expect(savedDelegates(cut)).toMatchObject([{ id: "psi", state: "started", binding: {} }]);
+  // The live assignment ends rolled back, so Kata shows the issue as that unwritten record left it.
+  await a.delegates.apply({ type: "exited", id: "psi", outcome: "ended" });
+  const before = await show(ref);
+  expect(before.issue.metadata["omp.subagent_id"]).toBeUndefined();
+  const notified = await requestsFor(task.short_id);
   const b = lead({ entries: cut, id: a.id });
   await b.core.session.start(b.ctx);
   await b.view();
   const view = await show(ref);
   expect(labels(view)).not.toContain("needs-review");
-  expect(await inbox()).toBe(notified);
+  expect(await requestsFor(task.short_id)).toBe(notified);
   expect(view.issue.metadata).toEqual(before.issue.metadata);
   expect(view.issue.owner).toBe(before.issue.owner);
 });
