@@ -367,7 +367,7 @@ export default function ompKata(pi: any) {
 	});
 	pi.on("session_stop", async (event: any, ctx: any) => {
 		await enter(ctx);
-		const additionalContext = await core.session.stop(ctx, event.messages ?? []);
+		const additionalContext = await core.session.stop(ctx, event.messages ?? [], event.signal);
 		if (additionalContext) return { continue: true, additionalContext };
 	});
 

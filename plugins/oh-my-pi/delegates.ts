@@ -144,6 +144,9 @@ export interface DelegateRecord {
 	exited?: DelegateOutcome;
 }
 
+// A record as the lead's snapshot keeps it.
+export type SavedDelegate = Omit<DelegateRecord, "text">;
+
 // What a task call's spawn was matched to before it started.
 export type Reservation = { ref?: string; ticket?: boolean };
 
@@ -204,7 +207,14 @@ export interface Delegates {
 	// Started and not exited, tracked or not.
 	running(): boolean;
 	// Exited and not yet handed back or settled.
-	waiting(): boolean;
+	cleanupPending(): boolean;
+	// The ids of those delegates: a turn end that waits for them stops once a pass leaves the same ones.
+	pendingIds(): string[];
+	// The unfinished records with something written to Kata, for the lead's snapshot. A prompt is only read to decide an
+	// assignment, which a restored record never does, so it is left out.
+	saved(leadSessionId: string): SavedDelegate[];
+	// Takes back records a past run left unfinished (those not already in memory), as exited so they settle. Whether any were new.
+	restore(records: SavedDelegate[]): boolean;
 	// Settles every exited delegate not yet settled. Runs inside the serial queue.
 	settle(): Promise<void>;
 }
@@ -364,26 +374,28 @@ export function createDelegates(env: DelegatesEnv): Delegates {
 	// is commented, flagged and handed back. Every step can run again after a failure.
 	async function settleOne(r: DelegateRecord) {
 		const ref = refOf(r);
-		if (!ref || !r.binding) { r.state = "settled"; env.store.put(r); return; }
+		const settled = () => { r.state = "settled"; env.store.put(r); };
+		if (!ref || !r.binding) return settled();
 		const cwd = r.binding.workspace;
 		let issue: KataIssue;
 		try { issue = (await env.kata.show(ref, cwd)).issue; }
 		catch (error) {
 			// A deleted issue has nothing left to hand back.
-			if (isKataCode(error, "issue_not_found")) { r.state = "settled"; env.store.put(r); return; }
+			if (isKataCode(error, "issue_not_found")) return settled();
 			throw error;
 		}
-		if (issue.status === "closed") { r.state = "settled"; env.store.put(r); return; }
+		if (issue.status === "closed") return settled();
 		// A delegate whose assignment was written ends by dropping its subagent id (rollback and hand back both write it last),
 		// so an id that is no longer its own means the cleanup already ran, maybe in another session.
-		if (r.state === "assigned" && issue.metadata?.[keySubagent] !== r.id) { r.state = "settled"; env.store.put(r); return; }
+		if (r.state === "assigned" && issue.metadata?.[keySubagent] !== r.id) return settled();
 		// A failed or cut-off assignment the issue's holder refused (another delegate holds it) has nothing to hand back.
-		if ((r.state === "failed" || r.state === "started") && heldByDelegate(ns, issue.metadata) && issue.metadata?.[keySubagent] !== r.id) { r.state = "settled"; env.store.put(r); return; }
-		// An assignment that never got to a tool did nothing: roll back what it wrote. A started record without a restore point wrote nothing.
+		if ((r.state === "failed" || r.state === "started") && heldByDelegate(ns, issue.metadata) && issue.metadata?.[keySubagent] !== r.id) return settled();
+		// An assignment that never got to a tool did nothing: roll back what it wrote. A started record wrote nothing without a restore
+		// point, and nothing of this delegate's once the issue carries neither its teammate nor its subagent id (someone else claimed it since).
 		if ((r.state === "assigned" || r.state === "started") && !r.ranTool) {
-			if (r.restore) await rollback(r, issue, r.restore);
-			r.state = "settled"; env.store.put(r);
-			return;
+			const ours = r.state === "assigned" || issue.metadata?.teammate === r.teammate || issue.metadata?.[keySubagent] === r.id;
+			if (r.restore && ours) await rollback(r, issue, r.restore);
+			return settled();
 		}
 		// Only observation metadata belongs to the parent; delegate work.* stays untouched.
 		if (ns === "omp" && issue.metadata?.["omp.status"] !== r.exited) await env.kata.run(["meta", "set", ref, "omp.status", r.exited!, "--if-match", String(issue.revision)], cwd);
@@ -468,7 +480,14 @@ export function createDelegates(env: DelegatesEnv): Delegates {
 		},
 		holds: ref => unfinished().some(r => refOf(r) === ref),
 		running: () => env.store.records().some(r => !r.exited),
-		waiting: () => unfinished().some(r => !!r.exited),
+		cleanupPending: () => unfinished().some(r => !!r.exited),
+		pendingIds: () => unfinished().filter(r => !!r.exited).map(r => r.id),
+		saved: leadSessionId => unfinished().filter(r => r.leadSessionId === leadSessionId && r.binding).map(({ text: _text, ...r }) => r),
+		restore: records => {
+			const fresh = records.filter(r => !env.store.get(r.id));
+			for (const r of fresh) env.store.put({ ...r, text: "", exited: r.exited ?? "aborted" });
+			return fresh.length > 0;
+		},
 		settle,
 	};
 }

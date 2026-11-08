@@ -93,6 +93,7 @@ async function drive(scenario: Scenario, args: string[], env: NodeJS.ProcessEnv,
 	const session: Session = {
 		kata: (args, extra) => kata(env, work, args, extra),
 		requests: () => linesIn<Request>(records),
+		tools: () => linesIn<ToolUse>(env.KATA_SMOKE_TOOLS!),
 		async fork() {
 			const id = `f${++sequence}`;
 			const done = new Promise<any>(resolve => waiting.set(id, resolve));

@@ -1,7 +1,8 @@
 // Scenarios for the real-omp smoke test (scripts/smoke-omp.ts). A scenario is
 // data: scripted turns per agent plus assertions over the throwaway Kata store.
-// Add a scenario by appending an entry to SCENARIOS; the driver and the scripted
-// provider need no changes.
+// Add a scenario by appending an entry to SCENARIOS. The driver and the scripted
+// provider need changes only for a scenario that restarts omp (`restart`: kill and
+// `--resume`), needs a new RPC command, or needs a model call that hangs (`{ hang: true }`).
 
 import { fileURLToPath } from "node:url";
 
@@ -53,6 +54,8 @@ export type Session = {
 	kata(args: string[], env?: NodeJS.ProcessEnv): string;
 	/** Requests recorded so far. */
 	requests(): Request[];
+	/** Finished tool calls recorded so far. */
+	tools(): ToolUse[];
 };
 
 export type Scenario = {
@@ -122,7 +125,7 @@ export const SCENARIOS: Scenario[] = [{
 			[{ tool: "todo", args: { op: "done", task: "Write parser tests", message, evidence: [evidence] } }],
 			[{ tool: "bash", args: { command: `kata close ${vars().bashClosed} --done --message '${message}' --evidence '${evidence}'` } }],
 			["All parser work is finished."],
-			// omp wakes the main agent when the background delegate reports back.
+			// omp wakes the lead when the background delegate reports back.
 			["The delegate has reported back."],
 		],
 		[SUB]: [
@@ -423,7 +426,7 @@ export const SCENARIOS: Scenario[] = [{
 			[{ tool: "todo", args: { op: "init", list: [{ phase: "Ports", items: PORTS }], message: "Smoke worker-thread session" } }],
 			[{ tool: "task", args: { context: "Smoke port work: nothing to change, just close your Kata issue.", tasks: PORTS.map((port, i) => ({ name: `Port${i + 1}`, agent: "task", task: `${WORKER} ${port}`, solutionSpace: "one fix: nothing to change, just close the issue" })) } }],
 			["The ports are delegated."],
-			// omp wakes the main agent as background delegates report back. Each turn only acknowledges; the end of the turn
+			// omp wakes the lead as background delegates report back. Each turn only acknowledges; the end of the turn
 			// waits for the hand backs and rollbacks, so the run cannot end before they are written.
 			...Array.from({ length: 2 * PORTS.length }, () => ["Noted."]),
 		],
@@ -526,10 +529,12 @@ export const SCENARIOS: Scenario[] = [{
 		const tasks = () => (JSON.parse(session.kata(["list", "--status", "all", "--limit", "0", "--json"])).issues as { title: string; metadata?: Record<string, string> }[])
 			.filter(i => [RESUME_HAND_BACK, RESUME_ROLL_BACK].includes(i.title));
 		await session.prompt(`${MAIN} plan the work and delegate it`);
+		const bothHeld = (h: { metadata?: Record<string, string> }[]) => h.length === 2 && h.every(i => i.metadata?.["omp.subagent_id"] && i.metadata["omp.status"] === "running");
 		let held = tasks();
-		for (let end = Date.now() + 30_000; Date.now() < end && !(held.length === 2 && held.every(i => i.metadata?.["omp.subagent_id"] && i.metadata["omp.status"] === "running")); held = tasks()) await Bun.sleep(250);
-		const holding = held.length === 2 && held.every(i => i.metadata?.["omp.subagent_id"] && i.metadata["omp.status"] === "running");
-		// The snapshot with the first delegate's tool use is the last state worth cutting at.
+		for (let end = Date.now() + 30_000; Date.now() < end && !bothHeld(held); held = tasks()) await Bun.sleep(250);
+		const holding = bothHeld(held);
+		// The tool use reaches the snapshot at the call, the tool record at its result: wait for both before the cut.
+		for (let end = Date.now() + 30_000; Date.now() < end && !session.tools().some(t => t.agent === "ResumeOne" && t.tool === "bash");) await Bun.sleep(100);
 		await session.restart('"ranTool":true');
 		await session.prompt(RESUMED);
 		return [{ name: "before the resume, both delegates' issues are still held by a delegate that never finished (omp.subagent_id set, omp.status running)", ok: holding, detail: JSON.stringify(held.map(i => [i.title, i.metadata?.["omp.subagent_id"], i.metadata?.["omp.status"]])) }];

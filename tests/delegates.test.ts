@@ -217,15 +217,23 @@ test("a resumed delegate whose settle never finished keeps its issue instead of 
   expect(await a.delegated("Build the kappa widget")).toBe(true);
 });
 
-// Resuming settles in the background on the lead's queue, so a todo view returns only after the settle is done.
-const savedDelegates = (entries: any[]) => entries.filter(e => e.customType === "io.kata.omp.state").at(-1)?.data.delegates;
+// The newest saved snapshot's data.
+const latestSnapshot = (entries: any[]) => entries.filter(e => e.customType === "io.kata.omp.state").at(-1)?.data;
+const savedDelegates = (entries: any[]) => latestSnapshot(entries)?.delegates;
 // How many requests the lead's inbox holds for an issue.
 const requestsFor = async (shortId: string) => (await kata(["inbox", "--for", `lead-actor/${LEAD}`, "--json"])).requests.filter((r: any) => r.ref.endsWith(shortId)).length;
 // The newest saved snapshot with `change` applied to its first delegate, as a process that died at that point would have left it.
 const withSnapshot = (entries: any[], change: (record: any) => void) => {
-  const data = structuredClone(entries.filter(e => e.customType === "io.kata.omp.state").at(-1).data);
+  const data = structuredClone(latestSnapshot(entries));
   change(data.delegates[0]);
   return [...structuredClone(entries), { type: "custom", customType: "io.kata.omp.state", data }];
+};
+// A rolled-back assignment leaves the issue as it was before it: no hand back, same owner, the delegate's keys gone.
+const expectRolledBack = (view: any, before: any) => {
+  expect(labels(view)).not.toContain("needs-review");
+  expect(view.issue.owner).toBe(before.issue.owner);
+  for (const key of ["omp.subagent_id", "omp.session_id", "omp.status", "omp.parent_agent_id"]) expect(view.issue.metadata[key]).toBeUndefined();
+  for (const key of ["teammate", "work.attention", "todo.status"]) expect(view.issue.metadata[key]).toEqual(before.issue.metadata[key]);
 };
 
 test("a lead resumed with a delegate's hand back unfinished finishes it: needs-review, needs-human, a request to the lead", async () => {
@@ -240,6 +248,7 @@ test("a lead resumed with a delegate's hand back unfinished finishes it: needs-r
   expect(labels(await show(ref))).not.toContain("needs-review");
   const b = lead({ entries: a.entries, id: a.id });
   await b.core.session.start(b.ctx);
+  // Resuming settles in the background on the lead's queue, so a todo view returns only after the settle is done.
   await b.view();
   const view = await show(ref);
   expect(labels(view)).toContain("needs-review");
@@ -263,10 +272,7 @@ test("a lead resumed with a delegate that ran no tool rolls its assignment back"
   await b.core.session.start(b.ctx);
   await b.view();
   const view = await show(ref);
-  expect(labels(view)).not.toContain("needs-review");
-  expect(view.issue.owner).toBe(before.issue.owner);
-  for (const key of ["omp.subagent_id", "omp.session_id", "omp.status", "omp.parent_agent_id"]) expect(view.issue.metadata[key]).toBeUndefined();
-  for (const key of ["teammate", "work.attention", "todo.status"]) expect(view.issue.metadata[key]).toEqual(before.issue.metadata[key]);
+  expectRolledBack(view, before);
 });
 
 test("a saved delegate with no exit is settled as aborted when the lead is resumed", async () => {
@@ -314,7 +320,7 @@ test("a /tree back to an older snapshot does not settle an already settled deleg
   for (const [key, value] of [["teammate", "mate-later"], ["omp.subagent_id", "later"], ["omp.status", "running"]]) await kata(["meta", "set", ref, key, value, "--json"]);
   b.entries.splice(older);
   expect(savedDelegates(b.entries)).toMatchObject([{ id: "tau", state: "assigned" }]);
-  // Empty memory again, as if the record had never been held: only the `resumed` check keeps /tree from restoring it.
+  // Empty memory again, as if the record had never been held: only the `newSession` check keeps /tree from restoring it.
   b.store.drop("tau");
   await b.core.session.tree(b.ctx);
   await b.view();
@@ -337,10 +343,7 @@ test("a lead resumed with a delegate whose assignment was cut off after its firs
   await b.core.session.start(b.ctx);
   await b.view();
   const view = await show(ref);
-  expect(labels(view)).not.toContain("needs-review");
-  expect(view.issue.owner).toBe(before.issue.owner);
-  for (const key of ["omp.subagent_id", "omp.session_id", "omp.status", "omp.parent_agent_id"]) expect(view.issue.metadata[key]).toBeUndefined();
-  for (const key of ["teammate", "work.attention", "todo.status"]) expect(view.issue.metadata[key]).toEqual(before.issue.metadata[key]);
+  expectRolledBack(view, before);
 });
 
 test("a new process resuming from an older snapshot leaves an issue a later holder took untouched", async () => {
@@ -386,6 +389,29 @@ test("a started delegate saved before its restore point existed leaves the issue
   expect(view.issue.owner).toBe(before.issue.owner);
 });
 
+test("a started delegate saved with its restore point leaves an issue another actor claimed since untouched on resume", async () => {
+  const a = lead(); const parent = await a.plan(["Build the sigma widget", "Lead step"]);
+  const task = await taskOf(parent, "Build the sigma widget"), ref = `delegates-test#${task.short_id}`;
+  // The lead claimed its plan tasks; release this one so the delegate's capture finds it unowned (restore.claimed).
+  await kata(["unassign", ref, "--json"]);
+  await a.delegates.apply(a.started("sigma", "Build the sigma widget"));
+  // The saved record is cut off before its ref: it has its restore point (issue unowned at capture) and its binding.
+  const cut = withSnapshot(a.entries, record => { record.state = "started"; delete record.ref; });
+  expect(savedDelegates(cut)).toMatchObject([{ id: "sigma", state: "started", restore: { claimed: true } }]);
+  // The live assignment ends rolled back, then someone else claims the issue under another teammate.
+  await a.delegates.apply({ type: "exited", id: "sigma", outcome: "ended" });
+  await kata(["assign", ref, "later-actor", "--json"]);
+  await kata(["meta", "set", ref, "teammate", "mate-later", "--json"]);
+  const before = await show(ref);
+  const b = lead({ entries: cut, id: a.id });
+  await b.core.session.start(b.ctx);
+  await b.view();
+  const view = await show(ref);
+  expect(view.issue.owner).toBe("later-actor");
+  expect(view.issue.metadata).toEqual(before.issue.metadata);
+  expect(labels(view)).not.toContain("needs-review");
+});
+
 test("an assignment saves its restore point before its first write", async () => {
   const a = lead(); await a.plan(["Build the omega widget", "Lead step"]);
   const gate = Promise.withResolvers<void>(), reached = Promise.withResolvers<void>();
@@ -404,7 +430,7 @@ test("a delegate whose issue was deleted settles instead of waiting forever", as
   await a.delegates.apply({ type: "ranTool", id: "chi" });
   await kata(["delete", ref, "--force", "--confirm", `DELETE ${ref}`, "--json"]);
   await a.delegates.apply({ type: "exited", id: "chi", outcome: "completed" });
-  // The public delegates API has no `waiting`: a settled record no longer appears in the saved snapshot.
+  // The public delegates API has no `cleanupPending`: a settled record no longer appearing in the saved snapshot is the observable.
   expect(savedDelegates(a.entries)).toBeUndefined();
 });
 
