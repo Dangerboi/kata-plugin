@@ -1547,8 +1547,6 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 				stopFollower();
 				const session = attentionSession;
 				attentionSession = undefined;
-				// The report is only stored, so it goes first: a slow drain cut off by the bound must not lose it.
-				if (closing.delegate?.report) await delegates.apply({ type: "reported", id: closing.delegate.id, text: closing.delegate.report });
 				// After the drain: the automatic parent's close still records this session.
 				await bounded((async () => {
 					await serial(async () => {
@@ -1556,6 +1554,7 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 						await drain();
 						if (session) await attention("end", session);
 					});
+					if (closing.delegate?.report) await delegates.apply({ type: "reported", id: closing.delegate.id, text: closing.delegate.report });
 					if (closing.delegate?.ended) await delegates.apply({ type: "exited", id: closing.delegate.id, outcome: "ended" });
 				})(), closing.delegate ? 3000 : SHUTDOWN_BOUND_MS);
 			},

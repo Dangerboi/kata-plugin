@@ -14,14 +14,14 @@ All notable changes to kata-plugin are listed here. The format follows [Keep a C
 
 - Each delegate bound to an issue (an omp subagent or a child pi) is told to comment what it did, how it verified it and what remains before it finishes, closed or not.
   - An issue several delegates worked has one comment per delegate, beside the plugin's own hand-back note.
-  - A delegate that exits without commenting gets its final report posted for it, under its own teammate: its last message, or what it yielded, cut at 4000 characters. omp reads it from the subagent's session events, a child pi from its own session at shutdown.
+- A delegate that exits without commenting gets its final report posted on its issue for it, under its own teammate: its last message, or what it yielded, cut at 4000 characters.
 
 ### Changed
 
 #### Delegates
 
 - pi: a child pi is named by its `--name`, else by the task or ticket it works, else by the end of its session id, instead of by its session UUID.
-  - Its teammate follows (`wordcounter-0c2d7b` instead of `pi-01a1bfd6-…`), and so do its report heading, hand-back comment and notify message.
+  - Its teammate follows (`wordcounter-0c2d7b` instead of `pi-01a1bfd6-…`), and so do its instructions, report heading, hand-back comment, notify message and attention message.
   - A child resumed from an earlier version keeps its old teammate.
 
 #### Development
