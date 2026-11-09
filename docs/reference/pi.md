@@ -4,7 +4,7 @@ Package: `@dangerboi/kata-pi` on npm; portable entry: `plugins/pi/kata.ts`. The 
 
 | Event/surface | Behavior |
 | --- | --- |
-| `session_start` | Restore saved plans/retries or child binding; a child clears the inherited lead `KATA_REF`. Export the child-process marker, plus `KATA_TRANSCRIPT_AGENT=pi` and `KATA_TRANSCRIPT_SESSION_ID`; a child replaces the pair it inherited. |
+| `session_start` | Restore saved plans/retries or child binding; a child clears the inherited lead `KATA_REF`. Export the child-process marker, plus `KATA_CLOSE_TRANSCRIPT_ENABLED=true` (unless already set), `KATA_TRANSCRIPT_AGENT=pi` and `KATA_TRANSCRIPT_SESSION_ID`; a child replaces the pair it inherited. |
 | `session_tree`, `session_shutdown` | Reload/drain reconciliation; a child that exits with its issue open restores it (no tool run) or hands it back for review. A child's shutdown passes the text of its last assistant message that has any as its report, posted when it left no comment of its own. `session_shutdown` leaves the transcript variables alone: a reload or new session starts the next instance in the same process, and that instance's `session_start` overwrites the pair. Clearing at shutdown could delete the new pair after a slow cleanup. |
 | `before_agent_start` | Bind inherited child work, inject its contract and exact issue/teammate/comment and close commands, or add the main plan and fallback context. |
 | `agent_before_settle` | Add a hidden continuation for actionable unfinished main work, within a three-reminder progress budget. Questions, blockers, aborts and errors suppress it. |

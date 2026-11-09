@@ -8,6 +8,7 @@ import { assertIsolated } from "./isolation";
 import { adoptIsolatedKata, isolatedKata, later } from "./kata-fixture";
 import { daemonUnavailable, missingExecutable, siblingThrottle } from "./kata-errors";
 import { ompHost } from "./omp-host";
+import { digest } from "../core/model";
 assertIsolated();
 const exec = promisify(execFile);
 const binary = process.env.KATA_TEST_EXECUTABLE!;
@@ -2285,5 +2286,41 @@ test("re-adding a removed item restores its issue with no priority after the def
     expect(restored.short_id).toBe(first.short_id);
     // Kata leaves `priority` out of the issue when it has none.
     expect((await show(`v2test#${restored.short_id}`)).issue.priority).toBeUndefined();
+  } finally { writeFileSync(config, ""); }
+});
+
+test("an item created by the previous plugin under a default priority replays on the new plugin", async () => {
+  const app = host(); const parent = await app.init(["Legacy sibling"]);
+  const config = path.join(env.KATA_HOME, "config.toml");
+  writeFileSync(config, "[create]\ndefault_priority = 2\n");
+  try {
+    // The previous plugin passed no --priority, so the issue took the default.
+    const old = (await kata(["create", "--parent", parent, "--project", "v2test", "--body", `Todo task in phase "Legacy".`, "--meta", "todo.phase=Legacy", "--meta", "todo.status=pending",
+      "--idempotency-key", `omp-kata:${digest(parent, "Legacy", "Legacy item")}`, "--force-new", "--json", "--", "Legacy item"])).issue;
+    expect(old.priority).toBe(2);
+    const again = await app.call({ op: "append", phase: "Legacy", items: ["Legacy item"] });
+    expect(again.isError, again.content?.[0]?.text).toBeUndefined();
+    const creates = app.calls.filter(a => a[0] === "create" && a.includes("Legacy item"));
+    expect(creates.map(a => a[a.indexOf("--priority") + 1])).toEqual(["none", "2"]);
+    expect((await show(parent)).children.filter((c: any) => c.title === "Legacy item").map((c: any) => c.short_id)).toEqual([old.short_id]);
+  } finally { writeFileSync(config, ""); }
+});
+
+test("an automatic parent created by the previous plugin under a default priority is adopted again", async () => {
+  const sid = `v2-legacy-parent-${++sequence}`;
+  const config = path.join(env.KATA_HOME, "config.toml");
+  writeFileSync(config, "[create]\ndefault_priority = 2\n");
+  try {
+    const old = (await kata(["create", "--idempotency-key", `omp-session:${sid}`, "--body", `Todo plan from omp session ${sid}.`, "--meta", `omp.session_id=${sid}`, "--meta", `omp.workspace=${cwd}`,
+      "--label", "omp-session", "--force-new", "--json", "--", "Legacy parent"])).issue;
+    expect(old.priority).toBe(2);
+    // The session lookup skips parents marked auto_parent=false, so the plugin must reach this issue through its create replay.
+    await kata(["meta", "set", `v2test#${old.short_id}`, "omp.auto_parent", "false", "--json-value", "--json"]);
+    const app = host({ sid }); await app.event("session_start");
+    const result = await app.call({ op: "init", items: ["Adopt me"], message: "Legacy parent" });
+    expect(result.isError, result.content?.[0]?.text).toBeUndefined();
+    expect(result.details.kata.parent).toBe(`v2test#${old.short_id}`);
+    const creates = app.calls.filter(a => a[0] === "create" && a.includes("--idempotency-key") && a.includes(`omp-session:${sid}`));
+    expect(creates.map(a => a[a.indexOf("--priority") + 1])).toEqual(["none", "2"]);
   } finally { writeFileSync(config, ""); }
 });

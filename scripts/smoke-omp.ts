@@ -30,7 +30,7 @@ const PROJECT = "omp-smoke";
 const TIMEOUT_MS = live ? 600_000 : 120_000;
 const tmp = realpathSync(mkdtempSync(path.join(os.tmpdir(), "omp-kata-smoke-")));
 // Inherited routing would point the child at someone else's Kata.
-const base = Object.fromEntries(Object.entries(process.env).filter(([k]) => !/^KATA_(SERVER|DAEMON|AUTH_TOKEN|REF|HOME|DEFAULT_PROJECT)$/.test(k)));
+const base = Object.fromEntries(Object.entries(process.env).filter(([k]) => !/^KATA_(SERVER|DAEMON|AUTH_TOKEN|REF|HOME|DEFAULT_PROJECT|CLOSE_TRANSCRIPT_ENABLED)$/.test(k)));
 let failures = 0;
 const report = (name: string, ok: boolean, detail?: string) => {
 	if (!ok) failures++;

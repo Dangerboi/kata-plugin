@@ -21,12 +21,14 @@ All notable changes to kata-plugin are listed here. The format follows [Keep a C
 - Closes record the session transcript with no Kata config: omp and pi turn close transcripts on for their own sessions.
   - Launch omp or pi with `KATA_CLOSE_TRANSCRIPT_ENABLED=false` to turn them off; `[close.transcript] enabled = false` in Kata's config does not stop them.
   - Harnesses started from the `bash` tool, such as `claude -p`, inherit the setting and record too.
+  - If you set `[close.transcript] enabled = true` only for omp and pi, you can remove it; closes from a plain terminal then stop warning about a missing session.
 
 ### Fixed
 
 #### Plans
 
 - Re-adding a removed item and resuming a session keep working after `[create].default_priority` changes in Kata's config; plan issues no longer take the default priority.
+  - Items and automatic parents made by an earlier version under a default priority keep replaying too.
 
 ## [1.8.0] - 2026-11-09
 

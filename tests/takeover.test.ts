@@ -33,7 +33,9 @@ const evidence = ["test:bun test takeover"];
 const message = "Implemented this takeover fixture and verified it with the isolated suite.";
 function host(options: any = {}) {
   const sid = `takeover-${++sequence}`;
-  return ompHost({ run: (args, opts) => run(args, opts.cwd, opts.timeout), cwd: options.cwd, sid, sessionFile: `${scratch}/${sid}.jsonl`, before: options.before, callId: "takeover" });
+  const contractReady = Promise.withResolvers<void>();
+  const app = ompHost({ run: (args, opts) => run(args, opts.cwd, opts.timeout), cwd: options.cwd, sid, sessionFile: `${scratch}/${sid}.jsonl`, before: options.before, after: args => { if (args[0] === "agent-contract-hook") contractReady.resolve(); }, callId: "takeover" });
+  return { ...app, contractReady: contractReady.promise };
 }
 beforeAll(async () => { const out = await run(["projects", "create", "takeover-home"]); if (out.code) throw new Error(out.stderr); });
 let restore: (() => void) | undefined;
@@ -214,6 +216,7 @@ test("the contract is injected once even when something already put it in the pr
 test("a folder without .kata.toml gets no contract section at all", async () => {
   const app = host({ cwd: repo("nocontractrepo") });
   await app.event("session_start");
+  await app.contractReady;
   const result = await app.event("before_agent_start", { systemPrompt: ["base"] });
   expect((result?.systemPrompt ?? ["base"]).join("\n")).not.toContain("kata_contract");
 });

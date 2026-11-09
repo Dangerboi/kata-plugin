@@ -81,10 +81,10 @@ async function host(options: any = {}) {
     },
   };
 }
-// Use Kata 0.21 or later for native pi attention coexistence. Tests that load
+// Use Kata 0.23.0 or later for native pi attention coexistence. Tests that load
 // the native adapter run only when Kata can install it; they never fake it.
 const nativeHelp = await run(["agent-hook", "install", "--help"]);
-const nativeMissing = nativeHelp.code ? "Kata under test lacks `agent-hook install`; use Kata 0.21 or later" : undefined;
+const nativeMissing = nativeHelp.code ? "Kata under test lacks `agent-hook install`; use Kata 0.23.0 or later" : undefined;
 if (nativeMissing) console.warn(`Skipping real native pi adapter tests: ${nativeMissing}`);
 beforeAll(async () => {
   const out = await run(["init", "--project", "pitest"]); if (out.code) throw new Error(out.stderr);
@@ -841,6 +841,14 @@ test("pi sets its transcript identity on start, a child replaces the inherited o
   await lead.event("session_shutdown", { reason: "new" });
   expect([process.env.KATA_TRANSCRIPT_AGENT, process.env.KATA_TRANSCRIPT_SESSION_ID]).toEqual(["pi", child.sid]);
   } finally { delete process.env.KATA_TRANSCRIPT_AGENT; delete process.env.KATA_TRANSCRIPT_SESSION_ID; }
+});
+
+test("pi turns close transcripts on at session start and keeps a user's opt-out", async () => {
+  await (await host()).event("session_start", { reason: "startup" });
+  expect(process.env.KATA_CLOSE_TRANSCRIPT_ENABLED).toBe("true");
+  process.env.KATA_CLOSE_TRANSCRIPT_ENABLED = "false";
+  await (await host()).event("session_start", { reason: "startup" });
+  expect(process.env.KATA_CLOSE_TRANSCRIPT_ENABLED).toBe("false");
 });
 
 test("a close driven through pi's real exec records the pi session when close transcripts are on", async () => {
