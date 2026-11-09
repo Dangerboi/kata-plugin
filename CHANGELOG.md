@@ -11,7 +11,7 @@ All notable changes to kata-plugin are listed here. The format follows [Keep a C
 - **Breaking:** Requires Kata 0.23.0. On older Kata every todo create fails; upgrade Kata first.
   - Kata 0.23.0 upgrades its SQLite store in place (index-only). Back up `~/.kata` first if you may need to go back to an older Kata.
   - Restart the Kata daemon after upgrading.
-  - Rerun `kata init` in a bound repo to add Kata's agent header to `.kata.toml`.
+  - Rerun `kata init` in a repo with a `.kata.toml` to add Kata's agent header to it.
   - If you use Kata's own pi hook, rerun `kata agent-hook install pi --attention` so it passes the session folder.
 - With Kata 0.23.0, a session gets the Kata contract only in a folder with a `.kata.toml`, and the contract is Kata's shorter single-agent version.
   - Plans and assignments work in other folders as before. Running `kata init --project <name>` in a folder adds a `.kata.toml`, and that folder's new plans then go to that project instead of `KATA_DEFAULT_PROJECT`.
