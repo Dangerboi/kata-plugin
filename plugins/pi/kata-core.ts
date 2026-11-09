@@ -285,8 +285,8 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 		if (revision !== undefined && issue.revision !== revision) throw new Error(`Kata issue ${ref} changed since the task was selected; no work metadata was written.`);
 		const currentActor = await actor(cwd, ref);
 		if (!who?.delegate && main(currentCtx) && heldByDelegate(issue.metadata)) {
-			// A closed item left marked (its child was killed after closing, its lead never resumed, or another session owns the plan)
-			// returns to the lead, unless an unfinished delegate of this session still holds it.
+			// A closed item left marked (its delegate was killed after closing, its lead never resumed, or another session owns the
+			// plan) returns to the lead, unless an unfinished delegate of this session still holds it.
 			if (!(allowClosed && issue.status === "closed" && !delegates.holds(ref) && issue.owner === currentActor)) throw new Error(`Kata issue ${ref} belongs to a delegate; no work metadata was written.`);
 			await delegates.returnClosed(ref, cwd, issue, ownTeammate());
 			issue = (await kata.show(ref, cwd)).issue;
@@ -1186,7 +1186,8 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 				const [task] = await resolve(params.task, undefined, "none");
 				if (task.status === "blocked") throw new Error(`"${task.content}" is blocked; unblock it first.`);
 				const decision = plan.local || task.ticket ? undefined : await owned(task.ref, cwd, true, !OPEN.has(task.status), task.revision);
-				if (decision) task.revision = decision.revision;
+				// owned() may have returned a closed item a past delegate still marked; it no longer is delegated.
+				if (decision) { task.revision = decision.revision; task.delegated = false; }
 				if (!OPEN.has(task.status) && !task.ticket) await reopenParent();
 				for (const other of plan.tasks) if (other !== task && other.status === "in_progress" && leads(other) && !settlement.hasTaskClose(other.ref)) await transition(other, "pending", {}, cwd);
 				await transition(task, "in_progress", change, cwd, decision);

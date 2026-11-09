@@ -23,6 +23,10 @@ A delegate with no assignment, because its task matched no plan task and named n
 Returning an exited delegate's still-open issue to the lead, marked for review.
 _Avoid_: release, settle-back
 
+**Return**:
+Giving a closed issue a delegate still marks back to the lead, with no review: the lead's teammate, the final plan status, the delegate's keys removed.
+_Avoid_: retire, release
+
 **Report**:
 A delegate's final word on its work: the text of its last assistant message that has any, or what it yielded. The plugin posts it on the delegate's issue when the delegate left no comment of its own.
 _Avoid_: summary, result

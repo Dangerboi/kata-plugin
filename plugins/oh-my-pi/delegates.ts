@@ -215,8 +215,9 @@ export interface Delegates {
 	// Whether a delegate that has not been handed back or settled holds the issue.
 	holds(ref: string): boolean;
 	// Returns a closed issue a delegate still marks to the lead: its teammate, the delegate's outcome and the item's final status,
-	// then the delegate keys last. Each write is skipped when already in place and guarded by the chained revision.
-	returnClosed(ref: string, cwd: string, issue: KataIssue, lead: string, outcome?: DelegateOutcome): Promise<void>;
+	// then the delegate keys last. Each write is skipped when already in place and guarded by the chained revision. `exit` is the
+	// exiting delegate's own return; without it the lead recovers an item no unfinished delegate holds.
+	returnClosed(ref: string, cwd: string, issue: KataIssue, lead: string, exit?: { teammate: string; outcome?: DelegateOutcome }): Promise<void>;
 	// Started and not exited, tracked or not.
 	running(): boolean;
 	// Exited and not yet handed back or settled.
@@ -400,13 +401,16 @@ export function createDelegates(env: DelegatesEnv): Delegates {
 
 	// A closed issue a delegate still marks returns to the lead: the lead's teammate, the delegate's outcome and the item's final
 	// status, so the lead can still retire it from a plan. Every write is skipped when in place and guarded by the revision chained
-	// from `issue`; the delegate keys go last, so a partial failure leaves the issue marked and a retry finishes it.
-	async function returnClosed(ref: string, cwd: string, issue: KataIssue, lead: string, outcome?: DelegateOutcome) {
+	// from `issue`; the delegate keys go last, so a partial failure leaves the issue marked and a retry finishes it. An exiting
+	// delegate moves the teammate only while it is still its own, as hand back does; the lead's recovery takes it whatever it is.
+	async function returnClosed(ref: string, cwd: string, issue: KataIssue, lead: string, exit?: { teammate: string; outcome?: DelegateOutcome }) {
 		const meta = issue.metadata ?? {};
 		let revision = issue.revision;
 		const write = async (args: string[]) => { await env.kata.run([...args, "--if-match", String(revision)], cwd); revision++; };
 		const setMeta = async (key: string, value: string) => { if (meta[key] !== value) await write(["meta", "set", ref, key, value]); };
-		if (((meta.teammate as string | undefined) || "") !== lead) await write(lead ? ["meta", "set", ref, "teammate", lead] : ["meta", "unset", ref, "teammate"]);
+		const teammate = (meta.teammate as string | undefined) || "";
+		if (teammate !== lead && (!exit || teammate === exit.teammate)) await write(lead ? ["meta", "set", ref, "teammate", lead] : ["meta", "unset", ref, "teammate"]);
+		const outcome = exit?.outcome;
 		if (ns === "omp") {
 			if (outcome) await setMeta("omp.status", outcome);
 			else if (meta["omp.status"] === "running") await setMeta("omp.status", "ended");
@@ -440,7 +444,7 @@ export function createDelegates(env: DelegatesEnv): Delegates {
 		// Closed: the delegate holding the issue returns it to the lead; only an assigned delegate reports on it (a failed or
 		// cut-off assignment never did).
 		if (issue.status === "closed") {
-			if (holding(r, issue)) await returnClosed(ref, cwd, issue, r.leadTeammate, r.exited);
+			if (holding(r, issue)) await returnClosed(ref, cwd, issue, r.leadTeammate, { teammate: r.teammate, outcome: r.exited });
 			if (r.state === "assigned") await postReport(r, ref, cwd, shown);
 			return settled();
 		}

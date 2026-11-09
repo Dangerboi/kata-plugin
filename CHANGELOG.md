@@ -10,7 +10,8 @@ All notable changes to kata-plugin are listed here. The format follows [Keep a C
 
 - A plan item a delegate closed no longer blocks the lead's next `todo init` with "belongs to a delegate".
   - When the delegate exits, its closed issue returns to the lead's teammate with `todo.status` completed (abandoned when closed as wontfix) and no subagent key; on omp, `omp.status` is set to its outcome.
-  - A closed item still marked by a delegate that no unfinished delegate of the session holds (left by an earlier version, a pi child killed after closing, a lead never resumed, or another session) is returned to the lead the next time the plan touches it, so no manual cleanup is needed.
+  - A closed item still marked by a delegate that no unfinished delegate of the session holds (left by an earlier version, a pi child killed after closing, a lead never resumed, or another session) is returned to the lead the next time the plan touches it, as long as the lead's actor owns it.
+  - A returned item can be reopened with `todo start` or by appending it again, as an item the lead closed can.
 
 #### Development
 

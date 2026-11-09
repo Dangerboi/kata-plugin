@@ -546,6 +546,20 @@ test("a closed plan item whose delegate has not exited still refuses a new plan"
   expect((await show(ref)).issue.metadata).toMatchObject({ teammate: "mate-phi", "omp.subagent_id": "phi" });
 });
 
+test("starting a closed item a past delegate still marks reopens it on the first call", async () => {
+  const a = lead(); const parent = await a.plan(["Build the chi2 widget", "Lead step"]);
+  const task = await taskOf(parent, "Build the chi2 widget"), ref = `delegates-test#${task.short_id}`;
+  await a.delegates.apply(a.started("chi2", "Build the chi2 widget"));
+  await kata(["close", ref, "--done", "--message", "Closed by the delegate itself with verified behaviour.", "--test", "delegates fixture", "--teammate", "mate-chi2", "--json"]);
+  const b = lead({ entries: a.entries, id: a.id });
+  const result = await b.core.todo.apply(b.ctx, "start", { task: "Build the chi2 widget" });
+  expect(result.isError, result.content[0].text).toBeFalsy();
+  const view = await show(ref);
+  expect(view.issue.status).toBe("open");
+  expect(view.issue.metadata).toMatchObject({ teammate: LEAD, "todo.status": "in_progress" });
+  expect(view.issue.metadata["omp.subagent_id"]).toBeUndefined();
+});
+
 const commentsOf = async (ref: string): Promise<{ body: string; teammate?: string }[]> => (await show(ref)).comments ?? [];
 const reportsOf = async (ref: string) => (await commentsOf(ref)).filter(c => c.body.startsWith("Report from subagent"));
 

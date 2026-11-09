@@ -162,7 +162,7 @@ export const SCENARIOS: Scenario[] = [{
 		const closeEvidence = (i?: Issue) => i?.events.find(e => e.type === "issue.closed")?.payload?.evidence ?? [];
 		const commentPayloads = (i?: Issue) => (i?.events.filter(e => /comment/.test(e.type)) ?? []).map(e => e.payload);
 		const comments = (i?: Issue) => commentPayloads(i).map(p => JSON.stringify(p));
-		// Only a real model follows the binding's instruction; the scripted delegate just closes. Once the delegate exits,
+		// Only a real model follows the assignment's instruction; the scripted delegate just closes. Once the delegate exits,
 		// its closed issue goes back to the lead's teammate, so its own comments are those under the teammate the issue
 		// carried when it closed; the plugin's report and the lead's notes do not count.
 		const delegateNote = store.live ? [{ name: "the delegate commented what it did on its own task", ok: commentPayloads(parser).some(p => ownComment(p, closingTeammate(parser))), detail: comments(parser).join(" | ") }] : [];
