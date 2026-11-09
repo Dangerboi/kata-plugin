@@ -115,7 +115,6 @@ const message = "Verified the smoke scenario by running it end to end against a 
 
 export const SCENARIOS: Scenario[] = [{
 	name: "default",
-	config: "[close.transcript]\nenabled = true\n",
 	setup: create => ({ bashClosed: create("Close from the main agent's bash") }),
 	prompt: `${MAIN} Plan the parser work, delegate the first item, close the second, then stop.`,
 	livePrompt: () => `Use the todo tool to plan two items, 'Implement parser module' and 'Write parser tests'. Delegate 'Implement parser module' to a task subagent (name it ImplementParser) and tell it to close its Kata issue with evidence ${evidence} and a 40+ character message. Then mark 'Write parser tests' done through the todo tool with evidence ${evidence} and a 40+ character message. Change no files. Stop when both are closed.`,
@@ -415,7 +414,6 @@ export const SCENARIOS: Scenario[] = [{
 	},
 }, {
 	name: "workers",
-	config: "[close.transcript]\nenabled = true\n",
 	// omp strips its todo tool from subagents unless prewalk is armed for their agent; a prewalk target lets delegates
 	// call todo. It hands off at a delegate's first edit; the target is a subscription model, and must differ from the
 	// --model of a live run in model or thinking level, or omp skips prewalk. Scripted runs skip it: no login.

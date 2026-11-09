@@ -12,6 +12,42 @@ All notable changes to kata-plugin are listed here. The format follows [Keep a C
   - Ctrl-C or SIGTERM now stops the tests and the daemons in the run's throwaway root before the runner exits.
   - A run killed outright leaves them behind; the next run stops them when it starts.
 
+## [1.9.0] - 2026-11-09
+
+kata-omp 2.9.0 and @dangerboi/kata-pi 1.9.0.
+
+### Added
+
+#### Development
+
+- `bun run test:changed [ref]` runs only the test files whose imports reach a file git reports as changed, for a faster edit loop. `bun run test` is still the check before a commit; see [development](docs/development.md) for what it misses.
+
+### Changed
+
+#### Requirements
+
+- **Breaking:** Requires Kata 0.23.0. On older Kata every todo create fails; upgrade Kata first.
+  - Kata 0.23.0 upgrades its SQLite store in place (index-only). Back up `~/.kata` first if you may need to go back to an older Kata.
+  - Restart the Kata daemon after upgrading.
+  - Rerun `kata init` in a repo with a `.kata.toml` to add Kata's agent header to it.
+  - If you use Kata's own pi hook, rerun `kata agent-hook install pi --attention` so it passes the session folder.
+- With Kata 0.23.0, a session gets the Kata contract only in a folder with a `.kata.toml`, and the contract is Kata's shorter single-agent version.
+  - Plans and assignments work in other folders as before. Running `kata init --project <name>` in a folder adds a `.kata.toml`, and that folder's new plans then go to that project instead of `KATA_DEFAULT_PROJECT`.
+
+#### Plans
+
+- Closes record the session transcript with no Kata config: omp and pi turn close transcripts on for their own sessions.
+  - Launch omp or pi with `KATA_CLOSE_TRANSCRIPT_ENABLED=false` to turn them off; `[close.transcript] enabled = false` in Kata's config does not stop them.
+  - Harnesses started from the `bash` tool, such as `claude -p`, inherit the setting and record too.
+  - If you set `[close.transcript] enabled = true` only for omp and pi, you can remove it; closes from a plain terminal then stop warning about a missing session.
+
+### Fixed
+
+#### Plans
+
+- Re-adding a removed item and resuming a session keep working after `[create].default_priority` changes in Kata's config; plan tasks and automatic parents no longer take the default priority.
+  - Plan tasks and automatic parents made by an earlier version keep replaying too, also after their priority was edited.
+
 ## [1.8.0] - 2026-11-09
 
 kata-omp 2.8.0 and @dangerboi/kata-pi 1.8.0.
@@ -419,7 +455,8 @@ kata-omp 2.2.0 and kata-pi 1.2.0.
 
 - omp: the plugin skips its Kata contract when the system prompt already carries it.
 
-[Unreleased]: https://github.com/Dangerboi/kata-plugin/compare/v1.8.0...HEAD
+[Unreleased]: https://github.com/Dangerboi/kata-plugin/compare/v1.9.0...HEAD
+[1.9.0]: https://github.com/Dangerboi/kata-plugin/compare/v1.8.0...v1.9.0
 [1.8.0]: https://github.com/Dangerboi/kata-plugin/compare/v1.7.2...v1.8.0
 [1.7.2]: https://github.com/Dangerboi/kata-plugin/compare/v1.7.1...v1.7.2
 [1.7.1]: https://github.com/Dangerboi/kata-plugin/compare/v1.7.0...v1.7.1

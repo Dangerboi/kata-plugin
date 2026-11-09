@@ -9,14 +9,23 @@ bun run check:plugins
 bun run typecheck
 ```
 
-The real native pi adapter tests need `kata agent-hook install pi` (Kata 0.21.0); against a Kata without it they are skipped with that reason, never faked. `test` runs OMP/pi tests, real-Kata integration tests, and revision conformance. The adapter tests and `smoke:omp` load the vendored copies in `plugins/*`, so every runner and `smoke:omp` refuse to start until `bun run build:plugins` has refreshed them after a `core/` edit.
+The real native pi adapter tests need Kata 0.23.0, the minimum version; they are skipped when `kata agent-hook install` is missing, never faked. `test` runs OMP/pi tests, real-Kata integration tests, and revision conformance. The adapter tests and `smoke:omp` load the vendored copies in `plugins/*`, so every runner and `smoke:omp` refuse to start until `bun run build:plugins` has refreshed them after a `core/` edit.
 
 Focused runners retain the isolation wrapper:
 
 ```sh
 KATA_TEST_EXECUTABLE=/absolute/path/to/guarded-kata bun run test:todo
 KATA_TEST_EXECUTABLE=/absolute/path/to/guarded-kata bun run test:revisions
+KATA_TEST_EXECUTABLE=/absolute/path/to/guarded-kata bun run test:changed        # vs the working tree
+KATA_TEST_EXECUTABLE=/absolute/path/to/guarded-kata bun run test:changed main   # vs a branch or commit
 ```
+
+`test:changed` is for the edit loop. It runs `bun test --changed`, which keeps only the test files whose imports reach a file git reports as changed: staged, unstaged and untracked files, plus commits since the ref when one is given. It cannot see what the tests reach without an import, so run `bun run test` before committing or closing a ticket. It misses:
+
+- a `core/` edit until `bun run build:plugins` has refreshed the vendored copies the adapter tests import;
+- files a test reads from disk, such as the manifests and changelog `packaging.test.ts` checks;
+- `tests/revision-conformance.ts`, which runs outside `bun test`;
+- a new Kata binary, which changes no file but is what most suites test.
 
 The semantic canary copies the default database and WAL into a disposable directory. SQLite opens only that copy. It requires the same schema version, no new projects, and no new events from test actors or project names. Ordinary background sync and WAL/SHM churn are ignored. Unreadable, invalid, or unstable copies fail closed. Update fixture actor/project coverage in `tests/isolation.ts` when adding cases; never disable the canary to obtain a pass.
 
@@ -24,7 +33,7 @@ The semantic canary copies the default database and WAL into a disposable direct
 
 `core/kata-core.ts` holds the shared engine: plan state, transitions, ops and the host-facing API. `core/model.ts` holds the vocabulary every module shares (task, plan parent, Kata issue shape, qualified refs, the text of a host message). `core/kata-cli.ts` runs Kata: every call, its error envelope (`KataError`) and the registered-project list refs are pinned against. `core/shell.ts` finds Kata invocations in a bash command and pins a delegate's to its teammate. `core/autocomplete.ts` adds `#` ticket completion to the host's editor. `core/plan-parent.ts` decides which plan parent and workspace a plan serves, as a pure function with no Kata calls. `core/delegates.ts` owns the delegate lifecycle. `core/settlement.ts` owns the closes the plugin still owes a session: throttled task closes, ticket closes waiting on children and the automatic parent's close, with one drain, one timer, one snapshot and one verdict memory; its clock and timer are injected, so `tests/settlement.test.ts` drives time with a fake clock against real Kata. `core/inbox.ts` holds the session inbox: the trust rule, the `<kata_inbox>` render, the delivery text, and the live follower with its seed retry, head cache and restart backoff. The omp adapter spawns `kata events --tail` and hands that to the follower through its dependencies; pi reads the inbox per turn only. The adapters are `plugins/oh-my-pi/kata.ts` and `plugins/pi/kata.ts`. `bun run build:plugins` vendors every `core/*.ts` module into both plugin folders; `check:plugins` rejects a stale copy. Each portable plugin's local imports stay inside its directory.
 
-Kata failures are read from Kata's `--json` error envelope and exit code, never from message wording: the core adds `--json` to every call (except the contract hook) and branches on `daemon_unavailable` (exit 7), `project_not_initialized`, `sibling_throttle`, `issue_not_found` (a deleted automatic parent, or a delegate's deleted issue, which the delegate's cleanup then drops) and `idempotency_deleted`/`idempotency_mismatch` (re-creating a deleted automatic parent). A missing executable or a killed call is detected from the exec result. The project name to register in an unregistered folder comes from the structured `data` on `project_not_initialized` (`project`, else `alias`), else the folder name; no code path reads a Kata message. Test fixtures in `tests/kata-errors.ts` are real Kata output.
+Kata failures are read from Kata's `--json` error envelope and exit code, never from message wording: the core adds `--json` to every call (except the contract hook) and branches on `daemon_unavailable` (exit 7), `project_not_initialized`, `sibling_throttle`, `issue_not_found` (a deleted automatic parent, or a delegate's deleted issue, which the delegate's cleanup then drops) and `idempotency_deleted`/`idempotency_mismatch` on a keyed create (a deleted automatic parent is re-created under a derived key; an existing issue whose first create differed, for example one made by an earlier version whose priority came from the user's default, is adopted by the envelope's `data.qualified_id`). A missing executable or a killed call is detected from the exec result. The project name to register in an unregistered folder comes from the structured `data` on `project_not_initialized` (`project`, else `alias`), else the folder name; no code path reads a Kata message. Test fixtures in `tests/kata-errors.ts` are real Kata output.
 
 For live smoke tests, use a fresh Git folder and throwaway store as in the [tutorial](tutorials/first-session.md). Point `KATA_OMP_EXECUTABLE` or `KATA_PI_EXECUTABLE` at the guarded binary before launch. Inspect actual issues and close events; stop the test daemon and close any terminal panes you created. Keep transcripts and temporary reports outside the repository.
 

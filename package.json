@@ -1,6 +1,6 @@
 {
   "name": "kata-plugin",
-  "version": "1.8.0",
+  "version": "1.9.0",
   "private": true,
   "type": "module",
   "description": "Kata work tracking for oh-my-pi and pi",
@@ -21,6 +21,7 @@
     "test": "bun tests/run.ts all",
     "smoke:omp": "bun scripts/vendor-core.ts --check && bun scripts/smoke-omp.ts",
     "test:todo": "bun tests/run.ts",
+    "test:changed": "bun tests/run.ts changed",
     "test:revisions": "bun tests/run.ts revisions",
     "build:plugins": "bun scripts/vendor-core.ts",
     "check:plugins": "bun scripts/vendor-core.ts --check",

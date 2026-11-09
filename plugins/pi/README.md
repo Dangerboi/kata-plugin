@@ -6,7 +6,7 @@
 pi install npm:@dangerboi/kata-pi
 ```
 
-Requires Kata 0.21.0 or later and a running Kata daemon. Tested with pi 1.5.0 and Kata 0.22.0. Remove any other todo extension first.
+Requires Kata 0.23.0 or later and a running Kata daemon. Tested with pi 1.5.0 and Kata 0.23.0. Remove any other todo extension first.
 
 - `/todo` and the `todo` tool plan into Kata. A repo with no Kata project plans in the project named by `KATA_DEFAULT_PROJECT` (labeled with the repo), or else in its inferred project.
 - An item named `<project>#<short_id>: <action>` works and logs on that existing ticket.

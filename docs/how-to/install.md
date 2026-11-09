@@ -1,6 +1,6 @@
 # Install
 
-Install Kata 0.21.0 or later. Oh-my-pi and pi need no Kata project in the folder: a folder without a Kata project uses `KATA_DEFAULT_PROJECT` or its inferred project (see the [oh-my-pi reference](../reference/oh-my-pi.md)). These plugins use `agent-contract-hook`, revision guards, typed evidence, `audit closes`, and `events`.
+Install Kata 0.23.0 or later. Oh-my-pi and pi need no Kata project in the folder: a folder without a Kata project uses `KATA_DEFAULT_PROJECT` or its inferred project (see the [oh-my-pi reference](../reference/oh-my-pi.md)). These plugins use `agent-contract-hook`, revision guards, typed evidence, `audit closes`, and `events`.
 
 ## Oh-my-pi
 
