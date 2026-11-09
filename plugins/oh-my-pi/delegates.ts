@@ -120,7 +120,7 @@ export type Restore = { claimed: boolean; meta: Record<string, unknown> };
 
 export interface DelegateRecord {
 	id: string;
-	// What messages call it, when that is not its id: a pi child's session name or the task it was matched to.
+	// What messages call it, when that is not its id: a pi child's name (see childName in kata-core.ts).
 	name?: string;
 	// The delegate's own session, the key the delegate side finds its record by.
 	sessionId: string;
@@ -151,7 +151,8 @@ export interface DelegateRecord {
 // A record as the lead's snapshot keeps it.
 export type SavedDelegate = Omit<DelegateRecord, "text">;
 
-// What a task call's spawn was matched to before it started; `title` is the plan item's text without a ticket prefix.
+// What a task call's spawn was matched to before it started; `title` names that work: the plan item's text without a
+// ticket prefix, or the title of a ticket outside the plan.
 export type Reservation = { ref?: string; ticket?: boolean; title?: string };
 
 // A delegate as messages name it.

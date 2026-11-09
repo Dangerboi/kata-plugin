@@ -482,7 +482,8 @@ for (const yielded of [false, true]) test(`a delegate's report is ${yielded ? "w
   message("message_end", "assistant", "The gizmo needs a new spring; I left it open.");
   message("message_update", "assistant", "partial streaming text");
   message("message_end", "user", "a user turn");
-  if (yielded) app.emit("task:subagent:event", { id, event: { type: "tool_execution_start", toolName: "yield", args: { data: { spring: "replaced" } } } });
+  // Strict-mode providers send an untyped final yield as `type: null`, and some fill `error` with "" beside the data.
+  if (yielded) app.emit("task:subagent:event", { id, event: { type: "tool_execution_start", toolName: "yield", args: { type: null, data: { spring: "replaced" }, error: "" } } });
   // An incremental section is part of a result, never the report.
   app.emit("task:subagent:event", { id, event: { type: "tool_execution_start", toolName: "yield", args: { type: ["confidence"], data: 0.8 } } });
   app.emit("task:subagent:lifecycle", { id, status: "completed", sessionFile });

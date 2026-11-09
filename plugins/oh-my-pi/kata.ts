@@ -323,10 +323,13 @@ export default function ompKata(pi: any) {
 		if (type !== "message_end" && type !== "tool_execution_start") return;
 		let text: string | undefined;
 		if (type === "message_end" && event.message?.role === "assistant") text = textOf(event.message.content);
-		// A yield with a `type` is one section of an incremental result, not the whole report.
-		else if (type === "tool_execution_start" && event.toolName === "yield" && event.args?.type === undefined) {
+		// A yield whose `type` is a non-empty list is one section of an incremental result, not the whole report; a string
+		// or null (strict-mode providers) type is terminal.
+		else if (type === "tool_execution_start" && event.toolName === "yield" && !(Array.isArray(event.args?.type) && event.args.type.length > 0)) {
+			// Data wins: backends fill the optional `error` with "" or a placeholder beside real data.
 			const { data, error } = event.args ?? {};
-			text = typeof error === "string" ? `Failed: ${error}` : typeof data === "string" ? data : data === undefined ? undefined : JSON.stringify(data, null, 2);
+			text = data !== undefined && data !== null ? (typeof data === "string" ? data : JSON.stringify(data, null, 2))
+				: typeof error === "string" && error.trim() ? `Failed: ${error.trim()}` : undefined;
 		}
 		if (!text?.trim() || !seen || typeof payload.id !== "string") return;
 		void leadOf(seen)?.delegates?.apply({ type: "reported", id: payload.id, text });

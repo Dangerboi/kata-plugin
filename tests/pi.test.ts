@@ -360,9 +360,9 @@ for (const named of ["session", "none"]) test(`a pi child is named by ${named ==
     const prompt = { prompt: named === "session" ? "Complete Named pi work" : "Survey the unrelated build system", systemPromptOptions: { sections: {} as any } };
     await child.event("before_agent_start", prompt);
     const record = delegateRecord(child);
-    const name = named === "session" ? "Slug-Writer" : "pi-ff1c15";
+    const name = named === "session" ? "Slug Writer" : "pi-ff1c15";
     expect(record.name).toBe(name);
-    expect(record.teammate).toMatch(new RegExp(`^${name.toLowerCase()}-[0-9a-f]{6}$`));
+    expect(record.teammate).toMatch(new RegExp(`^${name.toLowerCase().replace(" ", "-")}-[0-9a-f]{6}$`));
     expect(prompt.systemPromptOptions.sections.kata_binding).toStartWith(`You are subagent ${name}.`);
   } finally { delete process.env.KATA_TEAMMATE; delete process.env.KATA_INBOX_USER; delete process.env.KATA_PI_PARENT; }
 });

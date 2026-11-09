@@ -59,8 +59,9 @@ const CHILD_TEAMMATE = /^[a-z0-9][a-z0-9._-]{0,63}$/;
 // the end of its session id. Short enough to read in a comment heading.
 const CHILD_NAME_LIMIT = 40;
 function childName(sessionName: string | undefined, reserved: Reservation | undefined, id: string): string {
-	const short = (text: string | undefined) => text?.slice(0, CHILD_NAME_LIMIT).replace(/[-._]+$/, "") || undefined;
-	return short(slug(sessionName, true)) ?? short(slug(reserved?.title)) ?? `pi-${id.replace(/[^a-z0-9]/gi, "").slice(-6).toLowerCase()}`;
+	const short = (text: string | undefined) => text?.slice(0, CHILD_NAME_LIMIT).replace(/[-._\s]+$/, "") || undefined;
+	// The --name is shown as typed; teammateFor cleans it for the teammate.
+	return short(sessionName?.trim()) ?? short(slug(reserved?.title)) ?? `pi-${id.replace(/[^a-z0-9]/gi, "").slice(-6).toLowerCase()}`;
 }
 
 export function sessionKey(file: string, cwd: string): string {
@@ -1546,6 +1547,8 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 				stopFollower();
 				const session = attentionSession;
 				attentionSession = undefined;
+				// The report is only stored, so it goes first: a slow drain cut off by the bound must not lose it.
+				if (closing.delegate?.report) await delegates.apply({ type: "reported", id: closing.delegate.id, text: closing.delegate.report });
 				// After the drain: the automatic parent's close still records this session.
 				await bounded((async () => {
 					await serial(async () => {
@@ -1553,7 +1556,6 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 						await drain();
 						if (session) await attention("end", session);
 					});
-					if (closing.delegate?.report) await delegates.apply({ type: "reported", id: closing.delegate.id, text: closing.delegate.report });
 					if (closing.delegate?.ended) await delegates.apply({ type: "exited", id: closing.delegate.id, outcome: "ended" });
 				})(), closing.delegate ? 3000 : SHUTDOWN_BOUND_MS);
 			},
