@@ -1,4 +1,4 @@
-import { digest, OPEN, openTaskStatus, qualifiedRef, qualifiedRefs, type Binding, type KataIssue, type Plan, type Task } from "./model";
+import { digest, OPEN, openTaskStatus, qualifiedRef, qualifiedRefs, type Binding, type KataIssue, type KataShow, type Plan, type Task } from "./model";
 import { isKataCode, type Kata } from "./kata-cli";
 
 // The delegate lifecycle, shared by the omp lead and the pi child (see GLOSSARY.md: Delegate,
@@ -142,6 +142,8 @@ export interface DelegateRecord {
 	restore?: Restore;
 	ranTool?: boolean;
 	exited?: DelegateOutcome;
+	// Its latest report (its last assistant text, or what it yielded), posted for a delegate that left no comment of its own.
+	report?: string;
 }
 
 // A record as the lead's snapshot keeps it.
@@ -157,6 +159,8 @@ export type DelegateEvent =
 	| { type: "ranTool"; id: string }
 	// Its next prompt or todo call: retries a failed assignment.
 	| { type: "nextUse"; id: string }
+	// What it reported last, superseding an earlier report.
+	| { type: "reported"; id: string; text: string }
 	| { type: "exited"; id: string; outcome: DelegateOutcome };
 
 export type DelegateAssignment = { ref: string; workspace: string; teammate: string; binding: Binding };
@@ -218,6 +222,10 @@ export interface Delegates {
 	// Settles every exited delegate not yet settled. Runs inside the serial queue.
 	settle(): Promise<void>;
 }
+
+// The report is for reading on the issue, not a transcript: a long one is cut.
+const REPORT_LIMIT = 4000;
+const REPORT_HEADING = "Report from subagent";
 
 export function createDelegates(env: DelegatesEnv): Delegates {
 	const ns = env.namespace;
@@ -374,6 +382,15 @@ export function createDelegates(env: DelegatesEnv): Delegates {
 		if (issue.status === "open" && issue.metadata?.[keySubagent] === r.id) await env.kata.run(["meta", "unset", ref, keySubagent], cwd);
 	}
 
+	// The delegate's own comment is the better record; its report only stands in for a delegate that left none.
+	// Comments the plugin posted for it (an earlier run's report) do not count as its own.
+	async function postReport(r: DelegateRecord, ref: string, cwd: string, shown: KataShow) {
+		if (!r.report) return;
+		if ((shown.comments ?? []).some(c => c.teammate === r.teammate && !c.body.startsWith(REPORT_HEADING))) return;
+		await env.kata.run(["comment", ref, "--teammate", r.teammate, "--idempotency-key", `${ns}-report:${r.leadSessionId}:${r.id}:${digest(r.report)}`,
+			"--body", `${REPORT_HEADING} ${r.id} (it left no comment of its own):\n\n${r.report}`], cwd);
+	}
+
 	// One exited delegate: closed issue settles it; a delegate that never acted is rolled back; otherwise the open issue
 	// is commented, flagged and handed back. Every step can run again after a failure.
 	async function settleOne(r: DelegateRecord) {
@@ -381,14 +398,15 @@ export function createDelegates(env: DelegatesEnv): Delegates {
 		const settled = () => { r.state = "settled"; env.store.put(r); };
 		if (!ref || !r.binding) return settled();
 		const cwd = r.binding.workspace;
-		let issue: KataIssue;
-		try { issue = (await env.kata.show(ref, cwd)).issue; }
+		let shown: KataShow;
+		try { shown = await env.kata.show(ref, cwd); }
 		catch (error) {
 			// A deleted issue has nothing left to hand back.
 			if (isKataCode(error, "issue_not_found")) return settled();
 			throw error;
 		}
-		if (issue.status === "closed") return settled();
+		const issue = shown.issue;
+		if (issue.status === "closed") { await postReport(r, ref, cwd, shown); return settled(); }
 		// A delegate whose assignment was written ends by dropping its subagent id (rollback and hand back both write it last),
 		// so an id that is no longer its own means the cleanup already ran, maybe in another session.
 		if (r.state === "assigned" && issue.metadata?.[keySubagent] !== r.id) return settled();
@@ -404,6 +422,7 @@ export function createDelegates(env: DelegatesEnv): Delegates {
 		}
 		// Only observation metadata belongs to the parent; delegate work.* stays untouched.
 		if (ns === "omp" && issue.metadata?.["omp.status"] !== r.exited) await env.kata.run(["meta", "set", ref, "omp.status", r.exited!, "--if-match", String(issue.revision)], cwd);
+		await postReport(r, ref, cwd, shown);
 		await env.kata.run(["comment", ref, "--idempotency-key", `${ns}-settle:${r.leadSessionId}:${r.id}:${r.exited}`,
 			"--body", `Subagent ${r.id} ${r.exited} without closing its Kata issue. Review the work and supply evidence before closing.`], cwd);
 		if (issue.metadata?.teammate === r.teammate) {
@@ -442,6 +461,12 @@ export function createDelegates(env: DelegatesEnv): Delegates {
 			case "exited":
 				if (r && !r.exited) { r.exited = event.outcome; env.store.put(r); }
 				return r;
+			case "reported": {
+				const text = event.text.trim();
+				const report = text.length > REPORT_LIMIT ? `${text.slice(0, REPORT_LIMIT)}\n\n(cut at ${REPORT_LIMIT} characters)` : text;
+				if (r && report && r.report !== report) { r.report = report; env.store.put(r); }
+				return r;
+			}
 			case "nextUse":
 				if (r?.exited && !FINAL.has(r.state)) { r.exited = undefined; env.store.put(r); }
 				return r;
@@ -452,7 +477,7 @@ export function createDelegates(env: DelegatesEnv): Delegates {
 	const assigning = new Map<string, Promise<void>>();
 	function apply(event: DelegateEvent): Promise<void> {
 		const r = note(event);
-		if (!r || event.type === "ranTool") return Promise.resolve();
+		if (!r || event.type === "ranTool" || event.type === "reported") return Promise.resolve();
 		if (event.type === "nextUse") {
 			// A queued attempt that leaves a running delegate unassigned gets one retry before this use goes on.
 			const queued = assigning.get(r.id);

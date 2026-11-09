@@ -276,17 +276,21 @@ export default function ompKata(pi: any) {
 		return store.of(ctx);
 	};
 
+	// The lead Delegates that the delegates started from `ctx` report to: this session's own, or a nested delegate's lead.
+	const leadOf = (ctx: any): { id: string; delegates?: DelegateEvents } | undefined => {
+		if (main(ctx)) {
+			const id = sessionId(ctx);
+			if (id) { leads.set(id, core.delegates); return { id, delegates: core.delegates }; }
+			return undefined;
+		}
+		const owner = store.of(ctx);
+		return owner ? { id: owner.leadSessionId, delegates: leads.get(owner.leadSessionId) } : undefined;
+	};
+
 	pi.events?.on("task:subagent:lifecycle", (event: any) => {
 		const ctx = seen;
 		if (!ctx || !event?.id) return;
-		let lead: { id: string; delegates?: DelegateEvents } | undefined;
-		if (main(ctx)) {
-			const id = sessionId(ctx);
-			if (id) { leads.set(id, core.delegates); lead = { id, delegates: core.delegates }; }
-		} else {
-			const owner = store.of(ctx);
-			if (owner) lead = { id: owner.leadSessionId, delegates: leads.get(owner.leadSessionId) };
-		}
+		const lead = leadOf(ctx);
 		if (!lead?.delegates) return;
 		if (event.status === "started") {
 			if (assignmentsLead !== lead.id) { assignments.clear(); assignmentsLead = lead.id; } // a previous session's spawns
@@ -308,6 +312,21 @@ export default function ompKata(pi: any) {
 		} else if (["completed", "failed", "aborted"].includes(event.status)) {
 			void lead.delegates.apply({ type: "exited", id: event.id, outcome: event.status });
 		}
+	});
+
+	// Every event of a delegate's session, worker threads included, reaches the main thread here. Its report is its last
+	// assistant text, or what it yielded; streaming events are dropped first, since they arrive per token.
+	pi.events?.on("task:subagent:event", (payload: any) => {
+		const event = payload?.event, type = event?.type;
+		if (type !== "message_end" && type !== "tool_execution_start") return;
+		let text: string | undefined;
+		if (type === "message_end" && event.message?.role === "assistant") text = (event.message.content ?? []).filter((b: any) => b?.type === "text").map((b: any) => b.text).join("\n");
+		else if (type === "tool_execution_start" && event.toolName === "yield") {
+			const { data, error } = event.args ?? {};
+			text = typeof error === "string" ? `Failed: ${error}` : typeof data === "string" ? data : data === undefined ? undefined : JSON.stringify(data, null, 2);
+		}
+		if (!text?.trim() || !seen || typeof payload.id !== "string") return;
+		void leadOf(seen)?.delegates?.apply({ type: "reported", id: payload.id, text });
 	});
 
 	pi.on("tool_call", async (event: any, ctx: any) => {

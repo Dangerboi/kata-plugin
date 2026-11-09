@@ -329,6 +329,23 @@ for (const match of ["named", "active"]) test(`pi child ${match} binding owns it
   expect((await kata(["audit", "closes", "--json"])).rows.filter((r:any) => r.issue === ref.split("#")[1])).toHaveLength(1);
 });
 
+test("a pi child that leaves its issue open without a comment gets its last assistant text posted as its report", async () => {
+  const parent = await host(); await parent.event("session_start", { reason: "startup" });
+  await parent.init(["Reported pi work", "Lead pi work"]);
+  const marker = JSON.parse(process.env.KATA_PI_PARENT!);
+  process.env.KATA_PI_PARENT = JSON.stringify({ ...marker, pid: process.pid + 1 });
+  try {
+    const child = await host(); await child.event("session_start", { reason: "startup" });
+    await child.event("before_agent_start", { prompt: "Complete Reported pi work", systemPromptOptions: { sections: {} } });
+    const record = delegateRecord(child);
+    await child.event("tool_call", { toolName: "read", input: { path: "README.md" } });
+    child.entries.push({ type: "message", message: { role: "assistant", content: [{ type: "text", text: "Half done: the parser is written, its tests are not." }] } });
+    await child.event("session_shutdown", { reason: "quit" });
+    const comments = (await show(record.ref)).comments.map((c: any) => [c.teammate, c.body]);
+    expect(comments).toContainEqual([record.teammate, `Report from subagent ${record.id} (it left no comment of its own):\n\nHalf done: the parser is written, its tests are not.`]);
+  } finally { delete process.env.KATA_TEAMMATE; delete process.env.KATA_INBOX_USER; delete process.env.KATA_PI_PARENT; }
+});
+
 
 for (const order of ["plugin-first", "native-first"]) test.skipIf(!!nativeMissing)(`real native adapter preserves parent attention with ${order}`, async () => {
   const ref = (await kata(["create", "Real native ordering parent", "--force-new", "--json"])).issue.short_id;

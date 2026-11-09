@@ -19,7 +19,8 @@ export type KataIssue = {
 	status: "open" | "closed"; closed_reason?: string; closed_at?: string; created_at: string;
 	revision: number; owner?: string; labels?: (string | { label: string })[]; metadata?: Record<string, unknown>;
 };
-export type KataShow = { issue: KataIssue; children?: KataIssue[] };
+export type KataComment = { body: string; teammate?: string };
+export type KataShow = { issue: KataIssue; children?: KataIssue[]; comments?: KataComment[] };
 
 export const projectOf = (ref: string) => ref.split("#")[0];
 // An issue's qualified ref: Kata's own `qualified_id`, else `<parent's project>#<short_id>`.

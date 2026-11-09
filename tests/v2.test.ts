@@ -471,6 +471,25 @@ test("async snapshot settles a delegate when terminal lifecycle delivery is miss
   expect((await show(`v2test#${child.short_id}`)).labels.some((l: any) => l.label === "needs-review")).toBe(true);
 });
 
+for (const yielded of [false, true]) test(`a delegate's report is ${yielded ? "what it yielded" : "its last assistant text"}, read from its session events`, async () => {
+  const app = host(); await app.event("session_start"); const parent = await app.init(["Report the gizmo"]);
+  const id = `report-${yielded}`, sessionFile = `${scratch}/${id}.jsonl`;
+  app.emit("task:subagent:lifecycle", { id, agent: "task", status: "started", sessionFile, description: "Report the gizmo" });
+  await app.call({ op: "view" });
+  await ran(app, id, sessionFile);
+  const message = (type: string, role: string, text: string) => app.emit("task:subagent:event", { id, event: { type, message: { role, content: [{ type: "text", text }, { type: "toolCall", name: "read" }] } } });
+  message("message_end", "assistant", "Looking at the gizmo first.");
+  message("message_end", "assistant", "The gizmo needs a new spring; I left it open.");
+  message("message_update", "assistant", "partial streaming text");
+  message("message_end", "user", "a user turn");
+  if (yielded) app.emit("task:subagent:event", { id, event: { type: "tool_execution_start", toolName: "yield", args: { data: { spring: "replaced" } } } });
+  app.emit("task:subagent:lifecycle", { id, status: "completed", sessionFile });
+  await app.call({ op: "view" });
+  const comments = (await show(`v2test#${(await show(parent)).children[0].short_id}`)).comments.map((c: any) => c.body);
+  const report = yielded ? JSON.stringify({ spring: "replaced" }, null, 2) : "The gizmo needs a new spring; I left it open.";
+  expect(comments.filter((b: string) => b.startsWith("Report from subagent"))).toEqual([`Report from subagent ${id} (it left no comment of its own):\n\n${report}`]);
+});
+
 test("a missed delegate exit found at a prompt does not wait for the settlement", async () => {
   let recent: any[] = [], slow = false;
   const reached = Promise.withResolvers<void>(), gate = Promise.withResolvers<void>();

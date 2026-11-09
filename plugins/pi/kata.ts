@@ -34,6 +34,14 @@ export function inheritsModel(argv: string[]): { model: boolean; thinking: boole
 const PI_LAUNCH = /(?:^|[;&|(`\n]|\$\(|\b(?:ba|z|da|k)?sh\s+(?:-[a-z]+\s+)*-[a-z]*c\s+['"])\s*(?:(?:env|nohup|exec|command|time|setsid|caffeinate)\s+|[A-Za-z_][A-Za-z0-9_]*=(?:'[^']*'|"[^"]*"|[^\s;&|]*)\s+)*(?:[^\s;&|()'"`]*\/)?pi(?=$|[\s;&|)])/;
 export const launchesPi = (command: string) => PI_LAUNCH.test(command);
 
+// A child's report: the text of its last assistant message on the session branch.
+export function lastAssistantText(ctx: ExtensionContext): string | undefined {
+	const message = (ctx.sessionManager.getBranch() as any[]).filter(e => e.type === "message" && e.message?.role === "assistant").at(-1)?.message;
+	const content = message?.content;
+	const text = typeof content === "string" ? content : Array.isArray(content) ? content.filter((b: any) => b?.type === "text").map((b: any) => b.text).join("\n") : "";
+	return text.trim() || undefined;
+}
+
 export default async function piKata(pi: ExtensionAPI) {
 	// OMP also discovers legacy pi manifests. Do not register a second todo
 	// tool there, or even ask its loader to resolve pi's TypeBox dependency.
@@ -217,6 +225,6 @@ export default async function piKata(pi: ExtensionAPI) {
 	pi.on("session_shutdown", async (event, ctx) => {
 		// The transcript pair is not cleared here: pi fires this on the old instance for reload/new/resume/fork, then the new instance's session_start in the same process, and a slow cleanup would delete the new pair. session_start overwrites it and process exit ends the rest.
 		const record = inherited ? current : undefined;
-		await core.session.shutdown(ctx, record ? { delegate: { id: record.id, ended: event?.reason !== "reload" } } : {});
+		await core.session.shutdown(ctx, record ? { delegate: { id: record.id, ended: event?.reason !== "reload", report: lastAssistantText(ctx) } } : {});
 	});
 }

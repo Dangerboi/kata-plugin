@@ -1528,8 +1528,8 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 				see(ctx);
 				return remind(messages, ctx, signal);
 			},
-			// A delegate that ends with its session passes `delegate`; `ended` makes this call report its exit.
-			async shutdown(ctx: any, closing: { delegate?: { id: string; ended: boolean } } = {}): Promise<void> {
+			// A delegate that ends with its session passes `delegate`; `ended` makes this call report its exit, after its `report`.
+			async shutdown(ctx: any, closing: { delegate?: { id: string; ended: boolean; report?: string } } = {}): Promise<void> {
 				see(ctx);
 				if (!main(ctx) && !closing.delegate) return;
 				stopFollower();
@@ -1542,6 +1542,7 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 						await drain();
 						if (session) await attention("end", session);
 					});
+					if (closing.delegate?.report) await delegates.apply({ type: "reported", id: closing.delegate.id, text: closing.delegate.report });
 					if (closing.delegate?.ended) await delegates.apply({ type: "exited", id: closing.delegate.id, outcome: "ended" });
 				})(), closing.delegate ? 3000 : SHUTDOWN_BOUND_MS);
 			},
