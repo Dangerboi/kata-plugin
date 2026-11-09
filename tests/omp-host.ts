@@ -16,8 +16,6 @@ export interface OmpHostOptions {
   snapshot?: () => any;
   /** Answers an exec instead of Kata; undefined falls through to `run`. */
   before?: (args: string[], opts: any) => Promise<any> | any;
-  /** Sees every exec result, whoever produced it. */
-  after?: (args: string[], result: any) => void;
   /** Tool call id passed to `execute`. */
   callId?: string;
   /** Receives the adapter's `sendUserMessage` calls; omitted: the host offers none. */
@@ -26,11 +24,13 @@ export interface OmpHostOptions {
   afterEvent?: () => void;
 }
 
-/** The fake omp host: loads the adapter against a recording exec, a session manager, the event bus and the tool call. */
+/** The fake omp host: loads the adapter against a recording exec, a session manager, the event bus and the tool call.
+ * `contractReady` settles once the adapter's contract read has answered. */
 export function ompHost(options: OmpHostOptions) {
   let tool: any;
   const handlers = new Map<string, any>(), bus = new Map<string, any>();
   const entries: any[] = options.entries || [], calls: string[][] = [], notices: any[] = [], widgets: any[] = [];
+  const contractReady = Promise.withResolvers<void>();
   const schema: any = new Proxy(() => schema, { get: () => schema });
   const sessionManager: any = { getSessionId: () => options.sid, getBranch: () => entries, getHeader: () => options.header };
   if (options.sessionFile !== undefined) sessionManager.getSessionFile = () => options.sessionFile;
@@ -47,12 +47,12 @@ export function ompHost(options: OmpHostOptions) {
     async exec(_file: string, args: string[], opts: any) {
       calls.push(args);
       const result = await options.before?.(args, opts) ?? await options.run(args, opts);
-      options.after?.(args, result);
+      if (args[0] === "agent-contract-hook") contractReady.resolve();
       return result;
     },
   });
   const callId = options.callId ?? "fixture";
-  return { ctx, sid: options.sid, entries, calls, notices, widgets,
+  return { ctx, sid: options.sid, entries, calls, notices, widgets, contractReady: contractReady.promise,
     event: async (name: string, data: any = {}, context: any = ctx) => {
       try { return await handlers.get(name)?.(data, context); }
       finally { options.afterEvent?.(); }

@@ -21,6 +21,7 @@
     "test": "bun tests/run.ts all",
     "smoke:omp": "bun scripts/vendor-core.ts --check && bun scripts/smoke-omp.ts",
     "test:todo": "bun tests/run.ts",
+    "test:changed": "bun tests/run.ts changed",
     "test:revisions": "bun tests/run.ts revisions",
     "build:plugins": "bun scripts/vendor-core.ts",
     "check:plugins": "bun scripts/vendor-core.ts --check",

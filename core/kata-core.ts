@@ -658,20 +658,41 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 
 	// ------------------------------------------------------------- transitions
 
+	type Created = { ref: string; issue: KataIssue };
+	// What `kata create --json` prints: the new issue's event, or on a replay the first create's.
+	type CreateOutput = { issue?: KataIssue; event?: { project_name?: string } | null; original_event?: { project_name?: string } };
+
+	// Creates an issue under a key only this plugin uses, so a replay returns the issue the first create made. Kata
+	// fingerprints the whole first create, priority included: `--priority none` keeps a changed [create].default_priority
+	// out of it, and a mismatch against an issue that still exists (one an earlier version created under the user's
+	// default) is still this key's issue, so it is adopted. A deleted issue comes back as `deleted`: Kata refuses its key
+	// with `idempotency_deleted`, or with `idempotency_mismatch` naming an issue `show` no longer finds.
+	// `--force-new`: keyed issues are deliberate, e.g. sibling tasks that read alike ("write x" / "verify x"), so skip
+	// Kata's look-alike soft-block.
+	async function keyedCreate(key: string, args: string[], cwd: string): Promise<Created | { deleted: string; error: unknown }> {
+		let out: CreateOutput;
+		try { out = JSON.parse(await kata.run(["create", "--idempotency-key", key, "--priority", "none", "--force-new", ...args], cwd)); }
+		catch (error) {
+			const { uid, qualified_id: qualified } = (error as KataError).info?.data ?? {};
+			if (typeof uid !== "string") throw error;
+			if (isKataCode(error, "idempotency_deleted")) return { deleted: uid, error };
+			if (!isKataCode(error, "idempotency_mismatch") || typeof qualified !== "string") throw error;
+			try { return { ref: qualified, issue: (await kata.show(qualified, cwd)).issue }; }
+			catch (showError) { if (isKataCode(showError, "issue_not_found")) return { deleted: uid, error }; throw showError; }
+		}
+		const event = out?.event ?? out?.original_event;
+		if (typeof out?.issue?.short_id !== "string" || !event?.project_name) throw new Error("kata create returned no issue identity");
+		return { ref: `${event.project_name}#${out.issue.short_id}`, issue: out.issue };
+	}
+
 	async function create(phase: string, content: string, cwd: string): Promise<void> {
-		const project = projectOf(plan.parent!);
-		const out = JSON.parse(await kata.run([
-			"create", "--parent", plan.parent!, "--project", project, "--body", `Todo task in phase "${phase}".`,
-			"--meta", `todo.phase=${phase}`, "--meta", "todo.status=pending", ...(plan.label ? ["--label", plan.label] : []),
-			"--idempotency-key", `${namespace}-kata:${digest(plan.parent!, phase, content)}`,
-			// Sibling tasks often read alike ("write x" / "verify x"); they are
-			// deliberate plan items, so skip the look-alike soft-block.
-			"--force-new", "--", content,
-		], cwd));
-		const issue = out?.issue;
-		if (typeof issue?.short_id !== "string") throw new Error("kata create returned no short_id");
+		const created = await keyedCreate(`${namespace}-kata:${digest(plan.parent!, phase, content)}`, [
+			"--parent", plan.parent!, "--project", projectOf(plan.parent!), "--body", `Todo task in phase "${phase}".`,
+			"--meta", `todo.phase=${phase}`, "--meta", "todo.status=pending", ...(plan.label ? ["--label", plan.label] : []), "--", content,
+		], cwd);
+		if ("deleted" in created) throw created.error;
+		const { ref, issue } = created;
 		// Replays may restore removed work, but never another writer's task.
-		const ref = `${project}#${issue.short_id}`;
 		if (issue.status === "closed" || issue.metadata?.["todo.removed"] === true) {
 			let decision = await owned(ref, cwd, "check", true, issue.revision);
 			if (decision.status === "closed") {
@@ -929,32 +950,19 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 		stored: plan.parent ? { parent: plan.parent, workspace: plan.workspace } : undefined,
 	});
 
-	// Creates the session's automatic parent. Once a person deleted it, Kata refuses its idempotency key: `idempotency_deleted`,
-	// or `idempotency_mismatch` when this create's title or body differs from the deleted one's. The new parent takes a key
-	// derived from the deleted one, so a retry, the lead and its pi children all reach the same issue.
-	async function createAutomaticParent(sessionId: string, title: string, where: { project?: string; label?: string }, workspace: string, teammate?: string): Promise<{ ref: string; issue: KataIssue }> {
+	// Creates the session's automatic parent. Once a person deleted it, the new parent takes a key derived from the
+	// deleted one, so a retry, the lead and its pi children all reach the same issue.
+	async function createAutomaticParent(sessionId: string, title: string, where: { project?: string; label?: string }, workspace: string, teammate?: string): Promise<Created> {
 		const args = [...(where.project ? ["--project", where.project] : []), ...(where.label ? ["--label", where.label] : []), "--body", `Todo plan from ${namespace} session ${sessionId}.`, ...(teammate !== undefined ? ["--teammate", teammate] : []),
-			"--meta", `${namespace}.session_id=${sessionId}`, "--meta", `${namespace}.workspace=${workspace}`, "--label", `${namespace}-session`, "--force-new", "--", title];
+			"--meta", `${namespace}.session_id=${sessionId}`, "--meta", `${namespace}.workspace=${workspace}`, "--label", `${namespace}-session`, "--", title];
 		let key = `${namespace}-session:${sessionId}`;
 		for (const spent = new Set<string>(); ;) {
-			let out: any;
-			try { out = JSON.parse(await kata.run(["create", "--idempotency-key", key, ...args], workspace)); }
-			catch (error) {
-				const uid = (error as KataError).info?.data?.uid;
-				if (typeof uid !== "string" || spent.has(uid) || !(isKataCode(error, "idempotency_deleted") || isKataCode(error, "idempotency_mismatch") && await isDeleted(uid, workspace))) throw error;
-				spent.add(uid);
-				key = `${namespace}-session:${sessionId}:after:${uid}`;
-				continue;
-			}
-			const event = out.event ?? out.original_event;
-			if (!out.issue?.short_id || !event?.project_name) throw new Error("kata create returned no parent identity");
-			return { ref: `${event.project_name}#${out.issue.short_id}`, issue: out.issue };
+			const created = await keyedCreate(key, args, workspace);
+			if (!("deleted" in created)) return created;
+			if (spent.has(created.deleted)) throw created.error;
+			spent.add(created.deleted);
+			key = `${namespace}-session:${sessionId}:after:${created.deleted}`;
 		}
-	}
-
-	async function isDeleted(uid: string, cwd: string): Promise<boolean> {
-		try { await kata.show(uid, cwd); return false; }
-		catch (error) { if (isKataCode(error, "issue_not_found")) return true; throw error; }
 	}
 
 	async function ensureParent(params: any, ctx: any): Promise<string | undefined> {
@@ -989,7 +997,7 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 		if (typeof sessionId !== "string" || !sessionId.trim()) throw new Error("Kata needs a real session id before creating an automatic parent.");
 		const title = (params.message as string | undefined)?.trim() || host.getSessionName?.() || `Todo plan: ${(params.list ?? []).map((p: any) => p.phase).join(", ") || "tasks"}`.slice(0, 120);
 		const cwd = path.resolve(ctx.cwd);
-		let where: Awaited<ReturnType<typeof destination>>, created: { ref: string; issue: KataIssue };
+		let where: Awaited<ReturnType<typeof destination>>, created: Created;
 		try {
 			where = await destination(cwd);
 			created = await createAutomaticParent(sessionId, title, where, cwd);
@@ -1357,7 +1365,8 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 		return entry.actor ??= actor(cwd).catch(error => { entry.actor = undefined; throw error; });
 	}
 
-	// The contract is fetched once per session; the inbox on every call, so a request
+	// The contract is fetched until one arrives non-empty: Kata 0.23.0 sends an empty one outside a `.kata.toml`
+	// folder, so a mid-session `kata init` takes effect on the next turn. The inbox is read on every call, so a request
 	// sent mid-session reaches a later turn. A read slower than the caller's budget
 	// keeps running and lands in the cache for the next turn. `inbox: false` leaves the
 	// inbox to a caller that keeps it current another way.

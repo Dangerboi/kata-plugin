@@ -17,11 +17,16 @@ const before = snapshot();
 try {
   const args = process.argv.slice(2);
   const todoTests = readdirSync("tests").filter(file => file.endsWith(".test.ts")).map(file => "./tests/" + file);
+  const bunTest = [process.execPath, "test", "--timeout", "15000"];
+  // `changed [ref]` keeps only the test files whose imports reach a file git sees as changed
+  // (staged, unstaged, untracked, or since ref). It misses files read from disk and a changed Kata binary.
+  const changed = args[0] === "changed" ? [args[1] ? `--changed=${args[1]}` : "--changed"] : [];
   const commands = args[0] === "all" ? [
-    [process.execPath, "test", "--timeout", "15000", ...todoTests],
+    [...bunTest, ...todoTests],
     [process.execPath, "tests/revision-conformance.ts"],
   ]
-    : [[process.execPath, ...(args[0] === "revisions" ? ["tests/revision-conformance.ts"] : ["test", "--timeout", "15000", ...(args.length ? args : todoTests)])]];
+    : args[0] === "revisions" ? [[process.execPath, "tests/revision-conformance.ts"]]
+    : [[...bunTest, ...changed, ...(changed.length || !args.length ? todoTests : args)]];
   for (const command of commands) {
     const code = await Bun.spawn(command, { env, stdout: "inherit", stderr: "inherit" }).exited;
     if (code !== 0) { process.exitCode = code; break; }

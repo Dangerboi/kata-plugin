@@ -21,6 +21,18 @@ export class KataError extends Error {
 export const isUnusable = (error: unknown) => error instanceof KataError && error.unusable;
 export const isKataCode = (error: unknown, code: string) => error instanceof KataError && error.code === code;
 
+// What a `kata close` reads to record the session that made it: the session pair and the switch that turns recording on.
+export const TRANSCRIPT_ENV = ["KATA_TRANSCRIPT_AGENT", "KATA_TRANSCRIPT_SESSION_ID", "KATA_CLOSE_TRANSCRIPT_ENABLED"] as const;
+const [AGENT, SESSION, ENABLED] = TRANSCRIPT_ENV;
+// Every later close from this process and what it spawns (the bash tool, delegates, harnesses launched from bash) then
+// records this session. The switch stays as the launching environment set it, so `KATA_CLOSE_TRANSCRIPT_ENABLED=false` opts out.
+export function exportTranscriptSession(agent: string, sessionId: string | undefined): void {
+	if (!sessionId) return;
+	process.env[AGENT] = agent;
+	process.env[SESSION] = sessionId;
+	process.env[ENABLED] ??= "true";
+}
+
 export type ExecResult = { code: number; stdout: string; stderr?: string; killed?: boolean };
 export type Exec = (file: string, args: string[], options: { cwd: string; timeout: number; ctx?: any }) => Promise<ExecResult>;
 export type Project = { id: number; name: string };

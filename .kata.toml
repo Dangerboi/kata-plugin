@@ -1,3 +1,5 @@
+# This repository tracks its work in kata.
+# Coding agents: read `kata quickstart --format contract` before changing code here.
 version = 1
 
 [project]
