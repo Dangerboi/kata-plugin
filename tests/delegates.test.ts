@@ -258,6 +258,22 @@ test("a lead resumed with a delegate's hand back unfinished finishes it: needs-r
   expect(savedDelegates(b.entries)).toBeUndefined();
 });
 
+test("a lead resumed before a delegate's report was posted posts it from the saved record", async () => {
+  const a = lead(); const parent = await a.plan(["Build the rho gadget", "Lead step"]);
+  const ref = `delegates-test#${(await taskOf(parent, "Build the rho gadget")).short_id}`;
+  await a.delegates.apply(a.started("rho-gadget", "Build the rho gadget"));
+  await a.delegates.apply({ type: "ranTool", id: "rho-gadget" });
+  await a.delegates.apply({ type: "reported", id: "rho-gadget", text: "Built the rho gadget; its tests still fail." });
+  failing = args => args[0] === "comment";
+  await a.delegates.apply({ type: "exited", id: "rho-gadget", outcome: "completed" });
+  failing = undefined;
+  expect(savedDelegates(a.entries)).toMatchObject([{ id: "rho-gadget", report: "Built the rho gadget; its tests still fail." }]);
+  const b = lead({ entries: a.entries, id: a.id });
+  await b.core.session.start(b.ctx);
+  await b.view();
+  expect((await reportsOf(ref)).map(c => c.body)).toEqual(["Report from subagent rho-gadget (it left no comment of its own):\n\nBuilt the rho gadget; its tests still fail."]);
+});
+
 test("a lead resumed with a delegate that ran no tool rolls its assignment back", async () => {
   const a = lead(); const parent = await a.plan(["Build the omicron widget", "Lead step"]);
   const task = await taskOf(parent, "Build the omicron widget"), ref = `delegates-test#${task.short_id}`;
