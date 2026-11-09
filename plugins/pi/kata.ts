@@ -35,11 +35,10 @@ export function inheritsModel(argv: string[]): { model: boolean; thinking: boole
 const PI_LAUNCH = /(?:^|[;&|(`\n]|\$\(|\b(?:ba|z|da|k)?sh\s+(?:-[a-z]+\s+)*-[a-z]*c\s+['"])\s*(?:(?:env|nohup|exec|command|time|setsid|caffeinate)\s+|[A-Za-z_][A-Za-z0-9_]*=(?:'[^']*'|"[^"]*"|[^\s;&|]*)\s+)*(?:[^\s;&|()'"`]*\/)?pi(?=$|[\s;&|)])/;
 export const launchesPi = (command: string) => PI_LAUNCH.test(command);
 
-// A child's report: the text of its last assistant message on the session branch.
+// A child's report: the text of its last assistant message that has any (a failed or cut-off turn can end on one without).
 function lastAssistantText(ctx: ExtensionContext): string | undefined {
-	const message = (ctx.sessionManager.getBranch() as any[]).filter(e => e.type === "message" && e.message?.role === "assistant").at(-1)?.message;
-	const text = textOf(message?.content);
-	return text.trim() || undefined;
+	return (ctx.sessionManager.getBranch() as any[]).filter(e => e.type === "message" && e.message?.role === "assistant")
+		.map(e => textOf(e.message.content).trim()).filter(Boolean).at(-1);
 }
 
 export default async function piKata(pi: ExtensionAPI) {

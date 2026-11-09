@@ -342,6 +342,8 @@ test("a pi child that leaves its issue open without a comment gets its last assi
     expect(record.teammate).toMatch(/^reported-pi-work-[0-9a-f]{6}$/);
     await child.event("tool_call", { toolName: "read", input: { path: "README.md" } });
     child.entries.push({ type: "message", message: { role: "assistant", content: [{ type: "text", text: "Half done: the parser is written, its tests are not." }] } });
+    // A run that failed on a provider error ends on an assistant message without text.
+    child.entries.push({ type: "message", message: { role: "assistant", content: [], stopReason: "error" } });
     await child.event("session_shutdown", { reason: "quit" });
     const comments = (await show(record.ref)).comments.map((c: any) => [c.teammate, c.body]);
     expect(comments).toContainEqual([record.teammate, "Report from subagent reported-pi-work (it left no comment of its own):\n\nHalf done: the parser is written, its tests are not."]);
