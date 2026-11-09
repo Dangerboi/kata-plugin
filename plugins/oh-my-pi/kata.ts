@@ -21,6 +21,7 @@ import { BroadcastChannel, isMainThread, threadId } from "node:worker_threads";
 import { closeSync, openSync, readSync } from "node:fs";
 import { createInterface } from "node:readline";
 import { createKataCore, DESCRIPTION, sessionKey, TODO_OPS, TODO_PARAMS } from "./kata-core";
+import { exportTranscriptSession } from "./kata-cli";
 import { delegateCommand, kataCommands as parseKataCommands } from "./shell";
 import { FINAL, teammateFor } from "./delegates";
 import { textOf } from "./model";
@@ -425,12 +426,7 @@ export default function ompKata(pi: any) {
 		await enter(ctx);
 		if (!main(ctx)) { await core.session.start(ctx, { after: nextUseOf(ctx) }); return; }
 		core.offerTickets(ctx.ui);
-		const id = sessionId(ctx);
-		// Inherited by bash-tool and plugin closes so Kata records this omp session. A value the user already set, such as `false`, stays.
-		if (id) {
-			process.env.KATA_TRANSCRIPT_AGENT = "omp"; process.env.KATA_TRANSCRIPT_SESSION_ID = id;
-			process.env.KATA_CLOSE_TRANSCRIPT_ENABLED ??= "true";
-		}
+		exportTranscriptSession("omp", sessionId(ctx));
 		await core.session.start(ctx);
 	}
 

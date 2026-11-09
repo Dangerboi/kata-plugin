@@ -8,6 +8,7 @@ import { assertIsolated } from "./isolation";
 import { isolatedKata, later } from "./kata-fixture";
 import { daemonUnavailable, siblingThrottle } from "./kata-errors";
 import piKata, { launchesPi } from "../plugins/pi/kata";
+import { TRANSCRIPT_ENV } from "../core/kata-cli";
 assertIsolated();
 const binary = process.env.KATA_TEST_EXECUTABLE!;
 if (!binary || !path.isAbsolute(binary)) throw new Error("Set KATA_TEST_EXECUTABLE to the guarded Kata binary.");
@@ -95,7 +96,7 @@ beforeAll(async () => {
 beforeEach(() => {
   process.env.KATA_AUTHOR = "pi-builder";
   process.env.KATA_PI_EXECUTABLE = binary;
-  for (const key of ["KATA_REF", "KATA_TEAMMATE", "KATA_INBOX_USER", "KATA_PI_PARENT", "KATA_TRANSCRIPT_AGENT", "KATA_TRANSCRIPT_SESSION_ID", "KATA_CLOSE_TRANSCRIPT_ENABLED"]) delete process.env[key];
+  for (const key of ["KATA_REF", "KATA_TEAMMATE", "KATA_INBOX_USER", "KATA_PI_PARENT", ...TRANSCRIPT_ENV]) delete process.env[key];
   globalRegistry[nativeKey] = { adapters: new Map() };
 });
 afterAll(async () => { await run(["daemon", "stop"]); delete process.env.KATA_PI_EXECUTABLE; globalRegistry[nativeKey] = previousRegistry; });

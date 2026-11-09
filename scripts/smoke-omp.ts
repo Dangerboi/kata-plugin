@@ -15,6 +15,7 @@ import os from "node:os";
 import path from "node:path";
 import { SCENARIOS, type Check, type Issue, type Prompt, type Request, type ToolUse, type Scenario, type Session, type Store } from "./smoke-omp-scenarios";
 import { linesIn } from "./smoke-jsonl";
+import { TRANSCRIPT_ENV } from "../core/kata-cli";
 
 const root = path.resolve(import.meta.dir, "..");
 const argv = process.argv.slice(2);
@@ -29,8 +30,8 @@ if (!scenarios.length) { console.error(`Unknown scenario ${picked}. Known: ${SCE
 const PROJECT = "omp-smoke";
 const TIMEOUT_MS = live ? 600_000 : 120_000;
 const tmp = realpathSync(mkdtempSync(path.join(os.tmpdir(), "omp-kata-smoke-")));
-// Inherited routing would point the child at someone else's Kata, and an inherited transcript switch would hide whether the plugin turns transcripts on itself.
-const base = Object.fromEntries(Object.entries(process.env).filter(([k]) => !/^KATA_(SERVER|DAEMON|AUTH_TOKEN|REF|HOME|DEFAULT_PROJECT|CLOSE_TRANSCRIPT_ENABLED)$/.test(k)));
+// Inherited routing would point the child at someone else's Kata, and an inherited transcript session would hide whether the plugin exports its own.
+const base = Object.fromEntries(Object.entries(process.env).filter(([k]) => !/^KATA_(SERVER|DAEMON|AUTH_TOKEN|REF|HOME|DEFAULT_PROJECT)$/.test(k) && !(TRANSCRIPT_ENV as readonly string[]).includes(k)));
 let failures = 0;
 const report = (name: string, ok: boolean, detail?: string) => {
 	if (!ok) failures++;

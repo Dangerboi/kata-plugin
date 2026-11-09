@@ -33,9 +33,7 @@ const evidence = ["test:bun test takeover"];
 const message = "Implemented this takeover fixture and verified it with the isolated suite.";
 function host(options: any = {}) {
   const sid = `takeover-${++sequence}`;
-  const contractReady = Promise.withResolvers<void>();
-  const app = ompHost({ run: (args, opts) => run(args, opts.cwd, opts.timeout), cwd: options.cwd, sid, sessionFile: `${scratch}/${sid}.jsonl`, before: options.before, after: args => { if (args[0] === "agent-contract-hook") contractReady.resolve(); }, callId: "takeover" });
-  return { ...app, contractReady: contractReady.promise };
+  return ompHost({ run: (args, opts) => run(args, opts.cwd, opts.timeout), cwd: options.cwd, sid, sessionFile: `${scratch}/${sid}.jsonl`, before: options.before, callId: "takeover" });
 }
 beforeAll(async () => { const out = await run(["projects", "create", "takeover-home"]); if (out.code) throw new Error(out.stderr); });
 let restore: (() => void) | undefined;

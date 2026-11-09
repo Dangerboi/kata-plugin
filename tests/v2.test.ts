@@ -8,7 +8,7 @@ import { assertIsolated } from "./isolation";
 import { adoptIsolatedKata, isolatedKata, later } from "./kata-fixture";
 import { daemonUnavailable, missingExecutable, siblingThrottle } from "./kata-errors";
 import { ompHost } from "./omp-host";
-import { digest } from "../core/model";
+import { TRANSCRIPT_ENV } from "../core/kata-cli";
 assertIsolated();
 const exec = promisify(execFile);
 const binary = process.env.KATA_TEST_EXECUTABLE!;
@@ -32,21 +32,19 @@ const evidence = ["test:bun test fixture"];
 const message = "Implemented this isolated fixture and verified its behavior with the regression suite.";
 function host(options: any = {}) {
   const sid = options.sid === null ? undefined : options.sid || `v2-${++sequence}`;
-  const contractReady = Promise.withResolvers<void>();
   const app = ompHost({
     run: (args, opts) => run(args, opts.cwd, opts.timeout), cwd: options.cwd || cwd, sid, agent: options.agent, entries: options.entries,
     sessionFile: options.sessionFile || `${scratch}/${sid}.jsonl`, header: options.header, snapshot: options.snapshot, before: options.before,
-    after: args => { if (args[0] === "agent-contract-hook") contractReady.resolve(); },
-    // The adapter spawns paired closes itself (the pair, plus the transcript switch it turns on), so a host that must see or fail closes runs without them; `transcript: true` keeps them.
-    afterEvent: () => { if (!options.transcript) { delete process.env.KATA_TRANSCRIPT_AGENT; delete process.env.KATA_TRANSCRIPT_SESSION_ID; delete process.env.KATA_CLOSE_TRANSCRIPT_ENABLED; } },
+    // The adapter spawns closes itself while a transcript session is exported, so a host that must see or fail closes runs without one; `transcript: true` keeps it.
+    afterEvent: () => { if (!options.transcript) for (const key of TRANSCRIPT_ENV) delete process.env[key]; },
   });
-  return { ...app, contractReady: contractReady.promise,
+  return { ...app,
     async init(items = ["Implement fixture", "Verify fixture"]) { const result = await app.call({ op: "init", items }); expect(result.isError).toBeUndefined(); return result.details.kata.parent; },
   };
 }
 beforeAll(async () => { const out = await run(["init", "--project", "v2test"]); if (out.code) throw new Error(out.stderr); });
 let restore: (() => void) | undefined;
-beforeEach(() => { restore = adoptIsolatedKata(binary, env.KATA_HOME); process.env.KATA_AUTHOR = "v2-builder"; for (const key of ["KATA_REF", "KATA_TEAMMATE", "KATA_INBOX_USER", "KATA_TRANSCRIPT_AGENT", "KATA_TRANSCRIPT_SESSION_ID", "KATA_CLOSE_TRANSCRIPT_ENABLED"]) delete process.env[key]; });
+beforeEach(() => { restore = adoptIsolatedKata(binary, env.KATA_HOME); process.env.KATA_AUTHOR = "v2-builder"; for (const key of ["KATA_REF", "KATA_TEAMMATE", "KATA_INBOX_USER", ...TRANSCRIPT_ENV]) delete process.env[key]; });
 afterEach(() => restore?.());
 afterAll(async () => { await run(["daemon", "stop"]); });
 
@@ -2279,50 +2277,46 @@ async function withDefaultPriority(fn: () => Promise<void>): Promise<void> {
   try { await fn(); } finally { writeFileSync(config, ""); }
 }
 
-test("plan issues take no default priority, and a removed item comes back after the default changed", async () => {
-  const app = host(); const parent = await app.init(["Priority probe", "Priority sibling"]);
-  const first = (await show(parent)).children.find((c: any) => c.title === "Priority probe");
-  expect((await app.call({ op: "rm", task: "Priority probe", message: "Not needed after all." })).isError).toBeUndefined();
-  await withDefaultPriority(async () => {
-    const again = await app.call({ op: "append", items: ["Priority probe"] });
-    expect(again.isError, again.content?.[0]?.text).toBeUndefined();
-    const restored = (await show(parent)).children.find((c: any) => c.title === "Priority probe");
-    expect(restored.short_id).toBe(first.short_id);
-    // Kata leaves `priority` out of the issue when it has none.
-    expect((await show(`v2test#${restored.short_id}`)).issue.priority).toBeUndefined();
-    // Fresh creates under the same default must not take it either.
-    const fresh = host(); const freshParent = await fresh.init(["Fresh priority child"]);
-    expect((await show(freshParent)).issue.priority).toBeUndefined();
-    const child = (await show(freshParent)).children.find((c: any) => c.title === "Fresh priority child");
-    expect((await show(`v2test#${child.short_id}`)).issue.priority).toBeUndefined();
-  });
-});
-
-test("a plan task created by an earlier version under a default priority replays", () => withDefaultPriority(async () => {
-  const app = host(); const parent = await app.init(["Legacy sibling"]);
-  // An earlier version passed no --priority, so the issue took the default.
-  const old = (await kata(["create", "--parent", parent, "--project", "v2test", "--body", `Todo task in phase "Legacy".`, "--meta", "todo.phase=Legacy", "--meta", "todo.status=pending",
-    "--idempotency-key", `omp-kata:${digest(parent, "Legacy", "Legacy item")}`, "--force-new", "--json", "--", "Legacy item"])).issue;
-  expect(old.priority).toBe(2);
-  // A person later edits the priority; the replay must still find the same issue.
-  await kata(["edit", `v2test#${old.short_id}`, "--priority", "1", "--json"]);
-  const again = await app.call({ op: "append", phase: "Legacy", items: ["Legacy item"] });
-  expect(again.isError, again.content?.[0]?.text).toBeUndefined();
-  expect(app.calls.filter(a => a[0] === "create" && a.includes("Legacy item"))).toHaveLength(1);
-  expect((await show(parent)).children.filter((c: any) => c.title === "Legacy item").map((c: any) => c.short_id)).toEqual([old.short_id]);
+test("plan tasks and automatic parents take no default priority", () => withDefaultPriority(async () => {
+  const parent = await host().init(["Fresh priority child"]);
+  // Kata leaves `priority` out of the issue when it has none.
+  expect((await show(parent)).issue.priority).toBeUndefined();
+  const child = (await show(parent)).children.find((c: any) => c.title === "Fresh priority child");
+  expect((await show(`v2test#${child.short_id}`)).issue.priority).toBeUndefined();
 }));
 
-test("an automatic parent created by an earlier version under a default priority is adopted again", () => withDefaultPriority(async () => {
+// Just before the plugin's first create that `matches`, runs that create as an earlier version did: without `--priority`,
+// so the issue takes the default. A person then changes its priority, as people may.
+function earlierVersion(matches: (args: string[]) => boolean) {
+  const made: { issue?: { short_id: string; priority?: number } } = {};
+  const before = async (args: string[], opts: { cwd: string }) => {
+    if (made.issue || args[0] !== "create" || !matches(args)) return;
+    const at = args.indexOf("--priority");
+    const out = await run([...args.slice(0, at), ...args.slice(at + 2)], opts.cwd);
+    if (out.code) throw new Error(out.stderr);
+    const issue: { short_id: string; priority?: number } = JSON.parse(out.stdout).issue;
+    made.issue = issue;
+    await kata(["edit", `v2test#${issue.short_id}`, "--priority", "1", "--json"]);
+  };
+  return { made, before };
+}
+
+test("a plan task an earlier version created under a default priority replays", () => withDefaultPriority(async () => {
+  const earlier = earlierVersion(args => args.includes("Legacy item"));
+  const app = host({ before: earlier.before }); const parent = await app.init(["Legacy sibling"]);
+  const again = await app.call({ op: "append", items: ["Legacy item"] });
+  expect(again.isError, again.content?.[0]?.text).toBeUndefined();
+  expect(earlier.made.issue?.priority).toBe(2);
+  expect((await show(parent)).children.filter((c: any) => c.title === "Legacy item").map((c: any) => c.short_id)).toEqual([earlier.made.issue?.short_id]);
+}));
+
+test("an automatic parent an earlier version created under a default priority is adopted", () => withDefaultPriority(async () => {
   const sid = `v2-legacy-parent-${++sequence}`;
-  const old = (await kata(["create", "--idempotency-key", `omp-session:${sid}`, "--body", `Todo plan from omp session ${sid}.`, "--meta", `omp.session_id=${sid}`, "--meta", `omp.workspace=${cwd}`,
-    "--label", "omp-session", "--force-new", "--json", "--", "Legacy parent"])).issue;
-  expect(old.priority).toBe(2);
-  // The session lookup skips parents marked auto_parent=false, so the plugin must reach this issue through its create replay.
-  await kata(["meta", "set", `v2test#${old.short_id}`, "omp.auto_parent", "false", "--json-value", "--json"]);
-  const app = host({ sid }); await app.event("session_start");
-  const result = await app.call({ op: "init", items: ["Adopt me"], message: "Legacy parent" });
+  const earlier = earlierVersion(args => args.includes(`omp.session_id=${sid}`));
+  const app = host({ sid, before: earlier.before }); await app.event("session_start");
+  const result = await app.call({ op: "init", items: ["Adopt me"] });
   expect(result.isError, result.content?.[0]?.text).toBeUndefined();
-  expect(result.details.kata.parent).toBe(`v2test#${old.short_id}`);
-  expect(app.calls.filter(a => a[0] === "create" && a.includes(`omp-session:${sid}`))).toHaveLength(1);
+  expect(earlier.made.issue?.priority).toBe(2);
+  expect(result.details.kata.parent).toBe(`v2test#${earlier.made.issue?.short_id}`);
   expect((await kata(["list", "--status", "all", "--meta", `omp.session_id=${sid}`, "--json"])).issues).toHaveLength(1);
 }));

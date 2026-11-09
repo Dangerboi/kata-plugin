@@ -1,6 +1,7 @@
 import path from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { createKataCore, DESCRIPTION, TODO_OPS, TODO_PARAMS, type Lead, type ChildParent } from "./kata-core";
+import { exportTranscriptSession } from "./kata-cli";
 import { delegateCommand, kataCommands, quote } from "./shell";
 import type { DelegateRecord, DelegateStore } from "./delegates";
 import { textOf } from "./model";
@@ -191,11 +192,8 @@ export default async function piKata(pi: ExtensionAPI) {
 	});
 
 	pi.on("session_start", async (_event, ctx) => {
-		// Closes from this process (or its bash tool) record this pi session; a child replaces the pair it inherited.
-		process.env.KATA_TRANSCRIPT_AGENT = "pi";
-		process.env.KATA_TRANSCRIPT_SESSION_ID = ctx.sessionManager.getSessionId();
-		// A value the user already set, such as `false`, stays.
-		process.env.KATA_CLOSE_TRANSCRIPT_ENABLED ??= "true";
+		// A child replaces the session its lead exported.
+		exportTranscriptSession("pi", ctx.sessionManager.getSessionId());
 		const saved = savedOf(ctx);
 		if (saved?.parentMarker && (!explicit || inherited)) {
 			const { parentMarker, ...record } = saved;

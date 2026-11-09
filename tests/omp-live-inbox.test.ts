@@ -4,6 +4,7 @@ import path from "node:path";
 import { assertIsolated } from "./isolation";
 import { adoptIsolatedKata, isolatedKata, settle, until } from "./kata-fixture";
 import { ompHost } from "./omp-host";
+import { TRANSCRIPT_ENV } from "../core/kata-cli";
 assertIsolated();
 
 // What the omp adapter wires around the session inbox module: when it follows live, the aside it delivers
@@ -28,7 +29,7 @@ function host(options: { agent?: object } = {}) {
 	const sid = `live-${++sequence}`, sent: any[][] = [];
 	const app = ompHost({ run: (args, opts) => run(args, opts.cwd, opts.timeout), cwd, sid, sessionFile: `${scratch}/${sid}.jsonl`, agent: options.agent,
 		sendUserMessage: (...args) => { sent.push(args); },
-		afterEvent: () => { delete process.env.KATA_TRANSCRIPT_AGENT; delete process.env.KATA_TRANSCRIPT_SESSION_ID; } });
+		afterEvent: () => { for (const key of TRANSCRIPT_ENV) delete process.env[key]; } });
 	const section = async () => ((await app.event("before_agent_start", { systemPrompt: ["base"] }))?.systemPrompt ?? []).join("\n");
 	return { sent, calls: app.calls, event: app.event, section };
 }
