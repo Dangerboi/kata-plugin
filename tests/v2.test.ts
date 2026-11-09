@@ -1180,6 +1180,15 @@ test("after a hand-back, a bare done closes the lead's own active task", async (
   expect(children.find((c: any) => c.title === "Write widget tests").status).toBe("open");
 });
 
+test("a done plan task keeps its message and evidence as a comment, not only as the close reason", async () => {
+  const app = host(); await app.event("session_start");
+  const ref = await app.init(["Write widget tests"]);
+  expect((await app.call({ op: "done", task: "Write widget tests", message, evidence })).isError).toBeUndefined();
+  const child = (await show(ref)).children[0];
+  expect(child.status).toBe("closed");
+  expect(await commentsOf(child.short_id)).toEqual([`Done: ${message}\nEvidence: ${evidence.join(", ")}`]);
+});
+
 test("a task call that never spawns releases its plan task", async () => {
   const app = host(); await app.event("session_start"); await app.init(["Write gizmo tests"]);
   const input = { task: 'Complete "Write gizmo tests"' };

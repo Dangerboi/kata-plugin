@@ -4,6 +4,13 @@ All notable changes to kata-plugin are listed here. The format follows [Keep a C
 
 ## [Unreleased]
 
+### Added
+
+#### Progress in Kata
+
+- `todo done` on a plan task also comments its message and evidence on the issue. Kata shows the close message only as the close reason, so the work was missing from the issue's comments.
+- Each subagent (omp) or child pi bound to an issue is told to comment what it did, how it verified it and what remains before it finishes, closed or not. An issue several delegates worked now has one comment per delegate, beside the plugin's own hand-back note.
+
 ### Changed
 
 #### Development

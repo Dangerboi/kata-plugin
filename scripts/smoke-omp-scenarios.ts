@@ -148,7 +148,12 @@ export const SCENARIOS: Scenario[] = [{
 		const hasRecorded = (e: any) => e?.type === recorded.type && e?.command === recorded.command;
 		const transcript = (i?: Issue) => i?.events.find(e => e.type === "issue.closed")?.payload?.transcript;
 		const closeEvidence = (i?: Issue) => i?.events.find(e => e.type === "issue.closed")?.payload?.evidence ?? [];
+		const comments = (i?: Issue) => (i?.events.filter(e => /comment/.test(e.type)) ?? []).map(e => JSON.stringify(e.payload));
+		// Only a real model follows the binding's instruction; the scripted delegate just closes.
+		const delegateNote = store.live ? [{ name: "the delegate commented what it did on its own task", ok: comments(parser).length > 0, detail: `${comments(parser).length} comments` }] : [];
 		return [
+			...delegateNote,
+			{ name: "todo done also comments its message and evidence", ok: comments(tests).some(c => c.includes(store.live ? "Done: " : `Done: ${message}`) && c.includes(evidence)), detail: comments(tests).join(" | ") },
 			{ name: "todo init creates the automatic parent", ok: !!parent, detail: parent?.title },
 			{ name: "todo init creates both plan tasks", ok: children.length === 2 && !!parser && !!tests, detail: children.map(c => c.title).join(", ") },
 			{ name: "task delegation binds to its plan task (omp.subagent_id)", ok: !!parser?.metadata["omp.subagent_id"], detail: JSON.stringify(parser?.metadata) },

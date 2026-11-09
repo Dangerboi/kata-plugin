@@ -120,7 +120,7 @@ Kata specifics:
 
 function delegateContext(executable: string, id: string, ref: string, teammate: string, binding: Binding): string {
 	const command = `${quote(executable)} --workspace ${quote(binding.workspace)} --project ${quote(projectOf(binding.parent))} --teammate ${quote(teammate)}`;
-	return `You are subagent ${id}. Your Kata issue is ${ref}; your teammate is ${teammate}. Keep the existing actor and use this issue instead of inherited KATA_REF. Track attention on your own issue. When verified, YOU must run: ${command} close ${quote(ref)} --done --message '<describe this task and its verification in at least 40 characters>' --evidence '<typed evidence for your actual verification>'. If unfinished, leave it open and explain what remains.`;
+	return `You are subagent ${id}. Your Kata issue is ${ref}; your teammate is ${teammate}. Keep the existing actor and use this issue instead of inherited KATA_REF. Track attention on your own issue. Before you finish, whatever the outcome, YOU must comment on your issue what you did, since other subagents may work it before or after you: ${command} comment ${quote(ref)} --body '<what you changed, how you verified it, and what remains, in a few sentences>'. When verified, YOU must then run: ${command} close ${quote(ref)} --done --message '<describe this task and its verification in at least 40 characters>' --evidence '<typed evidence for your actual verification>'. If unfinished, leave it open; your comment says what remains.`;
 }
 
 // A delegate that matched no plan item and named no ticket has no issue. Its
@@ -719,8 +719,8 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 				break;
 			case "completed": {
 				const message = change.message ? `${change.message} (task: ${task.content}; ${task.ref})` : "";
-
-				const args = ["close", ref, "--done", "--if-match", String(decision.revision), "--message", message];
+				// The close message is only the close reason; the comment keeps it in the issue's activity.
+				const args = ["close", ref, "--done", "--if-match", String(decision.revision), "--message", message, "--comment", `Done: ${change.message}\nEvidence: ${change.evidence!.join(", ")}`];
 				for (const e of change.evidence!) args.push("--evidence", e);
 				task.revision = decision.revision;
 				await closeTask(args, task, to, change, cwd);
