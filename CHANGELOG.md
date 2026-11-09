@@ -14,7 +14,7 @@ All notable changes to kata-plugin are listed here. The format follows [Keep a C
 
 - Each delegate bound to an issue (an omp subagent or a child pi) is told to comment what it did, how it verified it and what remains before it finishes, closed or not.
   - An issue several delegates worked has one comment per delegate, beside the plugin's own hand-back note.
-- A delegate that exits without commenting gets its final report posted on its issue for it, under its own teammate: its last message, or what it yielded, cut at 4000 characters.
+- A delegate that exits without commenting gets its final report posted on its issue for it, under its own teammate: its last assistant text, or what it yielded, cut at 4000 characters.
 
 ### Changed
 

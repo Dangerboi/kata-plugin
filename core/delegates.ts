@@ -2,7 +2,7 @@ import { digest, itemTicket, OPEN, openTaskStatus, qualifiedRef, qualifiedRefs, 
 import { isKataCode, type Kata } from "./kata-cli";
 
 // The delegate lifecycle, shared by the omp lead and the pi child (see GLOSSARY.md: Delegate,
-// Assignment, Untracked delegate, Hand back). Adapters translate host events into DelegateEvents;
+// Assignment, Untracked delegate, Hand back, Report). Adapters translate host events into DelegateEvents;
 // everything Kata-side that follows (the assignment's writes, settling, rollback, hand back) lives here.
 
 // ------------------------------------------------------------------ matching
