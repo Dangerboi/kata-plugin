@@ -48,7 +48,7 @@ A missing executable or an unreachable or unresponsive daemon (a Kata call that 
 
 ## Hooks
 
-The plugin injects the contract Kata gives for the session folder and runs `kata agent-hook attention-native` itself; no `kata agent-hook install` step is needed. Kata 0.23.0 has no `omp` installer, so nothing else adds the contract to omp. Kata gives a contract only in a folder with a `.kata.toml` (or below one); elsewhere the section is left out, and sessions planning in `KATA_DEFAULT_PROJECT` or an inferred project still get the plan, assignment and inbox sections. Run `kata init --project <name>` in the folder to get the contract. If something else already put the contract in the system prompt, the plugin skips its own copy.
+The plugin injects the contract Kata gives for the session folder and runs `kata agent-hook attention-native` itself; no `kata agent-hook install` step is needed. Kata 0.23.0 has no `omp` installer, so nothing else adds the contract to omp. Kata gives a contract only in a folder with a `.kata.toml` (or below one); elsewhere the contract section is left out. The inbox section needs the folder to resolve to a Kata project, through a `.kata.toml` or a registered git remote. A session that plans only in `KATA_DEFAULT_PROJECT` gets the plan and assignment sections but no inbox. Run `kata init --project <name>` in the folder to get the contract; this also moves the folder's new plans from `KATA_DEFAULT_PROJECT` to that project. If something else already put the contract in the system prompt, the plugin skips its own copy.
 
 Qualified explicit issue references and saved bindings take precedence over directory probing, including in unbound worktrees. An unavailable explicit issue is an error.
 

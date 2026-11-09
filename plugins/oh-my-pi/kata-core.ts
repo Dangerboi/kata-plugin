@@ -678,7 +678,7 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 			// The key is ours, so an existing issue under it with another fingerprint (e.g. made by an earlier version) is this item.
 			const qualified = (error as KataError).info?.data?.qualified_id;
 			if (!isKataCode(error, "idempotency_mismatch") || typeof qualified !== "string") throw error;
-			issue = (await kata.show(qualified, cwd)).issue;
+			issue = (await kata.show(qualified, cwd).catch(shown => { throw isKataCode(shown, "issue_not_found") ? error : shown; })).issue;
 		}
 		if (typeof issue?.short_id !== "string") throw new Error("kata create returned no short_id");
 		// Replays may restore removed work, but never another writer's task.

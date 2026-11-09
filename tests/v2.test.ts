@@ -2286,6 +2286,11 @@ test("re-adding a removed item restores its issue with no priority after the def
     expect(restored.short_id).toBe(first.short_id);
     // Kata leaves `priority` out of the issue when it has none.
     expect((await show(`v2test#${restored.short_id}`)).issue.priority).toBeUndefined();
+    // Fresh creates under the same default must not take it either.
+    const fresh = host(); const freshParent = await fresh.init(["Fresh priority child"]);
+    expect((await show(freshParent)).issue.priority).toBeUndefined();
+    const child = (await show(freshParent)).children.find((c: any) => c.title === "Fresh priority child");
+    expect((await show(`v2test#${child.short_id}`)).issue.priority).toBeUndefined();
   } finally { writeFileSync(config, ""); }
 });
 
