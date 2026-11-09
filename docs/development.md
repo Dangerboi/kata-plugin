@@ -16,7 +16,16 @@ Focused runners retain the isolation wrapper:
 ```sh
 KATA_TEST_EXECUTABLE=/absolute/path/to/guarded-kata bun run test:todo
 KATA_TEST_EXECUTABLE=/absolute/path/to/guarded-kata bun run test:revisions
+KATA_TEST_EXECUTABLE=/absolute/path/to/guarded-kata bun run test:changed        # vs the working tree
+KATA_TEST_EXECUTABLE=/absolute/path/to/guarded-kata bun run test:changed main   # vs a branch or commit
 ```
+
+`test:changed` is for the edit loop. It runs `bun test --changed`, which keeps only the test files whose imports reach a file git reports as changed: staged, unstaged and untracked files, plus commits since the ref when one is given. It cannot see what the tests reach without an import, so run `bun run test` before committing or closing a ticket. It misses:
+
+- a `core/` edit until `bun run build:plugins` has refreshed the vendored copies the adapter tests import;
+- files a test reads from disk, such as the manifests and changelog `packaging.test.ts` checks;
+- `tests/revision-conformance.ts`, which runs outside `bun test`;
+- a new Kata binary, which changes no file but is what most suites test.
 
 The semantic canary copies the default database and WAL into a disposable directory. SQLite opens only that copy. It requires the same schema version, no new projects, and no new events from test actors or project names. Ordinary background sync and WAL/SHM churn are ignored. Unreadable, invalid, or unstable copies fail closed. Update fixture actor/project coverage in `tests/isolation.ts` when adding cases; never disable the canary to obtain a pass.
 

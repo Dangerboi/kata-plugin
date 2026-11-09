@@ -4,6 +4,12 @@ All notable changes to kata-plugin are listed here. The format follows [Keep a C
 
 ## [Unreleased]
 
+### Added
+
+#### Development
+
+- `bun run test:changed [ref]` runs only the test files whose imports reach a file git reports as changed, for a faster edit loop. `bun run test` is still the check before a commit; see [development](docs/development.md) for what it misses.
+
 ### Changed
 
 #### Requirements
