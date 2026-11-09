@@ -194,6 +194,8 @@ export default async function piKata(pi: ExtensionAPI) {
 		// Closes from this process (or its bash tool) record this pi session; a child replaces the pair it inherited.
 		process.env.KATA_TRANSCRIPT_AGENT = "pi";
 		process.env.KATA_TRANSCRIPT_SESSION_ID = ctx.sessionManager.getSessionId();
+		// A value the user already set, such as `false`, stays.
+		process.env.KATA_CLOSE_TRANSCRIPT_ENABLED ??= "true";
 		const saved = savedOf(ctx);
 		if (saved?.parentMarker && (!explicit || inherited)) {
 			const { parentMarker, ...record } = saved;

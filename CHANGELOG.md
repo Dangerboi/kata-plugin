@@ -4,6 +4,30 @@ All notable changes to kata-plugin are listed here. The format follows [Keep a C
 
 ## [Unreleased]
 
+### Changed
+
+#### Requirements
+
+- **Breaking:** Requires Kata 0.23.0. On older Kata every todo create fails; upgrade Kata first.
+  - Kata 0.23.0 upgrades its SQLite store in place (index-only). Back up `~/.kata` first if you may need to go back to an older Kata.
+  - Restart the Kata daemon after upgrading.
+  - Rerun `kata init` in a bound repo to add Kata's agent header to `.kata.toml`.
+  - If you use Kata's own pi hook, rerun `kata agent-hook install pi --attention` so it passes the session folder.
+- With Kata 0.23.0, a session gets the Kata contract only in a folder with a `.kata.toml`, and the contract is Kata's shorter single-agent version.
+  - Plans, issue bindings and the inbox work in other folders as before. Run `kata init --project <name>` in a folder to get the contract there.
+
+#### Plans
+
+- Closes record the session transcript with no Kata config: omp and pi turn close transcripts on for their own sessions.
+  - Launch omp or pi with `KATA_CLOSE_TRANSCRIPT_ENABLED=false` to turn them off; `[close.transcript] enabled = false` in Kata's config does not stop them.
+  - Harnesses started from the `bash` tool, such as `claude -p`, inherit the setting and record too.
+
+### Fixed
+
+#### Plans
+
+- Re-adding a removed item and resuming a session keep working after `[create].default_priority` changes in Kata's config; plan issues no longer take the default priority.
+
 ## [1.8.0] - 2026-11-09
 
 kata-omp 2.8.0 and @dangerboi/kata-pi 1.8.0.

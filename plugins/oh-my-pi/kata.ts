@@ -426,8 +426,11 @@ export default function ompKata(pi: any) {
 		if (!main(ctx)) { await core.session.start(ctx, { after: nextUseOf(ctx) }); return; }
 		core.offerTickets(ctx.ui);
 		const id = sessionId(ctx);
-		// Inherited by bash-tool and plugin closes so Kata records this omp session.
-		if (id) { process.env.KATA_TRANSCRIPT_AGENT = "omp"; process.env.KATA_TRANSCRIPT_SESSION_ID = id; }
+		// Inherited by bash-tool and plugin closes so Kata records this omp session. A value the user already set, such as `false`, stays.
+		if (id) {
+			process.env.KATA_TRANSCRIPT_AGENT = "omp"; process.env.KATA_TRANSCRIPT_SESSION_ID = id;
+			process.env.KATA_CLOSE_TRANSCRIPT_ENABLED ??= "true";
+		}
 		await core.session.start(ctx);
 	}
 

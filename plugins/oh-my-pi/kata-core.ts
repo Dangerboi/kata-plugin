@@ -664,6 +664,8 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 			"create", "--parent", plan.parent!, "--project", project, "--body", `Todo task in phase "${phase}".`,
 			"--meta", `todo.phase=${phase}`, "--meta", "todo.status=pending", ...(plan.label ? ["--label", plan.label] : []),
 			"--idempotency-key", `${namespace}-kata:${digest(plan.parent!, phase, content)}`,
+			// Keyed creates replay with the same arguments, so a changed [create].default_priority must not fill in a priority.
+			"--priority", "none",
 			// Sibling tasks often read alike ("write x" / "verify x"); they are
 			// deliberate plan items, so skip the look-alike soft-block.
 			"--force-new", "--", content,
@@ -934,7 +936,7 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 	// derived from the deleted one, so a retry, the lead and its pi children all reach the same issue.
 	async function createAutomaticParent(sessionId: string, title: string, where: { project?: string; label?: string }, workspace: string, teammate?: string): Promise<{ ref: string; issue: KataIssue }> {
 		const args = [...(where.project ? ["--project", where.project] : []), ...(where.label ? ["--label", where.label] : []), "--body", `Todo plan from ${namespace} session ${sessionId}.`, ...(teammate !== undefined ? ["--teammate", teammate] : []),
-			"--meta", `${namespace}.session_id=${sessionId}`, "--meta", `${namespace}.workspace=${workspace}`, "--label", `${namespace}-session`, "--force-new", "--", title];
+			"--meta", `${namespace}.session_id=${sessionId}`, "--meta", `${namespace}.workspace=${workspace}`, "--label", `${namespace}-session`, "--priority", "none", "--force-new", "--", title];
 		let key = `${namespace}-session:${sessionId}`;
 		for (const spent = new Set<string>(); ;) {
 			let out: any;

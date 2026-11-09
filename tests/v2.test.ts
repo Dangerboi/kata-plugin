@@ -37,7 +37,7 @@ function host(options: any = {}) {
     sessionFile: options.sessionFile || `${scratch}/${sid}.jsonl`, header: options.header, snapshot: options.snapshot, before: options.before,
     after: args => { if (args[0] === "agent-contract-hook") contractReady.resolve(); },
     // The adapter spawns paired closes itself, so a host that must see or fail closes runs without the pair; `transcript: true` keeps it.
-    afterEvent: () => { if (!options.transcript) { delete process.env.KATA_TRANSCRIPT_AGENT; delete process.env.KATA_TRANSCRIPT_SESSION_ID; } },
+    afterEvent: () => { if (!options.transcript) { delete process.env.KATA_TRANSCRIPT_AGENT; delete process.env.KATA_TRANSCRIPT_SESSION_ID; delete process.env.KATA_CLOSE_TRANSCRIPT_ENABLED; } },
   });
   return { ...app, contractReady: contractReady.promise,
     async init(items = ["Implement fixture", "Verify fixture"]) { const result = await app.call({ op: "init", items }); expect(result.isError).toBeUndefined(); return result.details.kata.parent; },
@@ -45,7 +45,7 @@ function host(options: any = {}) {
 }
 beforeAll(async () => { const out = await run(["init", "--project", "v2test"]); if (out.code) throw new Error(out.stderr); });
 let restore: (() => void) | undefined;
-beforeEach(() => { restore = adoptIsolatedKata(binary, env.KATA_HOME); process.env.KATA_AUTHOR = "v2-builder"; for (const key of ["KATA_REF", "KATA_TEAMMATE", "KATA_INBOX_USER", "KATA_TRANSCRIPT_AGENT", "KATA_TRANSCRIPT_SESSION_ID"]) delete process.env[key]; });
+beforeEach(() => { restore = adoptIsolatedKata(binary, env.KATA_HOME); process.env.KATA_AUTHOR = "v2-builder"; for (const key of ["KATA_REF", "KATA_TEAMMATE", "KATA_INBOX_USER", "KATA_TRANSCRIPT_AGENT", "KATA_TRANSCRIPT_SESSION_ID", "KATA_CLOSE_TRANSCRIPT_ENABLED"]) delete process.env[key]; });
 afterEach(() => restore?.());
 afterAll(async () => { await run(["daemon", "stop"]); });
 
@@ -107,21 +107,29 @@ for (const [name, bareResult, pairedBin] of [
   });
 }
 
-test("a plugin close records the omp session as its transcript when close transcripts are on", async () => {
-  const config = path.join(env.KATA_HOME, "config.toml");
-  writeFileSync(config, "[close.transcript]\nenabled = true\n");
-  try {
-    const app = host({ sid: "transcript-recorded", transcript: true });
-    await app.event("session_start");
-    const a = await issue("Ticket A");
-    await app.call({ op: "init", items: [`v2test#${a}: only step`] });
-    const done = await app.call({ op: "done", message, evidence });
-    expect(done.isError, done.content?.[0]?.text).toBeUndefined();
-    expect(app.calls.some(c => c[0] === "close")).toBe(false);
-    const closes = (await kata(["events", "--after", "0", "--limit", "500", "--json"])).events.filter((e: any) => e.type === "issue.closed" && e.payload?.transcript?.session_id === "transcript-recorded");
-    expect(closes.length).toBeGreaterThan(0);
-    expect(closes[0].payload.transcript).toMatchObject({ agent: "omp", session_id: "transcript-recorded" });
-  } finally { writeFileSync(config, ""); }
+test("a plugin close records the omp session as its transcript with no transcript config", async () => {
+  const app = host({ sid: "transcript-recorded", transcript: true });
+  await app.event("session_start");
+  const a = await issue("Ticket A");
+  await app.call({ op: "init", items: [`v2test#${a}: only step`] });
+  const done = await app.call({ op: "done", message, evidence });
+  expect(done.isError, done.content?.[0]?.text).toBeUndefined();
+  expect(app.calls.some(c => c[0] === "close")).toBe(false);
+  const closes = (await kata(["events", "--after", "0", "--limit", "500", "--json"])).events.filter((e: any) => e.type === "issue.closed" && e.payload?.transcript?.session_id === "transcript-recorded");
+  expect(closes.length).toBeGreaterThan(0);
+  expect(closes[0].payload.transcript).toMatchObject({ agent: "omp", session_id: "transcript-recorded" });
+});
+
+test("a plugin close records no transcript when KATA_CLOSE_TRANSCRIPT_ENABLED is false before the session starts", async () => {
+  process.env.KATA_CLOSE_TRANSCRIPT_ENABLED = "false";
+  const app = host({ sid: "transcript-off", transcript: true });
+  await app.event("session_start");
+  expect(process.env.KATA_CLOSE_TRANSCRIPT_ENABLED).toBe("false");
+  const a = await issue("Ticket transcript off");
+  await app.call({ op: "init", items: [`v2test#${a}: only step`] });
+  const done = await app.call({ op: "done", message, evidence });
+  expect(done.isError, done.content?.[0]?.text).toBeUndefined();
+  expect(await closeSessions(a)).toEqual([undefined]);
 });
 
 test("a plan of only ticket items reports an id-shaped task that names no issue as a Kata error, as a plan with a parent does", async () => {
@@ -1095,30 +1103,26 @@ async function closeSessions(shortId: string) {
 // one step and closes it through `todo done`. `midCall` runs once, inside the first Kata call of that done. Returns the
 // sessions the step's closes recorded.
 async function delegateStepCloseSessions(name: string, midCall?: (delegate: ReturnType<typeof host>) => void) {
-  const config = path.join(env.KATA_HOME, "config.toml");
-  writeFileSync(config, "[close.transcript]\nenabled = true\n");
-  try {
-    const lead = host({ sid: `${name}-lead`, transcript: true });
-    await lead.event("session_start");
-    const ref = await lead.init([`Delegated ${name} task`, `Lead ${name} step`]);
-    const sessionFile = `${scratch}/delegate-${name}.jsonl`, id = `${name}.Delegate`;
-    writeFileSync(sessionFile, `{"type":"session","version":3,"id":"${name}-delegate"}\n`);
-    lead.emit("task:subagent:lifecycle", { id, status: "started", sessionFile, description: `Delegated ${name} task` });
-    await lead.call({ op: "view" });
-    const assigned = (await show(ref)).children.find((c: any) => c.metadata?.["omp.subagent_id"] === id);
-    let armed = false;
-    const delegate: ReturnType<typeof host> = host({ sessionFile, agent: { kind: "sub", id, parentId: lead.ctx.agent.id }, transcript: true,
-      before: () => { if (armed) { armed = false; midCall?.(delegate); } } });
-    await delegate.event("session_start");
-    expect((await delegate.call({ op: "init", items: [`Delegate ${name} step`] })).isError).toBeUndefined();
-    armed = true;
-    const done = await delegate.call({ op: "done", task: `Delegate ${name} step`, message, evidence });
-    expect(done.isError, done.content?.[0]?.text).toBeUndefined();
-    expect(armed).toBe(false);
-    const step = (await show(`v2test#${assigned.short_id}`)).children.find((c: any) => c.title === `Delegate ${name} step`);
-    expect(step.status).toBe("closed");
-    return await closeSessions(step.short_id);
-  } finally { writeFileSync(config, ""); }
+  const lead = host({ sid: `${name}-lead`, transcript: true });
+  await lead.event("session_start");
+  const ref = await lead.init([`Delegated ${name} task`, `Lead ${name} step`]);
+  const sessionFile = `${scratch}/delegate-${name}.jsonl`, id = `${name}.Delegate`;
+  writeFileSync(sessionFile, `{"type":"session","version":3,"id":"${name}-delegate"}\n`);
+  lead.emit("task:subagent:lifecycle", { id, status: "started", sessionFile, description: `Delegated ${name} task` });
+  await lead.call({ op: "view" });
+  const assigned = (await show(ref)).children.find((c: any) => c.metadata?.["omp.subagent_id"] === id);
+  let armed = false;
+  const delegate: ReturnType<typeof host> = host({ sessionFile, agent: { kind: "sub", id, parentId: lead.ctx.agent.id }, transcript: true,
+    before: () => { if (armed) { armed = false; midCall?.(delegate); } } });
+  await delegate.event("session_start");
+  expect((await delegate.call({ op: "init", items: [`Delegate ${name} step`] })).isError).toBeUndefined();
+  armed = true;
+  const done = await delegate.call({ op: "done", task: `Delegate ${name} step`, message, evidence });
+  expect(done.isError, done.content?.[0]?.text).toBeUndefined();
+  expect(armed).toBe(false);
+  const step = (await show(`v2test#${assigned.short_id}`)).children.find((c: any) => c.title === `Delegate ${name} step`);
+  expect(step.status).toBe("closed");
+  return await closeSessions(step.short_id);
 }
 
 test("an assigned delegate's own todo close records the delegate's session, not the lead's", async () => {
@@ -2266,4 +2270,20 @@ test("free text containing # is never shown as a Kata ref", async () => {
     expect((await app.call({ op: "done", task: target, message, evidence })).isError).toBe(true);
     expect(app.calls.some(a => a[0] === "show" && a[1] === target)).toBe(false);
   }
+});
+
+test("re-adding a removed item restores its issue with no priority after the default priority changed", async () => {
+  const app = host(); const parent = await app.init(["Priority probe", "Priority sibling"]);
+  const first = (await show(parent)).children.find((c: any) => c.title === "Priority probe");
+  expect((await app.call({ op: "rm", task: "Priority probe", message: "Not needed after all." })).isError).toBeUndefined();
+  const config = path.join(env.KATA_HOME, "config.toml");
+  writeFileSync(config, "[create]\ndefault_priority = 2\n");
+  try {
+    const again = await app.call({ op: "append", items: ["Priority probe"] });
+    expect(again.isError, again.content?.[0]?.text).toBeUndefined();
+    const restored = (await show(parent)).children.find((c: any) => c.title === "Priority probe");
+    expect(restored.short_id).toBe(first.short_id);
+    // Kata leaves `priority` out of the issue when it has none.
+    expect((await show(`v2test#${restored.short_id}`)).issue.priority).toBeUndefined();
+  } finally { writeFileSync(config, ""); }
 });

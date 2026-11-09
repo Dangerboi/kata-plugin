@@ -95,7 +95,7 @@ beforeAll(async () => {
 beforeEach(() => {
   process.env.KATA_AUTHOR = "pi-builder";
   process.env.KATA_PI_EXECUTABLE = binary;
-  for (const key of ["KATA_REF", "KATA_TEAMMATE", "KATA_INBOX_USER", "KATA_PI_PARENT", "KATA_TRANSCRIPT_AGENT", "KATA_TRANSCRIPT_SESSION_ID"]) delete process.env[key];
+  for (const key of ["KATA_REF", "KATA_TEAMMATE", "KATA_INBOX_USER", "KATA_PI_PARENT", "KATA_TRANSCRIPT_AGENT", "KATA_TRANSCRIPT_SESSION_ID", "KATA_CLOSE_TRANSCRIPT_ENABLED"]) delete process.env[key];
   globalRegistry[nativeKey] = { adapters: new Map() };
 });
 afterAll(async () => { await run(["daemon", "stop"]); delete process.env.KATA_PI_EXECUTABLE; globalRegistry[nativeKey] = previousRegistry; });
@@ -845,7 +845,6 @@ test("pi sets its transcript identity on start, a child replaces the inherited o
 
 test("a close driven through pi's real exec records the pi session when close transcripts are on", async () => {
   const { execCommand } = await import("../node_modules/@earendil-works/pi-coding-agent/dist/core/exec.js");
-  writeFileSync(path.join(env.KATA_HOME, "config.toml"), "[close.transcript]\nenabled = true\n");
   const previousHome = process.env.KATA_HOME; process.env.KATA_HOME = env.KATA_HOME;
   try {
     const app = await host({ exec: (file: string, args: string[], opts: any) => execCommand(file, args, opts.cwd, opts) });

@@ -200,11 +200,20 @@ test("a missing executable is an outage too", async () => {
 });
 
 test("the contract is injected once even when something already put it in the prompt", async () => {
-  const app = host({ cwd: repo("contractrepo") });
+  const dir = repo("contractrepo");
+  expect((await run(["init", "--project", "contractrepo"], dir)).code).toBe(0);
+  const app = host({ cwd: dir });
   await app.event("session_start");
   const first = await app.event("before_agent_start", { systemPrompt: ["base"] });
   const contract = /<kata_contract>\n([\s\S]*?)\n<\/kata_contract>/.exec(first.systemPrompt.join("\n"))![1];
   const again = await app.event("before_agent_start", { systemPrompt: ["base", contract] });
   // Nothing to add: the prompt already carries the contract exactly once.
   expect(again).toBeUndefined();
+});
+
+test("a folder without .kata.toml gets no contract section at all", async () => {
+  const app = host({ cwd: repo("nocontractrepo") });
+  await app.event("session_start");
+  const result = await app.event("before_agent_start", { systemPrompt: ["base"] });
+  expect((result?.systemPrompt ?? ["base"]).join("\n")).not.toContain("kata_contract");
 });
