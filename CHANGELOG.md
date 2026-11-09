@@ -14,7 +14,7 @@ All notable changes to kata-plugin are listed here. The format follows [Keep a C
   - Rerun `kata init` in a bound repo to add Kata's agent header to `.kata.toml`.
   - If you use Kata's own pi hook, rerun `kata agent-hook install pi --attention` so it passes the session folder.
 - With Kata 0.23.0, a session gets the Kata contract only in a folder with a `.kata.toml`, and the contract is Kata's shorter single-agent version.
-  - Plans, issue bindings and the inbox work in other folders as before. Run `kata init --project <name>` in a folder to get the contract there.
+  - Plans, assignments and the inbox work in other folders as before. Run `kata init --project <name>` in a folder to get the contract there.
 
 #### Plans
 
@@ -27,8 +27,8 @@ All notable changes to kata-plugin are listed here. The format follows [Keep a C
 
 #### Plans
 
-- Re-adding a removed item and resuming a session keep working after `[create].default_priority` changes in Kata's config; plan issues no longer take the default priority.
-  - Items and automatic parents made by an earlier version under a default priority keep replaying too.
+- Re-adding a removed item and resuming a session keep working after `[create].default_priority` changes in Kata's config; plan tasks and automatic parents no longer take the default priority.
+  - Plan tasks and automatic parents made by an earlier version keep replaying too, also after their priority was edited.
 
 ## [1.8.0] - 2026-11-09
 

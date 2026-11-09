@@ -37,7 +37,7 @@ function host(options: any = {}) {
     run: (args, opts) => run(args, opts.cwd, opts.timeout), cwd: options.cwd || cwd, sid, agent: options.agent, entries: options.entries,
     sessionFile: options.sessionFile || `${scratch}/${sid}.jsonl`, header: options.header, snapshot: options.snapshot, before: options.before,
     after: args => { if (args[0] === "agent-contract-hook") contractReady.resolve(); },
-    // The adapter spawns paired closes itself, so a host that must see or fail closes runs without the pair; `transcript: true` keeps it.
+    // The adapter spawns paired closes itself (the pair, plus the transcript switch it turns on), so a host that must see or fail closes runs without them; `transcript: true` keeps them.
     afterEvent: () => { if (!options.transcript) { delete process.env.KATA_TRANSCRIPT_AGENT; delete process.env.KATA_TRANSCRIPT_SESSION_ID; delete process.env.KATA_CLOSE_TRANSCRIPT_ENABLED; } },
   });
   return { ...app, contractReady: contractReady.promise,
@@ -2298,10 +2298,11 @@ test("an item created by the previous plugin under a default priority replays on
     const old = (await kata(["create", "--parent", parent, "--project", "v2test", "--body", `Todo task in phase "Legacy".`, "--meta", "todo.phase=Legacy", "--meta", "todo.status=pending",
       "--idempotency-key", `omp-kata:${digest(parent, "Legacy", "Legacy item")}`, "--force-new", "--json", "--", "Legacy item"])).issue;
     expect(old.priority).toBe(2);
+    // A person later edits the priority; the replay must still find the same issue.
+    await kata(["edit", `v2test#${old.short_id}`, "--priority", "1", "--json"]);
     const again = await app.call({ op: "append", phase: "Legacy", items: ["Legacy item"] });
     expect(again.isError, again.content?.[0]?.text).toBeUndefined();
-    const creates = app.calls.filter(a => a[0] === "create" && a.includes("Legacy item"));
-    expect(creates.map(a => a[a.indexOf("--priority") + 1])).toEqual(["none", "2"]);
+    expect(app.calls.filter(a => a[0] === "create" && a.includes("Legacy item"))).toHaveLength(1);
     expect((await show(parent)).children.filter((c: any) => c.title === "Legacy item").map((c: any) => c.short_id)).toEqual([old.short_id]);
   } finally { writeFileSync(config, ""); }
 });
@@ -2320,7 +2321,7 @@ test("an automatic parent created by the previous plugin under a default priorit
     const result = await app.call({ op: "init", items: ["Adopt me"], message: "Legacy parent" });
     expect(result.isError, result.content?.[0]?.text).toBeUndefined();
     expect(result.details.kata.parent).toBe(`v2test#${old.short_id}`);
-    const creates = app.calls.filter(a => a[0] === "create" && a.includes("--idempotency-key") && a.includes(`omp-session:${sid}`));
-    expect(creates.map(a => a[a.indexOf("--priority") + 1])).toEqual(["none", "2"]);
+    expect(app.calls.filter(a => a[0] === "create" && a.includes(`omp-session:${sid}`))).toHaveLength(1);
+    expect((await kata(["list", "--status", "all", "--meta", `omp.session_id=${sid}`, "--json"])).issues).toHaveLength(1);
   } finally { writeFileSync(config, ""); }
 });

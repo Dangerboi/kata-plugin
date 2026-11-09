@@ -658,39 +658,28 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 
 	// ------------------------------------------------------------- transitions
 
-	// Kata compares a keyed replay with the first create, priority included. An issue made before creates passed `--priority none`
-	// may hold the user's default priority, so after `idempotency_mismatch` the replay is repeated once with that issue's priority.
-	async function existingPriority(error: unknown, cwd: string): Promise<string | undefined> {
-		const uid = (error as KataError).info?.data?.uid;
-		if (!isKataCode(error, "idempotency_mismatch") || typeof uid !== "string") return undefined;
-		try {
-			// Kata's show JSON omits `priority` when unset.
-			const { priority } = (await kata.show(uid, cwd)).issue as KataIssue & { priority?: number };
-			return priority === undefined ? undefined : String(priority);
-		} catch { return undefined; }
-	}
-
 	async function create(phase: string, content: string, cwd: string): Promise<void> {
 		const project = projectOf(plan.parent!);
-		const make = (priority: string) => [
+		const args = [
 			"create", "--parent", plan.parent!, "--project", project, "--body", `Todo task in phase "${phase}".`,
 			"--meta", `todo.phase=${phase}`, "--meta", "todo.status=pending", ...(plan.label ? ["--label", plan.label] : []),
 			"--idempotency-key", `${namespace}-kata:${digest(plan.parent!, phase, content)}`,
-			// Keyed creates replay with the same arguments, so a changed [create].default_priority must not fill in a priority.
-			"--priority", priority,
+			// Kata fingerprints the priority, so a replay must not pick up a changed [create].default_priority.
+			"--priority", "none",
 			// Sibling tasks often read alike ("write x" / "verify x"); they are
 			// deliberate plan items, so skip the look-alike soft-block.
 			"--force-new", "--", content,
 		];
-		let raw: string;
-		try { raw = await kata.run(make("none"), cwd); }
-		catch (error) {
-			const priority = await existingPriority(error, cwd);
-			if (priority === undefined) throw error;
-			raw = await kata.run(make(priority), cwd);
+		let issue: KataIssue;
+		try {
+			const out = JSON.parse(await kata.run(args, cwd));
+			issue = out?.issue;
+		} catch (error) {
+			// The key is ours, so an existing issue under it with another fingerprint (e.g. made by an earlier version) is this item.
+			const qualified = (error as KataError).info?.data?.qualified_id;
+			if (!isKataCode(error, "idempotency_mismatch") || typeof qualified !== "string") throw error;
+			issue = (await kata.show(qualified, cwd)).issue;
 		}
-		const out = JSON.parse(raw);
-		const issue = out?.issue;
 		if (typeof issue?.short_id !== "string") throw new Error("kata create returned no short_id");
 		// Replays may restore removed work, but never another writer's task.
 		const ref = `${project}#${issue.short_id}`;
@@ -953,35 +942,31 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 
 	// Creates the session's automatic parent. Once a person deleted it, Kata refuses its idempotency key: `idempotency_deleted`,
 	// or `idempotency_mismatch` when this create's title or body differs from the deleted one's. The new parent takes a key
-	// derived from the deleted one, so a retry, the lead and its pi children all reach the same issue.
+	// derived from the deleted one, so a retry, the lead and its pi children all reach the same issue. A mismatch against an
+	// issue that still exists (e.g. one an earlier version made, whose priority came from the user's default) is adopted.
 	async function createAutomaticParent(sessionId: string, title: string, where: { project?: string; label?: string }, workspace: string, teammate?: string): Promise<{ ref: string; issue: KataIssue }> {
-		const args = (priority: string) => [...(where.project ? ["--project", where.project] : []), ...(where.label ? ["--label", where.label] : []), "--body", `Todo plan from ${namespace} session ${sessionId}.`, ...(teammate !== undefined ? ["--teammate", teammate] : []),
-			"--meta", `${namespace}.session_id=${sessionId}`, "--meta", `${namespace}.workspace=${workspace}`, "--label", `${namespace}-session`, "--priority", priority, "--force-new", "--", title];
+		// `--priority none`: a replay must not pick up a changed default priority.
+		const args = [...(where.project ? ["--project", where.project] : []), ...(where.label ? ["--label", where.label] : []), "--body", `Todo plan from ${namespace} session ${sessionId}.`, ...(teammate !== undefined ? ["--teammate", teammate] : []),
+			"--meta", `${namespace}.session_id=${sessionId}`, "--meta", `${namespace}.workspace=${workspace}`, "--label", `${namespace}-session`, "--priority", "none", "--force-new", "--", title];
 		let key = `${namespace}-session:${sessionId}`;
 		for (const spent = new Set<string>(); ;) {
 			let out: any;
-			try { out = JSON.parse(await kata.run(["create", "--idempotency-key", key, ...args("none")], workspace)); }
+			try { out = JSON.parse(await kata.run(["create", "--idempotency-key", key, ...args], workspace)); }
 			catch (error) {
-				const uid = (error as KataError).info?.data?.uid;
+				const { uid, qualified_id: qualified } = (error as KataError).info?.data ?? {};
 				if (typeof uid !== "string" || spent.has(uid)) throw error;
-				if (isKataCode(error, "idempotency_deleted") || isKataCode(error, "idempotency_mismatch") && await isDeleted(uid, workspace)) {
-					spent.add(uid);
-					key = `${namespace}-session:${sessionId}:after:${uid}`;
-					continue;
-				}
-				const priority = await existingPriority(error, workspace);
-				if (priority === undefined) throw error;
-				out = JSON.parse(await kata.run(["create", "--idempotency-key", key, ...args(priority)], workspace));
+				if (isKataCode(error, "idempotency_mismatch") && typeof qualified === "string") {
+					try { return { ref: qualified, issue: (await kata.show(qualified, workspace)).issue }; }
+					catch (shown) { if (!isKataCode(shown, "issue_not_found")) throw shown; }
+				} else if (!isKataCode(error, "idempotency_deleted")) throw error;
+				spent.add(uid);
+				key = `${namespace}-session:${sessionId}:after:${uid}`;
+				continue;
 			}
 			const event = out.event ?? out.original_event;
 			if (!out.issue?.short_id || !event?.project_name) throw new Error("kata create returned no parent identity");
 			return { ref: `${event.project_name}#${out.issue.short_id}`, issue: out.issue };
 		}
-	}
-
-	async function isDeleted(uid: string, cwd: string): Promise<boolean> {
-		try { await kata.show(uid, cwd); return false; }
-		catch (error) { if (isKataCode(error, "issue_not_found")) return true; throw error; }
 	}
 
 	async function ensureParent(params: any, ctx: any): Promise<string | undefined> {
