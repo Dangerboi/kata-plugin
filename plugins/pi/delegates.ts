@@ -1,4 +1,4 @@
-import { digest, itemTicket, OPEN, openTaskStatus, qualifiedRef, qualifiedRefs, type Binding, type KataIssue, type KataShow, type Plan, type Task } from "./model";
+import { closedTaskStatus, digest, itemTicket, OPEN, openTaskStatus, qualifiedRef, qualifiedRefs, type Binding, type KataIssue, type KataShow, type Plan, type Task } from "./model";
 import { isKataCode, type Kata } from "./kata-cli";
 
 // The delegate lifecycle, shared by the omp lead and the pi child (see GLOSSARY.md: Delegate,
@@ -214,6 +214,10 @@ export interface Delegates {
 	unassigned(ctx: any): string;
 	// Whether a delegate that has not been handed back or settled holds the issue.
 	holds(ref: string): boolean;
+	// Returns a closed issue a delegate still marks to the lead: its teammate, the delegate's outcome and the item's final status,
+	// then the delegate keys last. Each write is skipped when already in place and guarded by the chained revision. `exit` is the
+	// exiting delegate's own return; without it the lead recovers an item no unfinished delegate holds.
+	returnClosed(ref: string, cwd: string, issue: KataIssue, lead: string, exit?: { teammate: string; outcome?: DelegateOutcome }): Promise<void>;
 	// Started and not exited, tracked or not.
 	running(): boolean;
 	// Exited and not yet handed back or settled.
@@ -242,6 +246,9 @@ export function createDelegates(env: DelegatesEnv): Delegates {
 	const failure = (error: unknown) => error instanceof Error ? error.message : String(error);
 	const refOf = (r: DelegateRecord) => r.ref ?? r.planRef;
 	const unfinished = () => env.store.records().filter(r => !FINAL.has(r.state));
+	// Whether the issue is this record's: its subagent id, under its lead's session. A fork's delegate can reuse a source
+	// delegate's name, so the id alone is not enough; a session key not yet written (or already rolled back) does not disown it.
+	const holding = (r: DelegateRecord, issue: KataIssue) => issue.metadata?.[keySubagent] === r.id && (issue.metadata?.[keySession] ?? r.leadSessionId) === r.leadSessionId;
 	const reservedRefs = (except?: DelegateRecord) => new Set(unfinished().filter(r => r !== except).map(refOf).filter((ref): ref is string => !!ref));
 
 	type Source = { all: Task[]; parent?: string; workspace: string; label?: string; auto?: boolean; local: boolean; planned: boolean };
@@ -389,7 +396,27 @@ export function createDelegates(env: DelegatesEnv): Delegates {
 		}
 		await env.kata.run(["label", "add", ref, "needs-review"], cwd);
 		await env.kata.run(["notify", ref, "--to", `${await env.actor(cwd, ref)}${lead ? `/${lead}` : ""}`, "--message", `Subagent ${nameOf(r)} ${r.exited} without closing ${ref}; review it, then close or reassign it.`], cwd);
-		if (issue.status === "open" && issue.metadata?.[keySubagent] === r.id) await env.kata.run(["meta", "unset", ref, keySubagent], cwd);
+		if (issue.status === "open" && holding(r, issue)) await env.kata.run(["meta", "unset", ref, keySubagent], cwd);
+	}
+
+	// A closed issue a delegate still marks returns to the lead: the lead's teammate, the delegate's outcome and the item's final
+	// status, so the lead can still retire it from a plan. Every write is skipped when in place and guarded by the revision chained
+	// from `issue`; the delegate keys go last, so a partial failure leaves the issue marked and a retry finishes it. An exiting
+	// delegate moves the teammate only while it is still its own, as hand back does; the lead's recovery takes it whatever it is.
+	async function returnClosed(ref: string, cwd: string, issue: KataIssue, lead: string, exit?: { teammate: string; outcome?: DelegateOutcome }) {
+		const meta = issue.metadata ?? {};
+		let revision = issue.revision;
+		const write = async (args: string[]) => { await env.kata.run([...args, "--if-match", String(revision)], cwd); revision++; };
+		const setMeta = async (key: string, value: string) => { if (meta[key] !== value) await write(["meta", "set", ref, key, value]); };
+		const teammate = (meta.teammate as string | undefined) || "";
+		if (teammate !== lead && (!exit || teammate === exit.teammate)) await write(lead ? ["meta", "set", ref, "teammate", lead] : ["meta", "unset", ref, "teammate"]);
+		const outcome = exit?.outcome;
+		if (ns === "omp") {
+			if (outcome) await setMeta("omp.status", outcome);
+			else if (meta["omp.status"] === "running") await setMeta("omp.status", "ended");
+		}
+		await setMeta("todo.status", closedTaskStatus(issue.closed_reason));
+		for (const key of delegateKeys(ns)) if (meta[key]) await write(["meta", "unset", ref, key]);
 	}
 
 	async function postReport(r: DelegateRecord, ref: string, cwd: string, shown: KataShow) {
@@ -399,8 +426,8 @@ export function createDelegates(env: DelegatesEnv): Delegates {
 			"--body", `${REPORT_HEADING} ${nameOf(r)} (it left no comment of its own):\n\n${r.report}`], cwd);
 	}
 
-	// One exited delegate: closed issue settles it; a delegate that never acted is rolled back; otherwise the open issue
-	// is commented, flagged and handed back. Every step can run again after a failure.
+	// One exited delegate: a closed issue settles it, returned to the lead when the delegate held it; a delegate that never
+	// acted is rolled back; otherwise the open issue is commented, flagged and handed back. Every step can run again after a failure.
 	async function settleOne(r: DelegateRecord) {
 		const ref = refOf(r);
 		const settled = () => { r.state = "settled"; env.store.put(r); };
@@ -414,18 +441,23 @@ export function createDelegates(env: DelegatesEnv): Delegates {
 			throw error;
 		}
 		const issue = shown.issue;
-		// Only a delegate that held the issue reports on it; a failed or cut-off assignment never did.
-		if (issue.status === "closed") { if (r.state === "assigned") await postReport(r, ref, cwd, shown); return settled(); }
+		// Closed: the delegate holding the issue returns it to the lead; only an assigned delegate reports on it (a failed or
+		// cut-off assignment never did).
+		if (issue.status === "closed") {
+			if (holding(r, issue)) await returnClosed(ref, cwd, issue, r.leadTeammate, { teammate: r.teammate, outcome: r.exited });
+			if (r.state === "assigned") await postReport(r, ref, cwd, shown);
+			return settled();
+		}
 		// A delegate whose assignment was written ends by dropping its subagent id (rollback and hand back both write it last),
 		// so an id that is no longer its own means the cleanup already ran, maybe in another session.
-		if (r.state === "assigned" && issue.metadata?.[keySubagent] !== r.id) return settled();
+		if (r.state === "assigned" && !holding(r, issue)) return settled();
 		// A failed or cut-off assignment the issue's holder refused (another delegate holds it) has nothing to hand back.
-		if ((r.state === "failed" || r.state === "started") && heldByDelegate(ns, issue.metadata) && issue.metadata?.[keySubagent] !== r.id) return settled();
+		if ((r.state === "failed" || r.state === "started") && heldByDelegate(ns, issue.metadata) && !holding(r, issue)) return settled();
 		// An assignment that never got to a tool did nothing: roll back what it wrote. A started record wrote nothing without a restore
 		// point, and nothing of this delegate's once the issue carries neither its teammate nor its subagent id (someone else claimed it since).
 		// A cut right after the claim looks the same, so that claim stays, held by the lead's actor and teammate.
 		if ((r.state === "assigned" || r.state === "started") && !r.ranTool) {
-			const ours = r.state === "assigned" || issue.metadata?.teammate === r.teammate || issue.metadata?.[keySubagent] === r.id;
+			const ours = r.state === "assigned" || issue.metadata?.teammate === r.teammate || holding(r, issue);
 			if (r.restore && ours) await rollback(r, issue, r.restore);
 			return settled();
 		}
@@ -520,6 +552,7 @@ export function createDelegates(env: DelegatesEnv): Delegates {
 			return `Kata assignment failed: ${r.error || (r.state === "handed-back" || r.state === "settled" ? "its issue was handed back" : "no issue was assigned")}`;
 		},
 		holds: ref => unfinished().some(r => refOf(r) === ref),
+		returnClosed,
 		running: () => env.store.records().some(r => !r.exited),
 		cleanupPending: () => unfinished().some(r => !!r.exited),
 		pendingIds: () => unfinished().filter(r => !!r.exited).map(r => r.id),

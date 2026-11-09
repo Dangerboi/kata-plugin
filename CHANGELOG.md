@@ -4,7 +4,18 @@ All notable changes to kata-plugin are listed here. The format follows [Keep a C
 
 ## [Unreleased]
 
+## [1.9.1] - 2026-11-10
+
+kata-omp 2.9.1 and @dangerboi/kata-pi 1.9.1.
+
 ### Fixed
+
+#### Delegates
+
+- A plan item a delegate closed no longer blocks the lead's next `todo init` with "belongs to a delegate".
+  - When the delegate exits, its closed issue returns to the lead's teammate with `todo.status` completed (abandoned when closed as wontfix) and no subagent key; on omp, `omp.status` is set to its outcome.
+  - A closed item still marked by a delegate that no unfinished delegate of the session holds (left by an earlier version, a pi child killed after closing, a lead never resumed, or another session) is returned to the lead the next time the plan touches it, as long as the lead's actor owns it.
+  - A returned item can be reopened with `todo start` or by appending it again, as an item the lead closed can.
 
 #### Development
 
@@ -455,7 +466,8 @@ kata-omp 2.2.0 and kata-pi 1.2.0.
 
 - omp: the plugin skips its Kata contract when the system prompt already carries it.
 
-[Unreleased]: https://github.com/Dangerboi/kata-plugin/compare/v1.9.0...HEAD
+[Unreleased]: https://github.com/Dangerboi/kata-plugin/compare/v1.9.1...HEAD
+[1.9.1]: https://github.com/Dangerboi/kata-plugin/compare/v1.9.0...v1.9.1
 [1.9.0]: https://github.com/Dangerboi/kata-plugin/compare/v1.8.0...v1.9.0
 [1.8.0]: https://github.com/Dangerboi/kata-plugin/compare/v1.7.2...v1.8.0
 [1.7.2]: https://github.com/Dangerboi/kata-plugin/compare/v1.7.1...v1.7.2

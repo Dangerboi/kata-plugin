@@ -8,7 +8,7 @@ import { createSettlement, MAX_FAILURES, openChildren, type PendingClose } from 
 import { createKata, isKataCode, isUnusable, KataError, type Exec } from "./kata-cli";
 import { createTicketCompletion } from "./autocomplete";
 import { kataCommands, quote, shellOptions } from "./shell";
-import { digest, itemTicket, OPEN, openTaskStatus, projectOf, QUALIFIED_REF_ONLY, qualifiedRef, slug, WORKING, type Binding, type Change, type KataIssue, type KataShow, type Plan, type Status, type Task } from "./model";
+import { closedTaskStatus, digest, itemTicket, OPEN, openTaskStatus, projectOf, QUALIFIED_REF_ONLY, qualifiedRef, slug, WORKING, type Binding, type Change, type KataIssue, type KataShow, type Plan, type Status, type Task } from "./model";
 
 // Canonical shared source. scripts/vendor-core.ts copies this file into each
 // self-contained plugin; host adapters own their event/schema/identity APIs.
@@ -283,8 +283,14 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 	async function owned(ref: string, cwd: string, mayClaim: boolean | "check" = false, allowClosed = false, revision?: number, who?: Who): Promise<KataIssue> {
 		let issue: KataIssue = (await kata.show(ref, cwd)).issue;
 		if (revision !== undefined && issue.revision !== revision) throw new Error(`Kata issue ${ref} changed since the task was selected; no work metadata was written.`);
-		if (!who?.delegate && main(currentCtx) && heldByDelegate(issue.metadata)) throw new Error(`Kata issue ${ref} belongs to a delegate; no work metadata was written.`);
 		const currentActor = await actor(cwd, ref);
+		if (!who?.delegate && main(currentCtx) && heldByDelegate(issue.metadata)) {
+			// A closed item left marked (its delegate was killed after closing, its lead never resumed, or another session owns the
+			// plan) returns to the lead, unless an unfinished delegate of this session still holds it.
+			if (!(allowClosed && issue.status === "closed" && !delegates.holds(ref) && issue.owner === currentActor)) throw new Error(`Kata issue ${ref} belongs to a delegate; no work metadata was written.`);
+			await delegates.returnClosed(ref, cwd, issue, ownTeammate());
+			issue = (await kata.show(ref, cwd)).issue;
+		}
 		const teammate = who?.teammate ?? ownTeammate();
 		if (issue?.status !== "open" && !(allowClosed && issue?.status === "closed")) throw new Error(`Kata issue ${ref} is closed or unavailable; no work metadata was written.`);
 		const assignedTeammate = issue.metadata?.teammate || "";
@@ -359,7 +365,7 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 			.map(c => {
 				const meta = c.metadata!;
 				let status: Status;
-				if (c.status === "closed") status = c.closed_reason === "wontfix" || meta["todo.status"] === "abandoned" ? "abandoned" : "completed";
+				if (c.status === "closed") status = meta["todo.status"] === "abandoned" ? "abandoned" : closedTaskStatus(c.closed_reason);
 				else status = openTaskStatus(meta["todo.status"]);
 				return {
 					ref: qualifiedRef(c, parent),
@@ -383,7 +389,7 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 			try {
 				const shown: KataIssue = (await kata.show(ticket, cwd)).issue;
 				if (shown.status !== "closed") continue;
-				for (const task of open) if (task.ticket === ticket) { task.status = shown.closed_reason === "wontfix" ? "abandoned" : "completed"; task.blocker = undefined; }
+				for (const task of open) if (task.ticket === ticket) { task.status = closedTaskStatus(shown.closed_reason); task.blocker = undefined; }
 			} catch (error) { debug(error); }
 		}
 	}
@@ -1180,7 +1186,8 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 				const [task] = await resolve(params.task, undefined, "none");
 				if (task.status === "blocked") throw new Error(`"${task.content}" is blocked; unblock it first.`);
 				const decision = plan.local || task.ticket ? undefined : await owned(task.ref, cwd, true, !OPEN.has(task.status), task.revision);
-				if (decision) task.revision = decision.revision;
+				// owned() may have returned a closed item a past delegate still marked; it no longer is delegated.
+				if (decision) { task.revision = decision.revision; task.delegated = false; }
 				if (!OPEN.has(task.status) && !task.ticket) await reopenParent();
 				for (const other of plan.tasks) if (other !== task && other.status === "in_progress" && leads(other) && !settlement.hasTaskClose(other.ref)) await transition(other, "pending", {}, cwd);
 				await transition(task, "in_progress", change, cwd, decision);

@@ -12,6 +12,7 @@
 | AgentsView says the linked session is not found | The close recorded another agent name, usually from a `[close.transcript.session_id_env]` mapping that names the wrong harness (`PI_SESSION_ID` mapped to `pi` while you use oh-my-pi), or the AgentsView address is wrong. Remove the mapping: the plugin sets the right agent itself. |
 | Close refused | Inspect the actual Kata error, evidence, owner, teammate, and current children. Do not force a completed display state. |
 | Parent stays open | Check all current children, pending/running delegates, lead settlement, and `needs-review`. Explicit parents stay open by design. |
+| `todo init` fails with “belongs to a delegate” | The plugin returns closed items still marked by a delegate to the lead itself, so this error means one of three things: the item is open and a delegate holds it (wait for the delegate to exit or for the hand back); on omp, the item is closed but a delegate of this session has not exited yet (the plugin returns it when that delegate exits; a pi lead cannot see its children's records and returns such an item at once); or the issue's owner is another actor. |
 | Duplicate todo tool | Disable OMP's native todo or remove another pi todo extension. |
 | No visible error | Hooks are deliberately quiet. Enable `KATA_OMP_DEBUG`, or `KATA_PI_DEBUG`. |
 | Git install cannot find pi subdirectory | Install the repository root shim or clone and install the local `plugins/pi` directory. |
