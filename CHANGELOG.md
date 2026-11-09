@@ -11,6 +11,7 @@ All notable changes to kata-plugin are listed here. The format follows [Keep a C
 - `todo done` on a plan task also comments its message and evidence on the issue. Kata shows the close message only as the close reason, so the work was missing from the issue's comments.
 - Each subagent (omp) or child pi bound to an issue is told to comment what it did, how it verified it and what remains before it finishes, closed or not. An issue several delegates worked now has one comment per delegate, beside the plugin's own hand-back note.
   - A delegate that exits without commenting gets its final report posted for it, under its own teammate: its last message, or what it yielded, cut at 4000 characters. omp reads it from the subagent's session events, a child pi from its own session at shutdown.
+- pi: a child pi is named by its `--name`, else by the task it works, else by the end of its session id, instead of by its session UUID. Its teammate follows (`wordcounter-0c2d7b` instead of `pi-01a1bfd6-…`), and so do its report heading, hand-back comment and notify message. Children resumed from before keep their old teammate.
 
 ### Changed
 

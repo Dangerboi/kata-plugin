@@ -512,7 +512,7 @@ test("check refuses to delegate a ticket that other open plan items name, and al
   await expect(a.delegates.check([{ text: `Work ${ref}` }])).rejects.toThrow(/other open plan items name it/);
   const done = await a.core.todo.apply(a.ctx, "done", { task: `${ref}: write the omicron parser`, message: "Wrote the omicron parser and verified it against the fixture.", evidence: ["test:delegates fixture"] });
   expect(done.isError).toBeUndefined();
-  expect(await a.delegates.check([{ text: `Do "${ref}: test the omicron parser"` }])).toEqual([{ ref, ticket: true }]);
+  expect(await a.delegates.check([{ text: `Do "${ref}: test the omicron parser"` }])).toEqual([{ ref, ticket: true, title: "test the omicron parser" }]);
 });
 
 test("a spawn naming a ticket outside the plan is reserved as that ticket and assigned it", async () => {

@@ -3,7 +3,7 @@ import { appendFileSync, realpathSync } from "node:fs";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { decidePlanParent, explicitParent, isExplicitParent, namesPlanParent } from "./plan-parent";
 import { createInboxFollower, knownProjectHead, trustedInbox, type InboxFollower, type LiveInbox } from "./inbox";
-import { createDelegates, heldByDelegate as heldBy, teammateFor, type DelegateAssignment, type DelegateRecord, type DelegateStore, type Reservation, type SavedDelegate, type Spawn, type Who } from "./delegates";
+import { createDelegates, heldByDelegate as heldBy, nameOf, teammateFor, type DelegateAssignment, type DelegateRecord, type DelegateStore, type Reservation, type SavedDelegate, type Spawn, type Who } from "./delegates";
 import { createSettlement, MAX_FAILURES, openChildren, type PendingClose } from "./settlement";
 import { createKata, isKataCode, isUnusable, KataError, type Exec } from "./kata-cli";
 import { createTicketCompletion } from "./autocomplete";
@@ -55,6 +55,12 @@ export type ChildParent = { sessionId: string; ref?: string; workspace: string; 
 	// The teammate of the child that re-exported the lead's marker.
 	via?: string };
 const CHILD_TEAMMATE = /^[a-z0-9][a-z0-9._-]{0,63}$/;
+// A pi child's name: the session name it was started with (`pi --name`), else the task or ticket it was matched to, else
+// the end of its session id. Short enough to read in a comment heading.
+function childName(sessionName: string | undefined, reserved: Reservation | undefined, id: string): string {
+	const short = (text: string | undefined) => text?.slice(0, 40).replace(/[-._]+$/, "") || undefined;
+	return short(slug(sessionName, true)) ?? short(slug(reserved?.title)) ?? short(slug(reserved?.ref)) ?? `pi-${id.replace(/[^a-z0-9]/gi, "").slice(-6).toLowerCase()}`;
+}
 
 export function sessionKey(file: string, cwd: string): string {
 	const absolute = path.resolve(cwd, file);
@@ -1476,18 +1482,22 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 		if (!parent.ref) throw new Error("Pi child parent identity is unavailable.");
 		// The lead may have moved the parent since it exported its marker: the child's issue goes where the parent lives now.
 		const binding: Binding = { parent: await kata.pin(parent.ref, parent.workspace), workspace: parent.workspace, sessionId: parent.sessionId, auto: false, label: parent.label };
-		// Keep a teammate the lead chose for this child; otherwise derive a distinct one.
+		// Keep a teammate the lead chose for this child; otherwise derive a distinct one from its name, known once it is matched.
 		const chosen = process.env.KATA_TEAMMATE || "";
-		const teammate = chosen && chosen !== parent.teammate && chosen !== parent.via && CHILD_TEAMMATE.test(chosen) ? chosen : teammateFor(`${parent.teammate || namespace}:${parent.sessionId}:${id}`);
-		process.env.KATA_TEAMMATE = teammate;
-		process.env.KATA_INBOX_USER = `${await actor(binding.workspace, binding.parent)}/${teammate}`;
-		const delegateScope = { parent: binding.parent, workspace: binding.workspace, label: binding.label, leadTeammate: parent.teammate, teammate };
+		const kept = chosen && chosen !== parent.teammate && chosen !== parent.via && CHILD_TEAMMATE.test(chosen) ? chosen : undefined;
+		const salt = `${parent.teammate || namespace}:${parent.sessionId}:${id}`;
+		// Matching reads which issues already carry this child's teammate: none yet, so any unused value matches the same.
+		const delegateScope = { parent: binding.parent, workspace: binding.workspace, label: binding.label, leadTeammate: parent.teammate, teammate: kept ?? teammateFor(salt) };
 		// A prompt the assignment rules refuse (two tickets, a taken task) tracks nothing.
 		let reserved: Reservation | undefined, untracked = false;
 		try { reserved = (await delegates.check([{ text: prompt }], [], delegateScope))[0]; }
 		catch (error) { debug(error); untracked = true; }
+		const name = childName(host.getSessionName?.(), reserved, id);
+		const teammate = kept ?? teammateFor(name, salt);
+		process.env.KATA_TEAMMATE = teammate;
+		process.env.KATA_INBOX_USER = `${await actor(binding.workspace, binding.parent)}/${teammate}`;
 		await delegates.apply({ type: "started", id, sessionId: id, leadSessionId: parent.sessionId, leadTeammate: parent.teammate, teammate, text: prompt, single: true,
-			parent: binding.parent, workspace: binding.workspace, parentLabel: binding.label, reserved, untracked });
+			name, parent: binding.parent, workspace: binding.workspace, parentLabel: binding.label, reserved, untracked });
 		if (currentId !== sid(ctx)) await bounded(serial(() => bind(ctx)), DELEGATE_BIND_MS);
 	}
 
@@ -1565,8 +1575,8 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 				}
 				const record = !main(ctx) ? store.of(ctx) : undefined;
 				const assigned = record ? delegates.assignment(ctx) : undefined;
-				if (record && assigned) sections.assignment = delegateContext(options.executable, record.id, assigned.ref, assigned.teammate, assigned.binding);
-				else if (record?.state === "untracked") sections.assignment = untrackedDelegateContext(record.id);
+				if (record && assigned) sections.assignment = delegateContext(options.executable, nameOf(record), assigned.ref, assigned.teammate, assigned.binding);
+				else if (record?.state === "untracked") sections.assignment = untrackedDelegateContext(nameOf(record));
 				if (plan.parent || plan.tasks.some(t => t.ticket)) sections.todo = `The todo tool is backed by Kata. Current plan:\n${render(plan)}`;
 				return { sections, lead: lead() };
 			},

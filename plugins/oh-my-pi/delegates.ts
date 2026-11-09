@@ -1,4 +1,4 @@
-import { digest, OPEN, openTaskStatus, qualifiedRef, qualifiedRefs, type Binding, type KataIssue, type KataShow, type Plan, type Task } from "./model";
+import { digest, itemTicket, OPEN, openTaskStatus, qualifiedRef, qualifiedRefs, type Binding, type KataIssue, type KataShow, type Plan, type Task } from "./model";
 import { isKataCode, type Kata } from "./kata-cli";
 
 // The delegate lifecycle, shared by the omp lead and the pi child (see GLOSSARY.md: Delegate,
@@ -120,6 +120,8 @@ export type Restore = { claimed: boolean; meta: Record<string, unknown> };
 
 export interface DelegateRecord {
 	id: string;
+	// What messages call it, when that is not its id: a pi child's session name or the task it was matched to.
+	name?: string;
 	// The delegate's own session, the key the delegate side finds its record by.
 	sessionId: string;
 	leadSessionId: string;
@@ -149,12 +151,15 @@ export interface DelegateRecord {
 // A record as the lead's snapshot keeps it.
 export type SavedDelegate = Omit<DelegateRecord, "text">;
 
-// What a task call's spawn was matched to before it started.
-export type Reservation = { ref?: string; ticket?: boolean };
+// What a task call's spawn was matched to before it started; `title` is the plan item's text without a ticket prefix.
+export type Reservation = { ref?: string; ticket?: boolean; title?: string };
+
+// A delegate as messages name it.
+export const nameOf = (r: Pick<DelegateRecord, "id" | "name">) => r.name || r.id;
 
 export type DelegateEvent =
 	| { type: "started"; id: string; sessionId: string; leadSessionId: string; leadTeammate: string; teammate: string; text: string; label?: string; single: boolean;
-		parentAgentId?: string; parent?: string; workspace?: string; parentLabel?: string; reserved?: Reservation; untracked?: boolean }
+		name?: string; parentAgentId?: string; parent?: string; workspace?: string; parentLabel?: string; reserved?: Reservation; untracked?: boolean }
 	// The delegate ran a tool: blocks rollback at exit.
 	| { type: "ranTool"; id: string }
 	// Its next prompt or todo call: retries a failed assignment.
@@ -277,7 +282,7 @@ export function createDelegates(env: DelegatesEnv): Delegates {
 					const selected = src.planned ? matchDelegation(tasks, spawn.text, { unavailable: taken, single: spawns.length === 1, label }) : undefined;
 					if (!selected?.ticket) {
 						if (selected) taken.add(selected.ref);
-						reservations.push({ ref: selected?.ref });
+						reservations.push({ ref: selected?.ref, title: selected?.content });
 						continue;
 					}
 					ticket = selected.ticket; item = selected;
@@ -289,7 +294,7 @@ export function createDelegates(env: DelegatesEnv): Delegates {
 				try { await env.owned(ticket, src.workspace, "check", false, undefined, as); }
 				catch (error) { throw new Error(`Task ${index + 1} names ${ticket}, which cannot be delegated: ${failure(error)}`); }
 				taken.add(ticket);
-				reservations.push({ ref: ticket, ticket: true });
+				reservations.push({ ref: ticket, ticket: true, title: item ? itemTicket(item.content)?.action ?? item.content : undefined });
 			}
 			return reservations;
 		});
@@ -378,7 +383,7 @@ export function createDelegates(env: DelegatesEnv): Delegates {
 			}
 		}
 		await env.kata.run(["label", "add", ref, "needs-review"], cwd);
-		await env.kata.run(["notify", ref, "--to", `${await env.actor(cwd, ref)}${lead ? `/${lead}` : ""}`, "--message", `Subagent ${r.id} ${r.exited} without closing ${ref}; review it, then close or reassign it.`], cwd);
+		await env.kata.run(["notify", ref, "--to", `${await env.actor(cwd, ref)}${lead ? `/${lead}` : ""}`, "--message", `Subagent ${nameOf(r)} ${r.exited} without closing ${ref}; review it, then close or reassign it.`], cwd);
 		if (issue.status === "open" && issue.metadata?.[keySubagent] === r.id) await env.kata.run(["meta", "unset", ref, keySubagent], cwd);
 	}
 
@@ -388,7 +393,7 @@ export function createDelegates(env: DelegatesEnv): Delegates {
 		if (!r.report) return;
 		if ((shown.comments ?? []).some(c => c.teammate === r.teammate && !c.body.startsWith(REPORT_HEADING))) return;
 		await env.kata.run(["comment", ref, "--teammate", r.teammate, "--idempotency-key", `${ns}-report:${r.leadSessionId}:${r.id}:${digest(r.report)}`,
-			"--body", `${REPORT_HEADING} ${r.id} (it left no comment of its own):\n\n${r.report}`], cwd);
+			"--body", `${REPORT_HEADING} ${nameOf(r)} (it left no comment of its own):\n\n${r.report}`], cwd);
 	}
 
 	// One exited delegate: closed issue settles it; a delegate that never acted is rolled back; otherwise the open issue
@@ -424,11 +429,11 @@ export function createDelegates(env: DelegatesEnv): Delegates {
 		if (ns === "omp" && issue.metadata?.["omp.status"] !== r.exited) await env.kata.run(["meta", "set", ref, "omp.status", r.exited!, "--if-match", String(issue.revision)], cwd);
 		await postReport(r, ref, cwd, shown);
 		await env.kata.run(["comment", ref, "--idempotency-key", `${ns}-settle:${r.leadSessionId}:${r.id}:${r.exited}`,
-			"--body", `Subagent ${r.id} ${r.exited} without closing its Kata issue. Review the work and supply evidence before closing.`], cwd);
+			"--body", `Subagent ${nameOf(r)} ${r.exited} without closing its Kata issue. Review the work and supply evidence before closing.`], cwd);
 		if (issue.metadata?.teammate === r.teammate) {
 			const decision = await env.owned(ref, cwd, false, false, undefined, { teammate: r.teammate, delegate: true });
 			const flagged = await env.work(ref, "work.attention", "needs-human", cwd, decision);
-			await env.work(ref, "work.attention_msg", `Subagent ${r.id} ${r.exited} without closing its issue; review its report and verification.`, cwd, flagged);
+			await env.work(ref, "work.attention_msg", `Subagent ${nameOf(r)} ${r.exited} without closing its issue; review its report and verification.`, cwd, flagged);
 		}
 		await handBack(r, ref, cwd);
 		r.state = "handed-back"; env.store.put(r);
@@ -505,7 +510,7 @@ export function createDelegates(env: DelegatesEnv): Delegates {
 		unassigned(ctx) {
 			const r = env.store.of(ctx);
 			if (!r) return "Kata assignment unavailable; the lead must assign this delegate an issue before it uses todo.";
-			if (r.state === "untracked") return `Subagent ${r.id} matched no plan item or ticket, so it has no Kata issue and no todo list.`;
+			if (r.state === "untracked") return `Subagent ${nameOf(r)} matched no plan item or ticket, so it has no Kata issue and no todo list.`;
 			return `Kata assignment failed: ${r.error || (r.state === "handed-back" || r.state === "settled" ? "its issue was handed back" : "no issue was assigned")}`;
 		},
 		holds: ref => unfinished().some(r => refOf(r) === ref),
