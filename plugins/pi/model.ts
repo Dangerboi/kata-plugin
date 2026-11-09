@@ -19,7 +19,14 @@ export type KataIssue = {
 	status: "open" | "closed"; closed_reason?: string; closed_at?: string; created_at: string;
 	revision: number; owner?: string; labels?: (string | { label: string })[]; metadata?: Record<string, unknown>;
 };
-export type KataShow = { issue: KataIssue; children?: KataIssue[] };
+export type KataComment = { body: string; teammate?: string };
+export type KataShow = { issue: KataIssue; children?: KataIssue[]; comments?: KataComment[] };
+
+// The text of a message's content: a plain string, or its text blocks joined.
+export function textOf(content: unknown): string {
+	if (typeof content === "string") return content;
+	return Array.isArray(content) ? content.filter(b => b?.type === "text" && typeof b.text === "string").map(b => b.text).join("\n") : "";
+}
 
 export const projectOf = (ref: string) => ref.split("#")[0];
 // An issue's qualified ref: Kata's own `qualified_id`, else `<parent's project>#<short_id>`.

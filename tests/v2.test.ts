@@ -471,6 +471,28 @@ test("async snapshot settles a delegate when terminal lifecycle delivery is miss
   expect((await show(`v2test#${child.short_id}`)).labels.some((l: any) => l.label === "needs-review")).toBe(true);
 });
 
+for (const yielded of [false, true]) test(`a delegate's report is ${yielded ? "what it yielded" : "its last assistant text"}, read from its session events`, async () => {
+  const app = host(); await app.event("session_start"); const parent = await app.init(["Report the gizmo"]);
+  const id = `report-${yielded}`, sessionFile = `${scratch}/${id}.jsonl`;
+  app.emit("task:subagent:lifecycle", { id, agent: "task", status: "started", sessionFile, description: "Report the gizmo" });
+  await app.call({ op: "view" });
+  await ran(app, id, sessionFile);
+  const message = (type: string, role: string, text: string) => app.emit("task:subagent:event", { id, event: { type, message: { role, content: [{ type: "text", text }, { type: "toolCall", name: "read" }] } } });
+  message("message_end", "assistant", "Looking at the gizmo first.");
+  message("message_end", "assistant", "The gizmo needs a new spring; I left it open.");
+  message("message_update", "assistant", "partial streaming text");
+  message("message_end", "user", "a user turn");
+  // Strict-mode providers send an untyped final yield as `type: null`, and some fill `error` with "" beside the data.
+  if (yielded) app.emit("task:subagent:event", { id, event: { type: "tool_execution_start", toolName: "yield", args: { type: null, data: { spring: "replaced" }, error: "" } } });
+  // An incremental section is part of a result, never the report.
+  app.emit("task:subagent:event", { id, event: { type: "tool_execution_start", toolName: "yield", args: { type: ["confidence"], data: 0.8 } } });
+  app.emit("task:subagent:lifecycle", { id, status: "completed", sessionFile });
+  await app.call({ op: "view" });
+  const comments = (await show(`v2test#${(await show(parent)).children[0].short_id}`)).comments.map((c: any) => c.body);
+  const report = yielded ? JSON.stringify({ spring: "replaced" }, null, 2) : "The gizmo needs a new spring; I left it open.";
+  expect(comments.filter((b: string) => b.startsWith("Report from subagent"))).toEqual([`Report from subagent ${id} (it left no comment of its own):\n\n${report}`]);
+});
+
 test("a missed delegate exit found at a prompt does not wait for the settlement", async () => {
   let recent: any[] = [], slow = false;
   const reached = Promise.withResolvers<void>(), gate = Promise.withResolvers<void>();
@@ -1178,6 +1200,15 @@ test("after a hand-back, a bare done closes the lead's own active task", async (
   const children = (await show(ref)).children;
   expect(children.find((c: any) => c.title === "Implement widget").status).toBe("closed");
   expect(children.find((c: any) => c.title === "Write widget tests").status).toBe("open");
+});
+
+test("a done plan task keeps its message and evidence as a comment, not only as the close reason", async () => {
+  const app = host(); await app.event("session_start");
+  const ref = await app.init(["Write widget tests"]);
+  expect((await app.call({ op: "done", task: "Write widget tests", message, evidence })).isError).toBeUndefined();
+  const child = (await show(ref)).children[0];
+  expect(child.status).toBe("closed");
+  expect(await commentsOf(child.short_id)).toEqual([`Done: ${message}\nEvidence: ${evidence.join(", ")}`]);
 });
 
 test("a task call that never spawns releases its plan task", async () => {

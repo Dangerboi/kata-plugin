@@ -23,6 +23,7 @@ import { createInterface } from "node:readline";
 import { createKataCore, DESCRIPTION, sessionKey, TODO_OPS, TODO_PARAMS } from "./kata-core";
 import { delegateCommand, kataCommands as parseKataCommands } from "./shell";
 import { FINAL, teammateFor } from "./delegates";
+import { textOf } from "./model";
 import type { DelegateRecord, Delegates, DelegateStore, Reservation } from "./delegates";
 import type { InboxStream } from "./inbox";
 import { describeTodoCall, describeTodoResult, todoWidget } from "./tsp";
@@ -276,17 +277,22 @@ export default function ompKata(pi: any) {
 		return store.of(ctx);
 	};
 
+	// The lead Delegates that the delegates started from `ctx` report to: this session's own (registered here for its
+	// delegates' later events, and for worker threads), or a nested delegate's lead.
+	const leadOf = (ctx: any): { id: string; delegates?: DelegateEvents } | undefined => {
+		if (main(ctx)) {
+			const id = sessionId(ctx);
+			if (id) { leads.set(id, core.delegates); return { id, delegates: core.delegates }; }
+			return undefined;
+		}
+		const owner = store.of(ctx);
+		return owner ? { id: owner.leadSessionId, delegates: leads.get(owner.leadSessionId) } : undefined;
+	};
+
 	pi.events?.on("task:subagent:lifecycle", (event: any) => {
 		const ctx = seen;
 		if (!ctx || !event?.id) return;
-		let lead: { id: string; delegates?: DelegateEvents } | undefined;
-		if (main(ctx)) {
-			const id = sessionId(ctx);
-			if (id) { leads.set(id, core.delegates); lead = { id, delegates: core.delegates }; }
-		} else {
-			const owner = store.of(ctx);
-			if (owner) lead = { id: owner.leadSessionId, delegates: leads.get(owner.leadSessionId) };
-		}
+		const lead = leadOf(ctx);
 		if (!lead?.delegates) return;
 		if (event.status === "started") {
 			if (assignmentsLead !== lead.id) { assignments.clear(); assignmentsLead = lead.id; } // a previous session's spawns
@@ -308,6 +314,25 @@ export default function ompKata(pi: any) {
 		} else if (["completed", "failed", "aborted"].includes(event.status)) {
 			void lead.delegates.apply({ type: "exited", id: event.id, outcome: event.status });
 		}
+	});
+
+	// Every event of a delegate's session, worker threads included, reaches the main thread here. Its report is its last
+	// assistant text, or what it yielded; streaming events are dropped first, since they arrive per token.
+	pi.events?.on("task:subagent:event", (payload: any) => {
+		const event = payload?.event, type = event?.type;
+		if (type !== "message_end" && type !== "tool_execution_start") return;
+		let text: string | undefined;
+		if (type === "message_end" && event.message?.role === "assistant") text = textOf(event.message.content);
+		// A yield whose `type` is a non-empty list is one section of an incremental result, not the whole report; a string
+		// or null (strict-mode providers) type is terminal.
+		else if (type === "tool_execution_start" && event.toolName === "yield" && !(Array.isArray(event.args?.type) && event.args.type.length > 0)) {
+			// Data wins: backends fill the optional `error` with "" or a placeholder beside real data.
+			const { data, error } = event.args ?? {};
+			text = data !== undefined && data !== null ? (typeof data === "string" ? data : JSON.stringify(data, null, 2))
+				: typeof error === "string" && error.trim() ? `Failed: ${error.trim()}` : undefined;
+		}
+		if (!text?.trim() || !seen || typeof payload.id !== "string") return;
+		void leadOf(seen)?.delegates?.apply({ type: "reported", id: payload.id, text });
 	});
 
 	pi.on("tool_call", async (event: any, ctx: any) => {

@@ -258,6 +258,22 @@ test("a lead resumed with a delegate's hand back unfinished finishes it: needs-r
   expect(savedDelegates(b.entries)).toBeUndefined();
 });
 
+test("a lead resumed before a delegate's report was posted posts it from the saved record", async () => {
+  const a = lead(); const parent = await a.plan(["Build the rho gadget", "Lead step"]);
+  const ref = `delegates-test#${(await taskOf(parent, "Build the rho gadget")).short_id}`;
+  await a.delegates.apply(a.started("rho-gadget", "Build the rho gadget"));
+  await a.delegates.apply({ type: "ranTool", id: "rho-gadget" });
+  await a.delegates.apply({ type: "reported", id: "rho-gadget", text: "Built the rho gadget; its tests still fail." });
+  failing = args => args[0] === "comment";
+  await a.delegates.apply({ type: "exited", id: "rho-gadget", outcome: "completed" });
+  failing = undefined;
+  expect(savedDelegates(a.entries)).toMatchObject([{ id: "rho-gadget", report: "Built the rho gadget; its tests still fail." }]);
+  const b = lead({ entries: a.entries, id: a.id });
+  await b.core.session.start(b.ctx);
+  await b.view();
+  expect((await reportsOf(ref)).map(c => c.body)).toEqual(["Report from subagent rho-gadget (it left no comment of its own):\n\nBuilt the rho gadget; its tests still fail."]);
+});
+
 test("a lead resumed with a delegate that ran no tool rolls its assignment back", async () => {
   const a = lead(); const parent = await a.plan(["Build the omicron widget", "Lead step"]);
   const task = await taskOf(parent, "Build the omicron widget"), ref = `delegates-test#${task.short_id}`;
@@ -445,6 +461,40 @@ test("a delegate that exits with its issue closed leaves it closed and releases 
   expect(labels(view)).not.toContain("needs-review");
 });
 
+const commentsOf = async (ref: string): Promise<{ body: string; teammate?: string }[]> => (await show(ref)).comments ?? [];
+const reportsOf = async (ref: string) => (await commentsOf(ref)).filter(c => c.body.startsWith("Report from subagent"));
+
+test("a delegate handed back without a comment of its own gets its latest report posted under its teammate", async () => {
+  const a = lead(); const parent = await a.plan(["Build the lambda gadget", "Lead step"]);
+  const task = await taskOf(parent, "Build the lambda gadget"), ref = `delegates-test#${task.short_id}`;
+  await a.delegates.apply(a.started("lambda", "Build the lambda gadget"));
+  await a.delegates.apply({ type: "ranTool", id: "lambda" });
+  await a.delegates.apply({ type: "reported", id: "lambda", text: "Starting on the gadget." });
+  await a.delegates.apply({ type: "reported", id: "lambda", text: "Wrote the gadget; its tests fail on the parser, which still needs work." });
+  await a.delegates.apply({ type: "exited", id: "lambda", outcome: "completed" });
+  const reports = await reportsOf(ref);
+  expect(reports).toHaveLength(1);
+  expect(reports[0].body).toContain("its tests fail on the parser");
+  expect(reports[0].body).not.toContain("Starting on the gadget");
+  expect(reports[0].teammate).toBe("mate-lambda");
+  expect(JSON.stringify(await commentsOf(ref))).toContain("completed without closing its Kata issue");
+});
+
+test("a delegate that closed its issue gets its report posted only when it left no comment of its own", async () => {
+  const a = lead(); const parent = await a.plan(["Build the mu gadget", "Build the xi gadget", "Lead step"]);
+  const mu = `delegates-test#${(await taskOf(parent, "Build the mu gadget")).short_id}`, xi = `delegates-test#${(await taskOf(parent, "Build the xi gadget")).short_id}`;
+  await a.delegates.apply(a.started("mu", "Build the mu gadget", { single: false }));
+  await a.delegates.apply(a.started("xi", "Build the xi gadget", { single: false }));
+  await kata(["comment", xi, "--body", "Built the xi gadget; its tests pass.", "--teammate", "mate-xi", "--json"]);
+  for (const [id, ref] of [["mu", mu], ["xi", xi]]) {
+    await kata(["close", ref, "--done", "--message", "Closed by the delegate itself with verified behaviour.", "--test", "delegates fixture", "--teammate", `mate-${id}`, "--json"]);
+    await a.delegates.apply({ type: "reported", id, text: `The ${id} gadget is built and verified.` });
+    await a.delegates.apply({ type: "exited", id, outcome: "completed" });
+  }
+  expect((await reportsOf(mu)).map(c => c.body)).toEqual(["Report from subagent mu (it left no comment of its own):\n\nThe mu gadget is built and verified."]);
+  expect(await reportsOf(xi)).toHaveLength(0);
+});
+
 test("an automatic parent stays open while a delegate runs, and closes once it has exited", async () => {
   const a = lead(); const parent = await a.plan(["Build the nu widget"]);
   const task = await taskOf(parent, "Build the nu widget"), ref = `delegates-test#${task.short_id}`;
@@ -478,14 +528,14 @@ test("check refuses to delegate a ticket that other open plan items name, and al
   await expect(a.delegates.check([{ text: `Work ${ref}` }])).rejects.toThrow(/other open plan items name it/);
   const done = await a.core.todo.apply(a.ctx, "done", { task: `${ref}: write the omicron parser`, message: "Wrote the omicron parser and verified it against the fixture.", evidence: ["test:delegates fixture"] });
   expect(done.isError).toBeUndefined();
-  expect(await a.delegates.check([{ text: `Do "${ref}: test the omicron parser"` }])).toEqual([{ ref, ticket: true }]);
+  expect(await a.delegates.check([{ text: `Do "${ref}: test the omicron parser"` }])).toEqual([{ ref, ticket: true, title: "test the omicron parser" }]);
 });
 
 test("a spawn naming a ticket outside the plan is reserved as that ticket and assigned it", async () => {
   const a = lead(); await a.plan(["Build the lambda widget"]);
   const ticket = (await kata(["create", "Outside ticket", "--force-new", "--json"])).issue.short_id, ref = `delegates-test#${ticket}`;
   const [reserved] = await a.delegates.check([{ text: `Work ${ref}: write the thing` }]);
-  expect(reserved).toEqual({ ref, ticket: true });
+  expect(reserved).toEqual({ ref, ticket: true, title: "Outside ticket" });
   await a.delegates.apply(a.started("lambda", `Work ${ref}`, { reserved }));
   expect((await show(ref)).issue.metadata["omp.subagent_id"]).toBe("lambda");
   expect(await a.delegate("lambda").assignment()).toContain(ref);

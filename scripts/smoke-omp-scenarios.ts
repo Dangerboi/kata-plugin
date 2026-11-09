@@ -5,6 +5,7 @@
 // `--resume`), needs a new RPC command, or needs a model call that hangs (`{ hang: true }`).
 
 import { fileURLToPath } from "node:url";
+import { ownComment } from "../plugins/oh-my-pi/delegates";
 
 /** `{ hang: true }` never answers: the model call stays pending (no events) until omp dies, so the agent never reaches a tool call. */
 export type Block = string | { tool: string; args: Record<string, unknown> } | { hang: true };
@@ -148,7 +149,15 @@ export const SCENARIOS: Scenario[] = [{
 		const hasRecorded = (e: any) => e?.type === recorded.type && e?.command === recorded.command;
 		const transcript = (i?: Issue) => i?.events.find(e => e.type === "issue.closed")?.payload?.transcript;
 		const closeEvidence = (i?: Issue) => i?.events.find(e => e.type === "issue.closed")?.payload?.evidence ?? [];
+		const commentPayloads = (i?: Issue) => (i?.events.filter(e => /comment/.test(e.type)) ?? []).map(e => e.payload);
+		const comments = (i?: Issue) => commentPayloads(i).map(p => JSON.stringify(p));
+		// Only a real model follows the binding's instruction; the scripted delegate just closes. The issue keeps the
+		// delegate's teammate once it closed it (the check beside this one), so the plugin's report and the lead's notes
+		// do not count; a hand back moves the teammate to the lead, but then the closed-task check fails anyway.
+		const delegateNote = store.live ? [{ name: "the delegate commented what it did on its own task", ok: commentPayloads(parser).some(p => ownComment(p, String(parser?.metadata.teammate ?? ""))), detail: comments(parser).join(" | ") }] : [];
 		return [
+			...delegateNote,
+			{ name: "todo done also comments its message and evidence", ok: comments(tests).some(c => c.includes(store.live ? "Done: " : `Done: ${message}`) && c.includes(evidence)), detail: comments(tests).join(" | ") },
 			{ name: "todo init creates the automatic parent", ok: !!parent, detail: parent?.title },
 			{ name: "todo init creates both plan tasks", ok: children.length === 2 && !!parser && !!tests, detail: children.map(c => c.title).join(", ") },
 			{ name: "task delegation binds to its plan task (omp.subagent_id)", ok: !!parser?.metadata["omp.subagent_id"], detail: JSON.stringify(parser?.metadata) },

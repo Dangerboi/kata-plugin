@@ -45,7 +45,7 @@ async function host(options: any = {}) {
   const api: any = {
     ...(options.omp ? { zod: {} } : {}),
     registerTool: (value: any) => tool = value,
-    getSessionName: () => undefined,
+    getSessionName: () => options.sessionName,
     registerCommand: (name: string, value: any) => commands.set(name, value),
     appendEntry: (customType: string, data: any) => entries.push({ type: "custom", customType, data }),
     sendMessage: (...args: any[]) => messages.push(args),
@@ -327,6 +327,46 @@ for (const match of ["named", "active"]) test(`pi child ${match} binding owns it
   expect((await parent.call({op:"done", task:"Remaining lead work", message, evidence})).isError).toBeUndefined();
   expect((await show(ref)).issue.status).toBe("closed");
   expect((await kata(["audit", "closes", "--json"])).rows.filter((r:any) => r.issue === ref.split("#")[1])).toHaveLength(1);
+});
+
+test("a pi child that leaves its issue open without a comment gets its last assistant text posted as its report, under its task's name", async () => {
+  const parent = await host(); await parent.event("session_start", { reason: "startup" });
+  await parent.init(["Reported pi work", "Lead pi work"]);
+  const marker = JSON.parse(process.env.KATA_PI_PARENT!);
+  process.env.KATA_PI_PARENT = JSON.stringify({ ...marker, pid: process.pid + 1 });
+  try {
+    const child = await host(); await child.event("session_start", { reason: "startup" });
+    await child.event("before_agent_start", { prompt: "Complete Reported pi work", systemPromptOptions: { sections: {} } });
+    const record = delegateRecord(child);
+    expect(record.name).toBe("reported-pi-work");
+    expect(record.teammate).toMatch(/^reported-pi-work-[0-9a-f]{6}$/);
+    await child.event("tool_call", { toolName: "read", input: { path: "README.md" } });
+    child.entries.push({ type: "message", message: { role: "assistant", content: [{ type: "text", text: "Half done: the parser is written, its tests are not." }] } });
+    // A run that failed on a provider error ends on an assistant message without text.
+    child.entries.push({ type: "message", message: { role: "assistant", content: [], stopReason: "error" } });
+    await child.event("session_shutdown", { reason: "quit" });
+    const comments = (await show(record.ref)).comments.map((c: any) => [c.teammate, c.body]);
+    expect(comments).toContainEqual([record.teammate, "Report from subagent reported-pi-work (it left no comment of its own):\n\nHalf done: the parser is written, its tests are not."]);
+    expect(comments).toContainEqual([record.teammate, "Subagent reported-pi-work ended without closing its Kata issue. Review the work and supply evidence before closing."]);
+  } finally { delete process.env.KATA_TEAMMATE; delete process.env.KATA_INBOX_USER; delete process.env.KATA_PI_PARENT; }
+});
+
+for (const named of ["session", "none"]) test(`a pi child is named by ${named === "session" ? "its --name over its task" : "the end of its session id when it matched nothing"}`, async () => {
+  const parent = await host(); await parent.event("session_start", { reason: "startup" });
+  await parent.init(["Named pi work", "Other lead work"]);
+  const marker = JSON.parse(process.env.KATA_PI_PARENT!);
+  process.env.KATA_PI_PARENT = JSON.stringify({ ...marker, pid: process.pid + 1 });
+  try {
+    const child = await host(named === "session" ? { sessionName: "Slug Writer" } : { sid: "01a1bfd7-4b80-77d7-9ce3-18e7ceff1c15" });
+    await child.event("session_start", { reason: "startup" });
+    const prompt = { prompt: named === "session" ? "Complete Named pi work" : "Survey the unrelated build system", systemPromptOptions: { sections: {} as any } };
+    await child.event("before_agent_start", prompt);
+    const record = delegateRecord(child);
+    const name = named === "session" ? "Slug Writer" : "pi-ff1c15";
+    expect(record.name).toBe(name);
+    expect(record.teammate).toMatch(new RegExp(`^${name.toLowerCase().replace(" ", "-")}-[0-9a-f]{6}$`));
+    expect(prompt.systemPromptOptions.sections.kata_binding).toStartWith(`You are subagent ${name}.`);
+  } finally { delete process.env.KATA_TEAMMATE; delete process.env.KATA_INBOX_USER; delete process.env.KATA_PI_PARENT; }
 });
 
 
