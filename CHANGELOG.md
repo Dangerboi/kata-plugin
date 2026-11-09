@@ -4,6 +4,14 @@ All notable changes to kata-plugin are listed here. The format follows [Keep a C
 
 ## [Unreleased]
 
+### Fixed
+
+#### Development
+
+- An interrupted test run no longer leaves Kata daemons running.
+  - Ctrl-C or SIGTERM now stops the tests and the daemons in the run's throwaway root before the runner exits.
+  - A run killed outright leaves them behind; the next run stops them when it starts.
+
 ## [1.8.0] - 2026-11-09
 
 kata-omp 2.8.0 and @dangerboi/kata-pi 1.8.0.
