@@ -2279,7 +2279,7 @@ async function withDefaultPriority(fn: () => Promise<void>): Promise<void> {
   try { await fn(); } finally { writeFileSync(config, ""); }
 }
 
-test("re-adding a removed item restores its issue with no priority after the default priority changed", async () => {
+test("plan issues take no default priority, and a removed item comes back after the default changed", async () => {
   const app = host(); const parent = await app.init(["Priority probe", "Priority sibling"]);
   const first = (await show(parent)).children.find((c: any) => c.title === "Priority probe");
   expect((await app.call({ op: "rm", task: "Priority probe", message: "Not needed after all." })).isError).toBeUndefined();
