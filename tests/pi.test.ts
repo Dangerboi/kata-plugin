@@ -608,6 +608,25 @@ test("a child that worked but left its plan task open hands it back for review",
   expect(closed.labels.some((l: any) => l.label === "needs-review")).toBe(false);
 });
 
+test("a child that closed its plan task leaves it closed and returned to the lead, with no child marker", async () => {
+  const parent = await host(); await parent.event("session_start", { reason: "startup" });
+  const ref = await parent.init(["Implement closed fixture", "Write closed fixture tests"]);
+  const child = await childOf(parent);
+  await child.event("before_agent_start", { prompt: "Write closed fixture tests", systemPromptOptions: { sections: {} } });
+  await child.event("tool_call", { toolName: "bash", input: { command: "ls" } });
+  const task = (await show(ref)).children.find((c: any) => c.title === "Write closed fixture tests"), taskRef = `pitest#${task.short_id}`;
+  expect((await show(taskRef)).issue.metadata["pi.subagent_id"]).toBe(child.sid);
+  await kata(["close", taskRef, "--done", "--message", "Closed by the child itself with verified behaviour.", "--test", "pi fixture", "--teammate", delegateRecord(child).teammate, "--json"]);
+  await child.event("session_shutdown");
+  leaveChild();
+  const view = await show(taskRef);
+  expect(view.issue.status).toBe("closed");
+  expect(view.labels.some((l: any) => l.label === "needs-review")).toBe(false);
+  expect(view.issue.metadata["pi.subagent_id"]).toBeUndefined();
+  expect(view.issue.metadata.teammate).toBeUndefined();
+  expect(view.issue.metadata["todo.status"]).toBe("completed");
+});
+
 test("children run on the parent's model and thinking level unless given their own", async () => {
   const zai = { provider: "zai", id: "glm-5.3" };
   const parent = await host({ model: zai, thinking: "high" }); await parent.event("session_start", { reason: "startup" });

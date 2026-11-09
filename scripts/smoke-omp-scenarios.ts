@@ -108,6 +108,18 @@ const vars = (): Record<string, string> => JSON.parse(process.env.KATA_SMOKE_VAR
 const lastRef = (ctx: TurnContext, pattern: RegExp) => ctx.texts.join("\n").match(pattern)?.[0];
 const labelled = (i?: Issue) => !!i?.events.some(e => /label/.test(e.type) && JSON.stringify(e.payload).includes("needs-review"));
 const notified = (i?: Issue) => Object.keys(i?.metadata ?? {}).some(key => key.startsWith("notify."));
+// A delegate that closed its issue and exited: bound by the lead's session, outcome completed, no subagent key.
+const returnedToLead = (i?: Issue) => !!i?.metadata["omp.session_id"] && i.metadata["omp.status"] === "completed" && !i.metadata["omp.subagent_id"];
+// The teammate an issue carried when it first closed, replayed from its creation and metadata events.
+const closingTeammate = (i?: Issue) => {
+	let teammate = "";
+	for (const e of i?.events ?? []) {
+		if (e.type === "issue.closed") return teammate;
+		if (e.type === "issue.created") teammate = e.payload?.metadata?.teammate ?? "";
+		else if (e.payload?.diff?.teammate) teammate = e.payload.diff.teammate.to ?? "";
+	}
+	return teammate;
+};
 
 const evidence = "test:bun smoke scenario ran";
 const recorded = { type: "test", command: "bun smoke scenario ran" }; // how Kata stores it
@@ -142,7 +154,7 @@ export const SCENARIOS: Scenario[] = [{
 		const issues = await store.issues();
 		const bashClosed = issues.find(i => i.ref.endsWith(ids.bashClosed));
 		const children = issues.filter(i => i.metadata["todo.phase"]);
-		const parent = issues.find(i => i.metadata["omp.session_id"] && !i.metadata["omp.subagent_id"] && !i.metadata["todo.phase"]);
+		const parent = issues.find(i => i.metadata["omp.auto_parent"] === true);
 		const parser = children.find(i => i.title === "Implement parser module");
 		const tests = children.find(i => i.title === "Write parser tests");
 		const hasRecorded = (e: any) => e?.type === recorded.type && e?.command === recorded.command;
@@ -150,16 +162,16 @@ export const SCENARIOS: Scenario[] = [{
 		const closeEvidence = (i?: Issue) => i?.events.find(e => e.type === "issue.closed")?.payload?.evidence ?? [];
 		const commentPayloads = (i?: Issue) => (i?.events.filter(e => /comment/.test(e.type)) ?? []).map(e => e.payload);
 		const comments = (i?: Issue) => commentPayloads(i).map(p => JSON.stringify(p));
-		// Only a real model follows the binding's instruction; the scripted delegate just closes. The issue keeps the
-		// delegate's teammate once it closed it (the check beside this one), so the plugin's report and the lead's notes
-		// do not count; a hand back moves the teammate to the lead, but then the closed-task check fails anyway.
-		const delegateNote = store.live ? [{ name: "the delegate commented what it did on its own task", ok: commentPayloads(parser).some(p => ownComment(p, String(parser?.metadata.teammate ?? ""))), detail: comments(parser).join(" | ") }] : [];
+		// Only a real model follows the binding's instruction; the scripted delegate just closes. Once the delegate exits,
+		// its closed issue goes back to the lead's teammate, so its own comments are those under the teammate the issue
+		// carried when it closed; the plugin's report and the lead's notes do not count.
+		const delegateNote = store.live ? [{ name: "the delegate commented what it did on its own task", ok: commentPayloads(parser).some(p => ownComment(p, closingTeammate(parser))), detail: comments(parser).join(" | ") }] : [];
 		return [
 			...delegateNote,
 			{ name: "todo done also comments its message and evidence", ok: comments(tests).some(c => c.includes(store.live ? "Done: " : `Done: ${message}`) && c.includes(evidence)), detail: comments(tests).join(" | ") },
 			{ name: "todo init creates the automatic parent", ok: !!parent, detail: parent?.title },
 			{ name: "todo init creates both plan tasks", ok: children.length === 2 && !!parser && !!tests, detail: children.map(c => c.title).join(", ") },
-			{ name: "task delegation binds to its plan task (omp.subagent_id)", ok: !!parser?.metadata["omp.subagent_id"], detail: JSON.stringify(parser?.metadata) },
+			{ name: "task delegation binds to its plan task and, closed, returns it to the lead (omp.session_id, omp.status completed, no omp.subagent_id)", ok: returnedToLead(parser), detail: JSON.stringify(parser?.metadata) },
 			{ name: "no stray issue was created for the delegation", ok: issues.length === 4, detail: `${issues.length} issues` },
 			{ name: "todo done closes with the evidence", ok: tests?.status === "closed" && closeEvidence(tests).some(hasRecorded), detail: `${tests?.status} ${JSON.stringify(closeEvidence(tests))}` },
 			{ name: "delegate closed its own task with evidence", ok: parser?.status === "closed" && closeEvidence(parser).some(hasRecorded), detail: `${parser?.status} ${JSON.stringify(closeEvidence(parser))}` },
@@ -345,7 +357,7 @@ export const SCENARIOS: Scenario[] = [{
 			{ name: "each finished item left a comment", ok: comments(alpha).length === 2, detail: `${comments(alpha).length} comments` },
 			{ name: "drop comments and leaves the ticket open", ok: beta?.status === "open" && comments(beta).length === 1 && events(beta, "issue.closed").length === 0, detail: `${beta?.status} ${comments(beta).length} comments` },
 			{ name: "an unresolvable ref created nothing", ok: !issues.some(i => /ghost/.test(i.title)) },
-			{ name: "a delegate bound the ticket its item names and closed it", ok: !!gamma?.metadata["omp.subagent_id"] && gamma.status === "closed" && !issues.some(i => i.title.startsWith("Subagent")), detail: `${gamma?.status} ${JSON.stringify(gamma?.metadata)}` },
+			{ name: "a delegate bound the ticket its item names, closed it and returned it to the lead", ok: returnedToLead(gamma) && gamma?.status === "closed" && !issues.some(i => i.title.startsWith("Subagent")), detail: `${gamma?.status} ${JSON.stringify(gamma?.metadata)}` },
 		];
 	},
 }, {

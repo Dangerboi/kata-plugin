@@ -2,7 +2,7 @@ import { afterAll, beforeAll, beforeEach, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync } from "node:fs";
 import path from "node:path";
 import { createKataCore } from "../core/kata-core";
-import type { DelegateEvent, DelegateRecord } from "../core/delegates";
+import type { DelegateEvent } from "../core/delegates";
 import { assertIsolated } from "./isolation";
 import { isolatedKata, memoryDelegateStore } from "./kata-fixture";
 assertIsolated();
@@ -450,7 +450,7 @@ test("a delegate whose issue was deleted settles instead of waiting forever", as
   expect(savedDelegates(a.entries)).toBeUndefined();
 });
 
-test("a delegate that exits with its issue closed leaves it closed and releases it", async () => {
+test("a delegate that exits with its issue closed leaves it closed and returns it to the lead, so a new plan can retire it", async () => {
   const a = lead(); const parent = await a.plan(["Build the theta widget", "Lead step"]);
   const task = await taskOf(parent, "Build the theta widget"), ref = `delegates-test#${task.short_id}`;
   await a.delegates.apply(a.started("theta", "Build the theta widget"));
@@ -459,6 +459,91 @@ test("a delegate that exits with its issue closed leaves it closed and releases 
   const view = await show(ref);
   expect(view.issue.status).toBe("closed");
   expect(labels(view)).not.toContain("needs-review");
+  expect(view.issue.metadata).toMatchObject({ teammate: LEAD, "todo.status": "completed", "omp.status": "completed" });
+  expect(view.issue.metadata["omp.subagent_id"]).toBeUndefined();
+  await a.plan(["Lead step", "Build the eta widget"]);
+  const retired = await show(ref);
+  expect(retired.issue.status).toBe("closed");
+  expect(retired.issue.metadata["todo.removed"]).toBe(true);
+});
+
+test("a refused delegate that exits leaves the closed issue of the delegate holding it alone", async () => {
+  const a = lead(); const parent = await a.plan(["Build the omicron widget", "Lead step"]);
+  const task = await taskOf(parent, "Build the omicron widget"), ref = `delegates-test#${task.short_id}`;
+  const [reserved] = await a.delegates.check([{ text: "Build the omicron widget" }]);
+  await a.delegates.apply(a.started("omicron", "Build the omicron widget"));
+  // A second delegate whose assignment the holder refused, reserved for the same task.
+  await a.delegates.apply(a.started("rho", "Build the omicron widget", { reserved }));
+  await kata(["close", ref, "--done", "--message", "Closed by the delegate itself with verified behaviour.", "--test", "delegates fixture", "--teammate", "mate-omicron", "--json"]);
+  await a.delegates.apply({ type: "exited", id: "rho", outcome: "failed" });
+  expect((await show(ref)).issue.metadata).toMatchObject({ teammate: "mate-omicron", "omp.subagent_id": "omicron", "omp.status": "running" });
+});
+
+test("a forked session's refused delegate with the same name leaves the source delegate's closed issue alone", async () => {
+  const a = lead(); const parent = await a.plan(["Build the omicron2 widget", "Lead step"]);
+  const task = await taskOf(parent, "Build the omicron2 widget"), ref = `delegates-test#${task.short_id}`;
+  await a.delegates.apply(a.started("omicron2", "Build the omicron2 widget"));
+  const f = lead({ entries: a.entries, id: a.id, fork: true });
+  await f.view();
+  await f.delegates.apply(f.started("omicron2", "Build the omicron2 widget", { teammate: "mate-omicron2-fork", reserved: { ref } }));
+  // The fork's delegate reached the refused state against this issue: it got no assignment.
+  expect(await f.delegate("omicron2").assignment()).toBeUndefined();
+  await kata(["close", ref, "--done", "--message", "Closed by the delegate itself with verified behaviour.", "--test", "delegates fixture", "--teammate", "mate-omicron2", "--json"]);
+  await f.delegates.apply({ type: "exited", id: "omicron2", outcome: "failed" });
+  expect((await show(ref)).issue.metadata).toMatchObject({ teammate: "mate-omicron2", "omp.subagent_id": "omicron2", "omp.session_id": a.id, "omp.status": "running" });
+});
+
+test("a forked session's refused delegate with the same name leaves the source delegate's open issue alone", async () => {
+  const a = lead(); const parent = await a.plan(["Build the omicron3 widget", "Lead step"]);
+  const task = await taskOf(parent, "Build the omicron3 widget"), ref = `delegates-test#${task.short_id}`;
+  await a.delegates.apply(a.started("omicron3", "Build the omicron3 widget"));
+  const f = lead({ entries: a.entries, id: a.id, fork: true });
+  await f.view();
+  await f.delegates.apply(f.started("omicron3", "Build the omicron3 widget", { teammate: "mate-omicron3-fork", reserved: { ref } }));
+  expect(await f.delegate("omicron3").assignment()).toBeUndefined();
+  await f.delegates.apply({ type: "ranTool", id: "omicron3" });
+  await f.delegates.apply({ type: "exited", id: "omicron3", outcome: "failed" });
+  const view = await show(ref);
+  expect(view.issue.status).toBe("open");
+  expect(labels(view)).not.toContain("needs-review");
+  expect(view.issue.metadata).toMatchObject({ teammate: "mate-omicron3", "omp.subagent_id": "omicron3", "omp.session_id": a.id, "omp.status": "running", "todo.status": "in_progress" });
+  expect(Object.keys(view.issue.metadata).filter(k => k.startsWith("notify."))).toEqual([]);
+  expect(JSON.stringify(view.comments ?? [])).not.toContain("without closing its Kata issue");
+});
+
+test("a delegate that closes its issue as wontfix and exits leaves it abandoned and returned to the lead", async () => {
+  const a = lead(); const parent = await a.plan(["Build the sigma widget", "Lead step"]);
+  const task = await taskOf(parent, "Build the sigma widget"), ref = `delegates-test#${task.short_id}`;
+  await a.delegates.apply(a.started("sigma", "Build the sigma widget"));
+  await kata(["close", ref, "--wontfix", "--message", "Not needed: the sigma widget is covered by the existing module already.", "--teammate", "mate-sigma", "--json"]);
+  await a.delegates.apply({ type: "exited", id: "sigma", outcome: "completed" });
+  const view = await show(ref);
+  expect(view.issue.status).toBe("closed");
+  expect(view.issue.metadata).toMatchObject({ teammate: LEAD, "todo.status": "abandoned" });
+  expect(view.issue.metadata["omp.subagent_id"]).toBeUndefined();
+});
+
+test("a lead with no record of the delegate returns its closed plan item when a new plan replaces the list", async () => {
+  const a = lead(); const parent = await a.plan(["Build the tau widget", "Lead step"]);
+  const task = await taskOf(parent, "Build the tau widget"), ref = `delegates-test#${task.short_id}`;
+  await a.delegates.apply(a.started("tau", "Build the tau widget"));
+  await kata(["close", ref, "--done", "--message", "Closed by the delegate itself with verified behaviour.", "--test", "delegates fixture", "--teammate", "mate-tau", "--json"]);
+  // The same session resumed: its plan is adopted again, but no record in memory holds the item.
+  const b = lead({ entries: a.entries, id: a.id });
+  await b.plan(["Lead step", "Build the upsilon widget"]);
+  const view = await show(ref);
+  expect(view.issue.status).toBe("closed");
+  expect(view.issue.metadata).toMatchObject({ teammate: LEAD, "todo.removed": true, "omp.status": "ended", "todo.status": "completed" });
+  expect(view.issue.metadata["omp.subagent_id"]).toBeUndefined();
+});
+
+test("a closed plan item whose delegate has not exited still refuses a new plan", async () => {
+  const a = lead(); const parent = await a.plan(["Build the phi widget", "Lead step"]);
+  const task = await taskOf(parent, "Build the phi widget"), ref = `delegates-test#${task.short_id}`;
+  await a.delegates.apply(a.started("phi", "Build the phi widget"));
+  await kata(["close", ref, "--done", "--message", "Closed by the delegate itself with verified behaviour.", "--test", "delegates fixture", "--teammate", "mate-phi", "--json"]);
+  await expect(a.plan(["Lead step", "Build the psi widget"])).rejects.toThrow(/belongs to a delegate/);
+  expect((await show(ref)).issue.metadata).toMatchObject({ teammate: "mate-phi", "omp.subagent_id": "phi" });
 });
 
 const commentsOf = async (ref: string): Promise<{ body: string; teammate?: string }[]> => (await show(ref)).comments ?? [];

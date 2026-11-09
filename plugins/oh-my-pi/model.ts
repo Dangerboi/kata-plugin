@@ -7,6 +7,8 @@ export const OPEN: ReadonlySet<Status> = new Set(["pending", "in_progress", "blo
 export const WORKING: ReadonlySet<Status> = new Set(["in_progress", "blocked"]);
 // An open plan task's status from its `todo.status` metadata: anything but started or blocked is pending.
 export const openTaskStatus = (value: unknown): Status => value === "in_progress" || value === "blocked" ? value : "pending";
+// A closed issue's final plan status: abandoned when closed as wontfix, completed otherwise.
+export const closedTaskStatus = (closedReason?: string): "completed" | "abandoned" => closedReason === "wontfix" ? "abandoned" : "completed";
 export type Task = { ref: string; content: string; phase: string; status: Status; ticket?: string; at?: number; blocker?: string; delegated?: boolean; review?: boolean; revision?: number; proof?: { message?: string; evidence?: string[] } };
 export type Binding = { parent: string; workspace: string; sessionId?: string; auto?: boolean; label?: string };
 export type Plan = Partial<Binding> & { workspace: string; tasks: Task[]; local?: boolean; error?: string };
