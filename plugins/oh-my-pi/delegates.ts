@@ -473,7 +473,9 @@ export function createDelegates(env: DelegatesEnv): Delegates {
 			case "reported": {
 				const text = event.text.trim();
 				const report = text.length > REPORT_LIMIT ? `${text.slice(0, REPORT_LIMIT)}\n\n(cut at ${REPORT_LIMIT} characters)` : text;
-				if (r && report && r.report !== report) { r.report = report; env.store.put(r); }
+				// Not saved here: omp reports every assistant turn, and each save writes the lead's whole snapshot. The exit
+				// saves the final report; a lead that crashes before it resumes with the one its last snapshot holds.
+				if (r && report) r.report = report;
 				return r;
 			}
 			case "nextUse":

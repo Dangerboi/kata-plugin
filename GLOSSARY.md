@@ -24,7 +24,7 @@ Returning an exited delegate's still-open issue to the lead, marked for review.
 _Avoid_: release, settle-back
 
 **Report**:
-A delegate's final word on its work: its last assistant message, or what it yielded. The plugin posts it on the delegate's issue when the delegate left no comment of its own.
+A delegate's final word on its work: the text of its last assistant message that has any, or what it yielded. The plugin posts it on the delegate's issue when the delegate left no comment of its own.
 _Avoid_: summary, result
 
 ## Plans
