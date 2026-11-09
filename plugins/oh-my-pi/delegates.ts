@@ -231,7 +231,10 @@ export interface Delegates {
 
 // The report is for reading on the issue, not a transcript: a long one is cut.
 const REPORT_LIMIT = 4000;
-export const REPORT_HEADING = "Report from subagent";
+const REPORT_HEADING = "Report from subagent";
+// A delegate's own comment is the better record; its report only stands in for a delegate that left none. A report the
+// plugin posted for it earlier carries its teammate too, but is not its own.
+export const ownComment = (c: { teammate?: string; body?: string }, teammate: string) => !!teammate && c.teammate === teammate && !(c.body ?? "").startsWith(REPORT_HEADING);
 
 export function createDelegates(env: DelegatesEnv): Delegates {
 	const ns = env.namespace;
@@ -389,11 +392,9 @@ export function createDelegates(env: DelegatesEnv): Delegates {
 		if (issue.status === "open" && issue.metadata?.[keySubagent] === r.id) await env.kata.run(["meta", "unset", ref, keySubagent], cwd);
 	}
 
-	// The delegate's own comment is the better record; its report only stands in for a delegate that left none.
-	// Comments the plugin posted for it (an earlier run's report) do not count as its own.
 	async function postReport(r: DelegateRecord, ref: string, cwd: string, shown: KataShow) {
 		if (!r.report) return;
-		if ((shown.comments ?? []).some(c => c.teammate === r.teammate && !c.body.startsWith(REPORT_HEADING))) return;
+		if ((shown.comments ?? []).some(c => ownComment(c, r.teammate))) return;
 		await env.kata.run(["comment", ref, "--teammate", r.teammate, "--idempotency-key", `${ns}-report:${r.leadSessionId}:${r.id}:${digest(r.report)}`,
 			"--body", `${REPORT_HEADING} ${nameOf(r)} (it left no comment of its own):\n\n${r.report}`], cwd);
 	}

@@ -36,7 +36,7 @@ const PI_LAUNCH = /(?:^|[;&|(`\n]|\$\(|\b(?:ba|z|da|k)?sh\s+(?:-[a-z]+\s+)*-[a-z
 export const launchesPi = (command: string) => PI_LAUNCH.test(command);
 
 // A child's report: the text of its last assistant message on the session branch.
-export function lastAssistantText(ctx: ExtensionContext): string | undefined {
+function lastAssistantText(ctx: ExtensionContext): string | undefined {
 	const message = (ctx.sessionManager.getBranch() as any[]).filter(e => e.type === "message" && e.message?.role === "assistant").at(-1)?.message;
 	const text = textOf(message?.content);
 	return text.trim() || undefined;

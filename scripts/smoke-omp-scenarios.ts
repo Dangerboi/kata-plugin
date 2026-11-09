@@ -5,7 +5,7 @@
 // `--resume`), needs a new RPC command, or needs a model call that hangs (`{ hang: true }`).
 
 import { fileURLToPath } from "node:url";
-import { REPORT_HEADING } from "../plugins/oh-my-pi/delegates";
+import { ownComment } from "../plugins/oh-my-pi/delegates";
 
 /** `{ hang: true }` never answers: the model call stays pending (no events) until omp dies, so the agent never reaches a tool call. */
 export type Block = string | { tool: string; args: Record<string, unknown> } | { hang: true };
@@ -149,11 +149,12 @@ export const SCENARIOS: Scenario[] = [{
 		const hasRecorded = (e: any) => e?.type === recorded.type && e?.command === recorded.command;
 		const transcript = (i?: Issue) => i?.events.find(e => e.type === "issue.closed")?.payload?.transcript;
 		const closeEvidence = (i?: Issue) => i?.events.find(e => e.type === "issue.closed")?.payload?.evidence ?? [];
-		const comments = (i?: Issue) => (i?.events.filter(e => /comment/.test(e.type)) ?? []).map(e => JSON.stringify(e.payload));
-		// Only a real model follows the binding's instruction; the scripted delegate just closes. Its own comment carries its
-		// teammate; the plugin's report (same teammate) and hand-back note (the lead's) do not count.
-		const own = (i?: Issue) => (i?.events.filter(e => /comment/.test(e.type)) ?? []).filter(e => e.payload?.teammate && e.payload.teammate === i?.metadata.teammate && !String(e.payload.body ?? "").startsWith(REPORT_HEADING));
-		const delegateNote = store.live ? [{ name: "the delegate commented what it did on its own task", ok: own(parser).length > 0, detail: comments(parser).join(" | ") }] : [];
+		const commentPayloads = (i?: Issue) => (i?.events.filter(e => /comment/.test(e.type)) ?? []).map(e => e.payload);
+		const comments = (i?: Issue) => commentPayloads(i).map(p => JSON.stringify(p));
+		// Only a real model follows the binding's instruction; the scripted delegate just closes. The issue keeps the
+		// delegate's teammate once it closed it (the check beside this one), so the plugin's report and the lead's notes
+		// do not count; a hand back moves the teammate to the lead, but then the closed-task check fails anyway.
+		const delegateNote = store.live ? [{ name: "the delegate commented what it did on its own task", ok: commentPayloads(parser).some(p => ownComment(p, String(parser?.metadata.teammate ?? ""))), detail: comments(parser).join(" | ") }] : [];
 		return [
 			...delegateNote,
 			{ name: "todo done also comments its message and evidence", ok: comments(tests).some(c => c.includes(store.live ? "Done: " : `Done: ${message}`) && c.includes(evidence)), detail: comments(tests).join(" | ") },
