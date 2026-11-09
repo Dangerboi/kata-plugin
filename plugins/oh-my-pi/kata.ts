@@ -23,6 +23,7 @@ import { createInterface } from "node:readline";
 import { createKataCore, DESCRIPTION, sessionKey, TODO_OPS, TODO_PARAMS } from "./kata-core";
 import { delegateCommand, kataCommands as parseKataCommands } from "./shell";
 import { FINAL, teammateFor } from "./delegates";
+import { textOf } from "./model";
 import type { DelegateRecord, Delegates, DelegateStore, Reservation } from "./delegates";
 import type { InboxStream } from "./inbox";
 import { describeTodoCall, describeTodoResult, todoWidget } from "./tsp";
@@ -276,7 +277,8 @@ export default function ompKata(pi: any) {
 		return store.of(ctx);
 	};
 
-	// The lead Delegates that the delegates started from `ctx` report to: this session's own, or a nested delegate's lead.
+	// The lead Delegates that the delegates started from `ctx` report to: this session's own (registered here for its
+	// delegates' later events, and for worker threads), or a nested delegate's lead.
 	const leadOf = (ctx: any): { id: string; delegates?: DelegateEvents } | undefined => {
 		if (main(ctx)) {
 			const id = sessionId(ctx);
@@ -320,8 +322,9 @@ export default function ompKata(pi: any) {
 		const event = payload?.event, type = event?.type;
 		if (type !== "message_end" && type !== "tool_execution_start") return;
 		let text: string | undefined;
-		if (type === "message_end" && event.message?.role === "assistant") text = (event.message.content ?? []).filter((b: any) => b?.type === "text").map((b: any) => b.text).join("\n");
-		else if (type === "tool_execution_start" && event.toolName === "yield") {
+		if (type === "message_end" && event.message?.role === "assistant") text = textOf(event.message.content);
+		// A yield with a `type` is one section of an incremental result, not the whole report.
+		else if (type === "tool_execution_start" && event.toolName === "yield" && event.args?.type === undefined) {
 			const { data, error } = event.args ?? {};
 			text = typeof error === "string" ? `Failed: ${error}` : typeof data === "string" ? data : data === undefined ? undefined : JSON.stringify(data, null, 2);
 		}

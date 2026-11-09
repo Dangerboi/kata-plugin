@@ -483,6 +483,8 @@ for (const yielded of [false, true]) test(`a delegate's report is ${yielded ? "w
   message("message_update", "assistant", "partial streaming text");
   message("message_end", "user", "a user turn");
   if (yielded) app.emit("task:subagent:event", { id, event: { type: "tool_execution_start", toolName: "yield", args: { data: { spring: "replaced" } } } });
+  // An incremental section is part of a result, never the report.
+  app.emit("task:subagent:event", { id, event: { type: "tool_execution_start", toolName: "yield", args: { type: ["confidence"], data: 0.8 } } });
   app.emit("task:subagent:lifecycle", { id, status: "completed", sessionFile });
   await app.call({ op: "view" });
   const comments = (await show(`v2test#${(await show(parent)).children[0].short_id}`)).comments.map((c: any) => c.body);

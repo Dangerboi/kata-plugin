@@ -57,9 +57,10 @@ export type ChildParent = { sessionId: string; ref?: string; workspace: string; 
 const CHILD_TEAMMATE = /^[a-z0-9][a-z0-9._-]{0,63}$/;
 // A pi child's name: the session name it was started with (`pi --name`), else the task or ticket it was matched to, else
 // the end of its session id. Short enough to read in a comment heading.
+const CHILD_NAME_LIMIT = 40;
 function childName(sessionName: string | undefined, reserved: Reservation | undefined, id: string): string {
-	const short = (text: string | undefined) => text?.slice(0, 40).replace(/[-._]+$/, "") || undefined;
-	return short(slug(sessionName, true)) ?? short(slug(reserved?.title)) ?? short(slug(reserved?.ref)) ?? `pi-${id.replace(/[^a-z0-9]/gi, "").slice(-6).toLowerCase()}`;
+	const short = (text: string | undefined) => text?.slice(0, CHILD_NAME_LIMIT).replace(/[-._]+$/, "") || undefined;
+	return short(slug(sessionName, true)) ?? short(slug(reserved?.title)) ?? `pi-${id.replace(/[^a-z0-9]/gi, "").slice(-6).toLowerCase()}`;
 }
 
 export function sessionKey(file: string, cwd: string): string {
@@ -124,15 +125,15 @@ Kata specifics:
 - drop/rm take the reason in \`message\`.
 - drop and rm close those tasks as wontfix (Kata never deletes). Automatic session parents close from their children’s Kata-recorded evidence once all work has settled. Explicit/claimed parents remain yours to close. Folders with no Kata project use KATA_DEFAULT_PROJECT (labeled with the repo) or register their inferred project; the plan is session-local only while Kata is unreachable and replays when it returns.`;
 
-function delegateContext(executable: string, id: string, ref: string, teammate: string, binding: Binding): string {
+function delegateContext(executable: string, name: string, ref: string, teammate: string, binding: Binding): string {
 	const command = `${quote(executable)} --workspace ${quote(binding.workspace)} --project ${quote(projectOf(binding.parent))} --teammate ${quote(teammate)}`;
-	return `You are subagent ${id}. Your Kata issue is ${ref}; your teammate is ${teammate}. Keep the existing actor and use this issue instead of inherited KATA_REF. Track attention on your own issue. Before you finish, whatever the outcome, YOU must comment on your issue what you did, since other subagents may work it before or after you: ${command} comment ${quote(ref)} --body '<what you changed, how you verified it, and what remains, in a few sentences>'. When verified, YOU must then run: ${command} close ${quote(ref)} --done --message '<describe this task and its verification in at least 40 characters>' --evidence '<typed evidence for your actual verification>'. If unfinished, leave it open; your comment says what remains.`;
+	return `You are subagent ${name}. Your Kata issue is ${ref}; your teammate is ${teammate}. Keep the existing actor and use this issue instead of inherited KATA_REF. Track attention on your own issue. Before you finish, whatever the outcome, YOU must comment on your issue what you did, since other subagents may work it before or after you: ${command} comment ${quote(ref)} --body '<what you changed, how you verified it, and what remains, in a few sentences>'. When verified, YOU must then run: ${command} close ${quote(ref)} --done --message '<describe this task and its verification in at least 40 characters>' --evidence '<typed evidence for your actual verification>'. If unfinished, leave it open; your comment says what remains.`;
 }
 
 // A delegate that matched no plan item and named no ticket has no issue. Its
 // binding says so instead of sending it to one: the lead tracks the work.
-function untrackedDelegateContext(id: string): string {
-	return `You are subagent ${id}. The lead session tracks this work and you have no Kata issue. Do not create, claim, close, comment on or edit Kata issues, including one named by an inherited KATA_REF. Reading Kata is fine. Report your results in your reply.`;
+function untrackedDelegateContext(name: string): string {
+	return `You are subagent ${name}. The lead session tracks this work and you have no Kata issue. Do not create, claim, close, comment on or edit Kata issues, including one named by an inherited KATA_REF. Reading Kata is fine. Report your results in your reply.`;
 }
 
 // Items that name no ticket become children of a parent issue; a plan of only named items needs none.

@@ -150,7 +150,7 @@ export const SCENARIOS: Scenario[] = [{
 		const closeEvidence = (i?: Issue) => i?.events.find(e => e.type === "issue.closed")?.payload?.evidence ?? [];
 		const comments = (i?: Issue) => (i?.events.filter(e => /comment/.test(e.type)) ?? []).map(e => JSON.stringify(e.payload));
 		// Only a real model follows the binding's instruction; the scripted delegate just closes.
-		const delegateNote = store.live ? [{ name: "the delegate commented what it did on its own task", ok: comments(parser).length > 0, detail: `${comments(parser).length} comments` }] : [];
+		const delegateNote = store.live ? [{ name: "the delegate commented what it did on its own task", ok: comments(parser).some(c => !c.includes("Report from subagent")), detail: comments(parser).join(" | ") }] : [];
 		return [
 			...delegateNote,
 			{ name: "todo done also comments its message and evidence", ok: comments(tests).some(c => c.includes(store.live ? "Done: " : `Done: ${message}`) && c.includes(evidence)), detail: comments(tests).join(" | ") },

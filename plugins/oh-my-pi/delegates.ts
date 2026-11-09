@@ -291,10 +291,11 @@ export function createDelegates(env: DelegatesEnv): Delegates {
 				// The delegate closes the whole ticket, which would strand the lead's other open items on it.
 				const siblings = tasks.filter(t => t !== item && t.ticket === ticket && OPEN.has(t.status));
 				if (siblings.length) throw new Error(`Task ${index + 1} would delegate ${ticket}, but other open plan items name it (${siblings.map(t => `"${t.content}"`).join(", ")}). A delegate closes its whole ticket. Delegate the ticket only when no other open item names it, or plan the work as child issues (todo init with ref ${ticket}) and delegate one of those.`);
-				try { await env.owned(ticket, src.workspace, "check", false, undefined, as); }
+				let shown: KataIssue;
+				try { shown = await env.owned(ticket, src.workspace, "check", false, undefined, as); }
 				catch (error) { throw new Error(`Task ${index + 1} names ${ticket}, which cannot be delegated: ${failure(error)}`); }
 				taken.add(ticket);
-				reservations.push({ ref: ticket, ticket: true, title: item ? itemTicket(item.content)?.action ?? item.content : undefined });
+				reservations.push({ ref: ticket, ticket: true, title: item ? itemTicket(item.content)?.action ?? item.content : shown.title });
 			}
 			return reservations;
 		});
@@ -411,7 +412,8 @@ export function createDelegates(env: DelegatesEnv): Delegates {
 			throw error;
 		}
 		const issue = shown.issue;
-		if (issue.status === "closed") { await postReport(r, ref, cwd, shown); return settled(); }
+		// Only a delegate that held the issue reports on it; a failed or cut-off assignment never did.
+		if (issue.status === "closed") { if (r.state === "assigned") await postReport(r, ref, cwd, shown); return settled(); }
 		// A delegate whose assignment was written ends by dropping its subagent id (rollback and hand back both write it last),
 		// so an id that is no longer its own means the cleanup already ran, maybe in another session.
 		if (r.state === "assigned" && issue.metadata?.[keySubagent] !== r.id) return settled();

@@ -3,6 +3,7 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import { createKataCore, DESCRIPTION, TODO_OPS, TODO_PARAMS, type Lead, type ChildParent } from "./kata-core";
 import { delegateCommand, kataCommands, quote } from "./shell";
 import type { DelegateRecord, DelegateStore } from "./delegates";
+import { textOf } from "./model";
 
 // Match the native adapter's capability/scope selection, including a project
 // root boundary. Recheck at prompt time: either factory can load first.
@@ -37,8 +38,7 @@ export const launchesPi = (command: string) => PI_LAUNCH.test(command);
 // A child's report: the text of its last assistant message on the session branch.
 export function lastAssistantText(ctx: ExtensionContext): string | undefined {
 	const message = (ctx.sessionManager.getBranch() as any[]).filter(e => e.type === "message" && e.message?.role === "assistant").at(-1)?.message;
-	const content = message?.content;
-	const text = typeof content === "string" ? content : Array.isArray(content) ? content.filter((b: any) => b?.type === "text").map((b: any) => b.text).join("\n") : "";
+	const text = textOf(message?.content);
 	return text.trim() || undefined;
 }
 

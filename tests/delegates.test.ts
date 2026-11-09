@@ -519,7 +519,7 @@ test("a spawn naming a ticket outside the plan is reserved as that ticket and as
   const a = lead(); await a.plan(["Build the lambda widget"]);
   const ticket = (await kata(["create", "Outside ticket", "--force-new", "--json"])).issue.short_id, ref = `delegates-test#${ticket}`;
   const [reserved] = await a.delegates.check([{ text: `Work ${ref}: write the thing` }]);
-  expect(reserved).toEqual({ ref, ticket: true });
+  expect(reserved).toEqual({ ref, ticket: true, title: "Outside ticket" });
   await a.delegates.apply(a.started("lambda", `Work ${ref}`, { reserved }));
   expect((await show(ref)).issue.metadata["omp.subagent_id"]).toBe("lambda");
   expect(await a.delegate("lambda").assignment()).toContain(ref);
