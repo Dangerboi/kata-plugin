@@ -1,6 +1,6 @@
 # Development
 
-**Run every test and live experiment with an explicit throwaway `KATA_HOME`. Never point experiments at a normal store or a real project.** The root test runner creates a marked temporary root, clears inherited remote/issue routing, and passes isolated stores to the suites. Real-Kata fixtures stop their own daemons.
+**Run every test and live experiment with an explicit throwaway `KATA_HOME`. Never point experiments at a normal store or a real project.** The root test runner creates a marked temporary root, clears inherited remote/issue routing, and passes isolated stores to the suites. Real-Kata fixtures stop their own daemons, and the runner stops any daemon left in its root when the tests end, including after Ctrl-C or SIGTERM. A run killed outright (SIGKILL) can't do that, so each run starts by stopping the daemons in roots whose runner is gone; a root whose runner is still running is left alone. A live experiment you start by hand leaves its daemon running: stop it with `KATA_HOME=<home> kata daemon stop`.
 
 ```sh
 bun install --ignore-scripts
