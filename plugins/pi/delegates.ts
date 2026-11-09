@@ -231,7 +231,7 @@ export interface Delegates {
 
 // The report is for reading on the issue, not a transcript: a long one is cut.
 const REPORT_LIMIT = 4000;
-const REPORT_HEADING = "Report from subagent";
+export const REPORT_HEADING = "Report from subagent";
 
 export function createDelegates(env: DelegatesEnv): Delegates {
 	const ns = env.namespace;
@@ -292,11 +292,11 @@ export function createDelegates(env: DelegatesEnv): Delegates {
 				// The delegate closes the whole ticket, which would strand the lead's other open items on it.
 				const siblings = tasks.filter(t => t !== item && t.ticket === ticket && OPEN.has(t.status));
 				if (siblings.length) throw new Error(`Task ${index + 1} would delegate ${ticket}, but other open plan items name it (${siblings.map(t => `"${t.content}"`).join(", ")}). A delegate closes its whole ticket. Delegate the ticket only when no other open item names it, or plan the work as child issues (todo init with ref ${ticket}) and delegate one of those.`);
-				let held: KataIssue;
-				try { held = await env.owned(ticket, src.workspace, "check", false, undefined, as); }
+				let ticketIssue: KataIssue;
+				try { ticketIssue = await env.owned(ticket, src.workspace, "check", false, undefined, as); }
 				catch (error) { throw new Error(`Task ${index + 1} names ${ticket}, which cannot be delegated: ${failure(error)}`); }
 				taken.add(ticket);
-				reservations.push({ ref: ticket, ticket: true, title: item ? itemTicket(item.content)?.action ?? item.content : held.title });
+				reservations.push({ ref: ticket, ticket: true, title: item ? itemTicket(item.content)?.action ?? item.content : ticketIssue.title });
 			}
 			return reservations;
 		});
