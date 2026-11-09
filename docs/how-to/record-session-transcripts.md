@@ -31,6 +31,7 @@ Each session start exports `KATA_CLOSE_TRANSCRIPT_ENABLED` (unless already set),
 - **oh-my-pi delegates** run inside the lead's process. A delegate's `kata close` in its `bash` tool and its own `todo` closes (`done`, `drop`, `rm`) record the delegate's own session, which AgentsView lists as a child of the lead's. If the plugin cannot read the delegate's session ID yet, a `bash` close records the lead's session and a `todo` close records no session.
 - **pi children** are separate processes, and each records its own session.
 - **Other harnesses** started from the `bash` tool (for example `claude -p`) inherit the switch and the pair, and Kata prefers the pair over their own session variable. Their closes record the oh-my-pi or pi session that launched them. Unset the pair in the command to record the child's own session.
+- **Harnesses outside omp and pi**, run in their own terminal, get no switch from the plugin: add `enabled = true` under `[close.transcript]` in Kata's config to record their closes, with their own session pair or a `[close.transcript.session_id_env]` mapping (see below).
 
 ## `session_id_env`
 

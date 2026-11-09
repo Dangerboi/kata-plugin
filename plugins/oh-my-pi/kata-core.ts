@@ -658,13 +658,23 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 
 	// ------------------------------------------------------------- transitions
 
+	// Keys are ours, so an `idempotency_mismatch` against an issue that still exists (first-create fingerprints include the
+	// priority, so issues from an earlier version mismatch) is that issue: adopt it. Undefined when the error is no such
+	// mismatch or the issue was deleted; any other show error propagates.
+	async function adoptMismatched(error: unknown, cwd: string): Promise<{ ref: string; issue: KataIssue } | undefined> {
+		const qualified = (error as KataError).info?.data?.qualified_id;
+		if (!isKataCode(error, "idempotency_mismatch") || typeof qualified !== "string") return;
+		try { return { ref: qualified, issue: (await kata.show(qualified, cwd)).issue }; }
+		catch (showError) { if (!isKataCode(showError, "issue_not_found")) throw showError; }
+	}
+
 	async function create(phase: string, content: string, cwd: string): Promise<void> {
 		const project = projectOf(plan.parent!);
 		const args = [
 			"create", "--parent", plan.parent!, "--project", project, "--body", `Todo task in phase "${phase}".`,
 			"--meta", `todo.phase=${phase}`, "--meta", "todo.status=pending", ...(plan.label ? ["--label", plan.label] : []),
 			"--idempotency-key", `${namespace}-kata:${digest(plan.parent!, phase, content)}`,
-			// Kata fingerprints the priority, so a replay must not pick up a changed [create].default_priority.
+			// A replay must not pick up a changed default priority.
 			"--priority", "none",
 			// Sibling tasks often read alike ("write x" / "verify x"); they are
 			// deliberate plan items, so skip the look-alike soft-block.
@@ -675,10 +685,9 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 			const out = JSON.parse(await kata.run(args, cwd));
 			issue = out?.issue;
 		} catch (error) {
-			// The key is ours, so an existing issue under it with another fingerprint (e.g. made by an earlier version) is this item.
-			const qualified = (error as KataError).info?.data?.qualified_id;
-			if (!isKataCode(error, "idempotency_mismatch") || typeof qualified !== "string") throw error;
-			issue = (await kata.show(qualified, cwd).catch(shown => { throw isKataCode(shown, "issue_not_found") ? error : shown; })).issue;
+			const adopted = await adoptMismatched(error, cwd);
+			if (!adopted) throw error;
+			issue = adopted.issue;
 		}
 		if (typeof issue?.short_id !== "string") throw new Error("kata create returned no short_id");
 		// Replays may restore removed work, but never another writer's task.
@@ -955,9 +964,10 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 			catch (error) {
 				const { uid, qualified_id: qualified } = (error as KataError).info?.data ?? {};
 				if (typeof uid !== "string" || spent.has(uid)) throw error;
-				if (isKataCode(error, "idempotency_mismatch") && typeof qualified === "string") {
-					try { return { ref: qualified, issue: (await kata.show(qualified, workspace)).issue }; }
-					catch (shown) { if (!isKataCode(shown, "issue_not_found")) throw shown; }
+				if (isKataCode(error, "idempotency_mismatch")) {
+					if (typeof qualified !== "string") throw error;
+					const adopted = await adoptMismatched(error, workspace);
+					if (adopted) return adopted;
 				} else if (!isKataCode(error, "idempotency_deleted")) throw error;
 				spent.add(uid);
 				key = `${namespace}-session:${sessionId}:after:${uid}`;
@@ -1369,7 +1379,8 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 		return entry.actor ??= actor(cwd).catch(error => { entry.actor = undefined; throw error; });
 	}
 
-	// The contract is fetched once per session; the inbox on every call, so a request
+	// The contract is fetched until one arrives non-empty: Kata 0.23.0 sends an empty one outside a `.kata.toml`
+	// folder, so a mid-session `kata init` takes effect on the next turn. The inbox is read on every call, so a request
 	// sent mid-session reaches a later turn. A read slower than the caller's budget
 	// keeps running and lands in the cache for the next turn. `inbox: false` leaves the
 	// inbox to a caller that keeps it current another way.
