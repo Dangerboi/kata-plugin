@@ -12,6 +12,7 @@ Session start exports `KATA_CLOSE_TRANSCRIPT_ENABLED=true` (unless already set),
 | `KATA_AUTHOR`, `KATA_TEAMMATE` | Existing actor and optional main teammate. |
 | `KATA_INBOX_USER` | The session's inbox address, `<actor>/<name>`. A bare `<actor>` is a person's own inbox: the session reads none and says so once. Only requests from the session's own actor are shown. |
 | `KATA_OMP_LIVE_INBOX` | `0` turns off live delivery of inbox requests to the main session and keeps the per-turn read. tern-kata sets it for the agents it starts, because it delivers there itself. |
+| `KATA_CLOSE_TRANSCRIPT_ENABLED` | `false` in the environment that launches omp stops closes recording the session; unset, session start sets `true`. |
 | `KATA_OMP_DEBUG` | Optional append-only diagnostic log. |
 
 The todo tool supports `init`, `append`, `start`, `block`, `unblock`, `done`, `drop`, `rm`, `view`. `/todo` supports `start`, `done`, `drop`, `rm`, `append`, `block`, and `unblock`; with no subcommand it shows the plan. Phases and task refs are retained in Kata. Local plans, queued close retries and unfinished delegate cleanups persist in custom session entries and resume with a saved session. Explicit `/todo done` records the user's completion attestation as external evidence. Removed items are retired, never deleted.
