@@ -11,6 +11,8 @@ bun run typecheck
 
 The real native pi adapter tests need Kata 0.23.0, the minimum version; they are skipped when `kata agent-hook install` is missing, never faked. `test` runs OMP/pi tests, real-Kata integration tests, and revision conformance. The adapter tests and `smoke:omp` load the vendored copies in `plugins/*`, so every runner and `smoke:omp` refuse to start until `bun run build:plugins` has refreshed them after a `core/` edit.
 
+Pull requests run `.github/workflows/compatibility.yml`: the full `bun run test`, the typecheck and a drift check of the vendored copies, against the public Kata 0.23.0 release in isolated homes.
+
 Focused runners retain the isolation wrapper:
 
 ```sh

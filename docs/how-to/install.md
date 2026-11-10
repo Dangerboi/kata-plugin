@@ -2,6 +2,16 @@
 
 Install Kata 0.23.0 or later. Oh-my-pi and pi need no Kata project in the folder: a folder without a Kata project uses `KATA_DEFAULT_PROJECT` or its inferred project (see the [oh-my-pi reference](../reference/oh-my-pi.md)). These plugins use `agent-contract-hook`, revision guards, typed evidence, `audit closes`, and `events`.
 
+## Runtime compatibility
+
+Both plugins check `kata version --json` before using the CLI. They require JSON schema 1 (`kata_api_version: 1`) and a version that proves Kata 0.23.0 or later. For older or unprovable versions, plan tools fail with an upgrade or installation message (Kata error code `unsupported_version`); missing executables, unreachable Kata and timed-out probes still use the local plan fallback.
+
+Background contract injection and plugin-managed attention hooks quietly skip incompatible Kata; they do not show the upgrade error. Use a plan tool to see the error and installation guidance.
+
+Release versions such as `v0.23.0` are accepted. Source builds made with `make install` from a tagged clone are accepted when their base release is at least 0.23.0, including git-describe versions such as `v0.23.0-4-g4aea65239`, `v0.23.0-4-g4aea65239-dirty` and `v0.23.0-dirty`. The 0.23.0 prerelease is below the minimum; prereleases of later versions are accepted.
+
+Plain `go build`, `go install …@latest` and tagless clones can report `dev` or a bare commit hash, which cannot establish the minimum. Install a versioned release at or above 0.23.0 using Homebrew, a release archive or `kata update`, or build with `make install` from a clone with release tags. Retry the plugin operation after installing or upgrading Kata.
+
 ## Oh-my-pi
 
 ```sh
