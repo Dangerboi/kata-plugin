@@ -910,3 +910,15 @@ test("a slow shutdown of the old instance does not delete the next session's tra
     expect([process.env.KATA_TRANSCRIPT_AGENT, process.env.KATA_TRANSCRIPT_SESSION_ID]).toEqual(["pi", next.sid]);
   } finally { delete process.env.KATA_TRANSCRIPT_AGENT; delete process.env.KATA_TRANSCRIPT_SESSION_ID; }
 });
+
+test("pi reports an old Kata as an upgrade error, never a local plan", async () => {
+  const app = await host({ before: (args: string[]) => args[0] === "version" ? { code: 0, stdout: '{"version":"0.22.9"}' } : undefined });
+  await app.event("session_start", { reason: "startup" });
+  const result = await app.call({ op: "init", items: ["Must upgrade first"] });
+  expect(result.isError).toBe(true);
+  expect(result.content[0].text).toContain("requires Kata >=0.23.0");
+  expect(result.content[0].text).toContain("Upgrade Kata");
+  expect(result.details.kata.local).not.toBe(true);
+  expect(app.calls.some(a => ["list", "create", "claim", "meta"].includes(a[0]))).toBe(false);
+  await app.event("session_shutdown", { reason: "quit" });
+});

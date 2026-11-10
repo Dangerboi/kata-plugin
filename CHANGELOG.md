@@ -4,6 +4,10 @@ All notable changes to kata-plugin are listed here. The format follows [Keep a C
 
 ## [Unreleased]
 
+### Fixed
+
+- Both omp and Pi now check for Kata >=0.23.0 before using the CLI and show an upgrade error for older or unrecognized versions. Missing executables and unreachable Kata still use the local plan fallback.
+
 ## [1.9.1] - 2026-11-10
 
 kata-omp 2.9.1 and @dangerboi/kata-pi 1.9.1.
