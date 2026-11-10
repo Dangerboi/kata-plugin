@@ -68,6 +68,7 @@ Scenarios are data in `scripts/smoke-omp-scenarios.ts`: scripted turns per agent
 - **Area:** inside each type, entries sit under a `####` area heading, in this order: Requirements (Kata and host versions), Install and update, Plans (the `todo` tool, parents, ticket items, closes), Delegates, Inbox and attention, Display (the `#` menu, widgets, Tern), Development. Add a heading only when the type has an entry for that area; a new area joins this list first.
 - **Shape:** one feature or fix per top-level bullet, a sentence that names the thing that changed. Detail goes in sub-bullets of a line or two each. A change that only one host gets starts with `omp:` or `pi:`. A change that breaks an upgrade starts with `**Breaking:**` and says what to do.
 - **Reader:** someone who installs and uses the plugins. Write in the present tense, and name the behaviour, not ticket ids or commit hashes.
+- **Credit:** an entry for a change someone other than the maintainer contributed ends its top-level bullet with `Thanks to @<user> ([#<pr>](<pull request URL>)).`, the one place a changelog entry links a pull request. When one contributor made every change in a release, say so once on the line under the version heading instead.
 - **Superseded:** when later work replaces something already under Unreleased, rewrite that entry in its final form.
 
 ## Releases
