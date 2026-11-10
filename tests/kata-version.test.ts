@@ -13,9 +13,12 @@ async function checkVersion(version: string, supported: boolean, guidance = "Upg
   const kata = client(async (_file, args) => { calls.push(args); return args[0] === "version" ? reply(version) : { code: 0, stdout: "ok" }; });
   if (supported) expect(await kata.run(["create", "fixture"], "/fixture")).toBe("ok");
   else {
-    const request = kata.run(["create", "must not write"], "/fixture");
-    await expect(request).rejects.toMatchObject({ code: "unsupported_version", unusable: false, message: expect.stringContaining(guidance) });
-    await expect(request).rejects.toThrow("requires Kata >=0.23.0");
+    const error = await kata.run(["create", "must not write"], "/fixture").then(() => undefined, error => error);
+    expect(error).toBeInstanceOf(Error);
+    expect(error.code).toBe("unsupported_version");
+    expect(error.unusable).toBe(false);
+    expect(error.message).toContain(guidance);
+    expect(error.message).toContain("requires Kata >=0.23.0");
     expect(calls).toHaveLength(1);
   }
 }
