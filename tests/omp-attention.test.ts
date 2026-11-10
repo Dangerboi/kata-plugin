@@ -1,4 +1,4 @@
-import { afterAll, afterEach, beforeAll, beforeEach, expect, test } from "bun:test";
+import { afterAll, afterEach, beforeAll, beforeEach, expect, jest, test } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { assertIsolated } from "./isolation";
@@ -98,6 +98,24 @@ test("no explicit ref keeps bounded startup and makes no daemon locate call", as
     expect(app.calls.some(a => a[0] === "daemon" && a[1] === "locate")).toBe(false);
     expect(process.env.KATA_ATTENTION_HOST).toBeUndefined();
   } finally { resume.resolve(); await start; }
+});
+
+test("a hung attention start holds explicit-ref startup for the attention bound only", async () => {
+  process.env.KATA_REF = await issue();
+  const entered = Promise.withResolvers<void>(), resume = Promise.withResolvers<void>();
+  const app = host(async args => { if (args[1] === "attention-native" && args[3] === "start") { entered.resolve(); await resume.promise; } });
+  jest.useFakeTimers();
+  let returned = false;
+  const start = app.event("session_start").then(() => { returned = true; });
+  const settle = async () => { for (let i = 0; i < 20; i++) await Promise.resolve(); };
+  try {
+    await entered.promise;
+    jest.advanceTimersByTime(9_999); await settle();
+    expect(returned).toBe(false);
+    jest.advanceTimersByTime(1); await settle();
+    expect(returned).toBe(true);
+    expect(process.env.KATA_ATTENTION_HOST).toBeUndefined();
+  } finally { jest.useRealTimers(); resume.resolve(); await start; }
 });
 
 // Run the real generated native consumer in another process: its live-parent check excludes its own PID.

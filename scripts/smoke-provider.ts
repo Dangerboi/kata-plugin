@@ -1,4 +1,5 @@
 // Shared credential-free scripted provider. Hosts supply their maintained stream class.
+/** `{ hang: true }` never answers: the model call stays pending (no events) until the host dies, so the agent never reaches a tool call. */
 export type SmokeBlock = string | { tool: string; args: Record<string, unknown> } | { hang: true };
 export function registerSmokeProvider(pi: any, Stream: new () => any, turn: (context: any) => SmokeBlock[], provider = "kata-smoke", model = "scripted") {
   let counter = 0;

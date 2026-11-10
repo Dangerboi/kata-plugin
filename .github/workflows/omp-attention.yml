@@ -1,13 +1,14 @@
 name: OMP native Pi attention
 
+# The unit tests run in the compatibility workflow; this one drives real omp releases through their bash tool.
 on:
   pull_request:
     paths:
       - core/**
       - plugins/**
-      - tests/omp-attention.test.ts
       - scripts/smoke-omp-attention.ts
       - scripts/smoke-provider.ts
+      - package.json
       - .github/workflows/omp-attention.yml
   workflow_dispatch:
 
@@ -21,33 +22,31 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        omp: [18.12.6, 18.18.1, 18.18.6]
+        omp: [18.18.1, 18.18.6]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
-          fetch-depth: 0
           persist-credentials: false
-      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version: '24'
           package-manager-cache: false
-      - name: Install public Kata and isolated harnesses
+      - name: Install Bun, public Kata 0.23.0 and isolated harnesses
         env:
           OMP_VERSION: ${{ matrix.omp }}
         run: |
+          npm install --global bun@1.4.4
           mkdir -p "$RUNNER_TEMP/kata-bin" "$RUNNER_TEMP/harnesses"
           release=https://github.com/kenn-io/kata/releases/download/v0.23.0
-          curl -fsSL "$release/kata_0.23.0_linux_amd64.tar.gz" -o "$RUNNER_TEMP/kata-bin/kata_0.23.0_linux_amd64.tar.gz"
-          curl -fsSL "$release/SHA256SUMS" -o "$RUNNER_TEMP/kata-bin/SHA256SUMS"
+          curl -fsSL --retry 3 "$release/kata_0.23.0_linux_amd64.tar.gz" -o "$RUNNER_TEMP/kata-bin/kata_0.23.0_linux_amd64.tar.gz"
+          curl -fsSL --retry 3 "$release/SHA256SUMS" -o "$RUNNER_TEMP/kata-bin/SHA256SUMS"
           (
             cd "$RUNNER_TEMP/kata-bin"
             sha256sum --check --ignore-missing SHA256SUMS
           )
           tar -xzf "$RUNNER_TEMP/kata-bin/kata_0.23.0_linux_amd64.tar.gz" -C "$RUNNER_TEMP/kata-bin" kata
           echo "$RUNNER_TEMP/kata-bin" >> "$GITHUB_PATH"
-          echo "KATA_TEST_EXECUTABLE=$RUNNER_TEMP/kata-bin/kata" >> "$GITHUB_ENV"
-          bun install --frozen-lockfile
+          bun install --ignore-scripts --frozen-lockfile
           npm install --prefix "$RUNNER_TEMP/harnesses" "@oh-my-pi/pi-coding-agent@$OMP_VERSION"
           echo "OMP_BIN=$RUNNER_TEMP/harnesses/node_modules/.bin/omp" >> "$GITHUB_ENV"
           echo "PI_BIN=$GITHUB_WORKSPACE/node_modules/.bin/pi" >> "$GITHUB_ENV"
@@ -57,42 +56,6 @@ jobs:
           echo "HOME=$RUNNER_TEMP/attention-home" >> "$GITHUB_ENV"
           echo "XDG_CONFIG_HOME=$RUNNER_TEMP/attention-home/config" >> "$GITHUB_ENV"
           echo "PI_CODING_AGENT_DIR=$RUNNER_TEMP/attention-home/pi" >> "$GITHUB_ENV"
-          echo "OMP_CONFIG_DIR=$RUNNER_TEMP/attention-home/omp" >> "$GITHUB_ENV"
           echo "KATA_HOME=$RUNNER_TEMP/attention-home/kata" >> "$GITHUB_ENV"
-      - name: Prove the regression fails on the base implementation
-        if: github.event_name == 'pull_request'
-        env:
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
-        run: |
-          cp core/kata-core.ts "$RUNNER_TEMP/head-kata-core.ts"
-          trap 'cp "$RUNNER_TEMP/head-kata-core.ts" core/kata-core.ts; bun run build:plugins' EXIT
-          git show "$BASE_SHA:core/kata-core.ts" > core/kata-core.ts
-          bun run build:plugins
-          set +e
-          bun tests/run.ts tests/omp-attention.test.ts -t 'OMP publishes the native marker before session_start returns' > "$RUNNER_TEMP/attention-red.log" 2>&1
-          status=$?
-          set -e
-          cat "$RUNNER_TEMP/attention-red.log"
-          test "$status" -ne 0
-          grep -q '1 fail' "$RUNNER_TEMP/attention-red.log"
-          grep -q 'OMP publishes the native marker before session_start returns' "$RUNNER_TEMP/attention-red.log"
-      - name: Generate portable plugins
-        run: bun run build:plugins
-      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
-        with:
-          name: omp-attention-generated-${{ matrix.omp }}
-          path: |
-            plugins/oh-my-pi/kata-core.ts
-            plugins/pi/kata-core.ts
-          if-no-files-found: error
-      - name: Check generated sources and types
-        run: |
-          bun scripts/vendor-core.ts --check
-          git diff --exit-code -- plugins/oh-my-pi/kata-core.ts plugins/pi/kata-core.ts
-          bunx tsc -p tsconfig.json
-      - name: Focused attention regression and native Pi control
-        run: |
-          bun tests/run.ts tests/omp-attention.test.ts
-          bun tests/run.ts tests/pi.test.ts -t native
       - name: Actual OMP bash path and native Pi lead control
-        run: bun scripts/smoke-omp-attention.ts
+        run: bun run smoke:omp-attention

@@ -1,12 +1,12 @@
 // Actual bash-tool inheritance proof, with a credential-free provider and synthetic homes.
-// OMP_BIN=/path/to/omp PI_BIN=/path/to/pi bun scripts/smoke-omp-attention.ts
+// OMP_BIN=/path/to/omp PI_BIN=/path/to/pi bun run smoke:omp-attention
 import { spawnSync } from "node:child_process";
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, realpathSync, rmSync } from "node:fs";
 import path from "node:path";
 import os from "node:os";
 const repo = process.cwd(), scratch = mkdtempSync(path.join(os.tmpdir(), "omp-attention-"));
 const pi = process.env.PI_BIN || path.join(repo, "node_modules/.bin/pi"), omp = process.env.OMP_BIN || "omp";
-const env = { ...process.env, HOME: scratch, XDG_CONFIG_HOME: path.join(scratch, "config"), KATA_HOME: path.join(scratch, "kata"), KATA_AUTHOR: "probe", PI_CODING_AGENT_DIR: path.join(scratch, "agent"), OMP_CONFIG_DIR: path.join(scratch, "omp") };
+const env = { ...process.env, HOME: scratch, XDG_CONFIG_HOME: path.join(scratch, "config"), XDG_DATA_HOME: path.join(scratch, "data"), XDG_STATE_HOME: path.join(scratch, "state"), XDG_CACHE_HOME: path.join(scratch, "cache"), KATA_HOME: path.join(scratch, "kata"), KATA_AUTHOR: "probe", PI_CODING_AGENT_DIR: path.join(scratch, "agent") };
 for (const key of Object.keys(env)) if (/^(KATA_(SERVER|DAEMON|AUTH_TOKEN|REF|TEAMMATE|INBOX_USER|PI_PARENT|PI_EXECUTABLE|OMP_EXECUTABLE|ATTENTION_HOST|TRANSCRIPT_.*|CLOSE_TRANSCRIPT_ENABLED)|CODEX_HOME|CLAUDE_CONFIG_DIR|OMP_AGENT_DIR)$/.test(key)) delete env[key];
 const work = path.join(scratch, "repo"); mkdirSync(work); mkdirSync(env.PI_CODING_AGENT_DIR);
 function run(file: string, args: string[], extra = {}) {

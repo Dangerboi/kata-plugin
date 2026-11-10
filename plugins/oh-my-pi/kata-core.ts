@@ -96,6 +96,10 @@ const DELEGATE_BIND_MS = 15_000;
 // How long the end of a lead turn waits for exited delegates to be handed back or rolled back. omp gives the stop hook
 // 30 s; the cleanups queue behind each other, about ten Kata calls each, so a burst of exits needs a good part of it.
 const TURN_SETTLE_MS = 15_000;
+// How long a main session's start with an explicit ref waits for attention: omp copies the environment its bash tool
+// passes on when the handler returns, so `KATA_ATTENTION_HOST` must be set by then. Kata's own pi hook allows 10 s per
+// call; a slower start sets the marker too late for bash, and native children track the issue as before.
+const ATTENTION_START_MS = 10_000;
 
 // The todo tool's ops and parameter descriptions; each host builds its schema from them.
 export const TODO_OPS = ["init", "start", "done", "rm", "drop", "block", "unblock", "append", "view"] as const;
@@ -1559,8 +1563,7 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 					await attention("start", attentionSession);
 				});
 				// OMP snapshots the bash environment after this handler returns.
-				if (explicit && options.attentionHarness && id) await transition.catch(debug);
-				else await bounded(transition);
+				await bounded(transition, explicit && options.attentionHarness && id ? ATTENTION_START_MS : undefined);
 				return lead();
 			},
 			branch: rebind,

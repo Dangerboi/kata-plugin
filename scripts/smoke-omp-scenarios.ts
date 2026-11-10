@@ -6,9 +6,9 @@
 
 import { fileURLToPath } from "node:url";
 import { ownComment } from "../plugins/oh-my-pi/delegates";
+import type { SmokeBlock } from "./smoke-provider";
 
-/** `{ hang: true }` never answers: the model call stays pending (no events) until omp dies, so the agent never reaches a tool call. */
-export type Block = string | { tool: string; args: Record<string, unknown> } | { hang: true };
+export type Block = SmokeBlock;
 export type TurnContext = {
 	/** Text of every message so far (tool results included), oldest first. */
 	texts: string[];
