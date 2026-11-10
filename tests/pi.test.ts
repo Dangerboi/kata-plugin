@@ -912,7 +912,7 @@ test("a slow shutdown of the old instance does not delete the next session's tra
 });
 
 test("pi reports an old Kata as an upgrade error, never a local plan", async () => {
-  const app = await host({ before: (args: string[]) => args[0] === "version" ? { code: 0, stdout: '{"version":"0.22.9"}' } : undefined });
+  const app = await host({ before: (args: string[]) => args[0] === "version" ? { code: 0, stdout: '{"kata_api_version":1,"version":"0.22.9"}' } : undefined });
   await app.event("session_start", { reason: "startup" });
   const result = await app.call({ op: "init", items: ["Must upgrade first"] });
   expect(result.isError).toBe(true);

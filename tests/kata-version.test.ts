@@ -5,29 +5,65 @@ import { createKata, isUnusable, type Exec } from "../core/kata-cli";
 function client(exec: Exec) {
   return createKata({ exec, executable: "/fixture/kata", teammate: () => "lead", ctx: () => "event", session: () => "session", debug() {} });
 }
-const reply = (version: string) => ({ code: 0, stdout: JSON.stringify({ name: "kata", version }) });
+const reply = (version: string) => ({ code: 0, stdout: JSON.stringify({ kata_api_version: 1, name: "kata", version }) });
 
-test("version boundaries follow release ordering, including prereleases and build metadata", async () => {
-  await fc.assert(fc.asyncProperty(
-    fc.tuple(fc.integer({ min: 0, max: 3 }), fc.integer({ min: 0, max: 50 }), fc.integer({ min: 0, max: 100 })),
-    fc.constantFrom("", "-rc.1", "+build.1", "-rc.1+build.1"), fc.boolean(),
-    async ([major, minor, patch], suffix, prefix) => {
-      const version = `${prefix ? "v" : ""}${major}.${minor}.${patch}${suffix}`;
-      const supported = major > 0 || minor > 23 || (minor === 23 && (patch > 0 || !suffix.startsWith("-")));
-      const calls: string[][] = [];
-      const kata = client(async (_file, args) => { calls.push(args); return args[0] === "version" ? reply(version) : { code: 0, stdout: "ok" }; });
-      if (supported) expect(await kata.run(["list"], "/fixture")).toBe("ok");
-      else {
-        try { await kata.run(["create", "must not write"], "/fixture"); throw new Error("accepted old Kata"); }
-        catch (error) { expect((error as Error).message).toContain("Upgrade Kata"); expect(isUnusable(error)).toBe(false); }
-        expect(calls).toHaveLength(1);
-      }
-    }), { numRuns: 150 });
+async function checkVersion(version: string, supported: boolean, guidance = "Upgrade Kata") {
+  const calls: string[][] = [];
+  const kata = client(async (_file, args) => { calls.push(args); return args[0] === "version" ? reply(version) : { code: 0, stdout: "ok" }; });
+  if (supported) expect(await kata.run(["create", "fixture"], "/fixture")).toBe("ok");
+  else {
+    try { await kata.run(["create", "must not write"], "/fixture"); throw new Error("accepted unsupported Kata"); }
+    catch (error) {
+      expect((error as Error).message).toContain("requires Kata >=0.23.0");
+      expect((error as Error).message).toContain(guidance);
+      expect(isUnusable(error)).toBe(false);
+    }
+    expect(calls).toHaveLength(1);
+  }
+}
+
+for (const [version, supported] of [
+  ["0.22.9", false], ["v0.22.0-40-gabcdef0", false],
+  ["0.23.0-rc.1", false], ["v0.23.0-rc.1-5-gabcdef0", false],
+  ["0.23.0", true], ["v0.23.0", true], ["v0.23.0+build.1", true],
+  ["v0.23.0-dirty", true], ["v0.23.0-4-g4aea65239", true],
+  ["v0.23.0-4-g4aea65239-dirty", true], ["v0.24.1-2-gabcdef0", true],
+  ["0.23.1-rc.1", true], ["0.24.0-rc.1+build.1", true], ["1.0.0-0", true],
+] as const) test(`version boundary ${version}: ${supported ? "accepted" : "refused"}`, () => checkVersion(version, supported));
+
+for (const version of ["dev", "g4aea652", "g4aea652-dirty", "4aea652", "", "0.23", "garbage",
+  "v0.23.0+.", "v0.23.0+a..b", "0.24.0-01", "0.24.0-rc..1", "0.24.0-rc.01", "v00.24.0"]) {
+  test(`unprovable version ${JSON.stringify(version)} gives installation guidance`, () => checkVersion(version, false, "Install a versioned release"));
+}
+
+const patch = fc.integer({ min: 0, max: 10000 });
+const newerRelease = fc.oneof(
+  fc.integer({ min: 1, max: 10000 }).map(p => `0.23.${p}`),
+  fc.tuple(fc.integer({ min: 24, max: 10000 }), patch).map(([minor, p]) => `0.${minor}.${p}`),
+  fc.tuple(fc.integer({ min: 1, max: 10000 }), patch, patch).map(([major, minor, p]) => `${major}.${minor}.${p}`),
+);
+const releaseVariant = fc.tuple(fc.boolean(), fc.constantFrom("", "-rc.1", "+build.1", "-rc.1+build.1"));
+test("releases strictly above the minimum accept semver variants", async () => {
+  await fc.assert(fc.asyncProperty(newerRelease, releaseVariant, (base, [prefix, suffix]) => checkVersion(`${prefix ? "v" : ""}${base}${suffix}`, true)), { numRuns: 100 });
+});
+test("releases below the minimum reject semver variants", async () => {
+  await fc.assert(fc.asyncProperty(fc.integer({ min: 0, max: 22 }), patch, releaseVariant,
+    (minor, p, [prefix, suffix]) => checkVersion(`${prefix ? "v" : ""}0.${minor}.${p}${suffix}`, false)), { numRuns: 100 });
+});
+test("tagged source builds at or above the minimum accept describe and dirty variants", async () => {
+  await fc.assert(fc.asyncProperty(fc.oneof(fc.constant("0.23.0"), newerRelease), fc.nat({ max: 10000 }), fc.boolean(),
+    (base, count, dirty) => checkVersion(`v${base}-${count}-g4aea65239${dirty ? "-dirty" : ""}`, true)), { numRuns: 100 });
 });
 
-for (const version of ["0.22.9", "v0.23.0-rc.1", "dev", "", "0.23", "garbage"]) test(`rejects unsupported or unknown version ${JSON.stringify(version)}`, async () => {
-  const kata = client(async () => reply(version));
-  expect(kata.run(["list"], "/fixture")).rejects.toThrow(/requires Kata >=0\.23\.0.*Upgrade Kata/);
+for (const identity of [
+  { kata_api_version: 2, version: "v0.24.0" },
+  { kata_api_version: "1", version: "v0.24.0" },
+  { version: "v0.24.0" }, null, [],
+]) test(`rejects unknown version schema ${JSON.stringify(identity)}`, async () => {
+  const calls: string[][] = [];
+  const kata = client(async (_file, args) => { calls.push(args); return { code: 0, stdout: JSON.stringify(identity) }; });
+  await expect(kata.run(["create", "must not write"], "/fixture")).rejects.toThrow("Install a versioned release");
+  expect(calls).toHaveLength(1);
 });
 
 test("checks once before concurrent calls, bounded and without workspace or teammate flags", async () => {
@@ -53,5 +89,5 @@ for (const failure of [
 
 test("a CLI too old to answer version gets upgrade guidance", async () => {
   const kata = client(async () => ({ code: 1, stdout: "", stderr: 'unknown command "version"' }));
-  expect(kata.run(["list"], "/fixture")).rejects.toThrow(/requires Kata >=0\.23\.0.*Upgrade Kata/);
+  await expect(kata.run(["list"], "/fixture")).rejects.toThrow("Install a versioned release");
 });

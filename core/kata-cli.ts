@@ -98,11 +98,19 @@ export function createKata(env: {
 	async function run(args: string[], cwd: string, options?: { timeout?: number; workspace?: boolean }): Promise<string> {
 		await (compatible ??= (async () => {
 			let version: unknown;
-			try { version = JSON.parse(await invoke(["version", "--json"], cwd, { timeout: 3000, workspace: false })).version; }
+			try {
+				const identity = JSON.parse(await invoke(["version", "--json"], cwd, { timeout: 3000, workspace: false }));
+				if (identity?.kata_api_version === 1) version = identity.version;
+			}
 			catch (error) { if (isUnusable(error)) throw error; }
-			const match = typeof version === "string" && /^v?(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/.exec(version);
-			if (!match || !(Number(match[1]) > 0 || Number(match[2]) > 23 || Number(match[2]) === 23 && (Number(match[3]) > 0 || !match[4]))) {
-				throw new KataError(`kata-plugin requires Kata >=0.23.0 (found ${typeof version === "string" ? version || "unknown" : "unknown"}). Upgrade Kata and retry.`, { exit: 1, code: "unsupported_version" });
+			// Kata's Makefile uses git describe; descendants and dirty trees keep the release tag's minimum.
+			const normalized = typeof version === "string" ? version.replace(/^(v?\d+\.\d+\.\d+)-(?:\d+-g[0-9a-f]{7,}(?:-dirty)?|dirty)$/, "$1") : "";
+			const match = /^v?(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/.exec(normalized);
+			if (!match || match[4]?.split(".").some(id => /^0\d+$/.test(id))) {
+				throw new KataError(`kata-plugin requires Kata >=0.23.0, but this Kata reports version ${JSON.stringify(version ?? "unknown")}, which does not prove its release. Install a versioned release (Homebrew, release archive or kata update), or build from a tagged clone with make install.`, { exit: 1, code: "unsupported_version" });
+			}
+			if (!(Number(match[1]) > 0 || Number(match[2]) > 23 || Number(match[2]) === 23 && (Number(match[3]) > 0 || !match[4]))) {
+				throw new KataError(`kata-plugin requires Kata >=0.23.0 (found ${version}). Upgrade Kata and retry.`, { exit: 1, code: "unsupported_version" });
 			}
 		})().catch(error => { compatible = undefined; throw error; }));
 		return invoke(args, cwd, options);

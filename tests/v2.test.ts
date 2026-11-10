@@ -2322,7 +2322,7 @@ test("an automatic parent an earlier version created under a default priority is
 }));
 
 test("omp reports an old Kata as an upgrade error, never a local plan", async () => {
-  const app = host({ before: (args: string[]) => args[0] === "version" ? { code: 0, stdout: '{"version":"0.22.9"}' } : undefined });
+  const app = host({ before: (args: string[]) => args[0] === "version" ? { code: 0, stdout: '{"kata_api_version":1,"version":"0.22.9"}' } : undefined });
   await app.event("session_start");
   const result = await app.call({ op: "init", items: ["Must upgrade first"] });
   expect(result.isError).toBe(true);
