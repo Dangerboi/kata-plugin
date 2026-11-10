@@ -1,7 +1,7 @@
 // Actual bash-tool inheritance proof, with a credential-free provider and synthetic homes.
 // OMP_BIN=/path/to/omp PI_BIN=/path/to/pi bun scripts/smoke-omp-attention.ts
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, realpathSync, rmSync } from "node:fs";
 import path from "node:path";
 import os from "node:os";
 const repo = process.cwd(), scratch = mkdtempSync(path.join(os.tmpdir(), "omp-attention-"));
@@ -33,13 +33,13 @@ child(process.env.ATTENTION_OTHER_REF);const other=show(process.env.ATTENTION_OT
 if(other['work.attention']!=='needs-human'||!other['work.attention_session'])throw Error('different-ref child did not track its own issue '+JSON.stringify(other));
 for(const key of ['work.attention','work.attention_session'])if(JSON.stringify(before[key])!==JSON.stringify(final[key]))throw Error('different-ref child changed lead '+key);
 appendFileSync(${JSON.stringify(results)},JSON.stringify({host:process.env.ATTENTION_HOST,marker,before,after,other,final})+'\\n');`);
-  writeFileSync(provider, `export default function(api){
-const Stream=class {events=[];push(e){this.events.push(e);}async *[Symbol.asyncIterator](){await new Promise(r=>queueMicrotask(r));yield* this.events;}async result(){return this.events.at(-1)?.message;}};
-api.registerProvider('probe',{baseUrl:'https://unused.invalid',apiKey:'unused',api:'probe-api',models:[{id:'dummy',name:'dummy',reasoning:false,input:['text'],cost:{input:0,output:0,cacheRead:0,cacheWrite:0},contextWindow:10000,maxTokens:1000}],streamSimple(model,context){
-const stream=new Stream(), first=!process.env.ATTENTION_CHILD&&!context.messages.some(m=>m.role==='assistant');
-const content=first?[{type:'toolCall',id:'attention-bash',name:'bash',arguments:{command:${JSON.stringify(`bun '${driver.replaceAll("'", "'\\''")}'`)}}}]:[{type:'text',text:'done'}];
-const message={role:'assistant',content,api:model.api,provider:model.provider,model:model.id,usage:{input:0,output:0,cacheRead:0,cacheWrite:0,totalTokens:0,cost:{input:0,output:0,cacheRead:0,cacheWrite:0,total:0}},stopReason:first?'toolUse':'stop',timestamp:Date.now()};
-queueMicrotask(()=>{const partial={...message,content:[]};stream.push({type:'start',partial});for(const block of content){partial.content.push(block);const contentIndex=partial.content.length-1;if(block.type==='toolCall'){stream.push({type:'toolcall_start',contentIndex,partial});stream.push({type:'toolcall_delta',contentIndex,delta:JSON.stringify(block.arguments),partial});stream.push({type:'toolcall_end',contentIndex,toolCall:block,partial});}else{stream.push({type:'text_start',contentIndex,partial});stream.push({type:'text_delta',contentIndex,delta:block.text,partial});stream.push({type:'text_end',contentIndex,content:block.text,partial});}}stream.push({type:'done',reason:message.stopReason,message:partial});});return stream;}});}`);
+  // Import the maintained stream by file: Pi's extension loader cannot require its import-only package export.
+  const streamModule = path.join(path.dirname(realpathSync(path.join(repo, "node_modules/@earendil-works/pi-coding-agent"))), "pi-ai/dist/utils/event-stream.js");
+  writeFileSync(provider, `import {registerSmokeProvider} from ${JSON.stringify(path.join(repo, "scripts/smoke-provider.ts"))};
+import {AssistantMessageEventStream} from ${JSON.stringify(streamModule)};
+export default function(api){registerSmokeProvider(api,AssistantMessageEventStream,context=>
+ !process.env.ATTENTION_CHILD&&!context.messages.some(m=>m.role==='assistant')
+ ?[{tool:'bash',args:{command:${JSON.stringify(`bun '${driver.replaceAll("'", "'\\''")}'`)}}}]:['done'],'probe','dummy');}`);
   for (const host of ["pi", "omp"]) {
     const refs = ["lead", "other"].map(role => `session-probe#${JSON.parse(kata(["create", `${host} ${role}`, "--force-new", "--json"])).issue.short_id}`);
     for (const ref of refs) kata(["claim", ref]);

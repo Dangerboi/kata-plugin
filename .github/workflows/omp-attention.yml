@@ -7,6 +7,7 @@ on:
       - plugins/**
       - tests/omp-attention.test.ts
       - scripts/smoke-omp-attention.ts
+      - scripts/smoke-provider.ts
       - .github/workflows/omp-attention.yml
   workflow_dispatch:
 
@@ -20,7 +21,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        omp: [18.12.6, 18.18.6]
+        omp: [18.12.6, 18.18.1, 18.18.6]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -87,6 +88,7 @@ jobs:
       - name: Check generated sources and types
         run: |
           bun scripts/vendor-core.ts --check
+          git diff --exit-code -- plugins/oh-my-pi/kata-core.ts plugins/pi/kata-core.ts
           bunx tsc -p tsconfig.json
       - name: Focused attention regression and native Pi control
         run: |
