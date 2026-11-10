@@ -21,6 +21,20 @@ export class KataError extends Error {
 export const isUnusable = (error: unknown) => error instanceof KataError && error.unusable;
 export const isKataCode = (error: unknown, code: string) => error instanceof KataError && error.code === code;
 
+// The oldest Kata whose commands and flags these plugins use.
+const MINIMUM = [0, 23, 0];
+
+// Whether a reported Kata version is at least MINIMUM; undefined when it names no release (`dev`, a commit hash).
+// `make install` reports git describe (`v0.23.0-4-gabc1234`, `-dirty`): a build after a tag has that tag's release.
+// A prerelease precedes its release, so 0.23.0-rc.1 is too old and 0.24.0-rc.1 is not.
+function meetsMinimum(version: string): boolean | undefined {
+	const release = version.replace(/^(v?\d+\.\d+\.\d+)-(?:\d+-g[0-9a-f]{4,}(?:-dirty)?|dirty)$/, "$1");
+	const match = /^v?(\d+)\.(\d+)\.(\d+)(-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/.exec(release);
+	if (!match) return undefined;
+	const order = MINIMUM.map((least, i) => Number(match[i + 1]) - least).find(diff => diff !== 0) ?? 0;
+	return order > 0 || (order === 0 && !match[4]);
+}
+
 // What a `kata close` reads to record the session that made it: the session pair and the switch that turns recording on.
 export const TRANSCRIPT_ENV = ["KATA_TRANSCRIPT_AGENT", "KATA_TRANSCRIPT_SESSION_ID", "KATA_CLOSE_TRANSCRIPT_ENABLED"] as const;
 const [AGENT, SESSION, ENABLED] = TRANSCRIPT_ENV;
@@ -65,9 +79,9 @@ export function createKata(env: {
 }): Kata {
 	let registered: { id?: string; list: Promise<Project[]> } | undefined;
 
-	async function run(args: string[], cwd: string, { timeout = 120_000, workspace = true } = {}): Promise<string> {
+	async function invoke(args: string[], cwd: string, { timeout = 120_000, workspace = true } = {}): Promise<string> {
 		// --json makes every failure carry Kata's error code; the contract hook prints its own format.
-		const plain = args[0] === "agent-contract-hook";
+		const plain = args[0] === "agent-contract-hook" || args[0] === "version";
 		const teammate = env.teammate();
 		// Options end at `--`: what follows (a title, an item) is data, even when it reads `--json`.
 		const at = args.indexOf("--"), end = at < 0 ? args.length : at;
@@ -90,6 +104,30 @@ export function createKata(env: {
 			throw new KataError(`kata ${args[0]} ${result.killed ? `timed out after ${timeout}ms` : notRun ? "could not run" : "failed"}${detail ? `: ${detail}` : ""}`, { exit: result.code, code: envelope?.code, data: envelope?.data && typeof envelope.data === "object" ? envelope.data : undefined, killed: result.killed, notRun });
 		}
 		return result.stdout;
+	}
+
+	// Share one bounded check across concurrent reads. Failed checks retry so installing
+	// or upgrading Kata can recover without restarting the host; outages stay outages.
+	let compatible: Promise<void> | undefined;
+	async function run(args: string[], cwd: string, options?: { timeout?: number; workspace?: boolean }): Promise<string> {
+		await (compatible ??= (async () => {
+			let version: unknown, output = "";
+			try { output = await invoke(["version", "--json"], cwd, { timeout: 3000, workspace: false }); }
+			catch (error) { if (!(error instanceof KataError) || isUnusable(error)) throw error; }
+			try {
+				const identity = JSON.parse(output);
+				if (identity?.kata_api_version === 1) version = identity.version;
+			} catch { /* Malformed JSON cannot prove a compatible release. */ }
+			const meets = typeof version === "string" ? meetsMinimum(version) : undefined;
+			const minimum = MINIMUM.join(".");
+			if (meets === undefined) {
+				throw new KataError(`kata-plugin requires Kata >=${minimum}, but this Kata reports version ${JSON.stringify(version ?? "unknown")}, which does not prove its release. Install a versioned release (Homebrew, release archive or kata update), or build from a tagged clone with make install.`, { exit: 1, code: "unsupported_version" });
+			}
+			if (!meets) {
+				throw new KataError(`kata-plugin requires Kata >=${minimum} (found ${version}). Upgrade Kata and retry.`, { exit: 1, code: "unsupported_version" });
+			}
+		})().catch(error => { compatible = undefined; throw error; }));
+		return invoke(args, cwd, options);
 	}
 
 	const show = async (ref: string, cwd: string): Promise<KataShow> => JSON.parse(await run(["show", ref], cwd));
