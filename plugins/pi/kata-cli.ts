@@ -65,9 +65,9 @@ export function createKata(env: {
 }): Kata {
 	let registered: { id?: string; list: Promise<Project[]> } | undefined;
 
-	async function run(args: string[], cwd: string, { timeout = 120_000, workspace = true } = {}): Promise<string> {
+	async function invoke(args: string[], cwd: string, { timeout = 120_000, workspace = true } = {}): Promise<string> {
 		// --json makes every failure carry Kata's error code; the contract hook prints its own format.
-		const plain = args[0] === "agent-contract-hook";
+		const plain = args[0] === "agent-contract-hook" || args[0] === "version";
 		const teammate = env.teammate();
 		// Options end at `--`: what follows (a title, an item) is data, even when it reads `--json`.
 		const at = args.indexOf("--"), end = at < 0 ? args.length : at;
@@ -90,6 +90,22 @@ export function createKata(env: {
 			throw new KataError(`kata ${args[0]} ${result.killed ? `timed out after ${timeout}ms` : notRun ? "could not run" : "failed"}${detail ? `: ${detail}` : ""}`, { exit: result.code, code: envelope?.code, data: envelope?.data && typeof envelope.data === "object" ? envelope.data : undefined, killed: result.killed, notRun });
 		}
 		return result.stdout;
+	}
+
+	// Share one bounded check across concurrent reads. Failed checks retry so installing
+	// or upgrading Kata can recover without restarting the host; outages stay outages.
+	let compatible: Promise<void> | undefined;
+	async function run(args: string[], cwd: string, options?: { timeout?: number; workspace?: boolean }): Promise<string> {
+		await (compatible ??= (async () => {
+			let version: unknown;
+			try { version = JSON.parse(await invoke(["version", "--json"], cwd, { timeout: 3000, workspace: false })).version; }
+			catch (error) { if (isUnusable(error)) throw error; }
+			const match = typeof version === "string" && /^v?(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/.exec(version);
+			if (!match || !(Number(match[1]) > 0 || Number(match[2]) > 23 || Number(match[2]) === 23 && (Number(match[3]) > 0 || !match[4]))) {
+				throw new KataError(`kata-plugin requires Kata >=0.23.0 (found ${typeof version === "string" ? version || "unknown" : "unknown"}). Upgrade Kata and retry.`, { exit: 1, code: "unsupported_version" });
+			}
+		})().catch(error => { compatible = undefined; throw error; }));
+		return invoke(args, cwd, options);
 	}
 
 	const show = async (ref: string, cwd: string): Promise<KataShow> => JSON.parse(await run(["show", ref], cwd));
