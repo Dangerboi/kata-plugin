@@ -1442,16 +1442,26 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 	// --------------------------------------------------------------- attention
 
 	// Kata owns session attention semantics; the harness name only selects payload parsing and the session token.
-	let attentionSession: { id: string; cwd: string; ref?: string } | undefined;
-	async function attention(mode: "start" | "end", session: { id: string; cwd: string; ref?: string }) {
+	let attentionSession: { id: string; cwd: string; ref?: string; hostCwd: string; hostRef?: string; marker?: string } | undefined;
+	async function attention(mode: "start" | "end", session: NonNullable<typeof attentionSession>) {
 		const ref = session.ref;
 		if (!ref || !options.attentionHarness) return;
 		try {
 			// The native hook guards revisions, not the actor or teammate.
 			await owned(ref, session.cwd);
 			await kata.run(["agent-hook", "attention-native", options.attentionHarness, mode, "--session", session.id, "--host-pid", String(process.pid), "--ref", ref], session.cwd, { timeout: mode === "start" ? 3000 : 1500 });
+			if (mode === "start" && session.hostRef) {
+				const route = JSON.parse(await kata.run(["daemon", "locate"], session.hostCwd, { timeout: 1500 }));
+				const daemon = route.request_base_url || route.address;
+				if (typeof daemon === "string" && daemon) {
+					const identity = JSON.stringify({ ref: session.hostRef.trim(), daemon, cwd: session.hostCwd });
+					process.env.KATA_ATTENTION_HOST = session.marker = JSON.stringify({ pid: process.pid, identity });
+				}
+			}
 		} catch (err) {
 			debug(`Kata attention skipped: ${(err as Error).message}`);
+		} finally {
+			if (mode === "end" && session.marker && process.env.KATA_ATTENTION_HOST === session.marker) delete process.env.KATA_ATTENTION_HOST;
 		}
 	}
 
@@ -1532,21 +1542,25 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 					return lead();
 				}
 				see(ctx);
-				const explicit = configuredRef(), previous = attentionSession, id = sid(ctx);
+				const explicit = configuredRef(), id = sid(ctx);
 				stopFollower();
 				const user = process.env.KATA_INBOX_USER;
 				const live = !!host.liveInbox && !!user && isSessionAddress(user);
 				if (live) liveInbox = "";
 				prefetch(ctx);
 				if (live) startFollower(ctx, user!);
-				await bounded(serial(async () => {
+				const transition = serial(async () => {
 					await bind(ctx);
 					reminders = 0;
+					const previous = attentionSession;
 					if (!options.attentionHarness || !id || previous?.id === id) return;
 					if (previous) await attention("end", previous);
-					attentionSession = { id, cwd: plan.workspace || path.resolve(ctx.cwd), ref: explicit && plan.parent };
+					attentionSession = { id, cwd: plan.workspace || path.resolve(ctx.cwd), ref: explicit && plan.parent, hostCwd: path.resolve(ctx.cwd), hostRef: explicit };
 					await attention("start", attentionSession);
-				}));
+				});
+				// OMP snapshots the bash environment after this handler returns.
+				if (explicit && options.attentionHarness && id) await transition.catch(debug);
+				else await bounded(transition);
 				return lead();
 			},
 			branch: rebind,
@@ -1561,11 +1575,11 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 				see(ctx);
 				if (!main(ctx) && !closing.delegate) return;
 				stopFollower();
-				const session = attentionSession;
-				attentionSession = undefined;
 				// After the drain: the automatic parent's close still records this session.
 				await bounded((async () => {
 					await serial(async () => {
+						const session = attentionSession;
+						attentionSession = undefined;
 						await load(plan.workspace || ctx.cwd).catch(debug);
 						await drain();
 						if (session) await attention("end", session);
