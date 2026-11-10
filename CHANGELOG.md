@@ -10,9 +10,16 @@ All notable changes to kata-plugin are listed here. The format follows [Keep a C
 
 - Both omp and Pi now check for Kata >=0.23.0 before using the CLI and show an upgrade error for older or unrecognized versions. Missing executables and unreachable Kata still use the local plan fallback.
 
+#### Inbox and attention
+
+- omp: a native Pi started from the lead's bash tool with the lead's `KATA_REF` no longer takes over the lead's attention session.
+  - With `KATA_REF` set, the lead publishes Kata's `KATA_ATTENTION_HOST` marker before session start or switch returns, and removes it at session end if it is still its own.
+  - Session start or switch with `KATA_REF` now waits up to 10 s, not 250 ms, for the plan binding, attention and the marker.
+
 #### Development
 
 - Pull requests run the full test suite, the typecheck and the vendored-copy drift check against the public Kata 0.23.0 release (`.github/workflows/compatibility.yml`).
+- Pull requests that touch the plugins also run a smoke test against real omp 18.18.1 and 18.18.6 (`.github/workflows/omp-attention.yml`): an omp lead and a Pi lead each start a native Pi from their bash tool, and the lead's attention must not change.
 
 ## [1.9.1] - 2026-11-10
 

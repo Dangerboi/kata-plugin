@@ -20,6 +20,7 @@
   "scripts": {
     "test": "bun tests/run.ts all",
     "smoke:omp": "bun scripts/vendor-core.ts --check && bun scripts/smoke-omp.ts",
+    "smoke:omp-attention": "bun scripts/vendor-core.ts --check && bun scripts/smoke-omp-attention.ts",
     "test:todo": "bun tests/run.ts",
     "test:changed": "bun tests/run.ts changed",
     "test:revisions": "bun tests/run.ts revisions",
