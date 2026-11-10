@@ -1,4 +1,5 @@
 import path from "node:path";
+import { valid, gte } from "semver";
 import { projectOf, type KataIssue, type KataShow } from "./model";
 
 // Running the Kata CLI: every call, its error envelope, and the registered projects it reads refs against.
@@ -97,19 +98,20 @@ export function createKata(env: {
 	let compatible: Promise<void> | undefined;
 	async function run(args: string[], cwd: string, options?: { timeout?: number; workspace?: boolean }): Promise<string> {
 		await (compatible ??= (async () => {
-			let version: unknown;
+			let version: unknown, output = "";
+			try { output = await invoke(["version", "--json"], cwd, { timeout: 3000, workspace: false }); }
+			catch (error) { if (!(error instanceof KataError) || isUnusable(error)) throw error; }
 			try {
-				const identity = JSON.parse(await invoke(["version", "--json"], cwd, { timeout: 3000, workspace: false }));
+				const identity = JSON.parse(output);
 				if (identity?.kata_api_version === 1) version = identity.version;
-			}
-			catch (error) { if (isUnusable(error)) throw error; }
+			} catch { /* Malformed JSON cannot prove a compatible release. */ }
 			// Kata's Makefile uses git describe; descendants and dirty trees keep the release tag's minimum.
-			const normalized = typeof version === "string" ? version.replace(/^(v?\d+\.\d+\.\d+)-(?:\d+-g[0-9a-f]{7,}(?:-dirty)?|dirty)$/, "$1") : "";
-			const match = /^v?(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/.exec(normalized);
-			if (!match || match[4]?.split(".").some(id => /^0\d+$/.test(id))) {
+			const normalized = typeof version === "string" ? version.replace(/^(v?\d+\.\d+\.\d+)-(?:\d+-g[0-9a-f]{4,}(?:-dirty)?|dirty)$/, "$1") : "";
+			const release = valid(normalized);
+			if (!release) {
 				throw new KataError(`kata-plugin requires Kata >=0.23.0, but this Kata reports version ${JSON.stringify(version ?? "unknown")}, which does not prove its release. Install a versioned release (Homebrew, release archive or kata update), or build from a tagged clone with make install.`, { exit: 1, code: "unsupported_version" });
 			}
-			if (!(Number(match[1]) > 0 || Number(match[2]) > 23 || Number(match[2]) === 23 && (Number(match[3]) > 0 || !match[4]))) {
+			if (!gte(release, "0.23.0")) {
 				throw new KataError(`kata-plugin requires Kata >=0.23.0 (found ${version}). Upgrade Kata and retry.`, { exit: 1, code: "unsupported_version" });
 			}
 		})().catch(error => { compatible = undefined; throw error; }));

@@ -1,0 +1,100 @@
+name: Kata compatibility
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: compatibility-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  compatibility:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+        with:
+          node-version: "24"
+          package-manager-cache: false
+
+      - name: Isolate homes and configuration
+        run: |
+          isolated=$(mktemp -d /tmp/kata-compatibility.XXXXXX)
+          mkdir -p "$isolated"/{home,kata,config,data,cache,pi,omp,bin,downloads}
+          {
+            echo "COMPATIBILITY_ROOT=$isolated"
+            echo "HOME=$isolated/home"
+            echo "KATA_HOME=$isolated/kata"
+            echo "XDG_CONFIG_HOME=$isolated/config"
+            echo "XDG_DATA_HOME=$isolated/data"
+            echo "XDG_CACHE_HOME=$isolated/cache"
+            echo "PI_CODING_AGENT_DIR=$isolated/pi"
+            echo "OMP_CONFIG_DIR=$isolated/omp"
+            echo "KATA_TEST_EXECUTABLE=$isolated/bin/kata"
+            echo "KATA_SERVER="
+            echo "KATA_DAEMON="
+            echo "KATA_AUTH_TOKEN="
+            echo "KATA_REF="
+            echo "KATA_PI_PARENT="
+            echo "KATA_TEAMMATE="
+            echo "KATA_INBOX_USER="
+          } >> "$GITHUB_ENV"
+          echo "$isolated/bin" >> "$GITHUB_PATH"
+
+      - name: Install Bun and public Kata 0.23.0
+        run: |
+          npm install --global bun@1.4.4
+          cd "$COMPATIBILITY_ROOT/downloads"
+          release=https://github.com/kenn-io/kata/releases/download/v0.23.0
+          curl --fail --location --retry 3 --output kata_0.23.0_linux_amd64.tar.gz "$release/kata_0.23.0_linux_amd64.tar.gz"
+          curl --fail --location --retry 3 --output SHA256SUMS "$release/SHA256SUMS"
+          sha256sum --check --ignore-missing SHA256SUMS
+          tar -xzf kata_0.23.0_linux_amd64.tar.gz -C "$COMPATIBILITY_ROOT/bin" kata
+
+      - name: Install dependencies
+        run: bun install --ignore-scripts --frozen-lockfile
+
+      - name: Generate portable copies before tests
+        run: bun run build:plugins
+
+      - name: Version, schema and execution error tests
+        run: bun tests/run.ts tests/kata-version.test.ts
+
+      - name: Pi old-version and outage tests
+        run: bun tests/run.ts tests/pi.test.ts -t 'reports an old Kata|keeps an unreachable Kata'
+
+      - name: Omp old-version and outage tests
+        run: bun tests/run.ts tests/v2.test.ts -t 'reports an old Kata|an unreachable Kata gets a local plan'
+
+      - name: Typecheck
+        run: bun run typecheck
+
+      - name: Check generated drift
+        run: |
+          bun run check:plugins
+          git diff --exit-code -- plugins/oh-my-pi plugins/pi
+
+      - name: Upload portable copies even when checks fail
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: generated-portable-copies
+          path: |
+            plugins/oh-my-pi/*.ts
+            plugins/pi/*.ts
+          if-no-files-found: error
+          retention-days: 3
+
+      - name: Remove isolated homes
+        if: always()
+        run: |
+          if [ -n "$COMPATIBILITY_ROOT" ]; then
+            rm -rf "$COMPATIBILITY_ROOT"
+          fi
