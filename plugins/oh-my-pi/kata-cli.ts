@@ -1,5 +1,4 @@
 import path from "node:path";
-import { valid, gte } from "semver";
 import { projectOf, type KataIssue, type KataShow } from "./model";
 
 // Running the Kata CLI: every call, its error envelope, and the registered projects it reads refs against.
@@ -21,6 +20,20 @@ export class KataError extends Error {
 }
 export const isUnusable = (error: unknown) => error instanceof KataError && error.unusable;
 export const isKataCode = (error: unknown, code: string) => error instanceof KataError && error.code === code;
+
+// The oldest Kata whose commands and flags these plugins use.
+const MINIMUM = [0, 23, 0];
+
+// Whether a reported Kata version is at least MINIMUM; undefined when it names no release (`dev`, a commit hash).
+// `make install` reports git describe (`v0.23.0-4-gabc1234`, `-dirty`): a build after a tag has that tag's release.
+// A prerelease precedes its release, so 0.23.0-rc.1 is too old and 0.24.0-rc.1 is not.
+function meetsMinimum(version: string): boolean | undefined {
+	const release = version.replace(/^(v?\d+\.\d+\.\d+)-(?:\d+-g[0-9a-f]{4,}(?:-dirty)?|dirty)$/, "$1");
+	const match = /^v?(\d+)\.(\d+)\.(\d+)(-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/.exec(release);
+	if (!match) return undefined;
+	const order = MINIMUM.map((least, i) => Number(match[i + 1]) - least).find(diff => diff !== 0) ?? 0;
+	return order > 0 || (order === 0 && !match[4]);
+}
 
 // What a `kata close` reads to record the session that made it: the session pair and the switch that turns recording on.
 export const TRANSCRIPT_ENV = ["KATA_TRANSCRIPT_AGENT", "KATA_TRANSCRIPT_SESSION_ID", "KATA_CLOSE_TRANSCRIPT_ENABLED"] as const;
@@ -105,14 +118,13 @@ export function createKata(env: {
 				const identity = JSON.parse(output);
 				if (identity?.kata_api_version === 1) version = identity.version;
 			} catch { /* Malformed JSON cannot prove a compatible release. */ }
-			// Kata's Makefile uses git describe; descendants and dirty trees keep the release tag's minimum.
-			const normalized = typeof version === "string" ? version.replace(/^(v?\d+\.\d+\.\d+)-(?:\d+-g[0-9a-f]{4,}(?:-dirty)?|dirty)$/, "$1") : "";
-			const release = valid(normalized);
-			if (!release) {
-				throw new KataError(`kata-plugin requires Kata >=0.23.0, but this Kata reports version ${JSON.stringify(version ?? "unknown")}, which does not prove its release. Install a versioned release (Homebrew, release archive or kata update), or build from a tagged clone with make install.`, { exit: 1, code: "unsupported_version" });
+			const meets = typeof version === "string" ? meetsMinimum(version) : undefined;
+			const minimum = MINIMUM.join(".");
+			if (meets === undefined) {
+				throw new KataError(`kata-plugin requires Kata >=${minimum}, but this Kata reports version ${JSON.stringify(version ?? "unknown")}, which does not prove its release. Install a versioned release (Homebrew, release archive or kata update), or build from a tagged clone with make install.`, { exit: 1, code: "unsupported_version" });
 			}
-			if (!gte(release, "0.23.0")) {
-				throw new KataError(`kata-plugin requires Kata >=0.23.0 (found ${version}). Upgrade Kata and retry.`, { exit: 1, code: "unsupported_version" });
+			if (!meets) {
+				throw new KataError(`kata-plugin requires Kata >=${minimum} (found ${version}). Upgrade Kata and retry.`, { exit: 1, code: "unsupported_version" });
 			}
 		})().catch(error => { compatible = undefined; throw error; }));
 		return invoke(args, cwd, options);

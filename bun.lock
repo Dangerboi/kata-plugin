@@ -4,13 +4,9 @@
   "workspaces": {
     "": {
       "name": "kata-plugin",
-      "dependencies": {
-        "semver": "7.8.5",
-      },
       "devDependencies": {
         "@earendil-works/pi-coding-agent": "1.0.2",
         "@types/node": "25.9.2",
-        "@types/semver": "7.8.0",
         "fast-check": "^4.3.0",
         "typebox": "1.3.27",
         "typescript": "5.9.3",
@@ -19,16 +15,10 @@
     "plugins/oh-my-pi": {
       "name": "kata-omp",
       "version": "2.9.1",
-      "dependencies": {
-        "semver": "7.8.5",
-      },
     },
     "plugins/pi": {
       "name": "@dangerboi/kata-pi",
       "version": "1.9.1",
-      "dependencies": {
-        "semver": "7.8.5",
-      },
       "peerDependencies": {
         "@earendil-works/pi-coding-agent": "*",
         "typebox": "*",
@@ -187,8 +177,6 @@
     "@types/node": ["@types/node@25.9.2", "", { "dependencies": { "undici-types": ">=7.24.0 <7.24.7" } }, "sha512-G05zqtJhcDLb8uslf5EjCxXg9G1KQxiV8OS0R26IC//Eoyitzqe8z37I7cqvnZlrlSfgocQRfSn/AHBZJJFyGw=="],
 
     "@types/retry": ["@types/retry@0.12.0", "", {}, "sha512-wWKOClTTiizcZhXnPY4wikVAwmdYHp8q6DmC+EJUzAMsycb7HB32Kh9RN4+0gExjmPmZSAQjgURXIGATPegAvA=="],
-
-    "@types/semver": ["@types/semver@7.8.0", "", {}, "sha512-1mAINjtQCXXeLkJ9ehXkwOcBpqtLxiVtKhpUf83DdRNdQKV0iXZpaHYqRr7nj+wvxuJzoAmAwXI+sCNMv1CzLQ=="],
 
     "agent-base": ["agent-base@9.0.0", "", {}, "sha512-TQf59BsZnytt8GdJKLPfUZ54g/iaUL2OWDSFCCvMOhsHduDQxO8xC4PNeyIkVcA5KwL2phPSv0douC0fgWzmnA=="],
 

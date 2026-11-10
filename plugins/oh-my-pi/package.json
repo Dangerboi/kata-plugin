@@ -7,8 +7,5 @@
     "extensions": [
       "./kata.ts"
     ]
-  },
-  "dependencies": {
-    "semver": "7.8.5"
   }
 }

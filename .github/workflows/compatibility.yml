@@ -64,22 +64,14 @@ jobs:
       - name: Generate portable copies before tests
         run: bun run build:plugins
 
-      - name: Version, schema and execution error tests
-        run: bun tests/run.ts tests/kata-version.test.ts
-
-      - name: Pi old-version and outage tests
-        run: bun tests/run.ts tests/pi.test.ts -t 'reports an old Kata|keeps an unreachable Kata'
-
-      - name: Omp old-version and outage tests
-        run: bun tests/run.ts tests/v2.test.ts -t 'reports an old Kata|an unreachable Kata gets a local plan'
+      - name: Full test suite against Kata 0.23.0
+        run: bun run test
 
       - name: Typecheck
         run: bun run typecheck
 
       - name: Check generated drift
-        run: |
-          bun run check:plugins
-          git diff --exit-code -- plugins/oh-my-pi plugins/pi
+        run: git diff --exit-code -- plugins/oh-my-pi plugins/pi
 
       - name: Upload portable copies even when checks fail
         if: always()

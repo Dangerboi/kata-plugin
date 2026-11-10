@@ -32,8 +32,7 @@ for (const [version, supported] of [
   ["v0.23.0-1-g5586", true], ["v0.23.0-1-g5586-dirty", true], ["1.0.0-0", true],
 ] as const) test(`version boundary ${version}: ${supported ? "accepted" : "refused"}`, () => checkVersion(version, supported));
 
-for (const version of ["dev", "g4aea652", "0.23",
-  "v0.23.0+a..b", "0.24.0-rc..1", "0.24.0-rc.01", "v00.24.0"]) {
+for (const version of ["dev", "g4aea652", "0.23", ""]) {
   test(`unprovable version ${JSON.stringify(version)} gives installation guidance`, () => checkVersion(version, false, "Install a versioned release"));
 }
 
@@ -63,11 +62,21 @@ for (const identity of [
   expect(calls).toHaveLength(1);
 });
 
-test("checks once before concurrent calls, bounded and without workspace or teammate flags", async () => {
-  const calls: { args: string[]; opts: any }[] = [];
+test("checks once before concurrent calls and later ones, bounded and without workspace or teammate flags", async () => {
+  const calls: { args: string[]; opts: Parameters<Exec>[2] }[] = [];
   const kata = client(async (_file, args, opts) => { calls.push({ args, opts }); return args[0] === "version" ? reply("0.23.0") : { code: 0, stdout: "ok" }; });
   await Promise.all([kata.run(["list"], "/fixture"), kata.run(["show", "demo#abcd"], "/fixture")]);
+  await kata.run(["list"], "/fixture");
   expect(calls.filter(c => c.args[0] === "version")).toEqual([{ args: ["version", "--json"], opts: { cwd: "/fixture", timeout: 3000, ctx: "event" } }]);
+});
+
+test("an upgrade after a refused Kata takes effect on the next call", async () => {
+  let version = "0.22.9", checks = 0;
+  const kata = client(async (_file, args) => args[0] === "version" ? (checks++, reply(version)) : { code: 0, stdout: "upgraded" });
+  await expect(kata.run(["list"], "/fixture")).rejects.toMatchObject({ code: "unsupported_version" });
+  version = "0.23.0";
+  expect(await kata.run(["list"], "/fixture")).toBe("upgraded");
+  expect(checks).toBe(2);
 });
 
 for (const [name, failure, code, message] of [

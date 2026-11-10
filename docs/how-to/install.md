@@ -4,7 +4,7 @@ Install Kata 0.23.0 or later. Oh-my-pi and pi need no Kata project in the folder
 
 ## Runtime compatibility
 
-Both plugins check `kata version --json` before using the CLI. They require JSON schema 1 (`kata_api_version: 1`) and a version that proves Kata 0.23.0 or later. Plan tools show `unsupported_version` with installation guidance for older or unprovable versions; missing executables, unreachable Kata and timed-out probes still use the local plan fallback.
+Both plugins check `kata version --json` before using the CLI. They require JSON schema 1 (`kata_api_version: 1`) and a version that proves Kata 0.23.0 or later. For older or unprovable versions, plan tools fail with an upgrade or installation message (Kata error code `unsupported_version`); missing executables, unreachable Kata and timed-out probes still use the local plan fallback.
 
 Background contract injection and plugin-managed attention hooks quietly skip incompatible Kata; they do not show the upgrade error. Use a plan tool to see the error and installation guidance.
 

@@ -168,8 +168,8 @@ test("auto parents carry typed identity and close exactly once from child eviden
   expect(rows).toHaveLength(1);
   const evt = (await kata(["events", "--after", String(rows[0].event_id - 1), "--limit", "1", "--json"])).events[0];
   expect(evt.payload.evidence).toEqual([{ type: "test", command: "bun test fixture" }]);
-  // Every Kata call pins the plan's workspace, so a worktree or a moved cwd never resolves another project.
-  expect(app.calls.every(a => a.includes("--workspace"))).toBe(true);
+  // Every project-scoped Kata call pins the plan's workspace, so a worktree or a moved cwd never resolves another project.
+  expect(app.calls.filter(a => a[0] !== "version").every(a => a.includes("--workspace"))).toBe(true);
 });
 
 test("explicit parent is never auto-closed and rejected close leaves status active", async () => {
