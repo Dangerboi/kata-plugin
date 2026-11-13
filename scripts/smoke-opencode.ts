@@ -3,7 +3,7 @@
 //   bun run smoke:opencode [--scenario <name>] [--verbose] [--no-plugin]
 //
 // Each run gets a fresh Git folder, a throwaway KATA_HOME, HOME and XDG_* directories, and an opencode.json that registers
-// the repo's plugins/opencode/kata.ts through a re-export shim directory and a scripted OpenAI-compatible provider (scripts/smoke-opencode-provider.ts,
+// the repo's plugins/opencode folder directly and a scripted OpenAI-compatible provider (scripts/smoke-opencode-provider.ts,
 // started in this process). No credentials or network are needed. The plugin entry is left out with --no-plugin;
 // scenarios that set `needsPlugin` fail in that case.
 //
@@ -306,6 +306,7 @@ SCENARIOS.push({
 	},
 });
 
+const SHARED = "shared-server";
 const root = path.resolve(import.meta.dir, "..");
 const argv = process.argv.slice(2);
 const verbose = argv.includes("--verbose");
@@ -313,7 +314,7 @@ const picked = argv.includes("--scenario") ? argv[argv.indexOf("--scenario") + 1
 const pluginFile = path.join(root, "plugins/opencode/kata.ts");
 const withPlugin = !argv.includes("--no-plugin") && existsSync(pluginFile);
 const scenarios = picked ? SCENARIOS.filter(s => s.name === picked) : SCENARIOS;
-if (import.meta.main && !scenarios.length) { console.error(`Unknown scenario ${picked}. Known: ${SCENARIOS.map(s => s.name).join(", ")}`); process.exit(2); }
+if (import.meta.main && !scenarios.length && picked !== SHARED) { console.error(`Unknown scenario ${picked}. Known: ${[...SCENARIOS.map(s => s.name), SHARED].join(", ")}`); process.exit(2); }
 
 const PROJECT = "opencode-smoke";
 const TIMEOUT_MS = 120_000;
@@ -331,7 +332,7 @@ function kata(env: NodeJS.ProcessEnv, cwd: string, args: string[], extra: NodeJS
 	return out.stdout;
 }
 
-function store(env: NodeJS.ProcessEnv, cwd: string, provider: { requests: Request[] }, events: any[], code: number | null): Store {
+function store(env: NodeJS.ProcessEnv, cwd: string, provider: { requests: Request[] }, events: any[], code: number | null, project = PROJECT): Store {
 	return {
 		requests: () => provider.requests,
 		events: () => events,
@@ -340,7 +341,7 @@ function store(env: NodeJS.ProcessEnv, cwd: string, provider: { requests: Reques
 		children: ref => (JSON.parse(kata(env, cwd, ["show", ref, "--json"])).children ?? []).map((c: any) => c.short_id),
 		async issues() {
 			const listed = JSON.parse(kata(env, cwd, ["list", "--status", "all", "--limit", "0", "--json"])).issues;
-			const all = JSON.parse(kata(env, cwd, ["events", "--project", PROJECT, "--after", "0", "--limit", "10000", "--json"])).events;
+			const all = JSON.parse(kata(env, cwd, ["events", "--project", project, "--after", "0", "--limit", "10000", "--json"])).events;
 			return listed.map((i: any): Issue => ({
 				ref: i.short_id, title: i.title, status: i.status, owner: i.owner, metadata: i.metadata ?? {},
 				events: all.filter((e: any) => e.issue_uid === i.uid).map((e: any) => ({ type: e.type, payload: e.payload })),
@@ -372,14 +373,10 @@ async function run(scenario: Scenario) {
 		spawnSync("git", ["init", "-q", "."], { cwd: work });
 		kata(env, work, ["init", "--project", PROJECT]);
 		vars = scenario.setup?.(title => JSON.parse(kata(env, work, ["create", title, "--force-new", "--json"])).issue.short_id) ?? {};
-		// A configured local plugin must be a directory (a file path is refused with "configured plugin path must be a directory")
-		// whose `server.ts` or `index.ts` default-exports the plugin, so a one-line re-export of the repo file stands in for it;
-		// this is the only way to give a local plugin options.
-		const shim = path.join(work, "kata-plugin");
-		mkdirSync(shim);
-		writeFileSync(path.join(shim, "index.ts"), `export { default } from ${JSON.stringify(pluginFile)};\n`);
+		// The folder itself is the plugin (package.json `exports`); a file path is refused with "configured plugin path must be a directory".
+		const pluginDir = path.dirname(pluginFile);
 		const config = {
-			...(withPlugin ? { plugins: [{ package: shim, options: scenario.pluginOptions ?? {} }] } : {}),
+			...(withPlugin ? { plugins: [{ package: pluginDir, options: scenario.pluginOptions ?? {} }] } : {}),
 			providers: { [PROVIDER]: { package: "@opencode/ai/providers/openai-compatible", name: "Kata smoke", settings: { baseURL: provider.url, apiKey: "unused" }, models: { [MODEL]: { name: "Scripted" } } } },
 			...scenario.config,
 		};
@@ -412,8 +409,103 @@ async function run(scenario: Scenario) {
 	}
 }
 
+// ---- Shared server: the default OpenCode mode, one `opencode serve` for several leads ----
+const SHARED_PROJECT = "opencode-smoke-default";
+const sharedPlan = (tag: string) => [`${tag} one`, `${tag} two`];
+const sharedLead = (tag: string): Turn[] => {
+	const [one, two] = sharedPlan(tag);
+	return [
+		[{ tool: "todowrite", args: { todos: [{ content: one, status: "in_progress" }, { content: two, status: "pending" }] } }],
+		[{ tool: "todowrite", args: { todos: [{ content: one, status: "completed", message: `${one}: implemented and verified by running its tests, all green.`, evidence: [`test:bun test ${tag}`] }, { content: two, status: "in_progress" }] } }],
+		[{ tool: "todowrite", args: { todos: [{ content: one, status: "completed" }, { content: two, status: "completed", message: `${two}: implemented and verified by running its tests, all green.`, evidence: [`test:bun test ${tag} two`] }] } }],
+		[`${tag} done`],
+	];
+};
+const freePort = async () => { const s = Bun.serve({ port: 0, fetch: () => new Response("") }); const p = s.port; await s.stop(true); return p; };
+
+/** Two concurrent leads on one `opencode serve`; the project comes from the plugin option alone (no KATA_DEFAULT_PROJECT anywhere). */
+async function runShared() {
+	console.log(`\n# scenario ${SHARED}`);
+	const dir = path.join(tmp, SHARED);
+	const work = path.join(dir, "repo"), projectDir = path.join(dir, "project"), kataHome = path.join(dir, "kata"), home = path.join(dir, "home");
+	for (const d of [work, projectDir, kataHome, home]) mkdirSync(d, { recursive: true });
+	const xdg = Object.fromEntries(["config", "data", "cache", "state"].map(k => [`XDG_${k.toUpperCase()}_HOME`, path.join(home, `.${k}`)]));
+	// `opencode serve` insists on a password, and its clients must present the same one.
+	const env: NodeJS.ProcessEnv = { ...base, ...xdg, HOME: home, KATA_HOME: kataHome, OPENCODE_PASSWORD: "smoke-password", PWD: work };
+	const tags = ["alpha", "bravo"];
+	const scripts = Object.fromEntries(tags.map(t => [`[smoke:${t}]`, sharedLead(t)]));
+	const provider = startProvider(scripts);
+	const stopDaemon = () => void spawnSync("kata", ["daemon", "stop"], { env, cwd: projectDir, stdio: "ignore", timeout: 15_000 });
+	cleanups.add(provider.stop); cleanups.add(stopDaemon);
+	let server: ReturnType<typeof spawn> | undefined;
+	const stopServer = () => void server?.kill("SIGKILL");
+	cleanups.add(stopServer);
+	try {
+		if (!withPlugin) throw new Error("scenario needs plugins/opencode/kata.ts and --no-plugin is not set");
+		spawnSync("git", ["init", "-q", "."], { cwd: projectDir });
+		kata(env, projectDir, ["init", "--project", SHARED_PROJECT]);
+		// The lead's folder has no Kata project, so only the plugin option can route its plans.
+		spawnSync("git", ["init", "-q", "."], { cwd: work });
+		const config = {
+			plugins: [{ package: path.dirname(pluginFile), options: { defaultProject: SHARED_PROJECT } }],
+			providers: { [PROVIDER]: { package: "@opencode/ai/providers/openai-compatible", name: "Kata smoke", settings: { baseURL: provider.url, apiKey: "unused" }, models: { [MODEL]: { name: "Scripted" } } } },
+		};
+		writeFileSync(path.join(work, "opencode.json"), JSON.stringify(config, null, 2));
+
+		const port = await freePort(), url = `http://127.0.0.1:${port}`;
+		let serverLog = "";
+		server = spawn("opencode", ["serve", "--hostname", "127.0.0.1", "--port", String(port)], { env, cwd: work, stdio: ["ignore", "pipe", "pipe"] });
+		server.stdout!.on("data", d => serverLog += d);
+		server.stderr!.on("data", d => serverLog += d);
+		const up = async () => { for (let n = 0; n < 150; n++) { try { await fetch(url); return true; } catch { await Bun.sleep(200); } } return false; };
+		report("opencode serve is reachable", await up(), serverLog.trim().split("\n").slice(-10).join("\n"));
+
+		const lead = (tag: string) => new Promise<{ code: number | null; output: string }>(resolve => {
+			const child = spawn("opencode", ["run", "--server", url, "--auto", "--archived", "--format", "json", "-m", `${PROVIDER}/${MODEL}`, `[smoke:${tag}] Plan and do the ${tag} work.`], { env, cwd: work, stdio: ["ignore", "pipe", "pipe"] });
+			let output = "";
+			child.stdout.on("data", d => output += d);
+			child.stderr.on("data", d => output += d);
+			const timer = setTimeout(() => child.kill("SIGKILL"), TIMEOUT_MS);
+			child.on("close", code => { clearTimeout(timer); resolve({ code, output }); });
+		});
+		const runs = await Promise.all(tags.map(t => lead(t)));
+		if (verbose) for (const r of runs) console.log(r.output);
+		runs.forEach((r, n) => report(`lead ${tags[n]} exited cleanly`, r.code === 0, `exit ${r.code}\n${r.output.trim().split("\n").slice(-20).join("\n")}`));
+		const events = runs.map(r => r.output.split("\n").filter(l => l.startsWith("{")).flatMap(l => { try { return [JSON.parse(l)]; } catch { return []; } }));
+		const sessions = events.map(e => e.find(x => x.sessionID)?.sessionID as string | undefined);
+
+		const s = store(env, projectDir, provider, events.flat(), 0, SHARED_PROJECT);
+		const issues = await s.issues();
+		const byTitle = (t: string) => issues.find(i => i.title.includes(t));
+		const parents = issues.filter(i => s.children(i.ref).length);
+		const checks: Check[] = [
+			{ name: "the two leads have distinct sessions", ok: !!sessions[0] && !!sessions[1] && sessions[0] !== sessions[1], detail: JSON.stringify(sessions) },
+			{ name: "every plan item landed in the defaultProject project", ok: tags.every(t => sharedPlan(t).every(c => byTitle(c))), detail: JSON.stringify(issues.map(i => [i.ref, i.title])) },
+			{ name: "exactly two automatic parents exist", ok: parents.length === 2, detail: JSON.stringify(parents.map(p => [p.ref, p.title])) },
+		];
+		tags.forEach((tag, n) => {
+			const items = sharedPlan(tag).map(byTitle);
+			const kids = s.children(parents.find(p => s.children(p.ref).includes(items[0]?.ref ?? ""))?.ref ?? "");
+			const parent = parents.find(p => s.children(p.ref).includes(items[0]?.ref ?? ""));
+			checks.push(
+				{ name: `${tag}: its parent has exactly its own two items`, ok: !!parent && kids.length === 2 && items.every(i => !!i && kids.includes(i.ref)), detail: JSON.stringify([parent?.ref, kids, items.map(i => i?.ref)]) },
+				{ name: `${tag}: both items closed done under its own session id`, ok: items.every(i => i?.status === "closed" && closeEvent(i)?.reason === "done" && closeTranscript(i)?.agent === "opencode" && closeTranscript(i)?.session_id === sessions[n]), detail: JSON.stringify(items.map(i => [i?.status, closeTranscript(i)])) },
+			);
+		});
+		const [a, b] = tags.map(t => parents.find(p => s.children(p.ref).includes(byTitle(sharedPlan(t)[0])?.ref ?? "")));
+		checks.push({ name: "the two leads have different parents", ok: !!a && !!b && a.ref !== b.ref, detail: JSON.stringify([a?.ref, b?.ref]) });
+		for (const check of checks) report(check.name, check.ok, check.detail);
+	} catch (error) {
+		report("scenario setup", false, String(error));
+	} finally {
+		stopServer(); cleanups.delete(stopServer);
+		stopDaemon(); cleanups.delete(stopDaemon);
+		provider.stop(); cleanups.delete(provider.stop);
+	}
+}
+
 if (import.meta.main) {
-	try { for (const scenario of scenarios) await run(scenario); }
+	try { for (const scenario of scenarios) await run(scenario); if (!picked || picked === SHARED) await runShared(); }
 	finally { teardown(); }
 	console.log(failures ? `\n${failures} check(s) failed` : "\nall checks passed");
 	process.exit(failures ? 1 : 0);
