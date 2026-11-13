@@ -27,16 +27,20 @@ export default {
 		const { seam } = registry;
 
 		// A lead's core is created at the lead's first context hook or first tool call, never at its `session.created` (not delivered).
-		seam.before(async event => { await seam.leadOf(event.sessionID); });
+		// A lead that runs a hook or tool is alive: it is no longer an ended session. A delegate's tool call says nothing of its lead.
+		seam.before(async event => {
+			await (await seam.ownLead(event.sessionID))?.clearEnded();
+		});
 		seam.context(async event => {
-			const session = await seam.sessionOf(event.sessionID);
-			if (!session || session.parentID !== undefined) return;
-			const text = await (await seam.leadOf(event.sessionID))?.planSection();
+			const lead = await seam.ownLead(event.sessionID);
+			await lead?.clearEnded();
+			const text = await lead?.planSection();
 			if (text) event.system.push({ type: "text", text });
 		});
 		// Events of sessions that are not leads of this instance find no lead and do nothing.
 		seam.events(LEAD_ENDED, async event => { if (event.data?.sessionID) await (await seam.savedLead(event.data.sessionID))?.settle(); });
 		seam.events(SESSION_ENDED, async event => { if (event.data?.sessionID) await seam.endLead(event.data.sessionID); });
+		seam.events(["session.unarchived"], async event => { if (event.data?.sessionID) await (await seam.savedLead(event.data.sessionID))?.clearEnded(); });
 		for (const install of MODULES) await install(seam);
 
 		await ctx.tool.hook("execute.before", registry.hooks.before);
@@ -48,7 +52,8 @@ export default {
 		const consumer = (async () => {
 			for await (const event of ctx.event.subscribe({ types, signal: stream.signal })) await registry.dispatchEvent(event);
 		})().catch(seam.debug);
-		await registry.resumeSaved();
+		// Saved work resumes in the background: a slow or unreachable Kata never holds OpenCode's boot of the location.
+		registry.resumeSaved();
 
 		// Location eviction or server exit: the session may resume later, so nothing is closed or released.
 		return async () => {

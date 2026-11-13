@@ -42,6 +42,8 @@ export interface FakeSession {
 	location: { directory: string; workspaceID?: string };
 	messages: any[];
 	created: number;
+	/** When the session was archived (`time.archived` of `session.get`); a test sets and clears it. */
+	archived?: number;
 }
 
 export interface CreateSessionInput {
@@ -241,14 +243,15 @@ async function start(options: OpenCodeHostOptions, shared: Shared): Promise<Open
 		projectID: "prj_fake",
 		cost: 0,
 		tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
-		time: { created: session.created, updated: session.created },
+		time: { created: session.created, updated: session.created, ...(session.archived === undefined ? {} : { archived: session.archived }) },
 		...(session.title === undefined ? {} : { title: session.title }),
 		location: { directory: session.location.directory, ...(session.location.workspaceID === undefined ? {} : { workspaceID: session.location.workspaceID }) },
 	});
 
 	const requireSession = (sessionID: string) => {
 		const session = shared.sessions.get(sessionID);
-		if (!session) throw new Error(`Session not found: ${sessionID}`);
+		// The in-process host rejects with core `Session.NotFoundError` (core session.ts), carrying the sessionID.
+		if (!session) throw Object.assign(new Error(`Session not found: ${sessionID}`), { _tag: "Session.NotFoundError", sessionID });
 		return session;
 	};
 

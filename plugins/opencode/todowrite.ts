@@ -90,8 +90,12 @@ async function write(seam: Seam, lead: Pick<Lead, "id" | "exclusive" | "todo">, 
 			const [name, params] = coreOp(op, init);
 			init = undefined;
 			result = await lead.todo(name, params);
-			// An earlier op may have been applied: say what the plan is now.
-			if (result.isError) throw new Error(`${result.kata.notice || result.text}\nEarlier changes of this call may have been applied. The current Kata plan is below. Send the list again with your changes applied on top:\n${listTail(result)}`);
+			if (op.op === "append" && !result.isError) for (const item of op.items) accepted.add(item);
+			// An earlier op may have been applied: say what the plan is now, and remember the items this call already added.
+			if (result.isError) {
+				await seam.storage.set(lead.id, "accepted", [...accepted]);
+				throw new Error(`${result.kata.notice || result.text}\nEarlier changes of this call may have been applied. The current Kata plan is below. Send the list again with your changes applied on top:\n${listTail(result)}`);
+			}
 		}
 		await seam.storage.set(lead.id, "accepted", todos.map(item => item.content));
 		return { content: result.text, metadata: { todos: listOf(planOf(result)), ...(result.kata.parent ? { parent: result.kata.parent } : {}) } };
@@ -112,10 +116,10 @@ export function install(seam: Seam): Promise<unknown> {
 				return write(seam, lead, input);
 			}
 			// A delegate bound to an issue plans under it, through its own core; one that is not bound has no plan, and the lead tracks its work.
-			const owner = await seam.delegateOf(context.sessionID);
-			if (!owner) throw new Error("todowrite is for the lead session: a delegate reports its work in its reply, and the lead tracks it.");
-			await owner.lead.core.delegates.apply({ type: "nextUse", id: owner.record.id });
-			return write(seam, owner.lead.child(context.sessionID), input);
+			const delegate = await seam.delegateOf(context.sessionID);
+			if (!delegate) throw new Error("todowrite is for the lead session: a delegate reports its work in its reply, and the lead tracks it.");
+			await delegate.lead.core.delegates.apply({ type: "nextUse", id: delegate.record.id });
+			return write(seam, delegate.lead.delegateCore(context.sessionID), input);
 		},
 	}));
 }

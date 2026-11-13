@@ -2,7 +2,7 @@ import { afterAll, afterEach, beforeAll, beforeEach, expect, test } from "bun:te
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { assertIsolated } from "./isolation";
-import { isolatedKata, later } from "./kata-fixture";
+import { isolatedKata, later, settle, until } from "./kata-fixture";
 import { siblingThrottle } from "./kata-errors";
 import { openCodeHost, type OpenCodeInstance } from "./opencode-host";
 import opencode from "../plugins/opencode/kata";
@@ -27,9 +27,10 @@ const show = (ref: string) => kata(["show", ref, "--json"]);
 // The adapter runs this wrapper as "kata": it records every call and can make `kata close` fail with the sibling throttle,
 // as Kata does after a burst of closes. Everything else goes to the real binary.
 const wrapper = path.join(scratch, "kata-wrapper.sh");
-const calls = path.join(scratch, "calls.log"), throttle = path.join(scratch, "throttle");
+const calls = path.join(scratch, "calls.log"), throttle = path.join(scratch, "throttle"), slow = path.join(scratch, "slow");
 writeFileSync(wrapper, `#!/bin/sh
 echo "$@" >> "${calls}"
+if [ -e "${slow}" ]; then sleep 0.5; fi
 if [ "$1" = close ] && [ -e "${throttle}" ]; then
 	printf '%s\\n' '${siblingThrottle().stderr.trim()}' >&2
 	exit 1
@@ -68,6 +69,9 @@ async function parentOf(id: string): Promise<any> {
 async function childrenOf(ref: string): Promise<any[]> {
 	return [...(await show(ref)).children ?? []].sort((a, b) => Date.parse(a.created_at) - Date.parse(b.created_at));
 }
+// The saved keys of a session in the fake host's storage.
+const keysOf = (shared: OpenCodeInstance["shared"], id: string) => [...shared.kv.keys()].filter(key => key.includes(`/${id}/`));
+const endedSession = (shared: OpenCodeInstance["shared"], id: string) => keysOf(shared, id).some(key => key.endsWith("/ended"));
 async function closeEvents(): Promise<any[]> {
 	const events: any[] = [];
 	for (let after = 0; ;) {
@@ -97,6 +101,7 @@ beforeAll(async () => {
 beforeEach(() => {
 	rmSync(calls, { force: true });
 	rmSync(throttle, { force: true });
+	rmSync(slow, { force: true });
 	for (const key of touched.slice(1)) delete process.env[key];
 });
 afterEach(() => restore(touched.slice(1)));
@@ -281,7 +286,149 @@ for (const type of ["session.deleted", "session.archived"]) {
 		expect(parent.closed_reason).toBe("done");
 		const close = (await closeEvents()).find(e => e.issue_uid === parent.uid);
 		expect(close.payload.transcript).toMatchObject({ agent: "opencode", session_id: id });
-		expect([...host.shared.kv.keys()].filter(key => key.includes(`/${id}/`))).toEqual([]);
+		expect(keysOf(host.shared, id)).toEqual([]);
+	});
+}
+
+test("session.deleted while a close is refused keeps the saved state, and the next setup finishes it and then forgets the session", async () => {
+	const { host, id } = await lead();
+	await write(host, id, todos(["Throttled item", "in_progress"]));
+	const ref = qref(await parentOf(id));
+	writeFileSync(throttle, "");
+	const deferred = await write(host, id, todos({ content: "Throttled item", status: "completed", message, evidence }));
+	expect(deferred.text).toContain("deferred");
+	host.sessions.delete(id);
+	await host.emit("session.deleted", { sessionID: id });
+	// Nothing could be closed: the pending close and the session's end stay saved.
+	expect((await childrenOf(ref)).map(statusOf)).toEqual(["in_progress"]);
+	expect((await show(ref)).issue.status).toBe("open");
+	const saved = () => keysOf(host.shared, id);
+	expect(saved().some(key => key.endsWith("/entries"))).toBe(true);
+	rmSync(throttle);
+	// The retry is due when the next setup runs: it finishes the close, closes the parent, and forgets the session, in the background.
+	let restarted!: OpenCodeInstance;
+	await later(async () => {
+		restarted = await host.restart();
+		open.push(restarted);
+		expect(await until(() => keysOf(restarted.shared, id).length === 0)).toBe(true);
+	});
+	expect((await childrenOf(ref)).map(statusOf)).toEqual(["closed:done"]);
+	expect((await show(ref)).issue.status).toBe("closed");
+});
+
+test("a lead that dropped every item leaves its automatic parent open on purpose, and its end forgets the session", async () => {
+	const { host, id } = await lead();
+	await write(host, id, todos(["Only item", "in_progress"]));
+	const ref = qref(await parentOf(id));
+	const reason = "The parser already covers it, so this item is no longer needed.";
+	const dropped = await write(host, id, todos({ content: "Only item", status: "cancelled", reason }));
+	expect(dropped.status, dropped.text).toBe("completed");
+	host.sessions.delete(id);
+	await host.emit("session.deleted", { sessionID: id });
+	// Every child is wontfix: the core flags the parent for a person instead of closing it, which is not work left.
+	const parent = (await show(ref)).issue;
+	expect(parent.status).toBe("open");
+	expect(parent.labels).toContain("needs-review");
+	expect(keysOf(host.shared, id)).toEqual([]);
+	// Nothing is left to end at the next setup.
+	rmSync(calls, { force: true });
+	const restarted = await host.restart();
+	open.push(restarted);
+	await settle(300);
+	expect(kataCalls()).toEqual([]);
+});
+
+test("setup returns before a saved ended session's Kata work is done, and the work finishes in the background", async () => {
+	const { host, id } = await lead();
+	await write(host, id, todos(["Throttled item", "in_progress"]));
+	const ref = qref(await parentOf(id));
+	writeFileSync(throttle, "");
+	await write(host, id, todos({ content: "Throttled item", status: "completed", message, evidence }));
+	host.sessions.delete(id);
+	await host.emit("session.deleted", { sessionID: id });
+	expect((await show(ref)).issue.status).toBe("open");
+	rmSync(throttle);
+	// The old instance's own cleanup is not what is measured.
+	await host.shutdown();
+	writeFileSync(slow, "");
+	let restarted!: OpenCodeInstance;
+	try {
+		await later(async () => {
+			const started = performance.now();
+			restarted = await host.restart();
+			open.push(restarted);
+			// Every Kata call takes half a second: ending the session takes many of them.
+			expect(performance.now() - started).toBeLessThan(2000);
+			expect((await show(ref)).issue.status).toBe("open");
+			expect(await until(() => keysOf(restarted.shared, id).length === 0, 60_000)).toBe(true);
+		});
+	} finally { rmSync(slow, { force: true }); }
+	expect((await childrenOf(ref)).map(statusOf)).toEqual(["closed:done"]);
+	expect((await show(ref)).issue.status).toBe("closed");
+}, 90_000);
+
+// An archive whose close Kata refused leaves an ended session; the user then keeps working in it.
+for (const [how, resumed] of [
+	["`session.unarchived`", async (host: OpenCodeInstance, id: string) => { host.sessions.get(id)!.archived = undefined; await host.emit("session.unarchived", { sessionID: id }); }],
+	["a context hook", async (host: OpenCodeInstance, id: string) => { await host.context(id); }],
+	["nothing the plugin saw, but OpenCode no longer reports it archived", async (host: OpenCodeInstance, id: string) => { host.sessions.get(id)!.archived = undefined; }],
+] as const) {
+	test(`an archived session that is back (${how}) is not ended by the next setup`, async () => {
+		const { host, id, session } = await lead();
+		await write(host, id, todos(["Throttled item", "in_progress"], ["Running item", "pending"]));
+		const ref = qref(await parentOf(id));
+		writeFileSync(throttle, "");
+		await write(host, id, todos({ content: "Throttled item", status: "completed", message, evidence }, ["Running item", "in_progress"]));
+		session.archived = Date.now();
+		await host.emit("session.archived", { sessionID: id });
+		expect(endedSession(host.shared, id)).toBe(true);
+		await resumed(host, id);
+		rmSync(throttle);
+		let restarted!: OpenCodeInstance;
+		await later(async () => {
+			restarted = await host.restart();
+			open.push(restarted);
+			expect(await until(() => !endedSession(restarted.shared, id))).toBe(true);
+			// The resumed lead finishes its refused close, and ends nothing: a short wait for what a wrong ending would do.
+			for (let wait = 0; wait < 100 && statusOf((await childrenOf(ref))[0]) !== "closed:done"; wait++) await settle(100);
+			await settle(1500);
+			expect((await show(ref)).issue.status).toBe("open");
+		});
+		expect((await show(ref)).issue.status).toBe("open");
+		const [first, second] = await childrenOf(ref);
+		expect([first, second].map(statusOf)).toEqual(["closed:done", "in_progress"]);
+		expect(second.metadata["todo.session"]).toBe(id);
+		expect(keysOf(restarted.shared, id).some(key => key.endsWith("/entries"))).toBe(true);
+		expect((await restarted.context(id)).system[0]).toContain("Running item");
+	});
+}
+
+// A delegate's tool call says nothing of its lead: it must not clear the ended session a lead was saved as.
+for (const [type, end] of [
+	["session.archived", (host: OpenCodeInstance, id: string) => { host.sessions.get(id)!.archived = Date.now(); }],
+	["session.deleted", (host: OpenCodeInstance, id: string) => { host.sessions.delete(id); }],
+] as const) {
+	test(`${type} while a delegate still runs stays an ended session through the delegate's tool calls, and the next setup ends the session`, async () => {
+		const { host, id } = await lead();
+		await write(host, id, todos(["Throttled item", "in_progress"]));
+		const ref = qref(await parentOf(id));
+		const child = host.createSession({ parentID: id });
+		writeFileSync(throttle, "");
+		await write(host, id, todos({ content: "Throttled item", status: "completed", message, evidence }));
+		end(host, id);
+		await host.emit(type, { sessionID: id });
+		expect(endedSession(host.shared, id)).toBe(true);
+		await host.callTool(child.id, "shell", { command: "ls" }, { execute: () => "ok" });
+		expect(endedSession(host.shared, id)).toBe(true);
+		rmSync(throttle);
+		let restarted!: OpenCodeInstance;
+		await later(async () => {
+			restarted = await host.restart();
+			open.push(restarted);
+			expect(await until(() => keysOf(restarted.shared, id).length === 0)).toBe(true);
+		});
+		expect((await childrenOf(ref)).map(statusOf)).toEqual(["closed:done"]);
+		expect((await show(ref)).issue.status).toBe("closed");
 	});
 }
 
@@ -297,7 +444,7 @@ test("cleanup drains what fits but never closes the parent or releases the lead'
 	[, running] = await childrenOf(ref);
 	expect(running.metadata["todo.session"]).toBe(id);
 	expect(statusOf(running)).toBe("in_progress");
-	expect([...host.shared.kv.keys()].some(key => key.includes(`/${id}/entries`))).toBe(true);
+	expect(keysOf(host.shared, id).some(key => key.endsWith("/entries"))).toBe(true);
 });
 
 test("a restart resumes the session's plan and its saved pending closes", async () => {
@@ -375,4 +522,18 @@ test("settings come from plugin options first, then the server's environment", a
 	result = await write(named.host, named.id, { ...todos(["Planned under the list ref", "pending"]), ref: listRef });
 	expect(result.status, result.text).toBe("completed");
 	expect((await childrenOf(listRef)).map(c => c.title)).toEqual(["Planned under the list ref"]);
+});
+
+test("an item appended before a later op failed is still the session's own: leaving it out offers cancelling", async () => {
+	const { host, id } = await lead();
+	await write(host, id, todos(["Held item", "pending"]));
+	const ref = qref(await parentOf(id));
+	const [held] = await childrenOf(ref);
+	await kata(["meta", "set", qref(held), "teammate", "someone-else", "--json"]);
+	const failed = await write(host, id, todos(["Held item", "in_progress"], ["Appended item", "pending"]));
+	expect(failed.status).toBe("error");
+	const refused = await write(host, id, todos(["Held item", "pending"]));
+	expect(refused.status).toBe("error");
+	expect(refused.text).toContain(`"Appended item" is missing from the list: keep it, or mark it cancelled with a reason`);
+	expect(refused.text).not.toContain("outside this session");
 });

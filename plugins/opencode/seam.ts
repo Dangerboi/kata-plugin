@@ -1,14 +1,15 @@
 import { appendFileSync } from "node:fs";
+import { waitAtMost } from "./wait-at-most";
 import { createLead, type Lead } from "./lead";
-import { sessionStorage, STATE_ENTRY, type SavedSession, type SessionStorage } from "./saved";
+import { holdsWork, sessionStorage, type SavedSession, type SessionStorage } from "./saved";
 import type { DelegateAssignment, DelegateRecord, SavedDelegate } from "./delegates";
 import { createKataExec, type KataExec } from "./spawn";
 import type { Settings } from "./settings";
 
 // The adapter's internal seam: what kata.ts hands to every module that adds behaviour to one plugin instance (an instance
 // is one location). A module is a file exporting `install(seam: Seam): void`; kata.ts calls it once, after its own handlers
-// are registered, so a module's handlers run after the adapter's. Today's modules: todowrite.ts, subagents.ts. Next: shell
-// routing, in its own file, wired by one `import` and one `install(seam)` line in the `MODULES` list of kata.ts.
+// are registered, so a module's handlers run after the adapter's. A new module is wired by one `import` and one
+// `install(seam)` line in the `MODULES` list of kata.ts.
 //
 // OpenCode serves many sessions from one process and one plugin instance per location. A session is a lead (no
 // `parentID`) or a delegate's child session; only leads have a core (see Lead in lead.ts).
@@ -33,12 +34,14 @@ export interface Seam {
 	sessionOf(sessionID: string): Promise<SessionInfo | undefined>;
 	// The lead a session belongs to: itself, or the lead above a delegate's child session. Created at first use.
 	leadOf(sessionID: string): Promise<Lead | undefined>;
+	// The lead of a session that is itself a lead (no parent); undefined for a delegate's child session or one that cannot be read.
+	ownLead(sessionID: string): Promise<Lead | undefined>;
 	// The delegate record of a child session (`record.teammate`, `record.sessionId` is the child's own session id, `assignment.binding`).
 	// Undefined for a lead, a session that was never bound as a delegate, or one whose record this instance and storage no longer hold.
 	delegateOf(sessionID: string): Promise<DelegateOf | undefined>;
 	// This lead session's record, when this instance holds it or storage has state saved for it in this location. Never creates one.
 	savedLead(leadID: string): Promise<Lead | undefined>;
-	// The lead session ended: `lead.end()`, then this instance forgets it.
+	// The lead session ended (deleted or archived): `lead.end()`; this instance forgets it once nothing is left to finish (see Lead.end).
 	endLead(leadID: string): Promise<void>;
 
 	// Handlers run in registration order. A throw in `before` ends the tool call as an error (the call does not run);
@@ -71,13 +74,16 @@ export interface SeamRegistry {
 	// Every event type some handler asked for, and the dispatcher for events of them.
 	eventTypes(): string[];
 	dispatchEvent(event: any): Promise<void>;
-	// Binds every lead of this location with saved closes or delegates waiting, so that work resumes without a hook.
-	resumeSaved(): Promise<void>;
-	// The instance is going away: every lead drains what fits and keeps the rest saved.
+	// Starts, in the background, the work an earlier instance left: binds every lead of this location with saved closes or delegates
+	// waiting, and finishes the sessions that ended with work left. Never waits for Kata; errors go to the debug file.
+	resumeSaved(): void;
+	// The instance is going away: every lead drains what fits and keeps the rest saved. Waits for the background resume, at most RESUME_WAIT_MS.
 	suspendAll(): Promise<void>;
 }
 
 const MAX_DEPTH = 8;
+// How long the instance's cleanup waits for the background resume before it suspends the leads.
+const RESUME_WAIT_MS = 10_000;
 
 export function createSeam(ctx: any, settings: Settings): SeamRegistry {
 	const directory: string = ctx.location.directory;
@@ -127,6 +133,11 @@ export function createSeam(ctx: any, settings: Settings): SeamRegistry {
 		return leads.get(info.id) ?? leadFor(info.id, await savedState(info.id), await storage.get<SavedDelegate[]>(info.id, "settled"));
 	}
 
+	async function ownLead(sessionID: string): Promise<Lead | undefined> {
+		const info = await sessionOf(sessionID);
+		return info && info.parentID === undefined ? leadOf(sessionID) : undefined;
+	}
+
 	async function savedLead(leadID: string): Promise<Lead | undefined> {
 		const held = leads.get(leadID);
 		if (held) return held;
@@ -140,19 +151,43 @@ export function createSeam(ctx: any, settings: Settings): SeamRegistry {
 		const lead = await leadOf(sessionID);
 		const record = lead?.delegates.get(sessionID);
 		if (!lead || !record) return undefined;
-		const assignment = record.state === "assigned" && record.ref && record.binding ? { ref: record.ref, workspace: record.binding.workspace, teammate: record.teammate, binding: record.binding } : undefined;
-		return { lead, record, assignment };
+		return { lead, record, assignment: lead.core.delegates.assignment({ sessionManager: { getSessionId: () => sessionID } }) };
 	}
 
 	async function endLead(leadID: string): Promise<void> {
 		const lead = await savedLead(leadID);
-		if (!lead) return;
-		await lead.end();
-		leads.delete(leadID);
+		if (lead && await lead.end()) leads.delete(leadID);
+	}
+
+	// What OpenCode says of the session: "ended" (archived, or gone), "alive", or "unknown" when the read failed otherwise.
+	async function openCodeSays(sessionID: string): Promise<"alive" | "ended" | "unknown"> {
+		try {
+			const session = await ctx.session.get({ sessionID });
+			return typeof session?.time?.archived === "number" ? "ended" : "alive";
+		} catch (error) {
+			debug(error);
+			// A session OpenCode no longer holds rejects with `Session.NotFoundError`
+			// (see `packages/core/src/session/session.ts` in OpenCode).
+			const tag = (error as { _tag?: string } | undefined)?._tag;
+			return tag === "Session.NotFoundError" ? "ended" : "unknown";
+		}
+	}
+
+	let stopped = false, resuming: Promise<unknown> = Promise.resolve();
+	// One saved session: a session saved as an ended session that OpenCode still holds alive was unarchived or kept working, so it is not ended.
+	async function resumeOne(id: string, saved: SavedSession) {
+		if (stopped) return;
+		let ended = !!await storage.get(id, "ended");
+		const fate = ended ? await openCodeSays(id) : "alive";
+		if (fate === "alive" && ended) { await storage.remove(id, "ended"); ended = false; }
+		if (!ended && !holdsWork(saved.entries)) return;
+		leadFor(id, saved, await storage.get<SavedDelegate[]>(id, "settled"));
+		// A session that ended with work left finishes it now, and forgets its state once nothing is left.
+		if (ended && fate === "ended" && !stopped) await endLead(id);
 	}
 
 	const seam: Seam = {
-		ctx, directory, settings, exec, storage, debug, sessionOf, leadOf, delegateOf, savedLead, endLead,
+		ctx, directory, settings, exec, storage, debug, sessionOf, leadOf, ownLead, delegateOf, savedLead, endLead,
 		before: handler => void handlers.before.push(handler),
 		after: handler => void handlers.after.push(handler),
 		context: handler => void handlers.context.push(handler),
@@ -180,14 +215,15 @@ export function createSeam(ctx: any, settings: Settings): SeamRegistry {
 		},
 		eventTypes: () => [...new Set(handlers.events.flatMap(entry => entry.types))],
 		dispatchEvent: event => run(handlers.events.filter(entry => entry.types.includes(event.type)).map(entry => entry.handler), event, true),
-		async resumeSaved() {
-			for (const { id, saved } of await storage.sessions()) {
-				if (saved.directory !== directory) continue;
-				const state = saved.entries.find(entry => entry.customType === STATE_ENTRY)?.data as { retries?: unknown[]; pendingCloses?: unknown[]; delegates?: unknown[] } | undefined;
-				if (state?.retries?.length || state?.pendingCloses?.length || state?.delegates?.length) leadFor(id, saved, await storage.get<SavedDelegate[]>(id, "settled"));
-			}
+		resumeSaved() {
+			resuming = (async () => {
+				const mine = (await storage.sessions()).filter(({ saved }) => saved.directory === directory);
+				await Promise.all(mine.map(({ id, saved }) => resumeOne(id, saved).catch(debug)));
+			})().catch(debug);
 		},
 		async suspendAll() {
+			stopped = true;
+			await waitAtMost(resuming, RESUME_WAIT_MS);
 			await Promise.all([...leads.values()].map(lead => lead.suspend().catch(debug)));
 		},
 	};

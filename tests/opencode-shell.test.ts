@@ -99,7 +99,8 @@ test("a delegate's kata close runs under its teammate with its own transcript pa
 	});
 	expect(ran.input.command).toContain(`--teammate '${teammate}'`);
 	expect(ran.input.command).toContain(`KATA_TRANSCRIPT_SESSION_ID='${childID}'`);
-	expect(ran.input.command).toContain(`'${binary}'`);
+	expect(ran.input.command).toContain(" kata --teammate ");
+	expect(ran.input.command).not.toContain(binary);
 	const issue = (await kata(["show", ref, "--json"])).issue;
 	expect(issue.status).toBe("closed");
 	const close = (await closeEvents()).find(e => e.issue_uid === issue.uid);
@@ -119,14 +120,15 @@ test("--as is refused for a delegate and the command does not run", async () => 
 	});
 });
 
-test("a lead's command is unchanged apart from the executable and the close transcript pair", async () => {
+test("a lead's command is unchanged apart from the author and the close transcript pair", async () => {
 	const { host, id } = await lead();
 	await host.callTool(id, "todowrite", todos(["Lead item", "pending"]));
-	const pair = `env KATA_TRANSCRIPT_AGENT=opencode KATA_TRANSCRIPT_SESSION_ID='${id}' KATA_CLOSE_TRANSCRIPT_ENABLED=true `;
+	const author = "KATA_AUTHOR='opencode-builder'";
+	const pair = `env KATA_TRANSCRIPT_AGENT='opencode' KATA_TRANSCRIPT_SESSION_ID='${id}' KATA_CLOSE_TRANSCRIPT_ENABLED='true' ${author} `;
 	let result = await shell(host, id, "kata close x#1 --done --as someone");
-	expect(result.input.command).toBe(`${pair}'${binary}' close x#1 --done --as someone`);
+	expect(result.input.command).toBe(`${pair}kata close x#1 --done --as someone`);
 	result = await shell(host, id, "kata list --agent && kata show x#1");
-	expect(result.input.command).toBe(`'${binary}' list --agent && '${binary}' show x#1`);
+	expect(result.input.command).toBe(`env ${author} kata list --agent && env ${author} kata show x#1`);
 	result = await shell(host, id, `'${binary}' close x#1`);
 	expect(result.input.command).toBe(`${pair}'${binary}' close x#1`);
 });
@@ -139,4 +141,38 @@ test("commands that are not Kata are untouched", async () => {
 	await delegate(host, id, "Please do another item.", async child => {
 		for (const command of commands) expect((await shell(host, child.id, command)).input.command).toBe(command);
 	});
+});
+
+// The server's own environment holds neither setting: only the plugin options name the actor.
+test("shell kata commands carry the configured author and teammate when the server environment has none", async () => {
+	const host = await openCodeHost({ plugin: opencode, directory: cwd, options: { executable: binary, author: "configured-author", teammate: "configured-mate" } });
+	open.push(host);
+	const id = host.createSession({ id: `oc-sh-env-${Date.now().toString(36)}` }).id;
+	await host.callTool(id, "todowrite", todos(["Configured actor item", "in_progress"]));
+	const bare = { ...env };
+	delete bare.KATA_AUTHOR;
+	delete bare.KATA_TEAMMATE;
+	const runBare = async (command: string) => {
+		const proc = Bun.spawn(["bash", "-c", command], { cwd, env: bare, stdout: "pipe", stderr: "pipe" });
+		const [stdout, stderr] = await Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text()]);
+		return { code: await proc.exited, stdout, stderr };
+	};
+
+	const listed = await shell(host, id, "kata list --agent");
+	expect(listed.input.command).toContain("KATA_AUTHOR='configured-author'");
+	expect(listed.input.command).toContain("KATA_TEAMMATE='configured-mate'");
+
+	let ref = "", childID = "";
+	await delegate(host, id, "Please implement the configured actor.", async (child, system) => {
+		ref = refIn(system); childID = child.id;
+		const ran = await shell(host, child.id, closeCommand(ref));
+		expect(ran.input.command).toContain("KATA_AUTHOR='configured-author'");
+		const out = await runBare(ran.input.command);
+		expect(out.code, out.stderr).toBe(0);
+	});
+	const issue = (await kata(["show", ref, "--json"])).issue;
+	expect(issue.status).toBe("closed");
+	const close = (await closeEvents()).find(e => e.issue_uid === issue.uid);
+	expect(close.actor).toBe("configured-author");
+	expect(close.payload.transcript).toMatchObject({ agent: "opencode", session_id: childID });
 });

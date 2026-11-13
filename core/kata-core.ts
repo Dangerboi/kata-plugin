@@ -1677,6 +1677,9 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 			branch: rebind,
 			tree: rebind,
 			input() { reminders = 0; },
+			// Whether the session still owes Kata closes: a pending close, an unfinished delegate, and unless `parents` is false an
+			// automatic parent's close the last audit still means to make. A parent it left open on purpose (flagged for a person) is not owed.
+			owes: (options?: { parents?: boolean }) => settlement.owes(options) || (!!currentId && delegates.saved(currentId).length > 0),
 			stop(ctx: any, messages: any[], signal?: AbortSignal): Promise<string | undefined> {
 				see(ctx);
 				return remind(messages, ctx, signal);
@@ -1752,6 +1755,8 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 		},
 		delegates: {
 			apply: delegates.apply,
+			// The issue the delegate running in `ctx` works, once assigned.
+			assignment: delegates.assignment,
 			// Refuses a spawn that cannot be delegated; otherwise says what each is matched to. `held`: refs other spawns of the same call reserved.
 			check: (spawns: Spawn[], held?: Iterable<string>) => delegates.check(spawns, held),
 			join,

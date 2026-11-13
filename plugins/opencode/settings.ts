@@ -15,6 +15,11 @@ export interface Settings {
 	kataEnv: Record<string, string>;
 }
 
+// What a Kata close needs to record the session as its transcript. The switch stays as the server's environment set it, so
+// `KATA_CLOSE_TRANSCRIPT_ENABLED=false` opts out.
+export const closeTranscriptSwitch = () => ({ KATA_CLOSE_TRANSCRIPT_ENABLED: process.env.KATA_CLOSE_TRANSCRIPT_ENABLED ?? "true" });
+export const transcriptEnv = (sessionID: string) => ({ KATA_TRANSCRIPT_AGENT: "opencode", KATA_TRANSCRIPT_SESSION_ID: sessionID, ...closeTranscriptSwitch() });
+
 // option name, environment variable: the first non-empty string wins, option before variable.
 const SETTINGS = {
 	executable: ["executable", "KATA_OPENCODE_EXECUTABLE"],

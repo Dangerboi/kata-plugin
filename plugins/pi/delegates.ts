@@ -522,26 +522,38 @@ export function createDelegates(env: DelegatesEnv): Delegates {
 				if (r && report) r.report = report;
 				return r;
 			}
-			case "woken": {
-				if (!r) return r;
-				r.sessionId = event.sessionId;
-				if (!FINAL.has(r.state)) r.exited = undefined;
-				// Nothing was ever written for an untracked or unbound delegate: there is no issue to resume.
-				else if (r.state !== "untracked" && r.ref && r.binding) {
-					Object.assign(r, { state: "started", exited: undefined, ranTool: false, restore: undefined, report: undefined, error: undefined, followUp: true });
-				}
-				env.store.put(r);
-				return r;
-			}
+			// Applied in the serial queue by `wake`, after any settle of the delegate's earlier exit.
+			case "woken": return r;
 			case "nextUse":
 				if (r?.exited && !FINAL.has(r.state)) { r.exited = undefined; env.store.put(r); }
 				return r;
 		}
 	}
 
+	// A follow-up wakes a delegate after the settle of its earlier exit: a settle running or queued is not undone half way, and the
+	// record it settled starts again on its issue.
+	function wake(event: Extract<DelegateEvent, { type: "woken" }>): Promise<void> {
+		const work = env.serial(async () => {
+			const r = env.store.get(event.id);
+			if (!r) return;
+			r.sessionId = event.sessionId;
+			if (!FINAL.has(r.state)) r.exited = undefined;
+			// Nothing was ever written for an untracked or unbound delegate: there is no issue to resume.
+			else if (r.state !== "untracked" && r.ref && r.binding) {
+				Object.assign(r, { state: "started", exited: undefined, ranTool: false, restore: undefined, report: undefined, error: undefined, followUp: true });
+			}
+			env.store.put(r);
+			if (!r.exited && (r.state === "started" || r.state === "failed")) await assign(r);
+		}).catch(env.debug);
+		assigning.set(event.id, work);
+		void work.then(() => { if (assigning.get(event.id) === work) assigning.delete(event.id); });
+		return work;
+	}
+
 	// Each record's queued assignment (its start or a retry), so its next use waits for that and not for the lead's whole queue.
 	const assigning = new Map<string, Promise<void>>();
 	function apply(event: DelegateEvent): Promise<void> {
+		if (event.type === "woken") return wake(event);
 		const r = note(event);
 		if (!r || event.type === "ranTool" || event.type === "reported") return Promise.resolve();
 		if (event.type === "nextUse") {

@@ -55,8 +55,8 @@ export function install(seam: Seam): void {
 		if (!session) return;
 		if (session.parentID !== undefined) {
 			// A delegate's tool call: it did something, so its assignment is no longer rolled back at exit.
-			const owner = await seam.delegateOf(event.sessionID);
-			if (owner && !owner.record.ranTool) await send(owner.lead, { type: "ranTool", id: owner.record.id });
+			const delegate = await seam.delegateOf(event.sessionID);
+			if (delegate && !delegate.record.ranTool) await send(delegate.lead, { type: "ranTool", id: delegate.record.id });
 			return;
 		}
 		if (event.tool !== "subagent") return;
@@ -74,8 +74,8 @@ export function install(seam: Seam): void {
 		await lead.exclusive(async () => {
 			const list = callsOf(lead.id);
 			if (typeof input.sessionID === "string" && input.sessionID) {
-				// A follow-up stays on its delegate's record and issue; nothing is matched again.
-				if (lead.delegates.get(input.sessionID)) call.followUp = input.sessionID;
+				// A follow-up stays on its delegate's record and issue; nothing is matched or reserved, and one with no record is untracked.
+				call.followUp = input.sessionID;
 			} else {
 				const held = list.flatMap(other => other.reserved?.ref ? [other.reserved.ref] : []);
 				[call.reserved] = await lead.core.delegates.check([{ text: call.prompt, label: call.description }], held);
@@ -107,9 +107,9 @@ export function install(seam: Seam): void {
 			record = lead.delegates.get(event.sessionID);
 		}
 		if (!record) return;
-		const child = lead.child(event.sessionID);
+		const delegateCore = lead.delegateCore(event.sessionID);
 		// A later prompt retries an assignment that failed; the first one already waited for the binding.
-		const { sections } = await child.core.session.beforePrompt(child.coreCtx, { context: false, after: call ? undefined : send(lead, { type: "nextUse", id: record.id }) });
+		const { sections } = await delegateCore.core.session.beforePrompt(delegateCore.coreCtx, { context: false, after: call ? undefined : send(lead, { type: "nextUse", id: record.id }) });
 		if (sections.assignment) event.system.push({ type: "text", text: sections.assignment });
 	});
 

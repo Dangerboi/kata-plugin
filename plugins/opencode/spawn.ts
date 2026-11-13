@@ -1,14 +1,6 @@
 import { execFile } from "node:child_process";
 import type { ExecResult } from "./kata-cli";
-import type { Settings } from "./settings";
-
-// The session pair a Kata close records as its transcript; the switch stays as the server's environment set it, so
-// `KATA_CLOSE_TRANSCRIPT_ENABLED=false` opts out.
-const transcriptEnv = (sessionID: string) => ({
-	KATA_TRANSCRIPT_AGENT: "opencode",
-	KATA_TRANSCRIPT_SESSION_ID: sessionID,
-	KATA_CLOSE_TRANSCRIPT_ENABLED: process.env.KATA_CLOSE_TRANSCRIPT_ENABLED ?? "true",
-});
+import { transcriptEnv, type Settings } from "./settings";
 
 export type KataExec = (sessionID: string | undefined, file: string, args: string[], options: { cwd: string; timeout: number }) => Promise<ExecResult>;
 

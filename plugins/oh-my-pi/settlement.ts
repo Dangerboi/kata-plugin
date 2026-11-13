@@ -61,6 +61,10 @@ export interface Settlement {
 	// `parents: false` leaves the automatic parents open (the host closes them when the session ends).
 	drain(options?: { parents?: boolean }): Promise<void>;
 	snapshot(): SettlementSnapshot;
+	// Whether closes are still owed: a pending close (a task's or a ticket's), or (`parents`, the default) an automatic parent whose close the last
+	// audit still means to make, not one it left open on purpose (flagged needs-review, closed, or no longer this session's).
+	// A parent not yet audited is owed.
+	owes(options?: { parents?: boolean }): boolean;
 	restore(saved: SettlementSnapshot | undefined): void;
 }
 
@@ -90,6 +94,8 @@ export function createSettlement(deps: SettlementDeps): Settlement {
 	const failures = new Map<string, number>();
 	// Audited and flagged at this revision with these children: not audited again until either changes. In memory only.
 	const flagged = new Map<string, string>();
+	// Automatic parents the last audit finished with: nothing more to close. In memory only; a parent not yet audited is owed.
+	const parentDone = new Set<string>();
 	const verdictKey = (view: KataShow, revision = view.issue.revision) => `${revision}|${(view.children ?? []).map(c => `${c.uid}:${c.revision}`).sort().join(",")}`;
 	let cancelTimer: (() => void) | undefined;
 
@@ -146,6 +152,7 @@ export function createSettlement(deps: SettlementDeps): Settlement {
 	}
 
 	async function auditAutoParents() {
+		parentDone.clear();
 		for (const binding of autoParents.values()) {
 			const { parent, workspace } = binding;
 			let decision: KataIssue | undefined, initial: KataShow | undefined;
@@ -153,9 +160,9 @@ export function createSettlement(deps: SettlementDeps): Settlement {
 				if (deps.delegatesRunning()) return;
 				initial = await kata.show(parent, workspace);
 				const children = initial.children ?? [];
-				if (initial.issue.status === "closed" || initial.issue.metadata?.[`${namespace}.auto_parent`] !== true || initial.issue.metadata?.[`${namespace}.session_id`] !== binding.sessionId) continue;
-				if (!children.length || children.some(c => c.status !== "closed")) continue;
-				if (flagged.get(parent) === verdictKey(initial)) continue;
+				if (initial.issue.status === "closed" || initial.issue.metadata?.[`${namespace}.auto_parent`] !== true || initial.issue.metadata?.[`${namespace}.session_id`] !== binding.sessionId) { parentDone.add(parent); continue; }
+				if (!children.length || children.some(c => c.status !== "closed")) { parentDone.add(parent); continue; }
+				if (flagged.get(parent) === verdictKey(initial)) { parentDone.add(parent); continue; }
 				decision = await owned(parent, workspace, false, false, initial.issue.revision);
 				const closedTimes = children.filter(c => c.closed_reason !== "wontfix").map(c => Date.parse(c.closed_at ?? ""));
 				if (closedTimes.some((time: number) => !Number.isFinite(time))) throw new Error("Kata child close time unavailable");
@@ -181,9 +188,11 @@ export function createSettlement(deps: SettlementDeps): Settlement {
 				if (!proof.length) throw new Error("Kata child close evidence union is empty");
 				const final: KataShow = await kata.show(parent, workspace);
 				const finalChildren = final.children ?? [];
-				if (final.issue.status === "closed" || deps.delegatesRunning()) continue;
+				if (final.issue.status === "closed") { parentDone.add(parent); continue; }
+				if (deps.delegatesRunning()) continue;
 				if (final.issue.revision !== initial.issue.revision || finalChildren.length !== children.length || finalChildren.some(c => c.status !== "closed" || !children.some(old => old.uid === c.uid && old.revision === c.revision))) continue;
 				await kata.run(["close", parent, "--done", "--if-match", String(final.issue.revision), "--idempotency-key", `${namespace}-parent-close:${parent}:${final.issue.revision}`, "--message", `${namespace.toUpperCase()} session ${binding.sessionId}: all ${finalChildren.length} child issues are closed in Kata and delegated work has settled. Evidence is the union of their current Kata-recorded close events.`, ...proof], workspace);
+				parentDone.add(parent);
 			} catch (error) {
 				debug(error);
 				if (codeOf(error) === "sibling_throttle") { schedule(); continue; }
@@ -194,6 +203,8 @@ export function createSettlement(deps: SettlementDeps): Settlement {
 					if (initial && !isUnusable(error)) {
 						const current: KataShow = await kata.show(parent, workspace);
 						flagged.set(parent, verdictKey(initial, current.issue.revision));
+						// Left open on purpose, flagged for a person: not a close the audit still means to make.
+						parentDone.add(parent);
 					}
 				} catch (error) { debug(error); }
 			}
@@ -211,7 +222,7 @@ export function createSettlement(deps: SettlementDeps): Settlement {
 		hasTaskClose: ref => retries.has(ref),
 		cancelRemoval(ref) { if (retries.get(ref)?.change.remove === true) dropTask(ref); },
 		holdTicketClose(ticket, request, cwd) { pendingCloses.set(ticket, { ...request, cwd }); failures.delete(`ticket:${ticket}`); },
-		addAutoParent(binding) { autoParents.set(binding.parent, binding); },
+		addAutoParent(binding) { autoParents.set(binding.parent, binding); parentDone.delete(binding.parent); },
 		dropAutoParent(parent) { autoParents.delete(parent); },
 		dropPlan(parent) {
 			autoParents.delete(parent);
@@ -238,8 +249,9 @@ export function createSettlement(deps: SettlementDeps): Settlement {
 			autoParents: [...autoParents.values()], retries: [...retries.entries()],
 			...(pendingCloses.size ? { pendingCloses: [...pendingCloses.entries()] } : {}),
 		}),
+		owes: ({ parents = true } = {}) => retries.size > 0 || pendingCloses.size > 0 || (parents && [...autoParents.keys()].some(parent => !parentDone.has(parent))),
 		restore(saved) {
-			retries.clear(); autoParents.clear(); pendingCloses.clear(); failures.clear(); flagged.clear();
+			retries.clear(); autoParents.clear(); pendingCloses.clear(); failures.clear(); flagged.clear(); parentDone.clear();
 			clearTimer();
 			if (!saved) return;
 			for (const binding of saved.autoParents ?? []) autoParents.set(binding.parent, binding);
