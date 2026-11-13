@@ -41,6 +41,11 @@ export interface CoreOptions {
 	widget?(line: string, view: PlanView, ctx: any): unknown;
 	// false: the core never starts a pending task on its own after a change (OpenCode's todowrite list says what is in progress).
 	autoStart?: boolean;
+	// Where the settings a host keeps per session live (KATA_REF, KATA_TEAMMATE, KATA_AUTHOR, KATA_DEFAULT_PROJECT, USER): asked first, then process.env.
+	// A host that serves several sessions from one process cannot hold them in the process environment.
+	env?(name: string): string | undefined;
+	// "shutdown": the automatic parent closes only when the lead's session ends (shutdown without `continues`/`forking`), never in a turn's settle or a drain. Default "drain".
+	closeParent?: "drain" | "shutdown";
 }
 
 // Where the session's plan lives: the host hands it to child processes it starts.
@@ -181,6 +186,7 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 	const WIDGET = `${namespace}-kata`;
 	const MAX_REMINDERS = 3;
 	const main = (ctx: any) => host.isMain?.(ctx) ?? true;
+	const setting = (name: string) => options.env?.(name) ?? process.env[name];
 	const sid = (ctx: any): string | undefined => ctx?.sessionManager?.getSessionId?.();
 	// The main session's UI, when the host lets it show any.
 	const uiOf = (ctx: any) => main(ctx) && host.allowUI?.(ctx) !== false ? ctx?.ui : undefined;
@@ -198,11 +204,11 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 	let bound = false;
 	let assignedRef: string | undefined;
 	// The one place the configured explicit ref is read: the host option, else KATA_REF.
-	const configuredRef = () => options.explicitRef?.() ?? process.env.KATA_REF;
+	const configuredRef = () => options.explicitRef?.() ?? setting("KATA_REF");
 	const aliases = new Set<string>(); // refs the plan's parent was rehomed from: they still name it
 	let requestedRef: string | undefined;
 	let sessionTeammate: string | undefined;
-	const ownTeammate = () => sessionTeammate ?? process.env.KATA_TEAMMATE ?? "";
+	const ownTeammate = () => sessionTeammate ?? setting("KATA_TEAMMATE") ?? "";
 	// A ticket item's ticket keeps the actor and teammate rule alone: it is not this plan's task, whoever's plan holds it.
 	const TICKET: Who = { ticket: true };
 	let boundAgent: string | undefined;
@@ -286,7 +292,7 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 			if (typeof status.actor !== "string" || !status.actor.trim()) throw new Error("Kata status returned no effective actor.");
 			return status.actor;
 		}
-		if (process.env.KATA_AUTHOR || process.env.USER) return (process.env.KATA_AUTHOR || process.env.USER)!;
+		if (setting("KATA_AUTHOR") || setting("USER")) return (setting("KATA_AUTHOR") || setting("USER"))!;
 		const result = await host.exec("git", ["config", "user.name"], { cwd, timeout: 1000 });
 		return result.code === 0 && result.stdout.trim() ? result.stdout.trim() : "anonymous";
 	}
@@ -489,7 +495,7 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 	function candidate(cwd: string): { project?: string; label?: string; register?: boolean } {
 		if (!refusal) return {};
 		const name = inferredName(refusal, cwd);
-		const configured = process.env.KATA_DEFAULT_PROJECT?.trim();
+		const configured = setting("KATA_DEFAULT_PROJECT")?.trim();
 		return configured ? { project: configured, label: slug(name) } : { project: name, register: true };
 	}
 
@@ -1088,12 +1094,13 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 
 	// The one settlement pass: a deleted automatic parent is forgotten first, then exited delegates settle, the session's
 	// local plan replays, and pending closes and the automatic parent's close run.
-	async function drain() {
+	async function drain() { return sweep(options.closeParent !== "shutdown"); }
+	async function sweep(closeParents: boolean) {
 		// A deleted automatic parent takes its plan tasks' pending closes with it: the load forgets it before they run.
 		if (plan.parent && plan.auto && settlement.hasPlanCloses(plan.parent)) await load(plan.workspace).catch(debug);
 		await delegates.settle();
 		if (plan.local && currentCtx) await replayLocal(currentCtx).catch(debug);
-		await settlement.drain();
+		await settlement.drain({ parents: closeParents });
 		if (plan.local) settlement.schedule();
 		persist();
 	}
@@ -1275,7 +1282,8 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 				// owned() may have returned a closed item a past delegate still marked; it no longer is delegated.
 				if (decision) { task.revision = decision.revision; task.delegated = false; }
 				if (!OPEN.has(task.status) && !task.ticket) await reopenParent();
-				for (const other of plan.tasks) if (other !== task && other.status === "in_progress" && leads(other) && !settlement.hasTaskClose(other.ref)) await transition(other, "pending", {}, cwd);
+				// A host whose list says what is in progress (autoStart: false) may have several tasks started.
+				if (options.autoStart !== false) for (const other of plan.tasks) if (other !== task && other.status === "in_progress" && leads(other) && !settlement.hasTaskClose(other.ref)) await transition(other, "pending", {}, cwd);
 				await transition(task, "in_progress", change, cwd, decision);
 				settlement.cancelTaskClose(task.ref);
 				break;
@@ -1689,8 +1697,9 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 						const session = attentionSession;
 						attentionSession = undefined;
 						await load(plan.workspace || ctx.cwd).catch(debug);
-						await drain();
-						const ending = main(ctx) && !closing.continues && !closing.forking ? leaving() : undefined;
+						const ends = main(ctx) && !closing.continues && !closing.forking;
+						await sweep(options.closeParent !== "shutdown" || ends);
+						const ending = ends ? leaving() : undefined;
 						if (session) await attention("end", session);
 						await release(ending);
 					});
@@ -1751,3 +1760,5 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 		offerTickets: createTicketCompletion(kata, () => ({ session: currentId, cwd: path.resolve(currentCtx?.cwd ?? process.cwd()) }), debug),
 	};
 }
+
+export type KataCore = ReturnType<typeof createKataCore>;

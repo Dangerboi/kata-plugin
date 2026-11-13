@@ -1,0 +1,10 @@
+{
+  "name": "@dangerboi/kata-opencode",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Kata plans for OpenCode",
+  "main": "./kata.ts",
+  "exports": {
+    ".": "./kata.ts"
+  }
+}

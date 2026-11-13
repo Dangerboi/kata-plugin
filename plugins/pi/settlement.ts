@@ -58,7 +58,8 @@ export interface Settlement {
 	renamePlan(old: string, current: string): void;
 	// Arm the timer (the core's local plan retries on it too).
 	schedule(): void;
-	drain(): Promise<void>;
+	// `parents: false` leaves the automatic parents open (the host closes them when the session ends).
+	drain(options?: { parents?: boolean }): Promise<void>;
 	snapshot(): SettlementSnapshot;
 	restore(saved: SettlementSnapshot | undefined): void;
 }
@@ -225,11 +226,11 @@ export function createSettlement(deps: SettlementDeps): Settlement {
 		},
 		schedule,
 		// Never throws. A running delegate pauses only the automatic-parent audit.
-		async drain() {
+		async drain({ parents = true } = {}) {
 			try {
 				await drainTasks();
 				await drainTickets();
-				await auditAutoParents();
+				if (parents) await auditAutoParents();
 			} catch (error) { debug(error); }
 			if (retries.size) schedule();
 		},

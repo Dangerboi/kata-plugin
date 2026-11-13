@@ -13,6 +13,7 @@
   "include": [
     "core/**/*.ts",
     "plugins/oh-my-pi/*.ts",
-    "plugins/pi/*.ts"
+    "plugins/pi/*.ts",
+    "plugins/opencode/*.ts"
   ]
 }
