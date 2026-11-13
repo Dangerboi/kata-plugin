@@ -27,6 +27,8 @@ All notable changes to kata-plugin are listed here. The format follows [Keep a C
   - New items become issues, `in_progress` starts a task, `completed` closes it with a message and evidence, `cancelled` drops it with a reason, and `blocker` pauses it.
   - A call whose list disagrees with the plan is refused, changes nothing and carries the current list to send back. That covers an open item missing from the list, a started item sent back as `pending` and an item Kata already closed.
   - An item added in Kata outside the session is asked back unchanged, with no offer to cancel it.
+  - A second lead session on the same parent can take over an item the first started and lost to a crash: `takeover: true` on the call, recorded on each issue. Refusal texts speak `todowrite`.
+  - Content is kept exactly as written, including surrounding spaces, newlines and long text. A content that appears twice in a plan made elsewhere shows as one item whose changes apply to every open copy.
   - A session's automatic parent closes when the session is deleted or archived. An automatic parent Kata leaves open on purpose, such as one whose items were all dropped, does not count as work left.
   - When a close or a delegate cleanup is still owed (Kata was unreachable or throttled, or a delegate is still running), the session becomes an ended session and its saved state is kept. The next plugin setup finishes the work in the background, without delaying startup, and then forgets the session.
   - Unarchiving the session, or new activity in it, stops it being an ended session, so a restart never finishes a session that was unarchived.
