@@ -71,7 +71,7 @@ bun run smoke:opencode --verbose             # also print OpenCode's JSON event 
 bun run smoke:opencode --no-plugin           # leave the plugin out; scenarios that need it fail
 ```
 
-Scenarios are data in `scripts/smoke-opencode.ts`: scripted turns per agent (keyed by a marker in the agent's first user message) plus assertions over the store. Add one by appending an entry to `SCENARIOS`; the driver changes only for a scenario that restarts OpenCode.
+Scenarios are data in `scripts/smoke-opencode.ts`: scripted turns per agent (keyed by a marker in the agent's first user message) plus assertions over the store. Add one by appending an entry to `SCENARIOS`; the driver changes only for a scenario that restarts OpenCode. `shared-server` is the exception: it is not a `SCENARIOS` entry but has its own driver (`runShared`, which starts `opencode serve` and two `opencode run --server` leads), and `--scenario shared-server` (and the default run) is special-cased in the script's main block.
 
 ## Changelog
 

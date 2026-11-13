@@ -356,6 +356,8 @@ const cleanups = new Set<() => void>();
 const teardown = () => { for (const fn of [...cleanups]) { try { fn(); } catch {} cleanups.delete(fn); } if (tmp) rmSync(tmp, { recursive: true, force: true }); };
 for (const sig of ["SIGINT", "SIGTERM"] as const) process.on(sig, () => { teardown(); process.exit(130); });
 
+const providers = (baseURL: string) => ({ [PROVIDER]: { package: "@opencode/ai/providers/openai-compatible", name: "Kata smoke", settings: { baseURL, apiKey: "unused" }, models: { [MODEL]: { name: "Scripted" } } } });
+
 async function run(scenario: Scenario) {
 	console.log(`\n# scenario ${scenario.name}`);
 	const dir = path.join(tmp, scenario.name);
@@ -377,7 +379,7 @@ async function run(scenario: Scenario) {
 		const pluginDir = path.dirname(pluginFile);
 		const config = {
 			...(withPlugin ? { plugins: [{ package: pluginDir, options: scenario.pluginOptions ?? {} }] } : {}),
-			providers: { [PROVIDER]: { package: "@opencode/ai/providers/openai-compatible", name: "Kata smoke", settings: { baseURL: provider.url, apiKey: "unused" }, models: { [MODEL]: { name: "Scripted" } } } },
+			providers: providers(provider.url),
 			...scenario.config,
 		};
 		writeFileSync(path.join(work, "opencode.json"), JSON.stringify(config, null, 2));
@@ -437,19 +439,19 @@ async function runShared() {
 	const provider = startProvider(scripts);
 	const stopDaemon = () => void spawnSync("kata", ["daemon", "stop"], { env, cwd: projectDir, stdio: "ignore", timeout: 15_000 });
 	cleanups.add(provider.stop); cleanups.add(stopDaemon);
+	// Leads are registered before the server so teardown kills them first.
+	const leads: ReturnType<typeof spawn>[] = [];
+	const stopLeads = () => leads.forEach(c => void c.kill("SIGKILL"));
 	let server: ReturnType<typeof spawn> | undefined;
 	const stopServer = () => void server?.kill("SIGKILL");
-	cleanups.add(stopServer);
+	cleanups.add(stopLeads); cleanups.add(stopServer);
 	try {
 		if (!withPlugin) throw new Error("scenario needs plugins/opencode/kata.ts and --no-plugin is not set");
 		spawnSync("git", ["init", "-q", "."], { cwd: projectDir });
 		kata(env, projectDir, ["init", "--project", SHARED_PROJECT]);
 		// The lead's folder has no Kata project, so only the plugin option can route its plans.
 		spawnSync("git", ["init", "-q", "."], { cwd: work });
-		const config = {
-			plugins: [{ package: path.dirname(pluginFile), options: { defaultProject: SHARED_PROJECT } }],
-			providers: { [PROVIDER]: { package: "@opencode/ai/providers/openai-compatible", name: "Kata smoke", settings: { baseURL: provider.url, apiKey: "unused" }, models: { [MODEL]: { name: "Scripted" } } } },
-		};
+		const config = { plugins: [{ package: path.dirname(pluginFile), options: { defaultProject: SHARED_PROJECT } }], providers: providers(provider.url) };
 		writeFileSync(path.join(work, "opencode.json"), JSON.stringify(config, null, 2));
 
 		const port = await freePort(), url = `http://127.0.0.1:${port}`;
@@ -462,6 +464,7 @@ async function runShared() {
 
 		const lead = (tag: string) => new Promise<{ code: number | null; output: string }>(resolve => {
 			const child = spawn("opencode", ["run", "--server", url, "--auto", "--archived", "--format", "json", "-m", `${PROVIDER}/${MODEL}`, `[smoke:${tag}] Plan and do the ${tag} work.`], { env, cwd: work, stdio: ["ignore", "pipe", "pipe"] });
+			leads.push(child);
 			let output = "";
 			child.stdout.on("data", d => output += d);
 			child.stderr.on("data", d => output += d);
@@ -483,16 +486,18 @@ async function runShared() {
 			{ name: "every plan item landed in the defaultProject project", ok: tags.every(t => sharedPlan(t).every(c => byTitle(c))), detail: JSON.stringify(issues.map(i => [i.ref, i.title])) },
 			{ name: "exactly two automatic parents exist", ok: parents.length === 2, detail: JSON.stringify(parents.map(p => [p.ref, p.title])) },
 		];
+		// Each `children` call runs `kata show`, so find every lead's parent once.
+		const parentOf = tags.map(t => parents.find(p => s.children(p.ref).includes(byTitle(sharedPlan(t)[0])?.ref ?? "")));
 		tags.forEach((tag, n) => {
 			const items = sharedPlan(tag).map(byTitle);
-			const kids = s.children(parents.find(p => s.children(p.ref).includes(items[0]?.ref ?? ""))?.ref ?? "");
-			const parent = parents.find(p => s.children(p.ref).includes(items[0]?.ref ?? ""));
+			const parent = parentOf[n];
+			const kids = parent ? s.children(parent.ref) : [];
 			checks.push(
 				{ name: `${tag}: its parent has exactly its own two items`, ok: !!parent && kids.length === 2 && items.every(i => !!i && kids.includes(i.ref)), detail: JSON.stringify([parent?.ref, kids, items.map(i => i?.ref)]) },
 				{ name: `${tag}: both items closed done under its own session id`, ok: items.every(i => i?.status === "closed" && closeEvent(i)?.reason === "done" && closeTranscript(i)?.agent === "opencode" && closeTranscript(i)?.session_id === sessions[n]), detail: JSON.stringify(items.map(i => [i?.status, closeTranscript(i)])) },
 			);
 		});
-		const [a, b] = tags.map(t => parents.find(p => s.children(p.ref).includes(byTitle(sharedPlan(t)[0])?.ref ?? "")));
+		const [a, b] = parentOf;
 		checks.push({ name: "the two leads have different parents", ok: !!a && !!b && a.ref !== b.ref, detail: JSON.stringify([a?.ref, b?.ref]) });
 		for (const check of checks) report(check.name, check.ok, check.detail);
 	} catch (error) {
