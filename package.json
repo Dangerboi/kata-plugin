@@ -3,7 +3,7 @@
   "version": "1.9.2",
   "private": true,
   "type": "module",
-  "description": "Kata work tracking for oh-my-pi and pi",
+  "description": "Kata work tracking for oh-my-pi, pi and OpenCode",
   "license": "MIT",
   "author": "Dangerboi",
   "keywords": [
@@ -20,6 +20,7 @@
   "scripts": {
     "test": "bun tests/run.ts all",
     "smoke:omp": "bun scripts/vendor-core.ts --check && bun scripts/smoke-omp.ts",
+    "smoke:opencode": "bun scripts/vendor-core.ts --check && bun scripts/smoke-opencode.ts",
     "smoke:omp-attention": "bun scripts/vendor-core.ts --check && bun scripts/smoke-omp-attention.ts",
     "test:todo": "bun tests/run.ts",
     "test:changed": "bun tests/run.ts changed",

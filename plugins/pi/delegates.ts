@@ -146,6 +146,8 @@ export interface DelegateRecord {
 	exited?: DelegateOutcome;
 	// Its latest report (its last assistant text, or what it yielded), posted for a delegate that left no comment of its own.
 	report?: string;
+	// A follow-up woke it after its first run: its report is posted even when it commented before, and a closed issue is no error.
+	followUp?: boolean;
 }
 
 // A record as the lead's snapshot keeps it.
@@ -167,6 +169,9 @@ export type DelegateEvent =
 	| { type: "nextUse"; id: string }
 	// What it reported last, superseding an earlier report.
 	| { type: "reported"; id: string; text: string }
+	// A follow-up woke a delegate that already ran: it stays on its record and issue. An open issue is assigned again; a closed one
+	// is never reopened and only takes the follow-up's report as a comment.
+	| { type: "woken"; id: string; sessionId: string }
 	| { type: "exited"; id: string; outcome: DelegateOutcome };
 
 export type DelegateAssignment = { ref: string; workspace: string; teammate: string; binding: Binding };
@@ -348,6 +353,7 @@ export function createDelegates(env: DelegatesEnv): Delegates {
 		r.binding = binding;
 		const ref = r.planRef, cwd = binding.workspace;
 		let issue: KataIssue = (await env.kata.show(ref, cwd)).issue;
+		if (issue.status !== "open" && r.followUp) { r.ref = ref; r.state = "assigned"; return; }
 		r.restore ??= capture(issue);
 		// Saved before the first write, so an assignment cut off by a crash is rolled back on resume.
 		env.store.put(r);
@@ -427,9 +433,9 @@ export function createDelegates(env: DelegatesEnv): Delegates {
 
 	async function postReport(r: DelegateRecord, ref: string, cwd: string, shown: KataShow) {
 		if (!r.report) return;
-		if ((shown.comments ?? []).some(c => ownComment(c, r.teammate))) return;
+		if (!r.followUp && (shown.comments ?? []).some(c => ownComment(c, r.teammate))) return;
 		await env.kata.run(["comment", ref, "--teammate", r.teammate, "--idempotency-key", `${ns}-report:${r.leadSessionId}:${r.id}:${digest(r.report)}`,
-			"--body", `${REPORT_HEADING} ${nameOf(r)} (it left no comment of its own):\n\n${r.report}`], cwd);
+			"--body", `${REPORT_HEADING} ${nameOf(r)} (${r.followUp ? "after a follow-up" : "it left no comment of its own"}):\n\n${r.report}`], cwd);
 	}
 
 	// One exited delegate: a closed issue settles it, returned to the lead when the delegate held it; a delegate that never
@@ -464,6 +470,8 @@ export function createDelegates(env: DelegatesEnv): Delegates {
 		// A cut right after the claim looks the same, so that claim stays, held by the lead's actor and teammate.
 		if ((r.state === "assigned" || r.state === "started") && !r.ranTool) {
 			const ours = r.state === "assigned" || issue.metadata?.teammate === r.teammate || holding(r, issue);
+			// A follow-up's answer is the only copy of its report, so it is posted before the rollback drops the claim.
+			if (r.followUp) await postReport(r, ref, cwd, shown);
 			if (r.restore && ours) await rollback(r, issue, r.restore);
 			return settled();
 		}
@@ -516,15 +524,38 @@ export function createDelegates(env: DelegatesEnv): Delegates {
 				if (r && report) r.report = report;
 				return r;
 			}
+			// Applied in the serial queue by `wake`, after any settle of the delegate's earlier exit.
+			case "woken": return r;
 			case "nextUse":
 				if (r?.exited && !FINAL.has(r.state)) { r.exited = undefined; env.store.put(r); }
 				return r;
 		}
 	}
 
+	// A follow-up wakes a delegate after the settle of its earlier exit: a settle running or queued is not undone half way, and the
+	// record it settled starts again on its issue.
+	function wake(event: Extract<DelegateEvent, { type: "woken" }>): Promise<void> {
+		const work = env.serial(async () => {
+			const r = env.store.get(event.id);
+			if (!r) return;
+			r.sessionId = event.sessionId;
+			if (!FINAL.has(r.state)) r.exited = undefined;
+			// Nothing was ever written for an untracked or unbound delegate: there is no issue to resume.
+			else if (r.state !== "untracked" && r.ref && r.binding) {
+				Object.assign(r, { state: "started", exited: undefined, ranTool: false, restore: undefined, report: undefined, error: undefined, followUp: true });
+			}
+			env.store.put(r);
+			if (!r.exited && (r.state === "started" || r.state === "failed")) await assign(r);
+		}).catch(env.debug);
+		assigning.set(event.id, work);
+		void work.then(() => { if (assigning.get(event.id) === work) assigning.delete(event.id); });
+		return work;
+	}
+
 	// Each record's queued assignment (its start or a retry), so its next use waits for that and not for the lead's whole queue.
 	const assigning = new Map<string, Promise<void>>();
 	function apply(event: DelegateEvent): Promise<void> {
+		if (event.type === "woken") return wake(event);
 		const r = note(event);
 		if (!r || event.type === "ranTool" || event.type === "reported") return Promise.resolve();
 		if (event.type === "nextUse") {

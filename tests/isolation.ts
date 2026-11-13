@@ -16,7 +16,7 @@ export function assertIsolated(env: NodeJS.ProcessEnv = process.env) {
 
 // Include every fixture actor/project, including live proof runs. Keep this list
 // next to the guard so additions to fixtures have one explicit canary boundary.
-const actors = new Set(["actor-a", "actor-b", "v2-builder", "revision-a", "revision-b", "omp-v2-proof", "pi-builder", "pi-port-proof", "integration-actor", "assemble-proof"]);
+const actors = new Set(["actor-a", "actor-b", "v2-builder", "revision-a", "revision-b", "omp-v2-proof", "pi-builder", "opencode-builder", "configured-author", "pi-port-proof", "integration-actor", "assemble-proof"]);
 const testProject = /(?:^|[^a-z0-9_-])(?:realtest|fixture|assemble-[a-z0-9_-]+|omptest|v2test|v2other|v2evidence|pitest|piother|pi-port-[a-z0-9_-]+|revision-conformance|omp-v2-[a-z0-9_-]+)(?=$|[^a-z0-9_-])/i;
 type Snapshot = { present: boolean; schema?: string; projects: string[]; forbidden: string[] };
 

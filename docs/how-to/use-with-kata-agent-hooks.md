@@ -15,3 +15,11 @@ Kata 0.21's pi hook keeps child sessions off the lead's attention with `KATA_ATT
 ## Oh-my-pi
 
 Kata has no omp harness, so there is nothing to install. For a `KATA_REF` session the omp plugin checks the actor and teammate, then calls `kata agent-hook attention-native pi start|end` itself; pi is the closest harness and only selects payload parsing and the session token. Kata 0.21's pi hook does nothing inside omp (`pi.zod`), so a `PI_CODING_AGENT_DIR` shared with omp no longer adds a second attention writer. Do not install another session-attention writer for the same issue alongside it. Subagents receive their own binding and do not run the lead's attention transitions. Once attention starts, the lead also publishes Kata's `KATA_ATTENTION_HOST`, so a native Pi it starts from bash with the same `KATA_REF`, folder and daemon leaves its attention alone; a Pi started in another folder or on another issue tracks its own.
+
+## OpenCode
+
+```sh
+kata agent-hook install opencode
+```
+
+Run it once for the contract, the inbox and session attention. The OpenCode plugin asks the core for the plan section only (`context: false`) and leaves the contract, the inbox and attention to Kata's hook, so nothing needs configuring on the plugin side. The installer probes `opencode --version` to pick the v1 or v2 API (`--api v1|v2` overrides the probe) and installs at user scope; add `--local` for the project folder, or `--attention=false` for the contract alone. Do not install a second session-attention writer for the same issue alongside it.

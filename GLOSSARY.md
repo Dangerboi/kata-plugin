@@ -9,7 +9,7 @@ The main agent session: it holds the plan and starts delegates.
 _Avoid_: main agent, coordinator, parent session
 
 **Delegate**:
-An agent the lead starts to do part of the work: an omp `task` subagent or a pi child process.
+An agent the lead starts to do part of the work: an omp `task` subagent, a pi child process or an OpenCode subagent session.
 _Avoid_: subagent, child, worker
 
 **Assignment**:
@@ -81,6 +81,10 @@ _Avoid_: deferred close, retry
 **Settlement**:
 The closes the plugin still owes for a session: its pending closes and its automatic parent's close.
 _Avoid_: reconcile, close queue
+
+**Ended session**:
+A lead session deleted or archived while it still owes closes or delegate cleanups; its saved state waits for the next plugin setup, which finishes the work and forgets it.
+_Avoid_: pending end, ended mark
 
 ## Inbox
 

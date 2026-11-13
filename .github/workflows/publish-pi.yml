@@ -1,6 +1,6 @@
-# Publishes @dangerboi/kata-pi to npm through trusted publishing (OIDC): no token, no one-time code.
-# npm trusts this file by name (publish-pi.yml) for Dangerboi/kata-plugin; renaming it breaks publishing.
-name: Publish pi package
+# Publishes @dangerboi/kata-pi and @dangerboi/kata-opencode to npm through trusted publishing (OIDC): no token, no one-time code.
+# npm trusts this file by name (publish-pi.yml) for Dangerboi/kata-plugin, for both packages; renaming it breaks publishing.
+name: Publish pi and OpenCode packages
 
 on:
   push:
@@ -56,4 +56,38 @@ jobs:
       - name: Publish
         if: steps.check.outputs.publish == 'true'
         working-directory: plugins/pi
+        run: npm publish
+
+  # The OpenCode package has its own version, so unlike the pi job this one does not require the tag to equal it: a
+  # release tag publishes the version in plugins/opencode/package.json when npm does not have it yet.
+  publish-opencode:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+          persist-credentials: false
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+          registry-url: "https://registry.npmjs.org"
+          package-manager-cache: false
+
+      - name: Check the OpenCode version is new
+        id: check
+        working-directory: plugins/opencode
+        run: |
+          name=$(node -p "require('./package.json').name")
+          version=$(node -p "require('./package.json').version")
+          if [ -n "$(npm view "$name@$version" version 2>/dev/null)" ]; then
+            echo "::notice::$name@$version is already on npm; nothing to publish."
+            echo "publish=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "publish=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Publish
+        if: steps.check.outputs.publish == 'true'
+        working-directory: plugins/opencode
         run: npm publish
