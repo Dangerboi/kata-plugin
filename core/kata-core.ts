@@ -166,7 +166,7 @@ export function render(plan: Plan): string {
 	const lines = [`${plan.local ? "Session-local plan (Kata is unreachable; it replays into Kata when Kata returns)" : plan.parent ? `Kata parent ${plan.parent}` : "Kata tickets (no parent issue)"}: ${done}/${plan.tasks.length} done`];
 	for (const phase of phasesOf(plan.tasks)) {
 		lines.push(`${phase.name}:`);
-		for (const t of phase.tasks) lines.push(`  ${MARK[t.status]} ${t.content} (${t.ticket ?? t.ref})${t.blocker ? ` — blocked: ${t.blocker}` : ""}`);
+		for (const t of phase.tasks) lines.push(`  ${MARK[t.status]} ${t.content} (${t.ticket ?? t.ref})${t.blocker ? ` — blocked: ${t.blocker}` : ""}${t.elsewhere ? ` — started by session ${t.elsewhere}` : ""}`);
 	}
 	return lines.join("\n");
 }
@@ -950,10 +950,12 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 			return tasks;
 		}
 		if (!target) {
-			// Never guess between two active tasks: closing one closes it with this evidence.
+			// Never guess between two active tasks: closing one closes it with this evidence. A task another session started
+			// counts too: the caller may mean it, and closing this session's own task with that evidence would be wrong.
 			const active = plan.tasks.filter(t => t.status === "in_progress" && leads(t));
-			if (fallback === "active" && active.length === 1) return active;
-			if (fallback === "active" && active.length > 1) throw new Error(`Several tasks are in progress (${active.map(t => `"${t.content}"`).join(", ")}); name the task.`);
+			const held = plan.tasks.filter(t => t.status === "in_progress" && t.elsewhere);
+			if (fallback === "active" && active.length === 1 && !held.length) return active;
+			if (fallback === "active" && active.length + held.length > 1) throw new Error(`Several tasks are in progress (${[...active, ...held].map(t => `"${t.content}"`).join(", ")}); name the task.`);
 			throw new Error("Name the task (verbatim content or Kata ref).");
 		}
 		if (!plan.local && !plan.tasks.some(t => t.content === target) && /(?:^|#)[0-9a-hjkmnp-tv-z]{26}$/i.test(target)) target = await kata.pin(target, plan.workspace);

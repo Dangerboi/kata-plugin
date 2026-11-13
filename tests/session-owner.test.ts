@@ -175,3 +175,22 @@ test("items a lead creates carry its session", async () => {
   const child = (await shown(parent)).children.find((c: { title: string }) => c.title === "A marked item");
   expect(child.metadata["todo.session"]).toBe("session-a");
 }, 30000);
+
+test("a bare done never picks this session's task while another session's task is in progress", async () => {
+  const parent = await issue();
+  const first = await issue(["todo.phase=Tasks", "todo.status=pending"], parent);
+  await issue(["todo.phase=Tasks", "todo.status=pending"], parent);
+  const a = lead("session-a", parent), b = lead("session-b", parent);
+  await a.begin();
+  await a.call({ op: "start", task: first });
+  await b.begin();
+  const view = await b.call({ op: "view" });
+  expect(view.content[0].text).toContain(`(omptest#${first}) — started by session session-a`);
+  // Starting another task leaves two in progress, one of them not this session's.
+  const second = (await shown(parent)).children.find((c: { short_id: string }) => c.short_id !== first).short_id;
+  expect((await b.call({ op: "start", task: second })).isError).toBeUndefined();
+  const refused = await b.call({ op: "done", ...proof });
+  expect(refused.isError).toBe(true);
+  expect(refused.content[0].text).toContain("Several tasks are in progress");
+  expect((await shown(second)).issue.status).toBe("open");
+}, 30000);
