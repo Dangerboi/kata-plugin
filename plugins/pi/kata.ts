@@ -115,6 +115,7 @@ export default async function piKata(pi: ExtensionAPI) {
 			reason: Type.Optional(Type.String({ description: TODO_PARAMS.reason })),
 			ref: Type.Optional(Type.String({ description: TODO_PARAMS.ref })),
 			replace: Type.Optional(Type.Boolean({ description: TODO_PARAMS.replace })),
+			takeover: Type.Optional(Type.Boolean({ description: TODO_PARAMS.takeover })),
 			message: Type.Optional(Type.String({ description: TODO_PARAMS.message })),
 			evidence: Type.Optional(Type.Array(Type.String(), { description: TODO_PARAMS.evidence })),
 		}),

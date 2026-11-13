@@ -111,11 +111,13 @@ test("a conflicting explicit binding is refused before either plan changes", asy
   expect(await kata(["show", p, "--json"])).toEqual(before);
 });
 test("qualified full UID and short ref restore the same removed child", async () => {
-  const a = app(); const p = await init(a); const uid = (await show(p)).uid;
-  const b = app({ ref: `reliability-test#${uid.toLowerCase()}` });
+  // One session throughout: another session's replace may not drop the task this session started.
+  const sid = "reliability-replay";
+  const a = app({ sid }); const p = await init(a); const uid = (await show(p)).uid;
+  const b = app({ sid, ref: `reliability-test#${uid.toLowerCase()}` });
   const first = await child(await init(b, ["Replay"], { replace: true }), "Replay");
   await b.call({ op: "rm", task: "Replay" });
-  const c = app({ ref: p }); await init(c, ["Replay"]);
+  const c = app({ sid, ref: p }); await init(c, ["Replay"]);
   expect(await child(p, "Replay")).toBe(first);
 });
 for (const failure of ["marker", "claim"]) test(`automatic parent setup recovers after failed ${failure}`, async () => {

@@ -167,3 +167,9 @@ test("an item names a ticket only with a qualified ref prefix and a colon", () =
   for (const text of ["bc7q: write the script", "write the script for kata-plugin#bc7q", "see kata-plugin#bc7q: write", "kata-plugin#bc7q write the script",
     "kata-plugin#bc7q:", "kata-plugin#bc7q:write", "kata-plugin#abl6: write", "update CHANGELOG", "#bc7q: write"]) expect(itemTicket(text)).toBeUndefined();
 });
+
+test("a task another session started is never matched to a delegate", () => {
+  const tasks = [task("s#held", "Write the parser tests", "in_progress", { elsewhere: "session-a" }), task("s#free", "Write the parser docs")];
+  expect(pick(tasks, "Write the parser tests")).toBeUndefined();
+  expect(pick(tasks, "Write the parser docs")).toBe("s#free");
+});

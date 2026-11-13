@@ -919,3 +919,21 @@ test("pi reports an old Kata as an upgrade error, never a local plan", async () 
   expect(result.content[0].text).toContain("requires Kata >=0.23.0");
   await app.event("session_shutdown", { reason: "quit" });
 });
+
+test("a second pi lead on the same parent is refused on the first lead's started task until it takes it over", async () => {
+  const first = await host(); await first.event("session_start", { reason: "startup" });
+  const parent = await first.init(["Shared pi task", "Later pi task"]);
+  const task = (await show(parent)).children.find((c: any) => c.title === "Shared pi task");
+  expect(task.metadata["todo.session"]).toBe(first.sid);
+  process.env.KATA_REF = parent;
+  const second = await host(); await second.event("session_start", { reason: "startup" });
+  const refused = await second.call({ op: "done", task: "Shared pi task", message, evidence });
+  expect(refused.isError).toBe(true);
+  expect(refused.content[0].text).toContain(`started by another session (${first.sid})`);
+  expect((await show(task.qualified_id)).issue.status).toBe("open");
+  expect((await second.call({ op: "done", task: "Shared pi task", message, evidence, takeover: true })).isError).toBeUndefined();
+  const closed = await show(task.qualified_id);
+  expect(closed.issue.status).toBe("closed");
+  expect(closed.comments.map((c: any) => c.body)).toContain(`Taken over by session ${second.sid} from session ${first.sid}, which started it.`);
+  await first.event("session_shutdown", { reason: "quit" }); await second.event("session_shutdown", { reason: "quit" });
+});

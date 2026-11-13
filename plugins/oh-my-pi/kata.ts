@@ -228,6 +228,7 @@ export default function ompKata(pi: any) {
 			reason: z.string().optional().describe(TODO_PARAMS.reason),
 			ref: z.string().optional().describe(TODO_PARAMS.ref),
 			replace: z.boolean().optional().describe(TODO_PARAMS.replace),
+			takeover: z.boolean().optional().describe(TODO_PARAMS.takeover),
 			message: z.string().optional().describe(TODO_PARAMS.message),
 			evidence: z.array(z.string()).optional().describe(TODO_PARAMS.evidence),
 		}),

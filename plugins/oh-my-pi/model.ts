@@ -9,7 +9,8 @@ export const WORKING: ReadonlySet<Status> = new Set(["in_progress", "blocked"]);
 export const openTaskStatus = (value: unknown): Status => value === "in_progress" || value === "blocked" ? value : "pending";
 // A closed issue's final plan status: abandoned when closed as wontfix, completed otherwise.
 export const closedTaskStatus = (closedReason?: string): "completed" | "abandoned" => closedReason === "wontfix" ? "abandoned" : "completed";
-export type Task = { ref: string; content: string; phase: string; status: Status; ticket?: string; at?: number; blocker?: string; delegated?: boolean; review?: boolean; revision?: number; proof?: { message?: string; evidence?: string[] } };
+// `elsewhere`: the id of another session that started this task and still holds it (see heldBySession).
+export type Task = { ref: string; content: string; phase: string; status: Status; ticket?: string; at?: number; blocker?: string; delegated?: boolean; elsewhere?: string; review?: boolean; revision?: number; proof?: { message?: string; evidence?: string[] } };
 export type Binding = { parent: string; workspace: string; sessionId?: string; auto?: boolean; label?: string };
 export type Plan = Partial<Binding> & { workspace: string; tasks: Task[]; local?: boolean; error?: string };
 export type Change = { message?: string; evidence?: string[]; reason?: string; remove?: boolean };
@@ -23,6 +24,16 @@ export type KataIssue = {
 };
 export type KataComment = { body: string; teammate?: string };
 export type KataShow = { issue: KataIssue; children?: KataIssue[]; comments?: KataComment[] };
+
+// The plan item metadata key naming the session that created or last started the item.
+export const SESSION_KEY = "todo.session";
+// The session holding an open, started plan item, when it is none of `owners` (this session and the sessions it was forked
+// from). Pending items, closed items, items without the key and non-plan issues are held by no session. No owners: unknown.
+export function heldBySession(issue: Pick<KataIssue, "status" | "metadata">, owners: readonly string[]): string | undefined {
+	const meta = issue.metadata, session = meta?.[SESSION_KEY];
+	if (!owners.length || issue.status !== "open" || typeof meta?.["todo.phase"] !== "string" || typeof session !== "string" || !session) return undefined;
+	return WORKING.has(openTaskStatus(meta["todo.status"])) && !owners.includes(session) ? session : undefined;
+}
 
 // The text of a message's content: a plain string, or its text blocks joined.
 export function textOf(content: unknown): string {
