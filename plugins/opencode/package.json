@@ -1,6 +1,6 @@
 {
   "name": "@dangerboi/kata-opencode",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "type": "module",
   "description": "Kata-backed plans and evidence-checked completion for OpenCode",
   "license": "MIT",
