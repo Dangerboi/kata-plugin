@@ -39,6 +39,8 @@ export interface CoreOptions {
 	prefetch?: boolean;
 	// The progress widget's content for this host and the event's context. Absent: the summary line alone.
 	widget?(line: string, view: PlanView, ctx: any): unknown;
+	// false: the core never starts a pending task on its own after a change (OpenCode's todowrite list says what is in progress).
+	autoStart?: boolean;
 }
 
 // Where the session's plan lives: the host hands it to child processes it starts.
@@ -936,8 +938,9 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 		settlement.cancelTaskClose(task.ref);
 	}
 
+	// The pending task the core starts when no task is active, unless the host's list says what is in progress (autoStart: false).
 	function nextTask(tasks: Task[]): Task | undefined {
-		if (tasks.some(t => t.status === "in_progress" && leads(t))) return;
+		if (options.autoStart === false || tasks.some(t => t.status === "in_progress" && leads(t))) return;
 		return phasesOf(tasks).flatMap(p => p.tasks).find(t => t.status === "pending" && leads(t));
 	}
 
