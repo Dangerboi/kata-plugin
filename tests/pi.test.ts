@@ -1006,3 +1006,14 @@ test("a pi fork that starts before its source's shutdown finished still inherits
   expect((await show(task.qualified_id)).issue.metadata["todo.session"]).toBe(fork.sid);
   await fork.event("session_shutdown", { reason: "quit" });
 });
+
+test("a pi fork that finds nothing left by its source still inherits the tasks the source holds in its plan", async () => {
+  const source = await host(); await source.event("session_start", { reason: "startup" });
+  const parent = await source.init(["Inherited without a hand-off", "Later fallback task"]);
+  const task = (await show(parent)).children.find((c: any) => c.title === "Inherited without a hand-off");
+  // The source's shutdown never ran, so no hand-off was left: the fork reads the tasks from the plan it binds.
+  process.env.KATA_REF = parent;
+  const fork = await host({ header: { parentSession: source.sid } }); await fork.event("session_start", { reason: "fork" });
+  expect((await show(task.qualified_id)).issue.metadata["todo.session"]).toBe(fork.sid);
+  await fork.event("session_shutdown", { reason: "quit" });
+});
