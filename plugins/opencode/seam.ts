@@ -1,16 +1,25 @@
 import { appendFileSync } from "node:fs";
 import { createLead, type Lead } from "./lead";
-import { sessionStorage, type SavedSession, type SessionStorage } from "./saved";
+import { sessionStorage, STATE_ENTRY, type SavedSession, type SessionStorage } from "./saved";
+import type { DelegateAssignment, DelegateRecord, SavedDelegate } from "./delegates";
 import { createKataExec, type KataExec } from "./spawn";
 import type { Settings } from "./settings";
 
 // The adapter's internal seam: what kata.ts hands to every module that adds behaviour to one plugin instance (an instance
 // is one location). A module is a file exporting `install(seam: Seam): void`; kata.ts calls it once, after its own handlers
-// are registered, so a module's handlers run after the adapter's. Today's modules: todowrite.ts. Next: subagent binding and
-// shell routing, each in its own file, each wired by one `import` and one `install(seam)` line in the `MODULES` list of kata.ts.
+// are registered, so a module's handlers run after the adapter's. Today's modules: todowrite.ts, subagents.ts. Next: shell
+// routing, in its own file, wired by one `import` and one `install(seam)` line in the `MODULES` list of kata.ts.
 //
 // OpenCode serves many sessions from one process and one plugin instance per location. A session is a lead (no
 // `parentID`) or a delegate's child session; only leads have a core (see Lead in lead.ts).
+// A delegate's child session as the lead tracks it. `assignment` (ref, workspace, teammate, binding) is set only while it holds
+// its Kata issue; an untracked delegate has a record and no assignment, and has no Kata issue.
+export interface DelegateOf {
+	readonly lead: Lead;
+	readonly record: DelegateRecord;
+	readonly assignment?: DelegateAssignment;
+}
+
 export interface Seam {
 	readonly ctx: any;
 	readonly directory: string;
@@ -24,6 +33,9 @@ export interface Seam {
 	sessionOf(sessionID: string): Promise<SessionInfo | undefined>;
 	// The lead a session belongs to: itself, or the lead above a delegate's child session. Created at first use.
 	leadOf(sessionID: string): Promise<Lead | undefined>;
+	// The delegate record of a child session (`record.teammate`, `record.sessionId` is the child's own session id, `assignment.binding`).
+	// Undefined for a lead, a session that was never bound as a delegate, or one whose record this instance and storage no longer hold.
+	delegateOf(sessionID: string): Promise<DelegateOf | undefined>;
 	// This lead session's record, when this instance holds it or storage has state saved for it in this location. Never creates one.
 	savedLead(leadID: string): Promise<Lead | undefined>;
 	// The lead session ended: `lead.end()`, then this instance forgets it.
@@ -66,8 +78,6 @@ export interface SeamRegistry {
 }
 
 const MAX_DEPTH = 8;
-// The core entry holding a lead's pending closes and unfinished delegates (`io.kata.<namespace>.state`, written by the core).
-const STATE_ENTRY = "io.kata.opencode.state";
 
 export function createSeam(ctx: any, settings: Settings): SeamRegistry {
 	const directory: string = ctx.location.directory;
@@ -98,9 +108,9 @@ export function createSeam(ctx: any, settings: Settings): SeamRegistry {
 		return known;
 	}
 
-	function leadFor(id: string, saved?: SavedSession): Lead {
+	function leadFor(id: string, saved?: SavedSession, settled?: SavedDelegate[]): Lead {
 		let lead = leads.get(id);
-		if (!lead) leads.set(id, lead = createLead({ id, directory: saved?.directory ?? directory, settings, exec, storage, saved, debug }));
+		if (!lead) leads.set(id, lead = createLead({ id, directory: saved?.directory ?? directory, settings, exec, storage, saved, settled, debug }));
 		return lead;
 	}
 
@@ -114,14 +124,24 @@ export function createSeam(ctx: any, settings: Settings): SeamRegistry {
 		let info = await sessionOf(sessionID);
 		for (let depth = 0; info?.parentID !== undefined && depth < MAX_DEPTH; depth++) info = await sessionOf(info.parentID);
 		if (!info || info.parentID !== undefined) return undefined;
-		return leads.get(info.id) ?? leadFor(info.id, await savedState(info.id));
+		return leads.get(info.id) ?? leadFor(info.id, await savedState(info.id), await storage.get<SavedDelegate[]>(info.id, "settled"));
 	}
 
 	async function savedLead(leadID: string): Promise<Lead | undefined> {
 		const held = leads.get(leadID);
 		if (held) return held;
 		const saved = await savedState(leadID);
-		return saved && leadFor(leadID, saved);
+		return saved && leadFor(leadID, saved, await storage.get<SavedDelegate[]>(leadID, "settled"));
+	}
+
+	async function delegateOf(sessionID: string): Promise<DelegateOf | undefined> {
+		const info = await sessionOf(sessionID);
+		if (info?.parentID === undefined) return undefined;
+		const lead = await leadOf(sessionID);
+		const record = lead?.delegates.get(sessionID);
+		if (!lead || !record) return undefined;
+		const assignment = record.state === "assigned" && record.ref && record.binding ? { ref: record.ref, workspace: record.binding.workspace, teammate: record.teammate, binding: record.binding } : undefined;
+		return { lead, record, assignment };
 	}
 
 	async function endLead(leadID: string): Promise<void> {
@@ -132,7 +152,7 @@ export function createSeam(ctx: any, settings: Settings): SeamRegistry {
 	}
 
 	const seam: Seam = {
-		ctx, directory, settings, exec, storage, debug, sessionOf, leadOf, savedLead, endLead,
+		ctx, directory, settings, exec, storage, debug, sessionOf, leadOf, delegateOf, savedLead, endLead,
 		before: handler => void handlers.before.push(handler),
 		after: handler => void handlers.after.push(handler),
 		context: handler => void handlers.context.push(handler),
@@ -164,7 +184,7 @@ export function createSeam(ctx: any, settings: Settings): SeamRegistry {
 			for (const { id, saved } of await storage.sessions()) {
 				if (saved.directory !== directory) continue;
 				const state = saved.entries.find(entry => entry.customType === STATE_ENTRY)?.data as { retries?: unknown[]; pendingCloses?: unknown[]; delegates?: unknown[] } | undefined;
-				if (state?.retries?.length || state?.pendingCloses?.length || state?.delegates?.length) leadFor(id, saved);
+				if (state?.retries?.length || state?.pendingCloses?.length || state?.delegates?.length) leadFor(id, saved, await storage.get<SavedDelegate[]>(id, "settled"));
 			}
 		},
 		async suspendAll() {

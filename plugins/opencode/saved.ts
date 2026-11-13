@@ -1,6 +1,9 @@
 // `ctx.storage` is one key-value store per plugin id, shared by every location and kept across server restarts, so every
 // key here is `session/<sessionID>/<part>`. Parts in use: `entries` (the core's saved state, written by lead.ts) and
-// `accepted` (the contents of the last todowrite list Kata accepted). Another module adds its own part name.
+// `accepted` (the contents of the last todowrite list Kata accepted) and `settled` (the delegate records that ended with
+// an issue, kept so a later follow-up still finds its issue). Another module adds its own part name.
+// The core's state entry: `io.kata.<namespace>.state`, written by the core with the pending closes and unfinished delegates.
+export const STATE_ENTRY = "io.kata.opencode.state";
 export type SavedEntry = { type: "custom"; customType: string; data: unknown };
 export type SavedSession = { directory: string; entries: SavedEntry[] };
 

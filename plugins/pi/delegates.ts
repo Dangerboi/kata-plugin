@@ -146,6 +146,8 @@ export interface DelegateRecord {
 	exited?: DelegateOutcome;
 	// Its latest report (its last assistant text, or what it yielded), posted for a delegate that left no comment of its own.
 	report?: string;
+	// A follow-up woke it after its first run: its report is posted even when it commented before, and a closed issue is no error.
+	followUp?: boolean;
 }
 
 // A record as the lead's snapshot keeps it.
@@ -167,6 +169,9 @@ export type DelegateEvent =
 	| { type: "nextUse"; id: string }
 	// What it reported last, superseding an earlier report.
 	| { type: "reported"; id: string; text: string }
+	// A follow-up woke a delegate that already ran: it stays on its record and issue. An open issue is assigned again; a closed one
+	// is never reopened and only takes the follow-up's report as a comment.
+	| { type: "woken"; id: string; sessionId: string }
 	| { type: "exited"; id: string; outcome: DelegateOutcome };
 
 export type DelegateAssignment = { ref: string; workspace: string; teammate: string; binding: Binding };
@@ -348,6 +353,7 @@ export function createDelegates(env: DelegatesEnv): Delegates {
 		r.binding = binding;
 		const ref = r.planRef, cwd = binding.workspace;
 		let issue: KataIssue = (await env.kata.show(ref, cwd)).issue;
+		if (issue.status !== "open" && r.followUp) { r.ref = ref; r.state = "assigned"; return; }
 		r.restore ??= capture(issue);
 		// Saved before the first write, so an assignment cut off by a crash is rolled back on resume.
 		env.store.put(r);
@@ -427,9 +433,9 @@ export function createDelegates(env: DelegatesEnv): Delegates {
 
 	async function postReport(r: DelegateRecord, ref: string, cwd: string, shown: KataShow) {
 		if (!r.report) return;
-		if ((shown.comments ?? []).some(c => ownComment(c, r.teammate))) return;
+		if (!r.followUp && (shown.comments ?? []).some(c => ownComment(c, r.teammate))) return;
 		await env.kata.run(["comment", ref, "--teammate", r.teammate, "--idempotency-key", `${ns}-report:${r.leadSessionId}:${r.id}:${digest(r.report)}`,
-			"--body", `${REPORT_HEADING} ${nameOf(r)} (it left no comment of its own):\n\n${r.report}`], cwd);
+			"--body", `${REPORT_HEADING} ${nameOf(r)} (${r.followUp ? "after a follow-up" : "it left no comment of its own"}):\n\n${r.report}`], cwd);
 	}
 
 	// One exited delegate: a closed issue settles it, returned to the lead when the delegate held it; a delegate that never
@@ -514,6 +520,17 @@ export function createDelegates(env: DelegatesEnv): Delegates {
 				// Not saved here: omp reports every assistant turn, and each save writes the lead's whole snapshot. The exit
 				// saves the final report; a lead that crashes before it resumes with the one its last snapshot holds.
 				if (r && report) r.report = report;
+				return r;
+			}
+			case "woken": {
+				if (!r) return r;
+				r.sessionId = event.sessionId;
+				if (!FINAL.has(r.state)) r.exited = undefined;
+				// Nothing was ever written for an untracked or unbound delegate: there is no issue to resume.
+				else if (r.state !== "untracked" && r.ref && r.binding) {
+					Object.assign(r, { state: "started", exited: undefined, ranTool: false, restore: undefined, report: undefined, error: undefined, followUp: true });
+				}
+				env.store.put(r);
 				return r;
 			}
 			case "nextUse":

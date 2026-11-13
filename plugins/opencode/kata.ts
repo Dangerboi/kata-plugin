@@ -1,5 +1,6 @@
 import { createSeam, type Seam } from "./seam";
 import { resolveSettings } from "./settings";
+import { install as installSubagents } from "./subagents";
 import { install as installTodowrite } from "./todowrite";
 
 // Kata plans for OpenCode: `todowrite` backed by Kata, one core per lead session, state saved in `ctx.storage`.
@@ -10,6 +11,7 @@ import { install as installTodowrite } from "./todowrite";
 // Modules that add behaviour through the seam (see seam.ts), installed in this order. One `import` above and one line here per module.
 const MODULES: ((seam: Seam) => void | Promise<unknown>)[] = [
 	installTodowrite,
+	installSubagents,
 ];
 
 const LEAD_ENDED = ["session.execution.succeeded", "session.execution.failed", "session.execution.interrupted"] as const;

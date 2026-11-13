@@ -75,7 +75,7 @@ function coreOp(op: ListOp, init: { ref?: string } | undefined): [string, Record
 }
 
 // One todowrite call: reload the Kata plan, diff the list against it, apply the ops in order. A refusal changes nothing.
-async function write(seam: Seam, lead: Lead, input: unknown) {
+async function write(seam: Seam, lead: Pick<Lead, "id" | "exclusive" | "todo">, input: unknown) {
 	const { todos, ref } = parseInput(input);
 	return lead.exclusive(async () => {
 		let result = await lead.todo("view");
@@ -105,11 +105,17 @@ export function install(seam: Seam): Promise<unknown> {
 		input: SCHEMA,
 		options: { codemode: false },
 		async execute(input: unknown, context: { sessionID: string }) {
-			// A delegate's child session has no core of its own: the lead tracks its work.
 			const session = await seam.sessionOf(context.sessionID);
-			const lead = session && session.parentID === undefined ? await seam.leadOf(context.sessionID) : undefined;
-			if (!lead) throw new Error("todowrite is for the lead session: a delegate reports its work in its reply, and the lead tracks it.");
-			return write(seam, lead, input);
+			if (session?.parentID === undefined) {
+				const lead = session && await seam.leadOf(context.sessionID);
+				if (!lead) throw new Error("todowrite is for the lead session: a delegate reports its work in its reply, and the lead tracks it.");
+				return write(seam, lead, input);
+			}
+			// A delegate bound to an issue plans under it, through its own core; one that is not bound has no plan, and the lead tracks its work.
+			const owner = await seam.delegateOf(context.sessionID);
+			if (!owner) throw new Error("todowrite is for the lead session: a delegate reports its work in its reply, and the lead tracks it.");
+			await owner.lead.core.delegates.apply({ type: "nextUse", id: owner.record.id });
+			return write(seam, owner.lead.child(context.sessionID), input);
 		},
 	}));
 }
