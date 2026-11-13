@@ -1,6 +1,6 @@
 {
   "name": "@dangerboi/kata-pi",
-  "version": "1.9.2",
+  "version": "1.10.0",
   "type": "module",
   "description": "Kata-backed plans and evidence-checked completion for stock pi",
   "license": "MIT",
