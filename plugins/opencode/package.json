@@ -2,9 +2,36 @@
   "name": "@dangerboi/kata-opencode",
   "version": "0.1.0",
   "type": "module",
-  "description": "Kata plans for OpenCode",
+  "description": "Kata-backed plans and evidence-checked completion for OpenCode",
+  "license": "MIT",
+  "author": "Dangerboi",
+  "homepage": "https://github.com/Dangerboi/kata-plugin/blob/main/docs/reference/opencode.md",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Dangerboi/kata-plugin.git",
+    "directory": "plugins/opencode"
+  },
+  "bugs": "https://github.com/Dangerboi/kata-plugin/issues",
+  "keywords": [
+    "opencode",
+    "opencode-plugin",
+    "kata"
+  ],
   "main": "./kata.ts",
   "exports": {
     ".": "./kata.ts"
+  },
+  "files": [
+    "*.ts",
+    "README.md",
+    "LICENSE",
+    "CHANGELOG.md"
+  ],
+  "scripts": {
+    "prepack": "cp ../../LICENSE ../../CHANGELOG.md .",
+    "postpack": "rm -f LICENSE CHANGELOG.md"
+  },
+  "publishConfig": {
+    "access": "public"
   }
 }

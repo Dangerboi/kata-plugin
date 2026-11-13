@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { assertIsolated } from "./isolation";
 assertIsolated();
@@ -20,6 +20,25 @@ test("host manifests expose only the intended host and declare pi's supplied pee
   expect(pi.dependencies).toBeUndefined();
 });
 
+test("the OpenCode manifest resolves a local folder and an npm install to the plugin entry", () => {
+  const dir = path.join(root, "plugins", "opencode");
+  const manifest = json("plugins/opencode/package.json");
+  expect(manifest.name).toBe("@dangerboi/kata-opencode");
+  expect(manifest.type).toBe("module");
+  // OpenCode resolves `<name>/server`, then `<name>`, through exports; a folder with a package name and exports resolves the same way.
+  expect(manifest.exports["."]).toBe("./kata.ts");
+  expect(manifest.exports["./server"]).toBeUndefined();
+  expect(Bun.resolveSync(manifest.name, dir)).toBe(path.join(dir, "kata.ts"));
+  expect(manifest.publishConfig.access).toBe("public");
+  expect(manifest.dependencies).toBeUndefined();
+  // Trusted publishing names publish-pi.yml, so the OpenCode package publishes from a job in that file.
+  expect(existsSync(path.join(root, ".github/workflows/publish-opencode.yml"))).toBe(false);
+  const flow = readFileSync(path.join(root, ".github/workflows/publish-pi.yml"), "utf8");
+  expect(flow).toContain("publish-opencode:");
+  expect(flow).toContain("working-directory: plugins/opencode");
+  expect(flow).toContain("id-token: write");
+});
+
 test("pi reads the newest changelog entry as the published version", () => {
   // pi's package changelog parser: a "## " heading that starts with a version, else the section is skipped.
   const versions = readFileSync(path.join(root, "CHANGELOG.md"), "utf8").split("\n")
@@ -28,18 +47,22 @@ test("pi reads the newest changelog entry as the published version", () => {
   expect(json("package.json").version).toBe(json("plugins/pi/package.json").version);
 });
 
-test("the npm tarball carries the license and changelog and leaves the folder clean", () => {
-  const dir = path.join(root, "plugins", "pi");
-  const run = Bun.spawnSync(["npm", "pack", "--dry-run", "--json"], { cwd: dir, stderr: "pipe" });
-  expect(run.exitCode).toBe(0);
-  const out = run.stdout.toString();
-  const files = JSON.parse(out.slice(out.indexOf("[")))[0].files.map((f: { path: string }) => f.path);
-  expect(files).toEqual(expect.arrayContaining(["LICENSE", "CHANGELOG.md", "README.md", "package.json", "kata.ts", "kata-core.ts"]));
-  expect(existsSync(path.join(dir, "LICENSE")) || existsSync(path.join(dir, "CHANGELOG.md"))).toBe(false);
-});
+for (const [plugin, modules] of [["pi", ["kata-core.ts"]], ["opencode", ["kata-core.ts", "seam.ts", "settings.ts", "todowrite.ts", "subagents.ts"]]] as const) {
+  test(`the ${plugin} npm tarball carries the license, changelog and every module, and leaves the folder clean`, () => {
+    const dir = path.join(root, "plugins", plugin);
+    const run = Bun.spawnSync(["npm", "pack", "--dry-run", "--json"], { cwd: dir, stderr: "pipe" });
+    expect(run.exitCode).toBe(0);
+    const out = run.stdout.toString();
+    const files = JSON.parse(out.slice(out.indexOf("[")))[0].files.map((f: { path: string }) => f.path);
+    expect(files).toEqual(expect.arrayContaining(["LICENSE", "CHANGELOG.md", "README.md", "package.json", "kata.ts", ...modules]));
+    // Every module the entry reaches ships: the tarball holds each .ts file the folder has.
+    for (const file of readdirSync(dir).filter(name => name.endsWith(".ts"))) expect(files).toContain(file);
+    expect(existsSync(path.join(dir, "LICENSE")) || existsSync(path.join(dir, "CHANGELOG.md"))).toBe(false);
+  });
+}
 
 test("each distributable keeps its complete local import graph inside its folder", () => {
-  for (const plugin of ["oh-my-pi", "pi"]) {
+  for (const plugin of ["oh-my-pi", "pi", "opencode"]) {
     const dir = path.join(root, "plugins", plugin);
     const visited = new Set<string>();
     const visit = (file: string) => {

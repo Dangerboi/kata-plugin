@@ -6,10 +6,50 @@ All notable changes to kata-plugin are listed here. The format follows [Keep a C
 
 ### Added
 
+#### Requirements
+
+- OpenCode: the plugin needs OpenCode 2.2.7 or later and Kata 0.23.0 or later, and checks the Kata version before it uses the CLI.
+  - It was tested with OpenCode 2.2.7 and Kata 0.23.0.
+
+#### Install and update
+
+- OpenCode: a new plugin package, `@dangerboi/kata-opencode`, keeps OpenCode's todo plans and delegates in Kata.
+  - Add it to the `plugins` list of `opencode.json`, or point `plugins` at the `plugins/opencode` directory of a checkout.
+  - Plugin options (`executable`, `ref`, `defaultProject`, `author`, `teammate`, `debugFile`) fall back to `KATA_*` variables in the OpenCode server's environment.
+  - Run `kata agent-hook install opencode` for Kata's contract, inbox and attention; the plugin does not add them.
+  - The TUI sidebar shows the plan with no extra setting; `experimental.todo: true` is needed only for the desktop composer pill.
+
 #### Plans
 
 - `todo` takes a task over from a lead session that crashed: `takeover: true` on `start`, `done`, `drop`, `rm`, `block` or `unblock` naming the task, or `/todo takeover <task>`.
   - The takeover comments both sessions on the issue, then makes this session the task's holder.
+- OpenCode: `todowrite` is backed by Kata. The model sends the whole list on every call, and the plugin compares it with the Kata plan.
+  - New items become issues, `in_progress` starts a task, `completed` closes it with a message and evidence, `cancelled` drops it with a reason, and `blocker` pauses it.
+  - A call whose list disagrees with the plan is refused, changes nothing and carries the current list to send back. That covers an open item missing from the list, a started item sent back as `pending` and an item Kata already closed.
+  - An item added in Kata outside the session is asked back unchanged, with no offer to cancel it.
+  - A session's automatic parent closes when the session is deleted or archived. An automatic parent Kata leaves open on purpose, such as one whose items were all dropped, does not count as work left.
+  - When a close or a delegate cleanup is still owed (Kata was unreachable or throttled, or a delegate is still running), the session becomes an ended session and its saved state is kept. The next plugin setup finishes the work in the background, without delaying startup, and then forgets the session.
+  - Unarchiving the session, or new activity in it, stops it being an ended session, so a restart never finishes a session that was unarchived.
+
+#### Delegates
+
+- OpenCode: a `subagent` call that names a plan item or a ticket gets that issue, and its session works it as its own teammate.
+  - The assignment happens before the delegate's first model call. A task or ticket that is already delegated refuses the call, also for two parallel calls.
+  - An assigned delegate's `todowrite` plans under its issue.
+- OpenCode: a delegate that exits is rolled back or handed back in Kata.
+  - One that exits without running a tool is rolled back.
+  - One that leaves its issue open flags it for review and hands it back to the lead with `needs-review`.
+- OpenCode: a `subagent` call with `sessionID` stays on the same issue.
+  - An open issue is assigned again, and a closed one gets the report as a comment and stays closed.
+- OpenCode: pending delegate work resumes after a restart of the OpenCode server.
+- OpenCode: Kata commands in the `shell` tool are routed by session.
+  - A delegate's commands get its teammate and the configured author, and `--as` is refused. The lead's commands get the configured author and teammate.
+  - A `kata close` records the session that ran it. The lead's close sets `KATA_CLOSE_TRANSCRIPT_ENABLED=true` unless the server sets it.
+  - The TUI keeps showing the command the model wrote.
+
+#### Development
+
+- `bun run smoke:opencode` runs the OpenCode plugin in a real headless OpenCode with a scripted model provider and checks the result in a real Kata daemon. It runs locally and is not part of CI.
 
 ### Fixed
 

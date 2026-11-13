@@ -1,6 +1,6 @@
 # Install
 
-Install Kata 0.23.0 or later. Oh-my-pi and pi need no Kata project in the folder: a folder without a Kata project uses `KATA_DEFAULT_PROJECT` or its inferred project (see the [oh-my-pi reference](../reference/oh-my-pi.md)). These plugins use `agent-contract-hook`, revision guards, typed evidence, `audit closes`, and `events`.
+Install Kata 0.23.0 or later. Oh-my-pi, pi and OpenCode need no Kata project in the folder: a folder without a Kata project uses `KATA_DEFAULT_PROJECT` or its inferred project (see the [oh-my-pi reference](../reference/oh-my-pi.md)). These plugins use `agent-contract-hook`, revision guards, typed evidence, `audit closes`, and `events`.
 
 ## Runtime compatibility
 
@@ -59,3 +59,43 @@ The root manifest supports `pi install git:github.com/Dangerboi/kata-plugin`. Pi
 For one run: `pi --no-extensions -e /path/to/kata-plugin/plugins/pi/kata.ts`. Remove any other todo extension first. Keep each plugin directory intact: every `.ts` file next to its `kata.ts` is a required core module. Do not overwrite the native adapter at the user extension path `kata.ts`.
 
 The omp marketplace identifies the plugin as `kata@kata-plugin`. The same catalog lists `kata-pi` (source `plugins/pi`) so tools that read the catalog, such as Skillshare, can install the pi build from the Git URL; it is for pi, and under omp its entry exits without loading. On npm the pi build is `@dangerboi/kata-pi`; `kata-omp` names the OMP package and is not published. The root pi shim does not make the OMP package a pi extension.
+
+## OpenCode
+
+Needs OpenCode 2.2.7 or later and Kata 0.23.0 or later. Add the package to the `plugins` list of `opencode.json` (global, or in the project folder):
+
+```json
+{
+  "plugins": [
+    { "package": "@dangerboi/kata-opencode", "options": {} }
+  ]
+}
+```
+
+To load a checkout instead of the npm package, point `package` (or a plain string entry) at the absolute path of the `plugins/opencode` directory:
+
+```json
+{ "plugins": ["/path/to/kata-plugin/plugins/opencode"] }
+```
+
+The directory's `package.json` `exports` resolves the plugin, so no wrapper file is needed. OpenCode refuses a bare file path such as `plugins/opencode/kata.ts`. Keep `plugins/opencode` intact: every `.ts` file next to its `kata.ts` is a required module.
+
+Plugin options (all optional) go in the `options` object: `executable`, `ref`, `defaultProject`, `author`, `teammate`, `debugFile`. Each falls back to a variable in the server's environment (see the [reference](../reference/opencode.md#settings)):
+
+```json
+{ "package": "@dangerboi/kata-opencode", "options": { "defaultProject": "vault", "teammate": "lead" } }
+```
+
+Variables you export in the shell that starts a client reach the plugin only with `opencode run --standalone`. The default background service does not see them, and a second client on the same server does not change them. Use plugin options, or set the variable in the service's environment.
+
+The plugin does not inject Kata's contract, inbox or attention. Install them with Kata's own hook:
+
+```sh
+kata agent-hook install opencode
+```
+
+See [Use with Kata agent hooks](use-with-kata-agent-hooks.md#opencode). Optional: record the agent session on each close; the plugin sets agent `opencode` and the session id ([Record agent sessions on closes](record-session-transcripts.md)).
+
+Tested with OpenCode 2.2.7. To check another release, run `bun run smoke:opencode` from a checkout (see [development](../development.md#smoke-test-against-a-real-opencode)).
+
+The TUI sidebar shows the plan with no extra setting. Set `experimental.todo: true` in `opencode.json` only if you want the plan in the desktop composer pill too.

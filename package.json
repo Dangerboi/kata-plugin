@@ -3,7 +3,7 @@
   "version": "1.9.2",
   "private": true,
   "type": "module",
-  "description": "Kata work tracking for oh-my-pi and pi",
+  "description": "Kata work tracking for oh-my-pi, pi and OpenCode",
   "license": "MIT",
   "author": "Dangerboi",
   "keywords": [

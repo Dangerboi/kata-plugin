@@ -250,7 +250,7 @@ async function start(options: OpenCodeHostOptions, shared: Shared): Promise<Open
 
 	const requireSession = (sessionID: string) => {
 		const session = shared.sessions.get(sessionID);
-		// The in-process host rejects with core `Session.NotFoundError` (core session.ts), carrying the sessionID.
+		// The in-process host rejects with core `Session.NotFoundError` (OpenCode's `packages/core/src/session/session.ts`), carrying the sessionID.
 		if (!session) throw Object.assign(new Error(`Session not found: ${sessionID}`), { _tag: "Session.NotFoundError", sessionID });
 		return session;
 	};

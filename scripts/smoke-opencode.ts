@@ -4,8 +4,8 @@
 //
 // Each run gets a fresh Git folder, a throwaway KATA_HOME, HOME and XDG_* directories, and an opencode.json that registers
 // the repo's plugins/opencode/kata.ts through a re-export shim directory and a scripted OpenAI-compatible provider (scripts/smoke-opencode-provider.ts,
-// started in this process). No credentials or network are needed. The plugin entry is left out when the file does not exist
-// yet or with --no-plugin; scenarios that set `needsPlugin` fail in that case.
+// started in this process). No credentials or network are needed. The plugin entry is left out with --no-plugin;
+// scenarios that set `needsPlugin` fail in that case.
 //
 // Add a scenario by appending an entry to SCENARIOS: scripted turns per agent (keyed by a marker in the agent's first user
 // message) plus assertions over the throwaway Kata store. The driver changes only for a scenario that restarts OpenCode.
