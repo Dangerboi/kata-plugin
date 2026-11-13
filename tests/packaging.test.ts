@@ -37,6 +37,14 @@ test("the OpenCode manifest resolves a local folder and an npm install to the pl
   expect(flow).toContain("publish-opencode:");
   expect(flow).toContain("working-directory: plugins/opencode");
   expect(flow).toContain("id-token: write");
+  // Each package releases on its own tag. GitHub's "v*" filter does not match "opencode-v*", so both are listed.
+  expect(flow).toContain('tags: ["v*", "opencode-v*"]');
+  const jobs = flow.split(/^jobs:\n/m)[1];
+  const [piJob, openCodeJob] = jobs.split(/^  publish-opencode:\n/m);
+  expect(piJob).toContain("if: startsWith(inputs.tag || github.ref_name, 'v')");
+  expect(openCodeJob).toContain("if: startsWith(inputs.tag || github.ref_name, 'opencode-v')");
+  expect(openCodeJob).toContain('[ "$TAG" != "opencode-v$version" ]');
+  expect(openCodeJob).toContain("exit 1");
 });
 
 test("pi reads the newest changelog entry as the published version", () => {

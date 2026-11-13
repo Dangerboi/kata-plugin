@@ -6,6 +6,27 @@ All notable changes to kata-plugin are listed here. The format follows [Keep a C
 
 ### Added
 
+#### Plans
+
+- `todo` takes a task over from a lead session that crashed: `takeover: true` on `start`, `done`, `drop`, `rm`, `block` or `unblock` naming the task, or `/todo takeover <task>`.
+  - The takeover comments both sessions on the issue, then makes this session the task's holder.
+
+### Fixed
+
+#### Plans
+
+- Two lead sessions on the same plan parent no longer change each other's started tasks, even with the same actor and no `KATA_TEAMMATE`.
+  - Plan tasks record the lead session that created them, then the one that started or blocked them (`todo.session`).
+  - Another lead is refused on a task in progress or blocked under a different session, including `init` with `replace: true`. Delegates are not matched to it.
+  - The plan text marks such a task, and `done`, `drop` or `block` without a task name no longer guesses while one is in progress.
+  - A fork counts as the session it was forked from, and a resumed session as itself.
+  - A lead that shuts down or switches to another session releases the tasks it started, so the next session continues them. A pi reload keeps them. A fork that replaces its source in the same process (pi `/fork` into a saved session, an omp switch to a fork) inherits them when it works the same plan; a fork from before the plan releases them.
+  - Pending and closed tasks, ticket items and tasks created by earlier versions keep the actor and teammate check alone.
+
+## [OpenCode 1.0.0] - 2026-11-13
+
+### Added
+
 #### Requirements
 
 - OpenCode: the plugin needs OpenCode 2.2.7 or later and Kata 0.23.0 or later, and checks the Kata version before it uses the CLI.
@@ -21,8 +42,6 @@ All notable changes to kata-plugin are listed here. The format follows [Keep a C
 
 #### Plans
 
-- `todo` takes a task over from a lead session that crashed: `takeover: true` on `start`, `done`, `drop`, `rm`, `block` or `unblock` naming the task, or `/todo takeover <task>`.
-  - The takeover comments both sessions on the issue, then makes this session the task's holder.
 - OpenCode: `todowrite` is backed by Kata. The model sends the whole list on every call, and the plugin compares it with the Kata plan.
   - New items become issues, `in_progress` starts a task, `completed` closes it with a message and evidence, `cancelled` drops it with a reason, and `blocker` pauses it.
   - A call whose list disagrees with the plan is refused, changes nothing and carries the current list to send back. That covers an open item missing from the list, a started item sent back as `pending` and an item Kata already closed.
@@ -54,18 +73,6 @@ All notable changes to kata-plugin are listed here. The format follows [Keep a C
 #### Development
 
 - `bun run smoke:opencode` runs the OpenCode plugin in a real headless OpenCode with a scripted model provider and checks the result in a real Kata daemon. It runs locally and is not part of CI.
-
-### Fixed
-
-#### Plans
-
-- Two lead sessions on the same plan parent no longer change each other's started tasks, even with the same actor and no `KATA_TEAMMATE`.
-  - Plan tasks record the lead session that created them, then the one that started or blocked them (`todo.session`).
-  - Another lead is refused on a task in progress or blocked under a different session, including `init` with `replace: true`. Delegates are not matched to it.
-  - The plan text marks such a task, and `done`, `drop` or `block` without a task name no longer guesses while one is in progress.
-  - A fork counts as the session it was forked from, and a resumed session as itself.
-  - A lead that shuts down or switches to another session releases the tasks it started, so the next session continues them. A pi reload keeps them. A fork that replaces its source in the same process (pi `/fork` into a saved session, an omp switch to a fork) inherits them when it works the same plan; a fork from before the plan releases them.
-  - Pending and closed tasks, ticket items and tasks created by earlier versions keep the actor and teammate check alone.
 
 ## [1.9.2] - 2026-11-10
 
@@ -561,6 +568,7 @@ kata-omp 2.2.0 and kata-pi 1.2.0. Every change in this release is by @salmonumbr
 - omp: the plugin skips its Kata contract when the system prompt already carries it.
 
 [Unreleased]: https://github.com/Dangerboi/kata-plugin/compare/v1.9.2...HEAD
+[OpenCode 1.0.0]: https://github.com/Dangerboi/kata-plugin/releases/tag/opencode-v1.0.0
 [1.9.2]: https://github.com/Dangerboi/kata-plugin/compare/v1.9.1...v1.9.2
 [1.9.1]: https://github.com/Dangerboi/kata-plugin/compare/v1.9.0...v1.9.1
 [1.9.0]: https://github.com/Dangerboi/kata-plugin/compare/v1.8.0...v1.9.0
