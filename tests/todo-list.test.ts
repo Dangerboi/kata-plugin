@@ -196,11 +196,24 @@ describe("a content that appears in several plan tasks", () => {
 		expect(ops(abandoned, [{ content: "t", status: "completed", message: LONG, evidence: ["e"] }]).map(o => (o as { task: string }).task)).toEqual(["p#2"]);
 	});
 
-	test("copies that share one ref get one op naming the content", () => {
+	test("copies that share one ref are refused when an op is needed, and a no-op resend passes", () => {
 		const shared = [{ content: "t", ref: "k#1", status: "pending" } as PlanItem, { content: "t", ref: "k#1", status: "pending" } as PlanItem];
-		expect(ops(shared, [{ content: "t", status: "in_progress" }])).toEqual([{ op: "start", task: "t" }]);
-		expect(ops(shared, [{ content: "t", status: "cancelled", reason: "r" }])).toEqual([{ op: "drop", task: "t", message: "r" }]);
-		expect(ops(shared, [{ content: "t", status: "completed", message: LONG, evidence: ["e"] }]).map(o => (o as { task: string }).task)).toEqual(["t"]);
+		const sent: ListItem[][] = [
+			[{ content: "t", status: "in_progress" }],
+			[{ content: "t", status: "in_progress", blocker: "w" }],
+			[{ content: "t", status: "cancelled", reason: "r" }],
+			[{ content: "t", status: "completed", message: LONG, evidence: ["e"] }],
+		];
+		for (const list of sent) {
+			const problems = refusal(shared, list).problems;
+			expect(problems).toHaveLength(1);
+			expect(problems[0]).toContain(`"t" cannot be told apart from its copy in another phase`);
+		}
+		const blocked = shared.map(t => ({ ...t, status: "blocked", blocker: "w" }) as PlanItem);
+		expect(refusal(blocked, [{ content: "t", status: "in_progress" }]).problems).toHaveLength(1);
+		// Nothing to apply: every op the model could send for them is refused, so applyOps never meets an ambiguous name.
+		expect(ops(shared, listOf(shared))).toEqual([]);
+		expect(applyOps(shared, ops(shared, listOf(shared)))).toEqual(shared);
 	});
 });
 

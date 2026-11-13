@@ -5,6 +5,7 @@ import { assertIsolated } from "./isolation";
 import { isolatedKata, until } from "./kata-fixture";
 import { openCodeHost, userMessage, type FakeSession, type OpenCodeInstance } from "./opencode-host";
 import opencode from "../plugins/opencode/kata";
+import { speak } from "../plugins/opencode/todowrite";
 import { TRANSCRIPT_ENV } from "../core/kata-cli";
 assertIsolated();
 const binary = process.env.KATA_TEST_EXECUTABLE!;
@@ -488,4 +489,10 @@ test("a follow-up that runs no tool is rolled back, and its report stays on the 
 	expect(after.metadata.teammate).toBe(before.metadata.teammate);
 	expect(after.status).toBe(before.status);
 	expect((await commentsOf(ref)).some(body => body.includes("after a follow-up") && body.includes("Only the error handling is left."))).toBe(true);
+});
+
+test("speak turns the shared-ticket advice into todowrite wording", () => {
+	const spoken = speak("or plan the work as child issues (todo init with ref kata-plugin#abcd) and delegate one of those.");
+	expect(spoken).toBe("or plan the work as child issues (start a session whose first todowrite passes ref kata-plugin#abcd) and delegate one of those.");
+	expect(spoken).not.toContain("todo init");
 });

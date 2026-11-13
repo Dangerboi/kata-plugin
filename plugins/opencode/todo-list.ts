@@ -53,18 +53,24 @@ export function diffTodoList(plan: readonly PlanItem[], accepted: ReadonlySet<st
 	const appended: string[] = [], closes: ListOp[] = [], unblocks: ListOp[] = [], blocks: ListOp[] = [], starts: ListOp[] = [];
 
 	// Names the ops for these copies out of all the plan tasks of the content. Core cannot resolve a shared content, so each
-	// copy is named by its ref; copies that share one ref (ticket items expose the ticket's ref) cannot be told apart by it, so
-	// they get one op naming the content.
-	const names = (copies: readonly PlanItem[], all: readonly PlanItem[]): string[] => [...new Set(copies.map(c =>
-		all.length > 1 && c.ref && all.filter(t => t.ref === c.ref).length === 1 ? c.ref : c.content))];
+	// copy is named by its ref. Copies that share one ref (ticket items expose the ticket's ref) cannot be told apart by either,
+	// so a list that needs an op for them is refused.
+	const names = (item: ListItem, copies: readonly PlanItem[], all: readonly PlanItem[]): string[] => {
+		if (all.length > 1 && copies.some(c => c.ref && all.filter(t => t.ref === c.ref).length > 1)) {
+			const problem = `"${item.content}" cannot be told apart from its copy in another phase (both name the same ticket): rename one copy or remove the duplicate item, then send the list again`;
+			if (!problems.includes(problem)) problems.push(problem);
+			return [];
+		}
+		return [...new Set(copies.map(c => all.length > 1 && c.ref ? c.ref : c.content))];
+	};
 	const finish = (item: ListItem, copies: readonly PlanItem[], all: readonly PlanItem[]) => {
 		const missing = proofMissing(item);
 		if (missing) problems.push(missing);
-		else for (const task of names(copies, all)) closes.push({ op: "done", task, message: item.message!, evidence: item.evidence!.filter(e => e.trim()) });
+		else for (const task of names(item, copies, all)) closes.push({ op: "done", task, message: item.message!, evidence: item.evidence!.filter(e => e.trim()) });
 	};
 	const cancel = (item: ListItem, copies: readonly PlanItem[], all: readonly PlanItem[]) => {
 		if (!item.reason?.trim()) problems.push(`"${item.content}" cannot be cancelled without a reason`);
-		else for (const task of names(copies, all)) closes.push({ op: "drop", task, message: item.reason });
+		else for (const task of names(item, copies, all)) closes.push({ op: "drop", task, message: item.reason });
 	};
 
 	for (const item of incoming) {
@@ -98,14 +104,14 @@ export function diffTodoList(plan: readonly PlanItem[], accepted: ReadonlySet<st
 		if (current.status === "blocked") {
 			if (item.status === "in_progress") {
 				if (!blocker) {
-					for (const task of names(ofStatus("blocked"), all)) unblocks.push({ op: "unblock", task });
-					for (const task of names(ofStatus("blocked", "pending"), all)) starts.push({ op: "start", task });
+					for (const task of names(item, ofStatus("blocked"), all)) unblocks.push({ op: "unblock", task });
+					for (const task of names(item, ofStatus("blocked", "pending"), all)) starts.push({ op: "start", task });
 				}
-			} else if (!blocker) for (const task of names(ofStatus("blocked"), all)) unblocks.push({ op: "unblock", task });
+			} else if (!blocker) for (const task of names(item, ofStatus("blocked"), all)) unblocks.push({ op: "unblock", task });
 		} else if (blocker) {
-			for (const task of names(ofStatus("pending", "in_progress"), all)) blocks.push({ op: "block", task, reason: blocker });
+			for (const task of names(item, ofStatus("pending", "in_progress"), all)) blocks.push({ op: "block", task, reason: blocker });
 		} else if (current.status === "pending") {
-			if (item.status === "in_progress") for (const task of names(copies, all)) starts.push({ op: "start", task });
+			if (item.status === "in_progress") for (const task of names(item, copies, all)) starts.push({ op: "start", task });
 		} else if (item.status === "pending") {
 			problems.push(`"${item.content}" is in progress and cannot go back to pending: to pause it, keep it in_progress and set blocker`);
 		}

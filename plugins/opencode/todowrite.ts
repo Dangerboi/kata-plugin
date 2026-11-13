@@ -66,12 +66,14 @@ const planOf = (result: TodoResult): PlanItem[] => (result.kata.phases ?? []).fl
 // The list tail every refusal and failure ends with, so the model can resend it.
 const listTail = (result: TodoResult) => JSON.stringify({ todos: listOf(planOf(result)) });
 
-// The core texts name the omp `todo` tool; here the model has todowrite, which takes the whole list. The subagent hook uses it too.
+// The core texts name the omp `todo` tool; here the model has todowrite, which takes the whole list. The delegate check uses it too.
 export const speak = (text: string) => text
 	.replace(/Use todo op=(init|view)( to refresh)?\./g, "Send the list with todowrite$2.")
 	.replace(/Call todo op=init first\./g, "Send the list with todowrite first.")
 	.replace(/repeat the call with takeover: true/g, "send the list again with takeover: true")
-	.replace(/take it over first \(todo start with takeover: true\)/g, "take it over first (send the list with takeover: true)");
+	.replace(/take it over first \(todo start with takeover: true\)/g, "take it over first (send the list with takeover: true)")
+	// todowrite takes `ref` only on a session's first call, so the way out of a shared ticket is a fresh session.
+	.replace(/\(todo init with ref ([^)\s]+)\)/g, "(start a session whose first todowrite passes ref $1)");
 
 function coreOp(op: ListOp, init: { ref?: string } | undefined, takeover: boolean): [string, Record<string, unknown>] {
 	const taken = takeover ? { takeover: true } : {};
