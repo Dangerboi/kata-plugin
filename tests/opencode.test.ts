@@ -373,7 +373,7 @@ for (const [how, resumed] of [
 	["a context hook", async (host: OpenCodeInstance, id: string) => { await host.context(id); }],
 	["nothing the plugin saw, but OpenCode no longer reports it archived", async (host: OpenCodeInstance, id: string) => { host.sessions.get(id)!.archived = undefined; }],
 ] as const) {
-	test(`an archived session that is back (${how}) is not ended by the next setup`, async () => {
+	test(`an archived session that is back (${how}) is not finished by the next setup`, async () => {
 		const { host, id, session } = await lead();
 		await write(host, id, todos(["Throttled item", "in_progress"], ["Running item", "pending"]));
 		const ref = qref(await parentOf(id));
@@ -408,7 +408,7 @@ for (const [type, end] of [
 	["session.archived", (host: OpenCodeInstance, id: string) => { host.sessions.get(id)!.archived = Date.now(); }],
 	["session.deleted", (host: OpenCodeInstance, id: string) => { host.sessions.delete(id); }],
 ] as const) {
-	test(`${type} while a delegate still runs stays an ended session through the delegate's tool calls, and the next setup ends the session`, async () => {
+	test(`${type} while a delegate still runs stays an ended session through the delegate's tool calls, and the next setup finishes the session`, async () => {
 		const { host, id } = await lead();
 		await write(host, id, todos(["Throttled item", "in_progress"]));
 		const ref = qref(await parentOf(id));

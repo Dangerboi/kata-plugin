@@ -49,10 +49,10 @@ export interface Lead extends CoreCaller {
 	planSection(): Promise<string | undefined>;
 	// The lead's turn ended: drain pending closes and hand back exited delegates. Never closes the automatic parent.
 	settle(): Promise<void>;
-	// The session ended (deleted or archived) and is now an ended session: drain, release what it holds, close the automatic parent when its work is done.
-	// Forgets the saved state and returns true when nothing is left to finish; otherwise keeps it saved as an ended session for the next setup and returns false.
+	// The session ended (deleted or archived): drain, release what it holds, close the automatic parent when its work is done.
+	// Forgets the saved state and returns true when nothing is left to finish; when work is still owed it stays saved as an ended session for the next setup and returns false.
 	end(): Promise<boolean>;
-	// The session is seen alive again (unarchived, or its own hook ran): it is no longer an ended session, so a later setup does not end it.
+	// The session is seen alive again (unarchived, or its own hook ran): it is no longer an ended session, so a later setup does not finish it.
 	clearEnded(): Promise<void>;
 	// The plugin instance is going away but the session may resume: drain what fits, keep the rest saved; closes and releases nothing.
 	suspend(): Promise<void>;

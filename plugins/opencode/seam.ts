@@ -34,7 +34,7 @@ export interface Seam {
 	sessionOf(sessionID: string): Promise<SessionInfo | undefined>;
 	// The lead a session belongs to: itself, or the lead above a delegate's child session. Created at first use.
 	leadOf(sessionID: string): Promise<Lead | undefined>;
-	// The lead of a session that is itself a lead (no parent); undefined for a delegate's child session or one that cannot be read.
+	// The lead of a session that is itself a lead (no parent); undefined for a delegate's session or one that cannot be read.
 	ownLead(sessionID: string): Promise<Lead | undefined>;
 	// The delegate record of a child session (`record.teammate`, `record.sessionId` is the child's own session id, `assignment.binding`).
 	// Undefined for a lead, a session that was never bound as a delegate, or one whose record this instance and storage no longer hold.
@@ -174,7 +174,7 @@ export function createSeam(ctx: any, settings: Settings): SeamRegistry {
 	}
 
 	let stopped = false, resuming: Promise<unknown> = Promise.resolve();
-	// One saved session: a session saved as an ended session that OpenCode still holds alive was unarchived or kept working, so it is not ended.
+	// One saved session: a session saved as an ended session that OpenCode still holds alive was unarchived or kept working, so it is not finished.
 	async function resumeOne(id: string, saved: SavedSession) {
 		if (stopped) return;
 		let ended = !!await storage.get(id, "ended");

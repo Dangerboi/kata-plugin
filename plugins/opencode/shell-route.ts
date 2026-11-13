@@ -22,7 +22,7 @@ export function install(seam: Seam): void {
 			const assignments = Object.entries({ ...transcript, ...actor }).map(([name, value]) => `${name}=${quote(value)}`);
 			const prefix = assignments.length ? `env ${assignments.join(" ")} ` : "";
 			if (!prefix) continue;
-			command = command.slice(0, word.start) + prefix + command.slice(word.start, word.end) + command.slice(word.end);
+			command = command.slice(0, word.start) + prefix + command.slice(word.start);
 		}
 		return command;
 	}
