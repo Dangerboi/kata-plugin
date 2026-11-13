@@ -1126,26 +1126,34 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 		}
 	}
 
-	// A lead that ends gracefully (shutdown, or a switch to another session) gives up the tasks it holds, so the next
-	// session continues them without a takeover. Only its own marks: a fork leaves its source's alone. A crash releases
-	// nothing, and those tasks still need a takeover. Captured before a switch replaces the plan, released after attention.
-	// A fork that replaces its source in this process takes the source's marks over instead (`to`), so nothing is left held
-	// by a session that no longer runs.
-	type Leaving = { session: string; workspace: string; refs: string[] };
+	// A lead that ends gracefully (shutdown, or a switch to another session) releases the tasks it holds, so the next
+	// session continues them without a takeover; a crash releases nothing, and those still need one. A fork that replaces
+	// its source in this process inherits the source's tasks (settleFork) when it works the same plan parent, so its own end
+	// releases them later; a fork whose history predates that plan gets nothing, and the tasks are released. The source's
+	// tasks come from the source's own plan: captured before the switch rebinds (omp), or left by the source's instance at
+	// its fork shutdown (pi, which starts a new instance for the fork). A fork started elsewhere leaves its source's alone.
+	type Leaving = { session: string; workspace: string; parent: string; refs: string[] };
 	function leaving(session = currentId): Leaving | undefined {
 		if (!session || !plan.parent || plan.local) return undefined;
 		const refs = plan.tasks.filter(t => !t.ticket && !t.delegated && !t.holder && WORKING.has(t.status)).map(t => t.ref);
-		return refs.length ? { session, workspace: plan.workspace, refs } : undefined;
+		return refs.length ? { session, workspace: plan.workspace, parent: plan.parent, refs } : undefined;
 	}
-	async function release(ending: Leaving | undefined, to?: string): Promise<void> {
-		if (!ending) return;
-		for (const ref of ending.refs) {
+	// Sets each mark `from.session` still holds to `to`, or removes it.
+	async function moveMarks(from: Leaving | undefined, to: string | undefined): Promise<void> {
+		if (!from) return;
+		for (const ref of from.refs) {
 			try {
-				const issue: KataIssue = (await kata.show(ref, ending.workspace)).issue;
-				if (issue.status === "open" && issue.metadata?.[SESSION_KEY] === ending.session) await work(ref, SESSION_KEY, to, ending.workspace, issue);
+				const issue: KataIssue = (await kata.show(ref, from.workspace)).issue;
+				if (issue.status === "open" && issue.metadata?.[SESSION_KEY] === from.session) await work(ref, SESSION_KEY, to, from.workspace, issue);
 			} catch (error) { debug(error); }
 		}
 	}
+	const release = (ending: Leaving | undefined) => moveMarks(ending, undefined);
+	// The source's tasks go to a fork that works their plan parent; any other fork releases them.
+	const settleFork = (source: Leaving | undefined, fork: string | undefined) =>
+		moveMarks(source, fork && source && (plan.parent === source.parent || aliases.has(source.parent)) ? fork : undefined);
+	// Tasks a pi source left for the fork that replaces it, by source session id: the fork runs in a new plugin instance.
+	const forkSources = ((globalThis as Record<symbol, unknown>)[Symbol.for(`kata.${namespace}.forkSources`)] ??= new Map<string, Leaving>()) as Map<string, Leaving>;
 
 	async function apply(params: any, ctx: any): Promise<string> {
 		if (!bound || currentId !== sid(ctx)) await bind(ctx, params.op === "view", params.ref ?? (!bound ? requestedRef : undefined));
@@ -1611,7 +1619,7 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 			// The session began or switched: bind the plan, follow the inbox live when the host can, start attention.
 			// `after` is host work (a delegate's assignment retry) the first context read waits for.
 			// `child`: the workspace of a pi child still to join its parent; when Kata does not answer there, nothing starts and the result is undefined: the host runs the session as a main session and starts it again.
-			// `forked`: this session is a fork that replaces its source in this process (pi's /fork); it takes the source's tasks.
+			// `forked`: this session is a fork that replaces its source in this process (pi's /fork); it inherits the source's tasks.
 			async start(ctx: any, begin: { after?: Promise<unknown>; child?: string; forked?: boolean } = {}): Promise<Lead | undefined> {
 				if (!main(ctx)) {
 					if (begin.child !== undefined && !await probe(begin.child)) return undefined;
@@ -1628,10 +1636,13 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 				prefetch(ctx);
 				if (live) startFollower(ctx, user!);
 				const transition = serial(async () => {
-					// A switch away from a bound lead ends it, unless the new session is its fork, which goes on with its tasks.
+					// A switch away from a bound lead ends it; a switch to its own fork hands its tasks on (settleFork).
 					const forkOf = forkSourceId(ctx.sessionManager?.getHeader?.()?.parentSession);
 					const switchedToFork = !!currentId && forkOf === currentId && bound;
 					const ending = currentId && id && currentId !== id && bound && !switchedToFork ? leaving() : undefined;
+					let source: Leaving | undefined;
+					if (switchedToFork) source = leaving();
+					else if (begin.forked && forkOf) { source = forkSources.get(forkOf); forkSources.delete(forkOf); }
 					await bind(ctx);
 					reminders = 0;
 					const previous = attentionSession;
@@ -1640,11 +1651,10 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 						attentionSession = { id, cwd: plan.workspace || path.resolve(ctx.cwd), ref: explicit && plan.parent, hostCwd: path.resolve(ctx.cwd), hostRef: explicit };
 						await attention("start", attentionSession);
 					}
-					const handOff = forkOf && id && forkOf !== id && (switchedToFork || begin.forked) ? leaving(forkOf) : undefined;
 					await release(ending);
-					await release(handOff, id);
+					await settleFork(source, id);
 					// The plan was loaded while the previous session still held its tasks: show them as they are now.
-					if (ending || handOff) { await load(plan.workspace).catch(debug); refresh(ctx); }
+					if (ending || source) { await load(plan.workspace).catch(debug); refresh(ctx); }
 				});
 				// OMP snapshots the bash environment after this handler returns.
 				await bounded(transition, explicit && options.attentionHarness && id ? ATTENTION_START_MS : undefined);
@@ -1658,9 +1668,9 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 				return remind(messages, ctx, signal);
 			},
 			// A delegate that ends with its session passes `delegate`; `ended` makes this call report its exit, after its `report`.
-			// `continues`: this shutdown does not end the lead's work (pi's reload, where the same session goes on, or its fork,
-			// which goes on with the source's tasks), so it keeps the tasks it holds.
-			async shutdown(ctx: any, closing: { delegate?: { id: string; ended: boolean; report?: string }; continues?: boolean } = {}): Promise<void> {
+			// `continues`: this shutdown does not end the lead's work (pi's reload: the same session goes on), so it keeps its tasks.
+			// `forking`: a fork replaces this session in a new instance (pi's /fork into a saved session); the tasks are left for it.
+			async shutdown(ctx: any, closing: { delegate?: { id: string; ended: boolean; report?: string }; continues?: boolean; forking?: boolean } = {}): Promise<void> {
 				see(ctx);
 				if (!main(ctx) && !closing.delegate) return;
 				stopFollower();
@@ -1673,7 +1683,8 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 						await drain();
 						const ending = main(ctx) && !closing.continues ? leaving() : undefined;
 						if (session) await attention("end", session);
-						await release(ending);
+						if (closing.forking && ending) forkSources.set(ending.session, ending);
+						else await release(ending);
 					});
 					if (closing.delegate?.report) await delegates.apply({ type: "reported", id: closing.delegate.id, text: closing.delegate.report });
 					if (closing.delegate?.ended) await delegates.apply({ type: "exited", id: closing.delegate.id, outcome: "ended" });

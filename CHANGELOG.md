@@ -20,7 +20,7 @@ All notable changes to kata-plugin are listed here. The format follows [Keep a C
   - Another lead is refused on a task in progress or blocked under a different session, including `init` with `replace: true`. Delegates are not matched to it.
   - The plan text marks such a task, and `done`, `drop` or `block` without a task name no longer guesses while one is in progress.
   - A fork counts as the session it was forked from, and a resumed session as itself.
-  - A lead that shuts down or switches to another session releases the tasks it started, so the next session continues them. A pi reload keeps them, and a fork that replaces its source in the same process (pi `/fork`, an omp switch to a fork) takes them.
+  - A lead that shuts down or switches to another session releases the tasks it started, so the next session continues them. A pi reload keeps them. A fork that replaces its source in the same process (pi `/fork` into a saved session, an omp switch to a fork) inherits them when it works the same plan; a fork from before the plan releases them.
   - Pending and closed tasks, ticket items and tasks created by earlier versions keep the actor and teammate check alone.
 
 ## [1.9.2] - 2026-11-10

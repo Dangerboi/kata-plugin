@@ -43,8 +43,10 @@ function lead(sid: string, parent: string, header?: unknown) {
     call: (params: any) => app.call(params),
     command: async (text: string) => { await app.event("input", { text, source: "interactive" }); return app.notices.at(-1)?.[0] as string; },
     shutdown: () => app.event("session_shutdown"),
-    // The same process switches to another session (omp /new or /resume), or to a fork of this one (`header`).
-    switchTo: (next: string, header?: unknown) => app.event("session_switch", {}, { ...app.ctx, sessionManager: { ...app.ctx.sessionManager, getSessionId: () => next, getHeader: () => header } }),
+    // The same process switches to another session (omp /new or /resume), or to a fork of this one (`header`);
+    // `branch` replaces the session entries the new session sees (a fork of history from before the plan).
+    switchTo: (next: string, header?: unknown, branch?: unknown[]) => app.event("session_switch", {}, { ...app.ctx,
+      sessionManager: { ...app.ctx.sessionManager, getSessionId: () => next, getHeader: () => header, ...(branch ? { getBranch: () => branch } : {}) } }),
   };
 }
 const proof = { message: "Finished the step and checked the result with the session test.", evidence: ["test:session-owner"] };
@@ -318,4 +320,14 @@ test("a takeover that names no task is refused and takes nothing", async () => {
   expect(refused.content[0].text).toContain("takeover needs the task");
   expect(await b.command("/todo takeover")).toContain("takeover needs the task");
   expect((await meta(ref))["todo.session"]).toBe("session-a");
+}, 30000);
+
+test("a switch to a fork whose history predates the plan releases the source's tasks", async () => {
+  const parent = await issue();
+  const ref = await issue(["todo.phase=Tasks", "todo.status=pending"], parent);
+  const a = lead("session-a", parent);
+  await a.begin();
+  await a.call({ op: "start", task: ref });
+  await a.switchTo("session-a-early-fork", { parentSession: "session-a" }, []);
+  expect((await meta(ref))["todo.session"]).toBeUndefined();
 }, 30000);

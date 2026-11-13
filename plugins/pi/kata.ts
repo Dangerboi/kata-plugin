@@ -227,8 +227,8 @@ export default async function piKata(pi: ExtensionAPI) {
 	pi.on("session_shutdown", async (event, ctx) => {
 		// The transcript pair is not cleared here: pi fires this on the old instance for reload/new/resume/fork, then the new instance's session_start in the same process, and a slow cleanup would delete the new pair. session_start overwrites it and process exit ends the rest.
 		const record = inherited ? current : undefined;
-		// A fork into a saved session hands the source's tasks to it (its header names the source); an in-memory one cannot, so it releases them.
-		const continues = event?.reason === "reload" || (event?.reason === "fork" && !!event.targetSessionFile);
-		await core.session.shutdown(ctx, record ? { delegate: { id: record.id, ended: event?.reason !== "reload", report: lastAssistantText(ctx) } } : { continues });
+		// A fork into a saved session gets the source's tasks at its start (its header names the source); an in-memory one cannot, so they are released.
+		const lead = { continues: event?.reason === "reload", forking: event?.reason === "fork" && !!event.targetSessionFile };
+		await core.session.shutdown(ctx, record ? { delegate: { id: record.id, ended: event?.reason !== "reload", report: lastAssistantText(ctx) } } : lead);
 	});
 }

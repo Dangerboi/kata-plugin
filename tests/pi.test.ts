@@ -949,7 +949,7 @@ test("a forked pi lead works on the tasks its source started; a third pi lead do
   await source.event("session_shutdown", { reason: "quit" }); await fork.event("session_shutdown", { reason: "quit" }); await stranger.event("session_shutdown", { reason: "quit" });
 });
 
-test("a pi reload or fork keeps the tasks its session holds; quitting releases them", async () => {
+test("a pi reload, or a fork into a saved session, keeps the tasks its session holds; quitting releases them", async () => {
   const app = await host(); await app.event("session_start", { reason: "startup" });
   const parent = await app.init(["Held across reload", "Later reload task"]);
   const task = (await show(parent)).children.find((c: any) => c.title === "Held across reload");
@@ -962,7 +962,7 @@ test("a pi reload or fork keeps the tasks its session holds; quitting releases t
   expect((await show(task.qualified_id)).issue.metadata["todo.session"]).toBeUndefined();
 });
 
-test("a pi /fork takes the tasks its source held; quitting the fork releases them", async () => {
+test("a pi /fork inherits the tasks its source held; quitting the fork releases them", async () => {
   const source = await host(); await source.event("session_start", { reason: "startup" });
   const parent = await source.init(["Handed to the fork", "Later fork task"]);
   const task = (await show(parent)).children.find((c: any) => c.title === "Handed to the fork");
@@ -980,4 +980,16 @@ test("a pi fork into an in-memory session releases the source's tasks, since no 
   const task = (await show(parent)).children.find((c: any) => c.title === "Released for an in-memory fork");
   await app.event("session_shutdown", { reason: "fork" });
   expect((await show(task.qualified_id)).issue.metadata["todo.session"]).toBeUndefined();
+});
+
+test("a pi /fork whose history predates the plan releases the source's tasks", async () => {
+  const source = await host(); await source.event("session_start", { reason: "startup" });
+  const parent = await source.init(["Released for an early fork", "Later early-fork task"]);
+  const task = (await show(parent)).children.find((c: any) => c.title === "Released for an early fork");
+  await source.event("session_shutdown", { reason: "fork", targetSessionFile: "/sessions/2026-11-13T00-00-00_early.jsonl" });
+  expect((await show(task.qualified_id)).issue.metadata["todo.session"]).toBe(source.sid);
+  // No KATA_REF and a fresh branch: the fork forked before the plan existed, so it has no plan parent.
+  const fork = await host({ header: { parentSession: source.sid } }); await fork.event("session_start", { reason: "fork" });
+  expect((await show(task.qualified_id)).issue.metadata["todo.session"]).toBeUndefined();
+  await fork.event("session_shutdown", { reason: "quit" });
 });
