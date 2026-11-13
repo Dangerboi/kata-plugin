@@ -29,7 +29,8 @@ export default {
 		// A lead's core is created at the lead's first context hook or first tool call, never at its `session.created` (not delivered).
 		// A lead that runs a hook or tool is alive: it is no longer an ended session. A delegate's tool call says nothing of its lead.
 		seam.before(async event => {
-			await (await seam.ownLead(event.sessionID))?.clearEnded();
+			// A failed lead lookup must not fail the session's read, edit or shell calls.
+			try { await (await seam.ownLead(event.sessionID))?.clearEnded(); } catch (error) { seam.debug(error); }
 		});
 		seam.context(async event => {
 			const lead = await seam.ownLead(event.sessionID);

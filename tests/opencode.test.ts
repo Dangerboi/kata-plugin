@@ -537,3 +537,79 @@ test("an item appended before a later op failed is still the session's own: leav
 	expect(refused.text).toContain(`"Appended item" is missing from the list: keep it, or mark it cancelled with a reason`);
 	expect(refused.text).not.toContain("outside this session");
 });
+
+test("a rejected storage read never fails the session's other tool calls", async () => {
+	const { host, id } = await lead();
+	host.ctx.storage.get = async () => { throw new Error("storage unavailable"); };
+	const result = await host.callTool(id, "shell", { command: "ls" }, { execute: () => "ok" });
+	expect(result.status, result.text).toBe("completed");
+});
+
+test("a second lead on the same ticket is refused an item the first started, and takeover: true takes it over", async () => {
+	const created = await kata(["create", "Ticket two leads plan under", "--body", "Shared by two sessions.", "--project", "pi-port-opencode", "--force-new", "--json"]);
+	const ticket = `pi-port-opencode#${created.issue.short_id}`;
+	const a = await lead({ ref: ticket });
+	await write(a.host, a.id, todos(["Shared item", "in_progress"]));
+	const b = await lead({ ref: ticket });
+	const done = todos({ content: "Shared item", status: "completed", message, evidence });
+	const refused = await write(b.host, b.id, done);
+	expect(refused.status).toBe("error");
+	expect(refused.text).toContain("takeover: true");
+	// The text speaks todowrite's interface, not the omp todo tool's.
+	expect(refused.text).not.toMatch(/todo op=|todo start|repeat the call/);
+	expect(refused.text).toContain("send the list again with takeover: true");
+	expect(currentList(refused.text)).toEqual([{ content: "Shared item", status: "in_progress" }]);
+	const [before] = await childrenOf(ticket);
+	expect(statusOf(before)).toBe("in_progress");
+
+	const taken = await write(b.host, b.id, { ...done, takeover: true });
+	expect(taken.status, taken.text).toBe("completed");
+	const [after] = await childrenOf(ticket);
+	expect(after.status).toBe("closed");
+	const comments = (await show(qref(after))).comments ?? [];
+	expect(comments.some((c: any) => /Taken over by session .* from session .*, which started it/.test(c.body))).toBe(true);
+
+	// A flag that is not a boolean is an error, not a silent no-takeover.
+	const bad = await write(b.host, b.id, { ...done, takeover: "yes" });
+	expect(bad.status).toBe("error");
+	expect(bad.text).toContain("takeover must be a boolean");
+});
+
+test("contents with surrounding spaces, an inner newline and 600 characters resend as the same list with no ops", async () => {
+	const { host, id } = await lead();
+	const contents = ["  padded on both sides  ", "first line\nsecond line", `long ${"x".repeat(600)}`, "tab\tand  double  spaces"];
+	const first = await write(host, id, { todos: contents.map(content => ({ content, status: "pending" })) });
+	expect(first.status, first.text).toBe("completed");
+	const ref = qref(await parentOf(id));
+	expect((await childrenOf(ref)).map(c => c.title)).toEqual(contents);
+	rmSync(calls, { force: true });
+	const again = await write(host, id, { todos: contents.map(content => ({ content, status: "pending" })) });
+	expect(again.status, again.text).toBe("completed");
+	expect(kataCalls().filter(line => /^(create|claim|meta|close|comment)\b/.test(line))).toEqual([]);
+	// The list a refusal carries is the same text and is accepted too.
+	const refused = await write(host, id, { todos: contents.slice(1).map(content => ({ content, status: "pending" })) });
+	expect(refused.status).toBe("error");
+	expect(currentList(refused.text).map((item: any) => item.content)).toEqual(contents);
+	const accepted = await write(host, id, { todos: currentList(refused.text) });
+	expect(accepted.status, accepted.text).toBe("completed");
+});
+
+test("a plan made elsewhere with one title in two phases shows it once, and a change applies to both copies", async () => {
+	const { host, id } = await lead();
+	await write(host, id, todos(["Plan opener", "pending"]));
+	const ref = qref(await parentOf(id));
+	for (const phase of ["Design", "Build"]) {
+		await kata(["create", "--parent", ref, "--project", "pi-port-opencode", "--meta", `todo.phase=${phase}`, "--meta", "todo.status=pending", "--force-new", "--json", "--", "Review the API"]);
+	}
+	const refused = await write(host, id, todos(["Plan opener", "pending"]));
+	expect(refused.status).toBe("error");
+	expect(currentList(refused.text)).toEqual([{ content: "Plan opener", status: "pending" }, { content: "Review the API", status: "pending" }]);
+	const sent = await write(host, id, { todos: currentList(refused.text) });
+	expect(sent.status, sent.text).toBe("completed");
+	const started = await write(host, id, todos(["Plan opener", "pending"], ["Review the API", "in_progress"]));
+	expect(started.status, started.text).toBe("completed");
+	expect((await childrenOf(ref)).map(c => [c.title, statusOf(c)])).toEqual([["Plan opener", "pending"], ["Review the API", "in_progress"], ["Review the API", "in_progress"]]);
+	const finished = await write(host, id, todos(["Plan opener", "pending"], { content: "Review the API", status: "completed", message, evidence }));
+	expect(finished.status, finished.text).toBe("completed");
+	expect((await childrenOf(ref)).map(c => [c.title, statusOf(c)])).toEqual([["Plan opener", "pending"], ["Review the API", "closed:done"], ["Review the API", "closed:done"]]);
+});

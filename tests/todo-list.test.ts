@@ -137,8 +137,9 @@ describe("diffTodoList", () => {
 });
 
 const CONTENTS = ["a", "b", "c", "d", "e", "f", "g"];
-const planArb = fc.uniqueArray(fc.constantFrom(...CONTENTS), { maxLength: 5 }).chain(names =>
-	fc.tuple(...names.map(content => fc.constantFrom<PlanItem["status"]>("pending", "in_progress", "blocked", "completed", "abandoned").map(status => ({ content, status, ...(status === "blocked" ? { blocker: "w" } : {}) } as PlanItem)))),
+// Contents may repeat: a plan made elsewhere can carry one title in two phases. Each task has its own ref.
+const planArb = fc.array(fc.constantFrom(...CONTENTS), { maxLength: 6 }).chain(names =>
+	fc.tuple(...names.map((content, index) => fc.constantFrom<PlanItem["status"]>("pending", "in_progress", "blocked", "completed", "abandoned").map(status => ({ content, ref: `p#${index}`, status, ...(status === "blocked" ? { blocker: "w" } : {}) } as PlanItem)))),
 );
 const itemArb = (content: string) => fc.record({
 	content: fc.constant(content),
@@ -155,13 +156,34 @@ const STATUS_OF: Record<ListOp["op"], PlanItem["status"]> = { append: "pending",
 const applyOps = (plan: PlanItem[], list: readonly ListOp[]): PlanItem[] => {
 	const next = plan.map(t => ({ ...t }));
 	for (const o of list) {
-		if (o.op === "append") { for (const content of o.items) next.push({ content, status: "pending" }); continue; }
-		const task = next.find(t => t.content === o.task)!;
+		if (o.op === "append") { for (const content of o.items) next.push({ content, ref: `n#${next.length}`, status: "pending" }); continue; }
+		const task = next.find(t => t.ref === o.task) ?? next.find(t => t.content === o.task)!;
 		task.status = STATUS_OF[o.op];
 		task.blocker = o.op === "block" ? o.reason : undefined;
 	}
 	return next;
 };
+
+describe("a content that appears in several plan tasks", () => {
+	const twice = (a: PlanItem["status"], b: PlanItem["status"]): PlanItem[] => [{ content: "t", ref: "p#1", status: a }, { content: "t", ref: "p#2", status: b }];
+
+	test("is one list item and its own list is a no-op", () => {
+		const plan = twice("pending", "in_progress");
+		expect(listOf(plan)).toEqual([{ content: "t", status: "in_progress" }]);
+		expect(ops(plan, listOf(plan))).toEqual([]);
+	});
+
+	test("an op names each open copy by ref and skips closed ones", () => {
+		const plan = [...twice("pending", "pending"), { content: "t", ref: "p#3", status: "completed" } as PlanItem];
+		expect(ops(plan, [{ content: "t", status: "in_progress" }])).toEqual([{ op: "start", task: "p#1" }, { op: "start", task: "p#2" }]);
+		expect(ops(twice("in_progress", "pending"), [{ content: "t", status: "completed", message: LONG, evidence: ["e"] }]).map(o => (o as { task: string }).task)).toEqual(["p#1", "p#2"]);
+		expect(ops(twice("pending", "pending"), [{ content: "t", status: "cancelled", reason: "r" }])).toEqual([{ op: "drop", task: "p#1", message: "r" }, { op: "drop", task: "p#2", message: "r" }]);
+	});
+
+	test("a copy that is missing from the list is reported once", () => {
+		expect(refusal(twice("pending", "pending"), []).problems).toEqual([`"t" was added to the Kata plan outside this session and is requested work: send it back unchanged`]);
+	});
+});
 
 describe("diffTodoList properties", () => {
 	test("the plan's own list yields no ops", () => {

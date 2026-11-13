@@ -15,7 +15,9 @@ Every call is compared with the Kata plan. A call that disagrees with it is refu
 - An item that works an existing ticket starts with its qualified ref: \`<project>#<short_id>: <action>\`. It creates no issue: starting it claims the ticket, completing it comments on it, and the last completed item of a ticket closes it with that item's evidence. A ref that does not resolve, or a closed ticket, is an error.
 - Every other item becomes a child issue of one parent issue. On the first call pass \`ref\` with the Kata issue this plan serves (search first: kata search "<terms>" --agent); without it the session gets its own parent issue.
 - The tool does the Kata bookkeeping for its items (claims, attention, closes). Do not run \`kata claim\`, \`kata meta set ... work.attention\` or \`kata close\` for them yourself, and never add such bookkeeping as an item.
-- A delegate bound to an item or ticket closes that issue itself, with its own evidence, once its work is verified; the item then shows completed.`;
+- A delegate bound to an item or ticket closes that issue itself, with its own evidence, once its work is verified; the item then shows completed.
+- An item another session started stays that session's until it ends: a call that changes it is refused. If that session crashed or was killed (or the user says so), send the list again with \`takeover: true\`; never take over work another session may still be doing.
+- Contents are kept as written (spaces and newlines included); send them back exactly as the list shows them. When the plan has the same content twice (in two phases), the list shows it once and a change to it applies to every open copy.`;
 
 const SCHEMA = {
 	type: "object",
@@ -37,11 +39,12 @@ const SCHEMA = {
 			},
 		},
 		ref: { type: "string", description: "First call: the existing Kata issue this plan serves." },
+		takeover: { type: "boolean", description: "Take over the items this call changes from another session that started them and crashed or was killed; recorded on each issue." },
 	},
 	required: ["todos"],
 };
 
-function parseInput(input: any): { todos: ListItem[]; ref?: string } {
+function parseInput(input: any): { todos: ListItem[]; ref?: string; takeover: boolean } {
 	if (!input || !Array.isArray(input.todos)) throw new Error("todowrite needs todos: [{content, status}], the whole list.");
 	const text = (value: unknown, where: string) => {
 		if (value !== undefined && typeof value !== "string") throw new Error(`${where} must be a string.`);
@@ -54,32 +57,41 @@ function parseInput(input: any): { todos: ListItem[]; ref?: string } {
 		if (item.evidence !== undefined && (!Array.isArray(item.evidence) || item.evidence.some((e: unknown) => typeof e !== "string"))) throw new Error(`${where}.evidence must be an array of strings.`);
 		return { content: item.content, status: item.status, message: text(item.message, `${where}.message`), evidence: item.evidence, reason: text(item.reason, `${where}.reason`), blocker: text(item.blocker, `${where}.blocker`) };
 	});
-	return { todos, ref: text(input.ref, "ref")?.trim() || undefined };
+	if (input.takeover !== undefined && typeof input.takeover !== "boolean") throw new Error("takeover must be a boolean.");
+	return { todos, ref: text(input.ref, "ref")?.trim() || undefined, takeover: input.takeover === true };
 }
 
-const planOf = (result: TodoResult): PlanItem[] => (result.kata.phases ?? []).flatMap(phase => phase.tasks.map(({ content, status, blocker }) => ({ content, status, blocker })));
+const planOf = (result: TodoResult): PlanItem[] => (result.kata.phases ?? []).flatMap(phase => phase.tasks.map(({ content, status, blocker, ref }) => ({ content, status, blocker, ref })));
 
 // The list tail every refusal and failure ends with, so the model can resend it.
 const listTail = (result: TodoResult) => JSON.stringify({ todos: listOf(planOf(result)) });
 
-function coreOp(op: ListOp, init: { ref?: string } | undefined): [string, Record<string, unknown>] {
+// The core texts name the omp `todo` tool; here the model has todowrite, which takes the whole list.
+const speak = (text: string) => text
+	.replace(/Use todo op=(init|view)( to refresh)?\./g, "Send the list with todowrite$2.")
+	.replace(/Call todo op=init first\./g, "Send the list with todowrite first.")
+	.replace(/repeat the call with takeover: true/g, "send the list again with takeover: true")
+	.replace(/take it over first \(todo start with takeover: true\)/g, "take it over first (send the list with takeover: true)");
+
+function coreOp(op: ListOp, init: { ref?: string } | undefined, takeover: boolean): [string, Record<string, unknown>] {
+	const taken = takeover ? { takeover: true } : {};
 	switch (op.op) {
 		// The first items of a session with no plan start it: one phase.
 		case "append": return init ? ["init", { list: [{ phase: "Tasks", items: op.items }], ...(init.ref ? { ref: init.ref } : {}) }] : ["append", { items: op.items }];
-		case "start": return ["start", { task: op.task }];
-		case "done": return ["done", { task: op.task, message: op.message, evidence: op.evidence }];
-		case "drop": return ["drop", { task: op.task, message: op.message }];
-		case "block": return ["block", { task: op.task, reason: op.reason }];
-		case "unblock": return ["unblock", { task: op.task }];
+		case "start": return ["start", { task: op.task, ...taken }];
+		case "done": return ["done", { task: op.task, message: op.message, evidence: op.evidence, ...taken }];
+		case "drop": return ["drop", { task: op.task, message: op.message, ...taken }];
+		case "block": return ["block", { task: op.task, reason: op.reason, ...taken }];
+		case "unblock": return ["unblock", { task: op.task, ...taken }];
 	}
 }
 
 // One todowrite call: reload the Kata plan, diff the list against it, apply the ops in order. A refusal changes nothing.
 async function write(seam: Seam, lead: Pick<Lead, "id" | "exclusive" | "todo">, input: unknown) {
-	const { todos, ref } = parseInput(input);
+	const { todos, ref, takeover } = parseInput(input);
 	return lead.exclusive(async () => {
 		let result = await lead.todo("view");
-		if (result.isError) throw new Error(result.text);
+		if (result.isError) throw new Error(speak(result.text));
 		const hasPlan = !!result.kata.parent || !!result.kata.local || planOf(result).length > 0;
 		const accepted = new Set(await seam.storage.get<string[]>(lead.id, "accepted") ?? []);
 		const diff = diffTodoList(planOf(result), accepted, todos);
@@ -87,18 +99,18 @@ async function write(seam: Seam, lead: Pick<Lead, "id" | "exclusive" | "todo">, 
 
 		let init = hasPlan ? undefined : { ref };
 		for (const op of diff.ops) {
-			const [name, params] = coreOp(op, init);
+			const [name, params] = coreOp(op, init, takeover);
 			init = undefined;
 			result = await lead.todo(name, params);
 			if (op.op === "append" && !result.isError) for (const item of op.items) accepted.add(item);
 			// An earlier op may have been applied: say what the plan is now, and remember the items this call already added.
 			if (result.isError) {
 				await seam.storage.set(lead.id, "accepted", [...accepted]);
-				throw new Error(`${result.kata.notice || result.text}\nEarlier changes of this call may have been applied. The current Kata plan is below. Send the list again with your changes applied on top:\n${listTail(result)}`);
+				throw new Error(`${speak(result.kata.notice || result.text)}\nEarlier changes of this call may have been applied. The current Kata plan is below. Send the list again with your changes applied on top:\n${listTail(result)}`);
 			}
 		}
 		await seam.storage.set(lead.id, "accepted", todos.map(item => item.content));
-		return { content: result.text, metadata: { todos: listOf(planOf(result)), ...(result.kata.parent ? { parent: result.kata.parent } : {}) } };
+		return { content: speak(result.text), metadata: { todos: listOf(planOf(result)), ...(result.kata.parent ? { parent: result.kata.parent } : {}) } };
 	});
 }
 
