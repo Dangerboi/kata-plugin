@@ -8,7 +8,7 @@ import { createSettlement, MAX_FAILURES, openChildren, type PendingClose } from 
 import { createKata, isKataCode, isUnusable, KataError, type Exec } from "./kata-cli";
 import { createTicketCompletion } from "./autocomplete";
 import { kataCommands, quote, shellOptions } from "./shell";
-import { closedTaskStatus, digest, itemTicket, OPEN, openTaskStatus, projectOf, QUALIFIED_REF_ONLY, qualifiedRef, slug, WORKING, type Binding, type Change, type KataIssue, type KataShow, type Plan, type Status, type Task } from "./model";
+import { closedTaskStatus, digest, heldBySession, heldMessage, itemTicket, OPEN, openTaskStatus, projectOf, QUALIFIED_REF_ONLY, qualifiedRef, SESSION_KEY, slug, WORKING, type Binding, type Change, type KataIssue, type KataShow, type Plan, type Status, type Task } from "./model";
 
 // Canonical shared source. scripts/vendor-core.ts copies this file into each
 // self-contained plugin; host adapters own their event/schema/identity APIs.
@@ -110,6 +110,7 @@ export const TODO_PARAMS = {
 	reason: "blocker note for block",
 	ref: "existing Kata issue this plan serves (init)",
 	replace: "init: replace a plan that still has open tasks (they close as wontfix); without it init refuses",
+	takeover: "start/done/drop/rm/block/unblock: take over the named tasks from another session that started them and crashed or was killed (a session that ends normally releases its tasks); recorded on each issue",
 	message: "done: what changed and how it was verified (40+ characters); drop/rm: reason; init without ref: title for the automatic parent",
 	evidence: "required for done: commit:<sha>, test:<cmd>, pr:<url>, reviewed-paths:<path>",
 };
@@ -127,6 +128,7 @@ Kata specifics:
 - The tool does the Kata bookkeeping for its tasks and ticket items: it claims them, sets \`work.attention\` (block: stuck with the reason; start/unblock: ok) and closes them on done. Do not run \`kata claim\`, \`kata meta set ... work.attention\` or \`kata close\` for them yourself, and never add such bookkeeping as a plan item.
 - A delegate bound to a plan item or ticket (an omp \`task\` subagent, or a pi started from this session) is told to close that issue itself, with its own evidence, once its work is verified. That close is expected: the item then shows done without your \`done\`, and a later \`done\` on it changes nothing. A delegate that exits with its issue still open hands it back to you, labeled \`needs-review\`.
 - init whose new list leaves out open tasks changes nothing and returns an error listing the missing ones; pass \`replace: true\` only to deliberately drop them (they close as wontfix).
+- A task another session started stays that session's until it ends; a session that ends normally releases its tasks. Ops on a held task are refused. If that session crashed or was killed (or the user says so), repeat the op naming the task with \`takeover: true\`; never take over work another session may still be doing.
 - drop/rm take the reason in \`message\`.
 - drop and rm close those tasks as wontfix (Kata never deletes). Automatic session parents close from their children’s Kata-recorded evidence once all work has settled. Explicit/claimed parents remain yours to close. Folders with no Kata project use KATA_DEFAULT_PROJECT (labeled with the repo) or register their inferred project; the plan is session-local only while Kata is unreachable and replays when it returns.`;
 
@@ -164,7 +166,7 @@ export function render(plan: Plan): string {
 	const lines = [`${plan.local ? "Session-local plan (Kata is unreachable; it replays into Kata when Kata returns)" : plan.parent ? `Kata parent ${plan.parent}` : "Kata tickets (no parent issue)"}: ${done}/${plan.tasks.length} done`];
 	for (const phase of phasesOf(plan.tasks)) {
 		lines.push(`${phase.name}:`);
-		for (const t of phase.tasks) lines.push(`  ${MARK[t.status]} ${t.content} (${t.ticket ?? t.ref})${t.blocker ? ` — blocked: ${t.blocker}` : ""}`);
+		for (const t of phase.tasks) lines.push(`  ${MARK[t.status]} ${t.content} (${t.ticket ?? t.ref})${t.blocker ? ` — blocked: ${t.blocker}` : ""}${t.holder ? ` — started by session ${t.holder}` : ""}`);
 	}
 	return lines.join("\n");
 }
@@ -187,6 +189,10 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 	let scope: "unknown" | "workspace" | "unbound" | "bound" | "down" = "unknown";
 	let refusal: Record<string, unknown> | undefined, outage = "", warnedFor: string | undefined;
 	let currentId: string | undefined;
+	// This session and the sessions it was forked from: plan tasks any of them started are this session's own. Saved in the snapshot.
+	let ownSessions: string[] = [];
+	// The session a lead's writes mark plan tasks with. A delegate never marks: its issue is held through the delegate keys.
+	const markingSession = () => main(currentCtx) && currentId ? currentId : undefined;
 	let bound = false;
 	let assignedRef: string | undefined;
 	// The one place the configured explicit ref is read: the host option, else KATA_REF.
@@ -195,6 +201,8 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 	let requestedRef: string | undefined;
 	let sessionTeammate: string | undefined;
 	const ownTeammate = () => sessionTeammate ?? process.env.KATA_TEAMMATE ?? "";
+	// A ticket item's ticket keeps the actor and teammate rule alone: it is not this plan's task, whoever's plan holds it.
+	const TICKET: Who = { ticket: true };
 	let boundAgent: string | undefined;
 	// An automatic parent a person deleted: todo results say so until a new plan starts. Saved in the session snapshot.
 	let deletedParent: string | undefined;
@@ -221,7 +229,7 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 		due: () => { void serial(drain).catch(debug); },
 		delegatesRunning: () => delegates.running(),
 		itemsOpen: ticket => named.some(t => t.ticket === ticket && OPEN.has(t.status)),
-		performTask, performTicket: (ticket, request) => owned(ticket, request.cwd, "check").then(decision => closeWith(ticket, decision, request)),
+		performTask, performTicket: (ticket, request) => owned(ticket, request.cwd, "check", false, undefined, TICKET).then(decision => closeWith(ticket, decision, request)),
 		flag: flagDropped, debug,
 	});
 	let lastSnapshot: string | undefined;
@@ -244,7 +252,7 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 		if (!currentId || !main(currentCtx)) return;
 		// A record with no binding wrote nothing to Kata, so the snapshot leaves it out (see Delegates.saved).
 		const open = delegates.saved(currentId);
-		const data = { version: 1, sessionId: currentId,
+		const data = { version: 1, sessionId: currentId, ...(ownSessions.length ? { ownSessions: [...ownSessions] } : {}),
 			plan: structuredClone({ ...plan, tasks: plan.tasks.filter(t => !t.ticket) }), ...settlement.snapshot(),
 			...(open.length ? { delegates: structuredClone(open) } : {}),
 			...(named.length ? { named: structuredClone(named) } : {}), ...(deletedParent ? { deletedParent } : {}) };
@@ -284,6 +292,7 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 	// Starting unowned work requires a successful claim. Already-owned tasks
 	// require both the actor and teammate, since delegates share an actor.
 	// "check" validates assignment without taking ownership.
+	// `who` (see Who): the delegate, a takeover, or a ticket item's ticket; the session holding a plan task refuses everyone else.
 	async function owned(ref: string, cwd: string, mayClaim: boolean | "check" = false, allowClosed = false, revision?: number, who?: Who): Promise<KataIssue> {
 		let issue: KataIssue = (await kata.show(ref, cwd)).issue;
 		if (revision !== undefined && issue.revision !== revision) throw new Error(`Kata issue ${ref} changed since the task was selected; no work metadata was written.`);
@@ -295,6 +304,8 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 			await delegates.returnClosed(ref, cwd, issue, ownTeammate());
 			issue = (await kata.show(ref, cwd)).issue;
 		}
+		const holder = !who?.delegate && !who?.takeover && !who?.ticket && main(currentCtx) ? heldBySession(issue, ownSessions) : undefined;
+		if (holder) throw new Error(`${heldMessage(ref, holder)}; no work metadata was written. If that session crashed or was killed, repeat the call with takeover: true; the takeover is recorded on the issue.`);
 		const teammate = who?.teammate ?? ownTeammate();
 		if (issue?.status !== "open" && !(allowClosed && issue?.status === "closed")) throw new Error(`Kata issue ${ref} is closed or unavailable; no work metadata was written.`);
 		const assignedTeammate = issue.metadata?.teammate || "";
@@ -378,6 +389,7 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 					revision: c.revision,
 					at: Date.parse(c.created_at),
 					delegated: heldByDelegate(meta) && (meta.teammate || "") !== ownTeammate(),
+					holder: heldBySession(c, ownSessions),
 					review: (c.labels ?? []).some(l => (typeof l === "string" ? l : l?.label) === "needs-review"),
 					status,
 					blocker: status === "blocked" ? meta["work.attention_msg"] as string | undefined : undefined,
@@ -579,6 +591,10 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 		}
 		// A forked session keeps the source id as the parent's owner: the parent's session_id metadata names it.
 		const parentOwner = source ?? id;
+		// A resumed lead keeps its saved sessions; a fork adds itself to its source's, so it works on what its source started.
+		// A delegate has none: its own issue is held through the delegate keys, and the lead's tasks are not its to judge.
+		const lineage = Array.isArray(snapshot?.ownSessions) ? snapshot.ownSessions.filter((o: unknown): o is string => typeof o === "string" && !!o) : [];
+		ownSessions = id && main(ctx) ? [...new Set([id, ...(source ? [source] : []), ...lineage])] : [];
 		settlement.restore(snapshot && !source ? snapshot : undefined);
 		// Delegate records are in memory only: a resumed lead takes back the ones a past run left unfinished. A fork leaves them to the source.
 		const unsettled: SavedDelegate[] = newSession && !source && Array.isArray(snapshot?.delegates) ? snapshot.delegates : [];
@@ -698,7 +714,8 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 	async function create(phase: string, content: string, cwd: string): Promise<void> {
 		const created = await keyedCreate(`${namespace}-kata:${digest(plan.parent!, phase, content)}`, [
 			"--parent", plan.parent!, "--project", projectOf(plan.parent!), "--body", `Todo task in phase "${phase}".`,
-			"--meta", `todo.phase=${phase}`, "--meta", "todo.status=pending", ...(plan.label ? ["--label", plan.label] : []), "--", content,
+			"--meta", `todo.phase=${phase}`, "--meta", "todo.status=pending", ...(markingSession() ? ["--meta", `${SESSION_KEY}=${markingSession()}`] : []),
+			...(plan.label ? ["--label", plan.label] : []), "--", content,
 		], cwd);
 		if ("deleted" in created) throw created.error;
 		const { ref, issue } = created;
@@ -707,7 +724,8 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 			let decision = await owned(ref, cwd, "check", true, issue.revision);
 			if (decision.status === "closed") {
 				await kata.run(["reopen", ref], cwd);
-				decision = await owned(ref, cwd, "check", false, decision.revision + 1);
+				// A closed task holds nothing: once reopened it is this session's, whoever's marker it still carries.
+				decision = await owned(ref, cwd, "check", false, decision.revision + 1, { takeover: true });
 				decision = await work(ref, "todo.status", "pending", cwd, decision);
 			}
 			await work(ref, "todo.removed", undefined, cwd, decision);
@@ -715,6 +733,9 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 	}
 
 	async function mark(ref: string, task: Task, from: Status, to: "in_progress" | "pending" | "blocked", change: Change, cwd: string, decision: KataIssue): Promise<KataIssue> {
+		// A started or blocked plan task is this session's: another session's lead may not rework it without a takeover.
+		const session = markingSession();
+		if (session && !task.ticket && WORKING.has(to)) decision = await work(ref, SESSION_KEY, session, cwd, decision);
 		if (to === "blocked") {
 			const reason = change.reason || "Blocked in the todo plan.";
 			decision = await work(ref, "work.attention", "stuck", cwd, decision);
@@ -746,7 +767,7 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 			if (decision.status !== "closed") throw new Error(`Kata task ${ref} changed before restart.`);
 			const revision = decision.revision;
 			await kata.run(["reopen", ref], cwd);
-			decision = await owned(ref, cwd);
+			decision = await owned(ref, cwd, false, false, undefined, { takeover: true });
 			if (decision.revision !== revision + 1) throw new Error(`Kata task ${ref} changed during restart; no work metadata was written.`);
 		}
 
@@ -798,7 +819,7 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 		const ticket = task.ticket!;
 		if (named.some(other => other !== task && other.ticket === ticket && WORKING.has(other.status))) return;
 		let decision: KataIssue;
-		try { decision = await owned(ticket, cwd, "check"); }
+		try { decision = await owned(ticket, cwd, "check", false, undefined, TICKET); }
 		catch (error) { debug(error); return; }
 		await mark(ticket, task, "blocked", "pending", {}, cwd, decision);
 	}
@@ -817,9 +838,9 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 			if (shown.status !== "open") {
 				if (to !== "pending") throw new Error(`Kata ticket ${ticket} ("${task.content}") is already closed; the plugin never reopens a ticket. Reopen it yourself if the work continues.`);
 			} else if (to !== "completed") {
-				await mark(ticket, task, from, to as "in_progress" | "pending" | "blocked", change, cwd, await owned(ticket, cwd, true));
+				await mark(ticket, task, from, to as "in_progress" | "pending" | "blocked", change, cwd, await owned(ticket, cwd, true, false, undefined, TICKET));
 			} else {
-				const decision = await owned(ticket, cwd, "check");
+				const decision = await owned(ticket, cwd, "check", false, undefined, TICKET);
 				await note(task, "done", `Todo item done: "${task.content}"\n${change.message}\nEvidence: ${change.evidence!.join(", ")}`, cwd);
 				if (!named.some(other => other !== task && other.ticket === ticket && OPEN.has(other.status))) await closeTicket(task, decision, change, cwd);
 				else if (WORKING.has(from)) await settleTicket(task, cwd);
@@ -848,7 +869,7 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 				catch (error) { throw new Error(`Todo item "${item.content}" names ${ref}, which Kata cannot resolve: ${(error as Error).message}. Nothing was created.`); }
 				if (shown.status !== "open") throw new Error(`Todo item "${item.content}" names ${ref}, which is already closed; the plugin never reopens a ticket. Nothing was created.`);
 				ticket = await kata.qualify(shown, cwd, ref);
-				try { await owned(ticket, cwd, "check"); }
+				try { await owned(ticket, cwd, "check", false, undefined, TICKET); }
 				catch (error) { throw new Error(`Todo item "${item.content}" cannot work ${ticket}: ${(error as Error).message} Nothing was created.`); }
 				checked.set(ref, ticket);
 			}
@@ -884,7 +905,7 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 		for (const e of request.evidence) args.push("--evidence", e);
 		await kata.run(args, request.cwd);
 		if (decision.metadata?.["todo.status"] !== undefined) {
-			await owned(ticket, request.cwd, "check", true).then(closed => work(ticket, "todo.status", "completed", request.cwd, closed)).catch(debug);
+			await owned(ticket, request.cwd, "check", true, undefined, TICKET).then(closed => work(ticket, "todo.status", "completed", request.cwd, closed)).catch(debug);
 		}
 	}
 
@@ -895,7 +916,7 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 		return `${verb} from the todo plan under ${plan.parent}: "${task.content}". Reason: ${why}. This task was intentionally retired from the plan without asserting completion.`;
 	}
 
-	const leads = (t: Task) => !t.delegated && !delegates.holds(t.ticket ?? t.ref);
+	const leads = (t: Task) => !t.delegated && !t.holder && !delegates.holds(t.ticket ?? t.ref);
 
 	async function remove(task: Task, change: Change, cwd: string): Promise<void> {
 		if (task.ticket) {
@@ -932,10 +953,12 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 			return tasks;
 		}
 		if (!target) {
-			// Never guess between two active tasks: closing one closes it with this evidence.
+			// Never guess between two active tasks: closing one closes it with this evidence. A task another session started
+			// counts too: the caller may mean it, and closing this session's own task with that evidence would be wrong.
 			const active = plan.tasks.filter(t => t.status === "in_progress" && leads(t));
-			if (fallback === "active" && active.length === 1) return active;
-			if (fallback === "active" && active.length > 1) throw new Error(`Several tasks are in progress (${active.map(t => `"${t.content}"`).join(", ")}); name the task.`);
+			const held = plan.tasks.filter(t => t.status === "in_progress" && t.holder);
+			if (fallback === "active" && active.length === 1 && !held.length) return active;
+			if (fallback === "active" && active.length + held.length > 1) throw new Error(`Several tasks are in progress (${[...active, ...held].map(t => `"${t.content}"`).join(", ")}); name the task.`);
 			throw new Error("Name the task (verbatim content or Kata ref).");
 		}
 		if (!plan.local && !plan.tasks.some(t => t.content === target) && /(?:^|#)[0-9a-hjkmnp-tv-z]{26}$/i.test(target)) target = await kata.pin(target, plan.workspace);
@@ -1075,12 +1098,62 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 	// ---------------------------------------------------------------------- ops
 
 	// init closes every task missing from the new list; leaving out an open task needs an explicit replace.
-	function refuseOpen(replace: boolean, tasks: Task[], wanted: Set<string>): void {
-		if (replace) return;
+	// Nor may it drop a task another session started (see takeOver).
+	function refuseDropped(replace: boolean, tasks: Task[], wanted: Set<string>): void {
 		const open = tasks.filter(t => OPEN.has(t.status) && !wanted.has(itemKey(t)));
-		if (!open.length) return;
+		const held = open.filter(t => t.holder);
+		if (replace && held.length) throw new Error(`The new todo list leaves out tasks another session started, so init changed nothing:\n${held.map(t => `- ${MARK[t.status]} ${t.content} (session ${t.holder})`).join("\n")}\nIf that session crashed or was killed, take them over first (start or drop with takeover: true), or keep them in the list.`);
+		if (replace || !open.length) return;
 		throw new Error(`The new todo list leaves out open tasks, so init changed nothing:\n${open.map(t => `- ${MARK[t.status]} ${t.content}`).join("\n")}\nTo replace them, call init again with replace: true.`);
 	}
+
+	// Moves tasks another session started to this one. Nothing tells the plugin whether that session still runs, so
+	// only an explicit request takes over, and the comment, written before the marker moves, names both sessions.
+	async function takeOver(tasks: Task[], cwd: string): Promise<void> {
+		const held = plan.local ? [] : tasks.filter(t => !t.ticket && t.holder);
+		if (!held.length) return;
+		const session = markingSession();
+		if (!session) throw new Error("takeover needs a lead session with an id; nothing was taken over.");
+		const who = { takeover: true };
+		for (const task of held) {
+			const first = await owned(task.ref, cwd, "check", false, task.revision, who);
+			const previous = heldBySession(first, ownSessions);
+			if (!previous) continue;
+			await kata.run(["comment", task.ref, "--idempotency-key", `${namespace}-takeover:${digest(task.ref, previous, session, String(first.revision))}`,
+				"--body", `Taken over by session ${session} from session ${previous}, which started it.`], cwd);
+			const current = await owned(task.ref, cwd, "check", false, undefined, who);
+			if (heldBySession(current, ownSessions) === previous) await work(task.ref, SESSION_KEY, session, cwd, current);
+		}
+	}
+
+	// A lead that ends gracefully (shutdown, or a switch to another session) releases the tasks it holds, so the next
+	// session continues them without a takeover; a crash releases nothing, and those still need one. A fork that replaces
+	// its source in this process inherits the source's tasks (settleFork) when it works the same plan parent, so its own end
+	// releases them later; a fork whose history predates that plan gets nothing, and the tasks are released. The source's
+	// tasks come from the source's own plan: captured before the switch rebinds (omp), or left by the source's instance at
+	// its fork shutdown (pi, which starts a new instance for the fork). A fork started elsewhere leaves its source's alone.
+	type Leaving = { session: string; workspace: string; parent: string; refs: string[] };
+	function leaving(session = currentId): Leaving | undefined {
+		if (!session || !plan.parent || plan.local) return undefined;
+		const refs = plan.tasks.filter(t => !t.ticket && !t.delegated && !t.holder && WORKING.has(t.status)).map(t => t.ref);
+		return refs.length ? { session, workspace: plan.workspace, parent: plan.parent, refs } : undefined;
+	}
+	// Sets each mark `from.session` still holds to `to`, or removes it.
+	async function moveMarks(from: Leaving | undefined, to: string | undefined): Promise<void> {
+		if (!from) return;
+		for (const ref of from.refs) {
+			try {
+				const issue: KataIssue = (await kata.show(ref, from.workspace)).issue;
+				if (issue.status === "open" && issue.metadata?.[SESSION_KEY] === from.session) await work(ref, SESSION_KEY, to, from.workspace, issue);
+			} catch (error) { debug(error); }
+		}
+	}
+	const release = (ending: Leaving | undefined) => moveMarks(ending, undefined);
+	// The source's tasks go to a fork that works their plan parent; any other fork releases them.
+	const settleFork = (source: Leaving | undefined, fork: string | undefined) =>
+		moveMarks(source, fork && source && (plan.parent === source.parent || aliases.has(source.parent)) ? fork : undefined);
+	// Tasks a pi source left for the fork that replaces it, by source session id: the fork runs in a new plugin instance.
+	const forkSources = ((globalThis as Record<symbol, unknown>)[Symbol.for(`kata.${namespace}.forkSources`)] ??= new Map<string, Leaving>()) as Map<string, Leaving>;
 
 	async function apply(params: any, ctx: any): Promise<string> {
 		if (!bound || currentId !== sid(ctx)) await bind(ctx, params.op === "view", params.ref ?? (!bound ? requestedRef : undefined));
@@ -1115,19 +1188,19 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 				const parent = keepsParent && plan.parent ? plan.parent : await kata.pin(target, workspace);
 				if (choice.overridden && parent !== await kata.pin(choice.overridden, workspace)) throw new Error(`Kata init ref ${params.ref} conflicts with the explicit binding ${target}; neither plan was replaced.`);
 				const tasks = tasksOf((await showParent(parent, workspace)).children ?? [], parent);
-				refuseOpen(params.replace === true, [...tasks, ...named], wanted);
+				refuseDropped(params.replace === true, [...tasks, ...named], wanted);
 				const kept = tasks.filter(t => wanted.has(itemKey(t)));
 				const affected = new Set(tasks.filter(t => !kept.includes(t)));
 				const next = nextTask(kept);
 				if (next) affected.add(next);
 				for (const task of affected) await owned(task.ref, workspace, "check", true, task.revision);
 			}
-			if (!target) refuseOpen(params.replace === true, plan.tasks, wanted);
+			if (!target) refuseDropped(params.replace === true, plan.tasks, wanted);
 			if (target || needsParent(desired.map(d => d.content))) await ensureParent(params, ctx);
 			cwd = plan.workspace;
 			await load(cwd);
 			// ensureParent may have found a parent with open tasks (a restored one, or one a pi child created).
-			if (!target) refuseOpen(params.replace === true, plan.tasks, wanted);
+			if (!target) refuseDropped(params.replace === true, plan.tasks, wanted);
 			for (const task of plan.tasks) if (wanted.has(itemKey(task))) settlement.cancelRemoval(task.ref);
 			for (const task of plan.tasks) {
 				if (!wanted.has(itemKey(task))) await remove(task, { message: "replaced by a new todo plan" }, cwd);
@@ -1146,6 +1219,12 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 		}
 		let children = await load(cwd);
 		if (!plan.parent && !plan.local && !named.length) throw new Error("No todo plan yet. Call todo op=init first.");
+		if (params.takeover === true) {
+			// A takeover is explicit: it names the task, or a phase for the ops that act on a whole phase.
+			if (!params.task && !(params.phase && ["done", "drop", "rm"].includes(op))) throw new Error("takeover needs the task it takes over; nothing was taken over.");
+			await takeOver(await resolve(params.task, params.phase, "none"), cwd);
+			children = await load(cwd);
+		}
 		switch (op) {
 			case "append": {
 				const items: string[] = params.items?.length ? params.items : params.task ? [params.task] : [];
@@ -1285,9 +1364,11 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 			append: { op: "append", items: arg ? [arg] : [] },
 			block: { op: "block", reason: arg },
 			unblock: { op: "unblock", task: arg },
+			// The user takes a task over from a session that crashed, and continues it here.
+			takeover: { op: "start", task: arg, takeover: true },
 		};
 		const params = supported[sub];
-		if (!params) return `/todo ${sub} is not available with Kata. Use /todo [start|done|drop|rm|append|block|unblock], or kata tui.`;
+		if (!params) return `/todo ${sub} is not available with Kata. Use /todo [start|done|drop|rm|append|block|unblock|takeover], or kata tui.`;
 		return serial(async () => {
 			try {
 				return withDeletionNotice(await apply(params, ctx));
@@ -1349,7 +1430,7 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 		} finally { if (onAbort) signal?.removeEventListener("abort", onAbort); }
 		if (signal?.aborted) return;
 		if (!refreshed || plan.error) return;
-		const open = plan.tasks.filter(t => t.status === "pending" || t.status === "in_progress");
+		const open = plan.tasks.filter(t => (t.status === "pending" || t.status === "in_progress") && !t.holder);
 		if (open.length === 0 || reminders >= MAX_REMINDERS || !progressed) return;
 		// Do not push past a question the assistant just asked the user.
 		const last = [...(messages)].reverse().find((m: any) => m?.role === "assistant");
@@ -1519,7 +1600,7 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 		const kept = chosen && chosen !== parent.teammate && chosen !== parent.via && CHILD_TEAMMATE.test(chosen) ? chosen : undefined;
 		const salt = `${parent.teammate || namespace}:${parent.sessionId}:${id}`;
 		// Matching reads which issues already carry this child's teammate: none yet, so any unused value matches the same.
-		const delegateScope = { parent: binding.parent, workspace: binding.workspace, label: binding.label, leadTeammate: parent.teammate, teammate: kept ?? teammateFor(salt) };
+		const delegateScope = { parent: binding.parent, workspace: binding.workspace, label: binding.label, leadTeammate: parent.teammate, teammate: kept ?? teammateFor(salt), leadSession: parent.sessionId };
 		// A prompt the assignment rules refuse (two tickets, a taken task) tracks nothing.
 		let reserved: Reservation | undefined, untracked = false;
 		try { reserved = (await delegates.check([{ text: prompt }], [], delegateScope))[0]; }
@@ -1538,7 +1619,8 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 			// The session began or switched: bind the plan, follow the inbox live when the host can, start attention.
 			// `after` is host work (a delegate's assignment retry) the first context read waits for.
 			// `child`: the workspace of a pi child still to join its parent; when Kata does not answer there, nothing starts and the result is undefined: the host runs the session as a main session and starts it again.
-			async start(ctx: any, begin: { after?: Promise<unknown>; child?: string } = {}): Promise<Lead | undefined> {
+			// `forked`: this session is a fork that replaces its source in this process (pi's /fork); it inherits the source's tasks.
+			async start(ctx: any, begin: { after?: Promise<unknown>; child?: string; forked?: boolean } = {}): Promise<Lead | undefined> {
 				if (!main(ctx)) {
 					if (begin.child !== undefined && !await probe(begin.child)) return undefined;
 					currentCtx = ctx;
@@ -1554,13 +1636,28 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 				prefetch(ctx);
 				if (live) startFollower(ctx, user!);
 				const transition = serial(async () => {
+					// A switch away from a bound lead ends it; a switch to its own fork hands its tasks on (settleFork).
+					const forkOf = forkSourceId(ctx.sessionManager?.getHeader?.()?.parentSession);
+					const switchedToFork = !!currentId && forkOf === currentId && bound;
+					const ending = currentId && id && currentId !== id && bound && !switchedToFork ? leaving() : undefined;
+					let source: Leaving | undefined;
+					if (switchedToFork) source = leaving();
+					// pi: the source's instance left its tasks at its fork shutdown (read below, after bind, if it did not).
+					else if (begin.forked && forkOf) { source = forkSources.get(forkOf); forkSources.delete(forkOf); }
 					await bind(ctx);
 					reminders = 0;
 					const previous = attentionSession;
-					if (!options.attentionHarness || !id || previous?.id === id) return;
-					if (previous) await attention("end", previous);
-					attentionSession = { id, cwd: plan.workspace || path.resolve(ctx.cwd), ref: explicit && plan.parent, hostCwd: path.resolve(ctx.cwd), hostRef: explicit };
-					await attention("start", attentionSession);
+					if (options.attentionHarness && id && previous?.id !== id) {
+						if (previous) await attention("end", previous);
+						attentionSession = { id, cwd: plan.workspace || path.resolve(ctx.cwd), ref: explicit && plan.parent, hostCwd: path.resolve(ctx.cwd), hostRef: explicit };
+						await attention("start", attentionSession);
+					}
+					await release(ending);
+					// No tasks left by a pi source: the fork's own view of the tasks the source holds in the plan it bound.
+					if (!source && begin.forked && forkOf && forkOf !== id) source = leaving(forkOf);
+					await settleFork(source, id);
+					// The plan was loaded while the previous session still held its tasks: show them as they are now.
+					if (ending || source) { await load(plan.workspace).catch(debug); refresh(ctx); }
 				});
 				// OMP snapshots the bash environment after this handler returns.
 				await bounded(transition, explicit && options.attentionHarness && id ? ATTENTION_START_MS : undefined);
@@ -1574,10 +1671,15 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 				return remind(messages, ctx, signal);
 			},
 			// A delegate that ends with its session passes `delegate`; `ended` makes this call report its exit, after its `report`.
-			async shutdown(ctx: any, closing: { delegate?: { id: string; ended: boolean; report?: string } } = {}): Promise<void> {
+			// `continues`: this shutdown does not end the lead's work (pi's reload: the same session goes on), so it keeps its tasks.
+			// `forking`: a fork replaces this session in a new instance (pi's /fork into a saved session); the tasks are left for it.
+			async shutdown(ctx: any, closing: { delegate?: { id: string; ended: boolean; report?: string }; continues?: boolean; forking?: boolean } = {}): Promise<void> {
 				see(ctx);
 				if (!main(ctx) && !closing.delegate) return;
 				stopFollower();
+				// Left for the fork before the bounded work: pi starts the fork's instance once this shutdown returns or times out.
+				const forking = main(ctx) && closing.forking ? leaving() : undefined;
+				if (forking) forkSources.set(forking.session, forking);
 				// After the drain: the automatic parent's close still records this session.
 				await bounded((async () => {
 					await serial(async () => {
@@ -1585,7 +1687,9 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 						attentionSession = undefined;
 						await load(plan.workspace || ctx.cwd).catch(debug);
 						await drain();
+						const ending = main(ctx) && !closing.continues && !closing.forking ? leaving() : undefined;
 						if (session) await attention("end", session);
+						await release(ending);
 					});
 					if (closing.delegate?.report) await delegates.apply({ type: "reported", id: closing.delegate.id, text: closing.delegate.report });
 					if (closing.delegate?.ended) await delegates.apply({ type: "exited", id: closing.delegate.id, outcome: "ended" });

@@ -115,6 +115,7 @@ export default async function piKata(pi: ExtensionAPI) {
 			reason: Type.Optional(Type.String({ description: TODO_PARAMS.reason })),
 			ref: Type.Optional(Type.String({ description: TODO_PARAMS.ref })),
 			replace: Type.Optional(Type.Boolean({ description: TODO_PARAMS.replace })),
+			takeover: Type.Optional(Type.Boolean({ description: TODO_PARAMS.takeover })),
 			message: Type.Optional(Type.String({ description: TODO_PARAMS.message })),
 			evidence: Type.Optional(Type.Array(Type.String(), { description: TODO_PARAMS.evidence })),
 		}),
@@ -191,7 +192,7 @@ export default async function piKata(pi: ExtensionAPI) {
 		};
 	});
 
-	pi.on("session_start", async (_event, ctx) => {
+	pi.on("session_start", async (event, ctx) => {
 		// A child replaces the session its lead exported.
 		exportTranscriptSession("pi", ctx.sessionManager.getSessionId());
 		const saved = savedOf(ctx);
@@ -202,8 +203,10 @@ export default async function piKata(pi: ExtensionAPI) {
 			process.env.KATA_TEAMMATE = saved.teammate;
 			delete process.env.KATA_REF;
 		}
-		let next = await core.session.start(ctx, { child: inherited && !inherited.ref ? inherited.workspace : undefined });
-		if (!next) { inherited = undefined; next = await core.session.start(ctx) as Lead; } // Kata does not answer from the child's workspace
+		// A /fork replaces the source session in this process: the fork takes the tasks the source holds.
+		const forked = event?.reason === "fork";
+		let next = await core.session.start(ctx, { child: inherited && !inherited.ref ? inherited.workspace : undefined, forked });
+		if (!next) { inherited = undefined; next = await core.session.start(ctx, { forked }) as Lead; } // Kata does not answer from the child's workspace
 		if (inherited?.provider && inherited.model) {
 			const inherit = inheritsModel(process.argv);
 			const model = inherit.model ? ctx.modelRegistry?.find(inherited.provider, inherited.model) : undefined;
@@ -220,10 +223,12 @@ export default async function piKata(pi: ExtensionAPI) {
 		follow(await core.session.tree(ctx), ctx);
 	});
 	// A child's shutdown is its last act; give its own issue cleanup time to finish.
-	// A reload continues the same session, so it is not an ending.
+	// A reload continues the same session, so it is not an ending; neither is a fork, which goes on with the source's tasks.
 	pi.on("session_shutdown", async (event, ctx) => {
 		// The transcript pair is not cleared here: pi fires this on the old instance for reload/new/resume/fork, then the new instance's session_start in the same process, and a slow cleanup would delete the new pair. session_start overwrites it and process exit ends the rest.
 		const record = inherited ? current : undefined;
-		await core.session.shutdown(ctx, record ? { delegate: { id: record.id, ended: event?.reason !== "reload", report: lastAssistantText(ctx) } } : {});
+		// A fork into a saved session gets the source's tasks at its start (its header names the source); an in-memory one cannot, so they are released.
+		const lead = { continues: event?.reason === "reload", forking: event?.reason === "fork" && !!event.targetSessionFile };
+		await core.session.shutdown(ctx, record ? { delegate: { id: record.id, ended: event?.reason !== "reload", report: lastAssistantText(ctx) } } : lead);
 	});
 }

@@ -9,7 +9,8 @@ export const WORKING: ReadonlySet<Status> = new Set(["in_progress", "blocked"]);
 export const openTaskStatus = (value: unknown): Status => value === "in_progress" || value === "blocked" ? value : "pending";
 // A closed issue's final plan status: abandoned when closed as wontfix, completed otherwise.
 export const closedTaskStatus = (closedReason?: string): "completed" | "abandoned" => closedReason === "wontfix" ? "abandoned" : "completed";
-export type Task = { ref: string; content: string; phase: string; status: Status; ticket?: string; at?: number; blocker?: string; delegated?: boolean; review?: boolean; revision?: number; proof?: { message?: string; evidence?: string[] } };
+// `holder`: another lead session that started this plan task and has not released it (see heldBySession).
+export type Task = { ref: string; content: string; phase: string; status: Status; ticket?: string; at?: number; blocker?: string; delegated?: boolean; holder?: string; review?: boolean; revision?: number; proof?: { message?: string; evidence?: string[] } };
 export type Binding = { parent: string; workspace: string; sessionId?: string; auto?: boolean; label?: string };
 export type Plan = Partial<Binding> & { workspace: string; tasks: Task[]; local?: boolean; error?: string };
 export type Change = { message?: string; evidence?: string[]; reason?: string; remove?: boolean };
@@ -23,6 +24,18 @@ export type KataIssue = {
 };
 export type KataComment = { body: string; teammate?: string };
 export type KataShow = { issue: KataIssue; children?: KataIssue[]; comments?: KataComment[] };
+
+// The plan task metadata key naming the lead session that created the task, then the one that last started or blocked it.
+export const SESSION_KEY = "todo.session";
+// The session holding an open, started or blocked plan task, when it is none of `own` (this session and the sessions it was
+// forked from). Pending and closed tasks, tasks without the key and other issues are held by no session. No `own`: unknown.
+export function heldBySession(issue: Pick<KataIssue, "status" | "metadata">, own: readonly string[]): string | undefined {
+	const meta = issue.metadata, session = meta?.[SESSION_KEY];
+	if (!own.length || issue.status !== "open" || typeof meta?.["todo.phase"] !== "string" || typeof session !== "string" || !session) return undefined;
+	return WORKING.has(openTaskStatus(meta["todo.status"])) && !own.includes(session) ? session : undefined;
+}
+// The start of every refusal for a plan task another session holds.
+export const heldMessage = (ref: string, holder: string) => `Plan task ${ref} was started by another session (${holder}), which has not released it`;
 
 // The text of a message's content: a plain string, or its text blocks joined.
 export function textOf(content: unknown): string {
