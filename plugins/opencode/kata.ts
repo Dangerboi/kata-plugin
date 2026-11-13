@@ -1,5 +1,6 @@
 import { createSeam, type Seam } from "./seam";
 import { resolveSettings } from "./settings";
+import { install as installShellRoute } from "./shell-route";
 import { install as installSubagents } from "./subagents";
 import { install as installTodowrite } from "./todowrite";
 
@@ -12,6 +13,7 @@ import { install as installTodowrite } from "./todowrite";
 const MODULES: ((seam: Seam) => void | Promise<unknown>)[] = [
 	installTodowrite,
 	installSubagents,
+	installShellRoute,
 ];
 
 const LEAD_ENDED = ["session.execution.succeeded", "session.execution.failed", "session.execution.interrupted"] as const;
