@@ -1,5 +1,6 @@
 import type { DelegateEvent, DelegateOutcome, Reservation } from "./delegates";
 import { teammateFor } from "./delegates";
+import { speak } from "./todowrite";
 import type { Lead } from "./lead";
 import type { Seam } from "./seam";
 
@@ -78,7 +79,12 @@ export function install(seam: Seam): void {
 				call.followUp = input.sessionID;
 			} else {
 				const held = list.flatMap(other => other.reserved?.ref ? [other.reserved.ref] : []);
-				[call.reserved] = await lead.core.delegates.check([{ text: call.prompt, label: call.description }], held);
+				try {
+					[call.reserved] = await lead.core.delegates.check([{ text: call.prompt, label: call.description }], held);
+				} catch (error) {
+					// The refusal reaches the model of a plugin whose tool is todowrite, not the omp todo tool.
+					throw new Error(speak(error instanceof Error ? error.message : String(error)));
+				}
 			}
 			list.push(call);
 		});

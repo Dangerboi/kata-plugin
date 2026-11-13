@@ -52,16 +52,19 @@ export function diffTodoList(plan: readonly PlanItem[], accepted: ReadonlySet<st
 	const seen = new Set<string>();
 	const appended: string[] = [], closes: ListOp[] = [], unblocks: ListOp[] = [], blocks: ListOp[] = [], starts: ListOp[] = [];
 
-	// An op on a content with several plan tasks names each task by ref: core cannot resolve the shared content.
-	const name = (copy: PlanItem, copies: readonly PlanItem[]) => copies.length > 1 ? copy.ref ?? copy.content : copy.content;
-	const finish = (item: ListItem, copies: readonly PlanItem[]) => {
+	// Names the ops for these copies out of all the plan tasks of the content. Core cannot resolve a shared content, so each
+	// copy is named by its ref; copies that share one ref (ticket items expose the ticket's ref) cannot be told apart by it, so
+	// they get one op naming the content.
+	const names = (copies: readonly PlanItem[], all: readonly PlanItem[]): string[] => [...new Set(copies.map(c =>
+		all.length > 1 && c.ref && all.filter(t => t.ref === c.ref).length === 1 ? c.ref : c.content))];
+	const finish = (item: ListItem, copies: readonly PlanItem[], all: readonly PlanItem[]) => {
 		const missing = proofMissing(item);
 		if (missing) problems.push(missing);
-		else for (const c of copies) closes.push({ op: "done", task: name(c, copies), message: item.message!, evidence: item.evidence!.filter(e => e.trim()) });
+		else for (const task of names(copies, all)) closes.push({ op: "done", task, message: item.message!, evidence: item.evidence!.filter(e => e.trim()) });
 	};
-	const cancel = (item: ListItem, copies: readonly PlanItem[]) => {
+	const cancel = (item: ListItem, copies: readonly PlanItem[], all: readonly PlanItem[]) => {
 		if (!item.reason?.trim()) problems.push(`"${item.content}" cannot be cancelled without a reason`);
-		else for (const c of copies) closes.push({ op: "drop", task: name(c, copies), message: item.reason });
+		else for (const task of names(copies, all)) closes.push({ op: "drop", task, message: item.reason });
 	};
 
 	for (const item of incoming) {
@@ -75,7 +78,7 @@ export function diffTodoList(plan: readonly PlanItem[], accepted: ReadonlySet<st
 			if (item.status === "cancelled") { problems.push(`"${item.content}" is new and cannot be cancelled: leave it out instead`); continue; }
 			appended.push(item.content);
 			const fresh = [{ content: item.content, status: "pending" as Status }];
-			if (item.status === "completed") finish(item, fresh);
+			if (item.status === "completed") finish(item, fresh, fresh);
 			else if (blocker) blocks.push({ op: "block", task: item.content, reason: blocker });
 			else if (item.status === "in_progress") starts.push({ op: "start", task: item.content });
 			continue;
@@ -88,21 +91,21 @@ export function diffTodoList(plan: readonly PlanItem[], accepted: ReadonlySet<st
 			continue;
 		}
 		const copies = all.filter(t => t.status !== "completed" && t.status !== "abandoned");
-		if (item.status === "completed") { finish(item, copies); continue; }
-		if (item.status === "cancelled") { cancel(item, copies); continue; }
+		if (item.status === "completed") { finish(item, copies, all); continue; }
+		if (item.status === "cancelled") { cancel(item, copies, all); continue; }
 
 		const ofStatus = (...statuses: Status[]) => copies.filter(t => statuses.includes(t.status));
 		if (current.status === "blocked") {
 			if (item.status === "in_progress") {
 				if (!blocker) {
-					for (const c of ofStatus("blocked")) unblocks.push({ op: "unblock", task: name(c, all) });
-					for (const c of ofStatus("blocked", "pending")) starts.push({ op: "start", task: name(c, all) });
+					for (const task of names(ofStatus("blocked"), all)) unblocks.push({ op: "unblock", task });
+					for (const task of names(ofStatus("blocked", "pending"), all)) starts.push({ op: "start", task });
 				}
-			} else if (!blocker) for (const c of ofStatus("blocked")) unblocks.push({ op: "unblock", task: name(c, all) });
+			} else if (!blocker) for (const task of names(ofStatus("blocked"), all)) unblocks.push({ op: "unblock", task });
 		} else if (blocker) {
-			for (const c of ofStatus("pending", "in_progress")) blocks.push({ op: "block", task: name(c, all), reason: blocker });
+			for (const task of names(ofStatus("pending", "in_progress"), all)) blocks.push({ op: "block", task, reason: blocker });
 		} else if (current.status === "pending") {
-			if (item.status === "in_progress") for (const c of copies) starts.push({ op: "start", task: name(c, all) });
+			if (item.status === "in_progress") for (const task of names(copies, all)) starts.push({ op: "start", task });
 		} else if (item.status === "pending") {
 			problems.push(`"${item.content}" is in progress and cannot go back to pending: to pause it, keep it in_progress and set blocker`);
 		}

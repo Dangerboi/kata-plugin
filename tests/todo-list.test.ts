@@ -157,7 +157,11 @@ const applyOps = (plan: PlanItem[], list: readonly ListOp[]): PlanItem[] => {
 	const next = plan.map(t => ({ ...t }));
 	for (const o of list) {
 		if (o.op === "append") { for (const content of o.items) next.push({ content, ref: `n#${next.length}`, status: "pending" }); continue; }
-		const task = next.find(t => t.ref === o.task) ?? next.find(t => t.content === o.task)!;
+		// Resolves a name like core: an exact ref, else a content that matches one task, else an error.
+		const byRef = next.filter(t => t.ref === o.task);
+		const byContent = next.filter(t => t.content === o.task);
+		if (!byRef.length && byContent.length !== 1) throw new Error(`Ambiguous or unknown task: ${o.task}`);
+		const task = byRef[0] ?? byContent[0];
 		task.status = STATUS_OF[o.op];
 		task.blocker = o.op === "block" ? o.reason : undefined;
 	}
@@ -182,6 +186,21 @@ describe("a content that appears in several plan tasks", () => {
 
 	test("a copy that is missing from the list is reported once", () => {
 		expect(refusal(twice("pending", "pending"), []).problems).toEqual([`"t" was added to the Kata plan outside this session and is requested work: send it back unchanged`]);
+	});
+
+	test("an op names the open copy by ref when another copy is closed", () => {
+		const done = [{ content: "t", ref: "p#1", status: "completed" } as PlanItem, { content: "t", ref: "p#2", status: "pending" } as PlanItem];
+		expect(ops(done, [{ content: "t", status: "completed", message: LONG, evidence: ["e"] }])).toEqual([{ op: "done", task: "p#2", message: LONG, evidence: ["e"] }]);
+		expect(ops(done, [{ content: "t", status: "cancelled", reason: "r" }])).toEqual([{ op: "drop", task: "p#2", message: "r" }]);
+		const abandoned = [{ content: "t", ref: "p#1", status: "abandoned" } as PlanItem, { content: "t", ref: "p#2", status: "in_progress" } as PlanItem];
+		expect(ops(abandoned, [{ content: "t", status: "completed", message: LONG, evidence: ["e"] }]).map(o => (o as { task: string }).task)).toEqual(["p#2"]);
+	});
+
+	test("copies that share one ref get one op naming the content", () => {
+		const shared = [{ content: "t", ref: "k#1", status: "pending" } as PlanItem, { content: "t", ref: "k#1", status: "pending" } as PlanItem];
+		expect(ops(shared, [{ content: "t", status: "in_progress" }])).toEqual([{ op: "start", task: "t" }]);
+		expect(ops(shared, [{ content: "t", status: "cancelled", reason: "r" }])).toEqual([{ op: "drop", task: "t", message: "r" }]);
+		expect(ops(shared, [{ content: "t", status: "completed", message: LONG, evidence: ["e"] }]).map(o => (o as { task: string }).task)).toEqual(["t"]);
 	});
 });
 

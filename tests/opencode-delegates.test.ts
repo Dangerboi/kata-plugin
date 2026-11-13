@@ -62,8 +62,8 @@ afterAll(async () => {
 	restore(touched);
 });
 
-async function lead(executable = binary) {
-	const host = await openCodeHost({ plugin: opencode, directory: cwd, options: { executable, author: "opencode-builder" } });
+async function lead(executable = binary, options: Record<string, unknown> = {}) {
+	const host = await openCodeHost({ plugin: opencode, directory: cwd, options: { executable, author: "opencode-builder", ...options } });
 	open.push(host);
 	return { host, id: host.createSession({ id: `oc-del-${++sequence}-${Date.now().toString(36)}` }).id };
 }
@@ -241,6 +241,20 @@ test("a spawn the rules refuse never runs and leaves Kata unchanged", async () =
 	expect(result.text).toContain("names more than one ticket or plan item");
 	expect(child).toBeUndefined();
 	expect(JSON.stringify((await itemsOf(id)).map(c => [c.title, c.revision]))).toBe(before);
+});
+
+test("a spawn naming an item another lead session holds is refused in todowrite's words", async () => {
+	const created = await kata(["create", "Ticket two leads delegate under", "--body", "Shared by two sessions.", "--project", "pi-port-opencode", "--force-new", "--json"]);
+	const ticket = `pi-port-opencode#${created.issue.short_id}`;
+	const a = await lead(binary, { ref: ticket });
+	await write(a.host, a.id, todos(["Shared parser item", "in_progress"]));
+	const b = await lead(binary, { ref: ticket });
+	const { result, child } = await spawn(b.host, b.id, { prompt: "Work on Shared parser item." }, async () => "never");
+	expect(result.status).toBe("error");
+	expect(result.executed).toBe(false);
+	expect(child).toBeUndefined();
+	expect(result.text).toContain("take it over first (send the list with takeover: true)");
+	expect(result.text).not.toMatch(/todo op=|todo start|repeat the call/);
 });
 
 test("a follow-up to a delegate whose issue is open resumes tracking on the same issue", async () => {
