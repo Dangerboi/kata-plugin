@@ -228,14 +228,16 @@ test("a switch to another session releases the tasks the previous one started", 
   expect((await meta(ref))["todo.session"]).toBeUndefined();
 }, 30000);
 
-test("a switch to a fork of the session keeps the tasks it started held", async () => {
+test("a switch to a fork of the session hands it the tasks the source held, and the fork's end releases them", async () => {
   const parent = await issue();
   const ref = await issue(["todo.phase=Tasks", "todo.status=pending"], parent);
   const a = lead("session-a", parent);
   await a.begin();
   await a.call({ op: "start", task: ref });
   await a.switchTo("session-a-fork", { parentSession: "session-a" });
-  expect((await meta(ref))["todo.session"]).toBe("session-a");
+  expect((await meta(ref))["todo.session"]).toBe("session-a-fork");
+  await a.shutdown();
+  expect((await meta(ref))["todo.session"]).toBeUndefined();
 }, 30000);
 
 test("a fork's shutdown leaves its source's started tasks held", async () => {

@@ -953,10 +953,31 @@ test("a pi reload or fork keeps the tasks its session holds; quitting releases t
   const app = await host(); await app.event("session_start", { reason: "startup" });
   const parent = await app.init(["Held across reload", "Later reload task"]);
   const task = (await show(parent)).children.find((c: any) => c.title === "Held across reload");
-  for (const reason of ["reload", "fork"]) {
-    await app.event("session_shutdown", { reason });
+  // A fork into a saved session hands the tasks over later, so the source keeps them until then.
+  for (const event of [{ reason: "reload" }, { reason: "fork", targetSessionFile: "/sessions/2026-11-13T00-00-00_fork.jsonl" }]) {
+    await app.event("session_shutdown", event);
     expect((await show(task.qualified_id)).issue.metadata["todo.session"]).toBe(app.sid);
   }
   await app.event("session_shutdown", { reason: "quit" });
+  expect((await show(task.qualified_id)).issue.metadata["todo.session"]).toBeUndefined();
+});
+
+test("a pi /fork takes the tasks its source held; quitting the fork releases them", async () => {
+  const source = await host(); await source.event("session_start", { reason: "startup" });
+  const parent = await source.init(["Handed to the fork", "Later fork task"]);
+  const task = (await show(parent)).children.find((c: any) => c.title === "Handed to the fork");
+  await source.event("session_shutdown", { reason: "fork", targetSessionFile: "/sessions/2026-11-13T00-00-00_fork.jsonl" });
+  process.env.KATA_REF = parent;
+  const fork = await host({ header: { parentSession: source.sid } }); await fork.event("session_start", { reason: "fork" });
+  expect((await show(task.qualified_id)).issue.metadata["todo.session"]).toBe(fork.sid);
+  await fork.event("session_shutdown", { reason: "quit" });
+  expect((await show(task.qualified_id)).issue.metadata["todo.session"]).toBeUndefined();
+});
+
+test("a pi fork into an in-memory session releases the source's tasks, since no header names the source", async () => {
+  const app = await host(); await app.event("session_start", { reason: "startup" });
+  const parent = await app.init(["Released for an in-memory fork", "Later in-memory task"]);
+  const task = (await show(parent)).children.find((c: any) => c.title === "Released for an in-memory fork");
+  await app.event("session_shutdown", { reason: "fork" });
   expect((await show(task.qualified_id)).issue.metadata["todo.session"]).toBeUndefined();
 });
