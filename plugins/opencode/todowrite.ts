@@ -17,7 +17,7 @@ Every call is compared with the Kata plan. A call that disagrees with it is refu
 - The tool does the Kata bookkeeping for its items (claims, attention, closes). Do not run \`kata claim\`, \`kata meta set ... work.attention\` or \`kata close\` for them yourself, and never add such bookkeeping as an item.
 - A delegate bound to an item or ticket closes that issue itself, with its own evidence, once its work is verified; the item then shows completed.
 - An item another session started stays that session's until it ends: a call that changes it is refused. If that session crashed or was killed (or the user says so), send the list again with \`takeover: true\`; never take over work another session may still be doing.
-- Contents are kept as written (spaces and newlines included); send them back exactly as the list shows them. When the plan has the same content twice (in two phases), the list shows it once and a change to it applies to every open copy. The exception is copies that name the same ticket: todowrite cannot change them, so ask the user to remove the duplicate item. If every copy is closed, the item may be sent as completed or cancelled.`;
+- Contents are kept as written (spaces and newlines included); send them back exactly as the list shows them. When the plan has the same content twice (in two phases), the list shows it once and a change to it applies to every open copy. The exception is copies that name the same ticket: todowrite cannot change them, so ask the user to remove the duplicate item. If the copies were closed both ways (some completed, some cancelled), the item may be sent as either.`;
 
 const SCHEMA = {
 	type: "object",
