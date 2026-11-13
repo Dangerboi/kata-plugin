@@ -27,6 +27,17 @@ _Avoid_: release, settle-back
 Giving a closed issue a delegate still marks back to the lead, with no review: the lead's teammate, the final plan status, the delegate's keys removed.
 _Avoid_: retire, release
 
+**Holder**:
+The lead session that started or blocked an open plan task (`todo.session`); other lead sessions are refused on the task until it releases it or one takes it over.
+_Avoid_: owner (Kata's owner is an actor)
+
+**Release**:
+A lead session giving up the plan tasks it holds when it shuts down or switches to another session.
+
+**Take over**:
+A lead session making itself the holder of a plan task another session holds, on explicit request, with a comment naming both sessions.
+_Avoid_: steal, reclaim
+
 **Report**:
 A delegate's final word on its work: the text of its last assistant message that has any, or what it yielded. The plugin posts it on the delegate's issue when the delegate left no comment of its own.
 _Avoid_: summary, result

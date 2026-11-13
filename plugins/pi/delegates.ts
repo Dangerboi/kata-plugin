@@ -1,4 +1,4 @@
-import { closedTaskStatus, digest, heldBySession, itemTicket, OPEN, openTaskStatus, qualifiedRef, qualifiedRefs, type Binding, type KataIssue, type KataShow, type Plan, type Task } from "./model";
+import { closedTaskStatus, digest, heldBySession, heldMessage, itemTicket, OPEN, openTaskStatus, qualifiedRef, qualifiedRefs, type Binding, type KataIssue, type KataShow, type Plan, type Task } from "./model";
 import { isKataCode, type Kata } from "./kata-cli";
 
 // The delegate lifecycle, shared by the omp lead and the pi child (see GLOSSARY.md: Delegate,
@@ -62,7 +62,7 @@ export type MatchOptions = { unavailable?: ReadonlySet<string>; single?: boolean
 // counts the task's leading word twice. The lead's active task scores
 // at half weight and is the fallback only for an explicit current-task handoff.
 export function matchDelegation(tasks: Task[], text: string, { unavailable = new Set(), single = true, label = "" }: MatchOptions = {}): Task | undefined {
-	const available = (t: Task) => OPEN.has(t.status) && t.status !== "blocked" && !t.delegated && !t.elsewhere && !unavailable.has(t.ref);
+	const available = (t: Task) => OPEN.has(t.status) && t.status !== "blocked" && !t.delegated && !t.holder && !unavailable.has(t.ref);
 	const full = label ? `${label}\n${text}` : text;
 	const named = namedTasks(tasks, full);
 	if (named.length > 1) return undefined;
@@ -182,7 +182,9 @@ export interface DelegateStore {
 	of(ctx: any): DelegateRecord | undefined;
 }
 
-export type Who = { teammate: string; delegate?: boolean };
+// Who an ownership check runs for. `teammate` absent: the session's own. `takeover`: the caller takes a plan task over from the
+// session holding it. `ticket`: the issue is a ticket item's ticket, which keeps the actor and teammate rule alone.
+export type Who = { teammate?: string; delegate?: boolean; takeover?: boolean; ticket?: boolean };
 
 export interface DelegatesEnv {
 	namespace: string;
@@ -200,7 +202,7 @@ export interface DelegatesEnv {
 }
 
 export type Spawn = { text: string; label?: string };
-// `leadSession`: the lead's session id; a plan item another session started is not the lead's to delegate.
+// `leadSession`: the lead's session id; a plan task another session started is not the lead's to delegate.
 export type Scope = { parent?: string; workspace?: string; label?: string; leadTeammate?: string; teammate?: string; leadSession?: string };
 
 export interface Delegates {
@@ -263,7 +265,7 @@ export function createDelegates(env: DelegatesEnv): Delegates {
 			const foreign = (c: KataIssue) => heldByDelegate(ns, c.metadata) || (!!c.owner && (c.owner !== actor || ![lead, mate].includes((c.metadata?.teammate as string | undefined) || "")));
 			const all: Task[] = (shown.children ?? []).filter(c => c.status === "open").map(c => ({ ref: qualifiedRef(c, scope.parent!), content: c.title,
 				phase: (c.metadata?.["todo.phase"] as string | undefined) ?? "", status: openTaskStatus(c.metadata?.["todo.status"]), delegated: foreign(c),
-				elsewhere: heldBySession(c, scope.leadSession ? [scope.leadSession] : []) }));
+				holder: heldBySession(c, scope.leadSession ? [scope.leadSession] : []) }));
 			return { all, parent: scope.parent, workspace, label: scope.label, auto: false, local: false, planned: true };
 		}
 		const first = env.plan();
@@ -292,7 +294,7 @@ export function createDelegates(env: DelegatesEnv): Delegates {
 				if (direct) { ticket = direct; item = named.find(t => `${label}\n${spawn.text}`.toLowerCase().includes(t.content.toLowerCase())) ?? (named.length === 1 ? named[0] : undefined); }
 				else {
 					if (named[0] && (taken.has(named[0].ref) || named[0].delegated)) throw new Error(`Plan task ${named[0].ref} is already delegated.`);
-					if (named[0]?.elsewhere) throw new Error(`Plan task ${named[0].ref} was started by another session (${named[0].elsewhere}); take it over first (todo start with takeover: true).`);
+					if (named[0]?.holder) throw new Error(`${heldMessage(named[0].ref, named[0].holder)}; take it over first (todo start with takeover: true).`);
 					const selected = src.planned ? matchDelegation(tasks, spawn.text, { unavailable: taken, single: spawns.length === 1, label }) : undefined;
 					if (!selected?.ticket) {
 						if (selected) taken.add(selected.ref);
@@ -306,7 +308,7 @@ export function createDelegates(env: DelegatesEnv): Delegates {
 				const siblings = tasks.filter(t => t !== item && t.ticket === ticket && OPEN.has(t.status));
 				if (siblings.length) throw new Error(`Task ${index + 1} would delegate ${ticket}, but other open plan items name it (${siblings.map(t => `"${t.content}"`).join(", ")}). A delegate closes its whole ticket. Delegate the ticket only when no other open item names it, or plan the work as child issues (todo init with ref ${ticket}) and delegate one of those.`);
 				let ticketIssue: KataIssue;
-				try { ticketIssue = await env.owned(ticket, src.workspace, "check", false, undefined, as); }
+				try { ticketIssue = await env.owned(ticket, src.workspace, "check", false, undefined, { ...as, ticket: true }); }
 				catch (error) { throw new Error(`Task ${index + 1} names ${ticket}, which cannot be delegated: ${failure(error)}`); }
 				taken.add(ticket);
 				reservations.push({ ref: ticket, ticket: true, title: item ? itemTicket(item.content)?.action ?? item.content : ticketIssue.title });

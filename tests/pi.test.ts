@@ -39,7 +39,7 @@ async function host(options: any = {}) {
   const entries: any[] = options.entries || [], calls: string[][] = [], notices: any[] = [], widgets: any[] = [], messages: any[] = [], models: any[] = [], thinking: any[] = [];
   const ctx: any = {
     cwd: options.cwd || cwd, hasUI: options.hasUI ?? true, mode: options.mode || "tui",
-    sessionManager: { getSessionId: () => sid, getBranch: () => entries },
+    sessionManager: { getSessionId: () => sid, getBranch: () => entries, getHeader: () => options.header },
     model: options.model, modelRegistry: options.modelRegistry,
     ui: { notify: (...args: any[]) => notices.push(args), setWidget: (...args: any[]) => widgets.push(args) },
   };
@@ -936,4 +936,15 @@ test("a second pi lead on the same parent is refused on the first lead's started
   expect(closed.issue.status).toBe("closed");
   expect(closed.comments.map((c: any) => c.body)).toContain(`Taken over by session ${second.sid} from session ${first.sid}, which started it.`);
   await first.event("session_shutdown", { reason: "quit" }); await second.event("session_shutdown", { reason: "quit" });
+});
+
+test("a forked pi lead works on the tasks its source started; a third pi lead does not", async () => {
+  const source = await host(); await source.event("session_start", { reason: "startup" });
+  const parent = await source.init(["Forked pi task", "Other forked pi task"]);
+  process.env.KATA_REF = parent;
+  const fork = await host({ header: { parentSession: source.sid } }); await fork.event("session_start", { reason: "fork" });
+  const stranger = await host(); await stranger.event("session_start", { reason: "startup" });
+  expect((await stranger.call({ op: "done", task: "Forked pi task", message, evidence })).isError).toBe(true);
+  expect((await fork.call({ op: "done", task: "Forked pi task", message, evidence })).isError).toBeUndefined();
+  await source.event("session_shutdown", { reason: "quit" }); await fork.event("session_shutdown", { reason: "quit" }); await stranger.event("session_shutdown", { reason: "quit" });
 });

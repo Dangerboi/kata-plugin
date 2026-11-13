@@ -98,17 +98,21 @@ test("takeover moves the task to the new session and records both sessions on th
   expect(refused.content[0].text).toContain("started by another session (session-b)");
 }, 30000);
 
-test("a user's /todo command takes the task over", async () => {
+test("a /todo command is refused on another session's task; /todo takeover takes it over", async () => {
   const parent = await issue();
   const ref = await issue(["todo.phase=Tasks", "todo.status=pending"], parent);
   const a = lead("session-a", parent), b = lead("session-b", parent);
   await a.begin();
   await a.call({ op: "start", task: ref });
   await b.begin();
+  expect(await b.command(`/todo done ${ref}`)).toContain("started by another session (session-a)");
+  expect((await shown(ref)).issue.status).toBe("open");
+  await b.command(`/todo takeover ${ref}`);
+  const taken = await shown(ref);
+  expect(taken.issue.metadata["todo.session"]).toBe("session-b");
+  expect((taken.comments ?? []).some((c: { body: string }) => c.body.startsWith("Taken over by session session-b"))).toBe(true);
   await b.command(`/todo done ${ref}`);
-  const after = await shown(ref);
-  expect(after.issue.status).toBe("closed");
-  expect((after.comments ?? []).some((c: { body: string }) => c.body.startsWith("Taken over by session session-b"))).toBe(true);
+  expect((await shown(ref)).issue.status).toBe("closed");
 }, 30000);
 
 test("init replace cannot drop a task another session started", async () => {
@@ -152,8 +156,8 @@ test("a resumed session keeps its fork lineage from the snapshot", async () => {
   const fork = lead("session-f", parent, { parentSession: "session-a" });
   await fork.begin();
   const snapshot = fork.entries.findLast(e => e.customType === "io.kata.omp.state")?.data;
-  expect(snapshot.owners).toEqual(["session-f", "session-a"]);
-  // Resumed with the same branch but no fork header: the saved owners still include the source.
+  expect(snapshot.ownSessions).toEqual(["session-f", "session-a"]);
+  // Resumed with the same branch but no fork header: the saved sessions still include the source.
   const resumed = ompHost({ run: args => run(args), cwd, sid: "session-f", agent: { kind: "main", id: "main-session-f" }, entries: [...fork.entries] });
   await resumed.event("session_start");
   expect((await resumed.call({ op: "done", task: ref, ...proof })).isError).toBeUndefined();
@@ -234,4 +238,58 @@ test("a fork's shutdown leaves its source's started tasks held", async () => {
   await fork.begin();
   await fork.shutdown();
   expect((await meta(ref))["todo.session"]).toBe("session-a");
+}, 30000);
+
+test("restarting a task closed outside the plan takes it, whoever's marker it still carries", async () => {
+  const parent = await issue();
+  const ref = await issue(["todo.phase=Tasks", "todo.status=in_progress", "todo.session=session-a"], parent);
+  await kata(["claim", ref, "--json"]);
+  await kata(["close", ref, "--done", "--message", "Closed outside the plan by a person in the Kata terminal UI.", "--evidence", "test:external", "--json"]);
+  const b = lead("session-b", parent);
+  await b.begin();
+  expect((await b.call({ op: "start", task: ref })).isError).toBeUndefined();
+  const after = await shown(ref);
+  expect(after.issue.status).toBe("open");
+  expect(after.issue.metadata["todo.session"]).toBe("session-b");
+}, 30000);
+
+test("every takeover leaves its own comment, also back and forth between two sessions", async () => {
+  const parent = await issue();
+  const ref = await issue(["todo.phase=Tasks", "todo.status=pending"], parent);
+  const a = lead("session-a", parent), b = lead("session-b", parent);
+  await a.begin(); await b.begin();
+  await a.call({ op: "start", task: ref });
+  for (const [who, session] of [[b, "session-b"], [a, "session-a"], [b, "session-b"]] as const) {
+    expect((await who.call({ op: "start", task: ref, takeover: true })).isError).toBeUndefined();
+    expect((await meta(ref))["todo.session"]).toBe(session);
+  }
+  const comments = ((await shown(ref)).comments ?? []).filter((c: { body: string }) => c.body.startsWith("Taken over by session"));
+  expect(comments.length).toBe(3);
+}, 30000);
+
+test("a phase without a task takes nothing over for an op that needs one task", async () => {
+  const parent = await issue();
+  const ref = await issue(["todo.phase=Tasks", "todo.status=pending"], parent);
+  const a = lead("session-a", parent), b = lead("session-b", parent);
+  await a.begin();
+  await a.call({ op: "start", task: ref });
+  await b.begin();
+  expect((await b.call({ op: "start", phase: "Tasks", takeover: true })).isError).toBe(true);
+  const after = await shown(ref);
+  expect(after.issue.metadata["todo.session"]).toBe("session-a");
+  expect((after.comments ?? []).some((c: { body: string }) => c.body.startsWith("Taken over by session"))).toBe(false);
+}, 30000);
+
+test("a ticket item may name another plan's task that session holds; tickets keep the actor and teammate rule", async () => {
+  const other = await issue();
+  const held = await issue(["todo.phase=Tasks", "todo.status=pending"], other);
+  const a = lead("session-a", other);
+  await a.begin();
+  await a.call({ op: "start", task: held });
+  const parent = await issue();
+  const b = lead("session-b", parent);
+  await b.begin();
+  const result = await b.call({ op: "append", items: [`omptest#${held}: review the change`] });
+  expect(result.isError).toBeUndefined();
+  expect(result.content[0].text).toContain(`omptest#${held}: review the change`);
 }, 30000);
