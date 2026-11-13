@@ -42,6 +42,9 @@ function lead(sid: string, parent: string, header?: unknown) {
     async begin() { await app.event("session_start"); await app.call({ op: "view" }); },
     call: (params: any) => app.call(params),
     command: async (text: string) => { await app.event("input", { text, source: "interactive" }); return app.notices.at(-1)?.[0] as string; },
+    shutdown: () => app.event("session_shutdown"),
+    // The same process switches to another session (omp /new or /resume).
+    switchTo: (next: string) => app.event("session_switch", {}, { ...app.ctx, sessionManager: { ...app.ctx.sessionManager, getSessionId: () => next } }),
   };
 }
 const proof = { message: "Finished the step and checked the result with the session test.", evidence: ["test:session-owner"] };
@@ -193,4 +196,42 @@ test("a bare done never picks this session's task while another session's task i
   expect(refused.isError).toBe(true);
   expect(refused.content[0].text).toContain("Several tasks are in progress");
   expect((await shown(second)).issue.status).toBe("open");
+}, 30000);
+
+test("a lead that shuts down releases its started tasks, so the next session continues them without a takeover", async () => {
+  const parent = await issue();
+  const ref = await issue(["todo.phase=Tasks", "todo.status=pending"], parent);
+  const a = lead("session-a", parent);
+  await a.begin();
+  await a.call({ op: "start", task: ref });
+  await a.shutdown();
+  const released = await meta(ref);
+  expect(released["todo.session"]).toBeUndefined();
+  expect(released["todo.status"]).toBe("in_progress");
+  const b = lead("session-b", parent);
+  await b.begin();
+  expect((await b.call({ op: "done", ...proof })).isError).toBeUndefined();
+  expect((await shown(ref)).issue.status).toBe("closed");
+}, 30000);
+
+test("a switch to another session releases the tasks the previous one started", async () => {
+  const parent = await issue();
+  const ref = await issue(["todo.phase=Tasks", "todo.status=pending"], parent);
+  const a = lead("session-a", parent);
+  await a.begin();
+  await a.call({ op: "start", task: ref });
+  await a.switchTo("session-a2");
+  expect((await meta(ref))["todo.session"]).toBeUndefined();
+}, 30000);
+
+test("a fork's shutdown leaves its source's started tasks held", async () => {
+  const parent = await issue();
+  const ref = await issue(["todo.phase=Tasks", "todo.status=pending"], parent);
+  const a = lead("session-a", parent);
+  await a.begin();
+  await a.call({ op: "start", task: ref });
+  const fork = lead("session-f", parent, { parentSession: "session-a" });
+  await fork.begin();
+  await fork.shutdown();
+  expect((await meta(ref))["todo.session"]).toBe("session-a");
 }, 30000);

@@ -11,7 +11,8 @@ All notable changes to kata-plugin are listed here. The format follows [Keep a C
 - Two lead sessions on the same plan parent no longer change each other's started items, even with the same actor and no `KATA_TEAMMATE`.
   - Plan items record the lead session that created them, then the one that started or blocked them (`todo.session`). Another lead's `start`, `done`, `drop`, `rm`, `block`, `unblock` and `init` with `replace: true` are refused on an item that is in progress or blocked under a different session; the item is not matched to that lead's delegates either.
   - A fork counts as the session it was forked from, and a resumed session as itself.
-  - If the other session has ended, repeat the op naming the item with the new `takeover: true`; a `/todo` command takes over too. The takeover comments both sessions on the issue.
+  - A lead that shuts down or switches to another session releases the items it started, so the next session continues them.
+  - Items a crashed session left need the new `takeover: true` on the op naming them; a `/todo` command takes over too. The takeover comments both sessions on the issue.
   - Pending items, closed items, ticket items and items created by earlier versions keep the actor and teammate check alone.
 
 ## [1.9.2] - 2026-11-10
