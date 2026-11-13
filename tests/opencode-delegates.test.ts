@@ -455,3 +455,23 @@ test("a follow-up to a delegate the lead holds no record of reserves nothing, so
 	expect(next.result.status, next.result.text).toBe("completed");
 	expect(statusOf(await item(id, "Implement parser module"))).toBe("closed:done");
 });
+
+test("a follow-up that runs no tool is rolled back, and its report stays on the open issue", async () => {
+	const { host, id } = await lead();
+	await write(host, id, todos(["Implement parser module", "pending"]));
+	const first = await spawn(host, id, { prompt: "Implement parser module first part.", description: "Parser" }, async child => {
+		await useTool(host, child);
+		return "Only the first part is done.";
+	});
+	expect(first.result.status, first.result.text).toBe("completed");
+	const ref = qref(await item(id, "Implement parser module"));
+	const before = (await show(ref)).issue;
+
+	const second = await spawn(host, id, { prompt: "Which part is left?", sessionID: first.child.id }, async () => "Only the error handling is left.");
+	expect(second.result.status, second.result.text).toBe("completed");
+	const after = (await show(ref)).issue;
+	expect(after.metadata["opencode.subagent_id"]).toBeUndefined();
+	expect(after.metadata.teammate).toBe(before.metadata.teammate);
+	expect(after.status).toBe(before.status);
+	expect((await commentsOf(ref)).some(body => body.includes("after a follow-up") && body.includes("Only the error handling is left."))).toBe(true);
+});

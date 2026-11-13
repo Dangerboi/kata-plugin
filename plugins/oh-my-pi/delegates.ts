@@ -470,6 +470,8 @@ export function createDelegates(env: DelegatesEnv): Delegates {
 		// A cut right after the claim looks the same, so that claim stays, held by the lead's actor and teammate.
 		if ((r.state === "assigned" || r.state === "started") && !r.ranTool) {
 			const ours = r.state === "assigned" || issue.metadata?.teammate === r.teammate || holding(r, issue);
+			// A follow-up's answer is the only copy of its report, so it is posted before the rollback drops the claim.
+			if (r.followUp) await postReport(r, ref, cwd, shown);
 			if (r.restore && ours) await rollback(r, issue, r.restore);
 			return settled();
 		}
