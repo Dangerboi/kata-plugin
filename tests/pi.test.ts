@@ -993,3 +993,16 @@ test("a pi /fork whose history predates the plan releases the source's tasks", a
   expect((await show(task.qualified_id)).issue.metadata["todo.session"]).toBeUndefined();
   await fork.event("session_shutdown", { reason: "quit" });
 });
+
+test("a pi fork that starts before its source's shutdown finished still inherits the source's tasks", async () => {
+  const source = await host(); await source.event("session_start", { reason: "startup" });
+  const parent = await source.init(["Inherited despite a slow shutdown", "Later slow task"]);
+  const task = (await show(parent)).children.find((c: any) => c.title === "Inherited despite a slow shutdown");
+  // The source's shutdown is still running (not awaited) when the fork starts.
+  const shutdown = source.event("session_shutdown", { reason: "fork", targetSessionFile: "/sessions/2026-11-13T00-00-00_slow.jsonl" });
+  process.env.KATA_REF = parent;
+  const fork = await host({ header: { parentSession: source.sid } }); await fork.event("session_start", { reason: "fork" });
+  await shutdown;
+  expect((await show(task.qualified_id)).issue.metadata["todo.session"]).toBe(fork.sid);
+  await fork.event("session_shutdown", { reason: "quit" });
+});

@@ -1642,6 +1642,7 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 					const ending = currentId && id && currentId !== id && bound && !switchedToFork ? leaving() : undefined;
 					let source: Leaving | undefined;
 					if (switchedToFork) source = leaving();
+					// pi: the source's instance left its tasks at its fork shutdown (read below, after bind, if it did not).
 					else if (begin.forked && forkOf) { source = forkSources.get(forkOf); forkSources.delete(forkOf); }
 					await bind(ctx);
 					reminders = 0;
@@ -1652,6 +1653,8 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 						await attention("start", attentionSession);
 					}
 					await release(ending);
+					// No tasks left by a pi source: the fork's own view of the tasks the source holds in the plan it bound.
+					if (!source && begin.forked && forkOf && forkOf !== id) source = leaving(forkOf);
 					await settleFork(source, id);
 					// The plan was loaded while the previous session still held its tasks: show them as they are now.
 					if (ending || source) { await load(plan.workspace).catch(debug); refresh(ctx); }
@@ -1674,6 +1677,9 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 				see(ctx);
 				if (!main(ctx) && !closing.delegate) return;
 				stopFollower();
+				// Left for the fork before the bounded work: pi starts the fork's instance once this shutdown returns or times out.
+				const forking = main(ctx) && closing.forking ? leaving() : undefined;
+				if (forking) forkSources.set(forking.session, forking);
 				// After the drain: the automatic parent's close still records this session.
 				await bounded((async () => {
 					await serial(async () => {
@@ -1681,10 +1687,9 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 						attentionSession = undefined;
 						await load(plan.workspace || ctx.cwd).catch(debug);
 						await drain();
-						const ending = main(ctx) && !closing.continues ? leaving() : undefined;
+						const ending = main(ctx) && !closing.continues && !closing.forking ? leaving() : undefined;
 						if (session) await attention("end", session);
-						if (closing.forking && ending) forkSources.set(ending.session, ending);
-						else await release(ending);
+						await release(ending);
 					});
 					if (closing.delegate?.report) await delegates.apply({ type: "reported", id: closing.delegate.id, text: closing.delegate.report });
 					if (closing.delegate?.ended) await delegates.apply({ type: "exited", id: closing.delegate.id, outcome: "ended" });
