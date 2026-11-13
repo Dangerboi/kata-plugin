@@ -4,6 +4,10 @@ All notable changes to kata-plugin are listed here. The format follows [Keep a C
 
 ## [Unreleased]
 
+## [1.10.0] - 2026-11-13
+
+kata-omp 2.10.0 and @dangerboi/kata-pi 1.10.0.
+
 ### Added
 
 #### Plans
@@ -567,7 +571,8 @@ kata-omp 2.2.0 and kata-pi 1.2.0. Every change in this release is by @salmonumbr
 
 - omp: the plugin skips its Kata contract when the system prompt already carries it.
 
-[Unreleased]: https://github.com/Dangerboi/kata-plugin/compare/v1.9.2...HEAD
+[Unreleased]: https://github.com/Dangerboi/kata-plugin/compare/v1.10.0...HEAD
+[1.10.0]: https://github.com/Dangerboi/kata-plugin/compare/v1.9.2...v1.10.0
 [OpenCode 1.0.0]: https://github.com/Dangerboi/kata-plugin/releases/tag/opencode-v1.0.0
 [1.9.2]: https://github.com/Dangerboi/kata-plugin/compare/v1.9.1...v1.9.2
 [1.9.1]: https://github.com/Dangerboi/kata-plugin/compare/v1.9.0...v1.9.1
