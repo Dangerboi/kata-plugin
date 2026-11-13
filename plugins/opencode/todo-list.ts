@@ -57,7 +57,7 @@ export function diffTodoList(plan: readonly PlanItem[], accepted: ReadonlySet<st
 	// so a list that needs an op for them is refused.
 	const names = (item: ListItem, copies: readonly PlanItem[], all: readonly PlanItem[]): string[] => {
 		if (all.length > 1 && copies.some(c => c.ref && all.filter(t => t.ref === c.ref).length > 1)) {
-			const problem = `"${item.content}" cannot be told apart from its copy in another phase (both name the same ticket): rename one copy or remove the duplicate item, then send the list again`;
+			const problem = `"${item.content}" appears in more than one phase naming the same ticket, so todowrite cannot change it: ask the user to remove the duplicate item (for example from the session that made it), then send the list again`;
 			if (!problems.includes(problem)) problems.push(problem);
 			return [];
 		}
@@ -90,9 +90,14 @@ export function diffTodoList(plan: readonly PlanItem[], accepted: ReadonlySet<st
 			continue;
 		}
 
-		// The item is compared with the copy that stands for it (see representative); its ops reach every open copy.
+		// The item is compared with the copy that stands for it (see representative); its ops reach every open copy, except
+		// copies that share a ref, which todowrite cannot name (see names).
 		const current = representative(all);
 		if (current.status === "completed" || current.status === "abandoned") {
+			// Copies closed both ways read back as completed, but dropping an item with a completed copy leaves exactly that mix,
+			// so either closed status is the same item.
+			const mixed = all.some(t => t.status === "completed") && all.some(t => t.status === "abandoned");
+			if (mixed && (item.status === "completed" || item.status === "cancelled")) continue;
 			if (item.status !== LISTED[current.status]) problems.push(`"${item.content}" is already ${LISTED[current.status]} in Kata and cannot be sent as ${item.status}`);
 			continue;
 		}

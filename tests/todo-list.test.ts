@@ -207,7 +207,7 @@ describe("a content that appears in several plan tasks", () => {
 		for (const list of sent) {
 			const problems = refusal(shared, list).problems;
 			expect(problems).toHaveLength(1);
-			expect(problems[0]).toContain(`"t" cannot be told apart from its copy in another phase`);
+			expect(problems[0]).toContain(`"t" appears in more than one phase naming the same ticket, so todowrite cannot change it: ask the user to remove the duplicate item`);
 		}
 		const blocked = shared.map(t => ({ ...t, status: "blocked", blocker: "w" }) as PlanItem);
 		expect(refusal(blocked, [{ content: "t", status: "in_progress" }]).problems).toHaveLength(1);
@@ -230,6 +230,31 @@ describe("diffTodoList properties", () => {
 			if (!("ops" in result)) return;
 			expect(diffTodoList(applyOps(plan, result.ops), accepted, incoming)).toEqual({ ops: [] });
 		}));
+	});
+
+	// Two contents over up to six tasks make repeated titles with mixed statuses common; the seed pins the run.
+	test("applying the ops makes the same list a no-op, with repeated titles in mixed statuses", () => {
+		const pool = ["a", "b"];
+		const plans = fc.array(fc.tuple(fc.constantFrom(...pool), fc.constantFrom<PlanItem["status"]>("pending", "in_progress", "completed", "abandoned")), { maxLength: 6 })
+			.map(rows => rows.map(([content, status], index) => ({ content, ref: `p#${index}`, status }) as PlanItem));
+		const lists = fc.uniqueArray(fc.constantFrom(...pool), { maxLength: 2 }).chain(names => fc.tuple(...names.map(itemArb)));
+		fc.assert(fc.property(plans, lists, (plan, incoming) => {
+			const result = diffTodoList(plan, none, incoming);
+			if (!("ops" in result)) return;
+			expect(diffTodoList(applyOps(plan, result.ops), none, incoming)).toEqual({ ops: [] });
+		}), { seed: 11, numRuns: 20000 });
+	});
+
+	test("a repeated title with one completed and one open copy: cancelling it leaves a list that stays accepted", () => {
+		const plan: PlanItem[] = [{ content: "t", ref: "p#1", status: "completed" }, { content: "t", ref: "p#2", status: "pending" }];
+		const cancelled: ListItem[] = [{ content: "t", status: "cancelled", reason: "why" }];
+		const result = diffTodoList(plan, none, cancelled);
+		if (!("ops" in result)) throw new Error(result.refusal);
+		const after = applyOps(plan, result.ops);
+		expect(after.map(t => t.status)).toEqual(["completed", "abandoned"]);
+		expect(diffTodoList(after, none, cancelled)).toEqual({ ops: [] });
+		expect(diffTodoList(after, none, [{ content: "t", status: "completed" }])).toEqual({ ops: [] });
+		expect(diffTodoList(after, none, [{ content: "t", status: "pending" }])).toHaveProperty("refusal");
 	});
 
 	test("the list inside a refusal is accepted when sent back", () => {
