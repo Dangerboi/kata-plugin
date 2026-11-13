@@ -43,8 +43,8 @@ function lead(sid: string, parent: string, header?: unknown) {
     call: (params: any) => app.call(params),
     command: async (text: string) => { await app.event("input", { text, source: "interactive" }); return app.notices.at(-1)?.[0] as string; },
     shutdown: () => app.event("session_shutdown"),
-    // The same process switches to another session (omp /new or /resume).
-    switchTo: (next: string) => app.event("session_switch", {}, { ...app.ctx, sessionManager: { ...app.ctx.sessionManager, getSessionId: () => next } }),
+    // The same process switches to another session (omp /new or /resume), or to a fork of this one (`header`).
+    switchTo: (next: string, header?: unknown) => app.event("session_switch", {}, { ...app.ctx, sessionManager: { ...app.ctx.sessionManager, getSessionId: () => next, getHeader: () => header } }),
   };
 }
 const proof = { message: "Finished the step and checked the result with the session test.", evidence: ["test:session-owner"] };
@@ -228,6 +228,16 @@ test("a switch to another session releases the tasks the previous one started", 
   expect((await meta(ref))["todo.session"]).toBeUndefined();
 }, 30000);
 
+test("a switch to a fork of the session keeps the tasks it started held", async () => {
+  const parent = await issue();
+  const ref = await issue(["todo.phase=Tasks", "todo.status=pending"], parent);
+  const a = lead("session-a", parent);
+  await a.begin();
+  await a.call({ op: "start", task: ref });
+  await a.switchTo("session-a-fork", { parentSession: "session-a" });
+  expect((await meta(ref))["todo.session"]).toBe("session-a");
+}, 30000);
+
 test("a fork's shutdown leaves its source's started tasks held", async () => {
   const parent = await issue();
   const ref = await issue(["todo.phase=Tasks", "todo.status=pending"], parent);
@@ -292,4 +302,18 @@ test("a ticket item may name another plan's task that session holds; tickets kee
   const result = await b.call({ op: "append", items: [`omptest#${held}: review the change`] });
   expect(result.isError).toBeUndefined();
   expect(result.content[0].text).toContain(`omptest#${held}: review the change`);
+}, 30000);
+
+test("a takeover that names no task is refused and takes nothing", async () => {
+  const parent = await issue();
+  const ref = await issue(["todo.phase=Tasks", "todo.status=pending"], parent);
+  const a = lead("session-a", parent), b = lead("session-b", parent);
+  await a.begin();
+  await a.call({ op: "start", task: ref });
+  await b.begin();
+  const refused = await b.call({ op: "start", takeover: true });
+  expect(refused.isError).toBe(true);
+  expect(refused.content[0].text).toContain("takeover needs the task");
+  expect(await b.command("/todo takeover")).toContain("takeover needs the task");
+  expect((await meta(ref))["todo.session"]).toBe("session-a");
 }, 30000);

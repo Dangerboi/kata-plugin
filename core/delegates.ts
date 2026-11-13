@@ -352,7 +352,8 @@ export function createDelegates(env: DelegatesEnv): Delegates {
 		// Saved before the first write, so an assignment cut off by a crash is rolled back on resume.
 		env.store.put(r);
 		if (issue.metadata?.teammate !== r.teammate || issue.owner !== await env.actor(cwd)) {
-			issue = await env.owned(ref, cwd, true, false, undefined, { teammate: r.leadTeammate });
+			// A ticket keeps the actor and teammate rule alone, as check() decided; a plan task another session holds is refused.
+			issue = await env.owned(ref, cwd, true, false, undefined, { teammate: r.leadTeammate, ticket: r.ticket });
 			await env.kata.run(["meta", "set", ref, "teammate", r.teammate, "--if-match", String(issue.revision)], cwd);
 		}
 		if (issue.status !== "open") throw new Error(`Delegated task ${ref} is already closed.`);

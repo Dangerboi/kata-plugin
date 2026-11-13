@@ -21,11 +21,11 @@ A delegate with no assignment, because its task matched no plan task and named n
 
 **Hand back**:
 Returning an exited delegate's still-open issue to the lead, marked for review.
-_Avoid_: release, settle-back
+_Avoid_: settle-back; release (a lead session giving up its own tasks)
 
 **Return**:
 Giving a closed issue a delegate still marks back to the lead, with no review: the lead's teammate, the final plan status, the delegate's keys removed.
-_Avoid_: retire, release
+_Avoid_: retire; release (a lead session giving up its own tasks)
 
 **Holder**:
 The lead session that started or blocked an open plan task (`todo.session`); other lead sessions are refused on the task until it releases it or one takes it over.

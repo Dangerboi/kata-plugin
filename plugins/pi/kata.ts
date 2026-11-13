@@ -221,10 +221,10 @@ export default async function piKata(pi: ExtensionAPI) {
 		follow(await core.session.tree(ctx), ctx);
 	});
 	// A child's shutdown is its last act; give its own issue cleanup time to finish.
-	// A reload continues the same session, so it is not an ending.
+	// A reload continues the same session, so it is not an ending; neither is a fork, which goes on with the source's tasks.
 	pi.on("session_shutdown", async (event, ctx) => {
 		// The transcript pair is not cleared here: pi fires this on the old instance for reload/new/resume/fork, then the new instance's session_start in the same process, and a slow cleanup would delete the new pair. session_start overwrites it and process exit ends the rest.
 		const record = inherited ? current : undefined;
-		await core.session.shutdown(ctx, record ? { delegate: { id: record.id, ended: event?.reason !== "reload", report: lastAssistantText(ctx) } } : {});
+		await core.session.shutdown(ctx, record ? { delegate: { id: record.id, ended: event?.reason !== "reload", report: lastAssistantText(ctx) } } : { continues: event?.reason === "reload" || event?.reason === "fork" });
 	});
 }

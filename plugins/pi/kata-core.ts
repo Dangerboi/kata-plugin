@@ -591,8 +591,8 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 		}
 		// A forked session keeps the source id as the parent's owner: the parent's session_id metadata names it.
 		const parentOwner = source ?? id;
-		// A resumed lead keeps its saved owners; a fork adds itself to its source's, so it works on what its source started.
-		// A delegate has none: its own issue is held through the delegate keys, and the lead's items are not its to judge.
+		// A resumed lead keeps its saved sessions; a fork adds itself to its source's, so it works on what its source started.
+		// A delegate has none: its own issue is held through the delegate keys, and the lead's tasks are not its to judge.
 		const lineage = Array.isArray(snapshot?.ownSessions) ? snapshot.ownSessions.filter((o: unknown): o is string => typeof o === "string" && !!o) : [];
 		ownSessions = id && main(ctx) ? [...new Set([id, ...(source ? [source] : []), ...lineage])] : [];
 		settlement.restore(snapshot && !source ? snapshot : undefined);
@@ -1126,17 +1126,20 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 		}
 	}
 
-	// A lead that ends gracefully (shutdown, or a switch to another session) gives up the tasks it started, so the next
+	// A lead that ends gracefully (shutdown, or a switch to another session) gives up the tasks it holds, so the next
 	// session continues them without a takeover. Only its own marks: a fork leaves its source's alone. A crash releases
-	// nothing, and those tasks still need a takeover.
-	async function release(): Promise<void> {
-		const session = currentId;
-		if (!session || !plan.parent || plan.local) return;
-		for (const task of plan.tasks) {
-			if (task.ticket || task.delegated || !WORKING.has(task.status)) continue;
+	// nothing, and those tasks still need a takeover. Captured before a switch replaces the plan, released after attention.
+	type Leaving = { session: string; workspace: string; refs: string[] };
+	function leaving(): Leaving | undefined {
+		if (!currentId || !plan.parent || plan.local) return undefined;
+		const refs = plan.tasks.filter(t => !t.ticket && !t.delegated && !t.holder && WORKING.has(t.status)).map(t => t.ref);
+		return refs.length ? { session: currentId, workspace: plan.workspace, refs } : undefined;
+	}
+	async function release(ending: Leaving | undefined): Promise<void> {
+		for (const ref of ending?.refs ?? []) {
 			try {
-				const issue: KataIssue = (await kata.show(task.ref, plan.workspace)).issue;
-				if (issue.status === "open" && issue.metadata?.[SESSION_KEY] === session) await work(task.ref, SESSION_KEY, undefined, plan.workspace, issue);
+				const issue: KataIssue = (await kata.show(ref, ending!.workspace)).issue;
+				if (issue.status === "open" && issue.metadata?.[SESSION_KEY] === ending!.session) await work(ref, SESSION_KEY, undefined, ending!.workspace, issue);
 			} catch (error) { debug(error); }
 		}
 	}
@@ -1205,8 +1208,9 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 		}
 		let children = await load(cwd);
 		if (!plan.parent && !plan.local && !named.length) throw new Error("No todo plan yet. Call todo op=init first.");
-		// A phase alone names tasks only for the ops that act on a whole phase.
-		if (params.takeover === true && (params.task || (params.phase && ["done", "drop", "rm"].includes(op)))) {
+		if (params.takeover === true) {
+			// A takeover is explicit: it names the task, or a phase for the ops that act on a whole phase.
+			if (!params.task && !(params.phase && ["done", "drop", "rm"].includes(op))) throw new Error("takeover needs the task it takes over; nothing was taken over.");
 			await takeOver(await resolve(params.task, params.phase, "none"), cwd);
 			children = await load(cwd);
 		}
@@ -1620,15 +1624,18 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 				prefetch(ctx);
 				if (live) startFollower(ctx, user!);
 				const transition = serial(async () => {
-					// A switch away from a bound lead ends it: release its tasks before the new session's plan replaces them.
-					if (currentId && id && currentId !== id && bound) await release();
+					// A switch away from a bound lead ends it, unless the new session is its fork, which goes on with its tasks.
+					const forkOf = forkSourceId(ctx.sessionManager?.getHeader?.()?.parentSession);
+					const ending = currentId && id && currentId !== id && bound && forkOf !== currentId ? leaving() : undefined;
 					await bind(ctx);
 					reminders = 0;
 					const previous = attentionSession;
-					if (!options.attentionHarness || !id || previous?.id === id) return;
-					if (previous) await attention("end", previous);
-					attentionSession = { id, cwd: plan.workspace || path.resolve(ctx.cwd), ref: explicit && plan.parent, hostCwd: path.resolve(ctx.cwd), hostRef: explicit };
-					await attention("start", attentionSession);
+					if (options.attentionHarness && id && previous?.id !== id) {
+						if (previous) await attention("end", previous);
+						attentionSession = { id, cwd: plan.workspace || path.resolve(ctx.cwd), ref: explicit && plan.parent, hostCwd: path.resolve(ctx.cwd), hostRef: explicit };
+						await attention("start", attentionSession);
+					}
+					await release(ending);
 				});
 				// OMP snapshots the bash environment after this handler returns.
 				await bounded(transition, explicit && options.attentionHarness && id ? ATTENTION_START_MS : undefined);
@@ -1642,7 +1649,8 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 				return remind(messages, ctx, signal);
 			},
 			// A delegate that ends with its session passes `delegate`; `ended` makes this call report its exit, after its `report`.
-			async shutdown(ctx: any, closing: { delegate?: { id: string; ended: boolean; report?: string } } = {}): Promise<void> {
+			// `continues`: the same session goes on in a new instance (pi's reload), so it keeps the tasks it holds.
+			async shutdown(ctx: any, closing: { delegate?: { id: string; ended: boolean; report?: string }; continues?: boolean } = {}): Promise<void> {
 				see(ctx);
 				if (!main(ctx) && !closing.delegate) return;
 				stopFollower();
@@ -1653,8 +1661,9 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 						attentionSession = undefined;
 						await load(plan.workspace || ctx.cwd).catch(debug);
 						await drain();
-						if (main(ctx)) await release();
+						const ending = main(ctx) && !closing.continues ? leaving() : undefined;
 						if (session) await attention("end", session);
+						await release(ending);
 					});
 					if (closing.delegate?.report) await delegates.apply({ type: "reported", id: closing.delegate.id, text: closing.delegate.report });
 					if (closing.delegate?.ended) await delegates.apply({ type: "exited", id: closing.delegate.id, outcome: "ended" });

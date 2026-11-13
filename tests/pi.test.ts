@@ -948,3 +948,15 @@ test("a forked pi lead works on the tasks its source started; a third pi lead do
   expect((await fork.call({ op: "done", task: "Forked pi task", message, evidence })).isError).toBeUndefined();
   await source.event("session_shutdown", { reason: "quit" }); await fork.event("session_shutdown", { reason: "quit" }); await stranger.event("session_shutdown", { reason: "quit" });
 });
+
+test("a pi reload or fork keeps the tasks its session holds; quitting releases them", async () => {
+  const app = await host(); await app.event("session_start", { reason: "startup" });
+  const parent = await app.init(["Held across reload", "Later reload task"]);
+  const task = (await show(parent)).children.find((c: any) => c.title === "Held across reload");
+  for (const reason of ["reload", "fork"]) {
+    await app.event("session_shutdown", { reason });
+    expect((await show(task.qualified_id)).issue.metadata["todo.session"]).toBe(app.sid);
+  }
+  await app.event("session_shutdown", { reason: "quit" });
+  expect((await show(task.qualified_id)).issue.metadata["todo.session"]).toBeUndefined();
+});
