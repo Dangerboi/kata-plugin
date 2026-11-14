@@ -22,7 +22,7 @@ export type SettlementSnapshot = {
 
 export interface SettlementDeps {
 	namespace: string;
-	kata: Pick<Kata, "run" | "show" | "projects">;
+	kata: Pick<Kata, "run" | "show" | "projects" | "fresh">;
 	owned(ref: string, cwd: string, mayClaim?: boolean | "check", allowClosed?: boolean, revision?: number): Promise<KataIssue>;
 	clock(): number;
 	// Calls `fire` once after `ms` and returns what cancels it.
@@ -186,7 +186,8 @@ export function createSettlement(deps: SettlementDeps): Settlement {
 				}
 				const proof = proofArgs(evidence);
 				if (!proof.length) throw new Error("Kata child close evidence union is empty");
-				const final: KataShow = await kata.show(parent, workspace);
+				// Read again past the operation's earlier reads: the children may have changed while the evidence was gathered.
+				const final: KataShow = await kata.fresh(() => kata.show(parent, workspace));
 				const finalChildren = final.children ?? [];
 				if (final.issue.status === "closed") { parentDone.add(parent); continue; }
 				if (deps.delegatesRunning()) continue;
@@ -197,7 +198,7 @@ export function createSettlement(deps: SettlementDeps): Settlement {
 				debug(error);
 				if (codeOf(error) === "sibling_throttle") { schedule(); continue; }
 				try {
-					const live = await owned(parent, workspace);
+					const live = await kata.fresh(() => owned(parent, workspace));
 					if (decision && live.revision !== decision.revision) continue;
 					await kata.run(["label", "add", parent, "needs-review"], workspace);
 					if (initial && !isUnusable(error)) {

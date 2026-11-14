@@ -58,7 +58,7 @@ function build(options: { fail?: (args: string[]) => Error | undefined; running?
   };
   const settlement = createSettlement({
     namespace: "omp",
-    kata: { run: runKata, show: async ref => JSON.parse(await runKata(["show", ref])), projects: async () => [] },
+    kata: { run: runKata, show: async ref => JSON.parse(await runKata(["show", ref])), projects: async () => [], fresh: fn => fn() },
     owned: async ref => (await view(ref)).issue,
     clock: () => now,
     timer: fire => { timers.add(fire); return () => { timers.delete(fire); }; },

@@ -279,18 +279,30 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 		finally { clearTimeout(timer!); }
 	}
 
-	// Serialize every plan mutation: tool calls, /todo, and session reloads.
+	// Serialize every plan mutation: tool calls, /todo, and session reloads. Each job is one Kata operation (see kata.operation).
 	function serial<T>(fn: () => Promise<T>): Promise<T> {
-		const run = queue.then(fn);
+		const run = queue.then(() => kata.operation(fn));
 		queue = run.catch(() => undefined);
 		return run;
 	}
 
+	// Kata's effective actor for a ref comes from the author setting or the user, not from the issue: read once per session,
+	// workspace, project and author setting. A failed read is not kept.
+	const actors = new Map<string, Promise<string>>();
 	async function actor(cwd: string, ref = plan.parent): Promise<string> {
 		if (ref) {
-			const status = JSON.parse(await kata.run(["status", ref], cwd));
-			if (typeof status.actor !== "string" || !status.actor.trim()) throw new Error("Kata status returned no effective actor.");
-			return status.actor;
+			const key = [currentId, path.resolve(cwd), projectOf(ref), setting("KATA_AUTHOR")].join("\0");
+			let known = actors.get(key);
+			if (!known) {
+				known = kata.run(["status", ref], cwd).then(out => {
+					const status = JSON.parse(out);
+					if (typeof status.actor !== "string" || !status.actor.trim()) throw new Error("Kata status returned no effective actor.");
+					return status.actor as string;
+				});
+				actors.set(key, known);
+				known.catch(() => { if (actors.get(key) === known) actors.delete(key); });
+			}
+			return known;
 		}
 		if (setting("KATA_AUTHOR") || setting("USER")) return (setting("KATA_AUTHOR") || setting("USER"))!;
 		const result = await host.exec("git", ["config", "user.name"], { cwd, timeout: 1000 });
@@ -323,6 +335,8 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 		if (!issue.owner && mayClaim === true) {
 			// Never swallow a claim failure, including an ownership race.
 			await kata.run(["claim", ref, "--if-unowned"], cwd);
+			// Read the issue again, not the one claim prints: a delegate marker another writer added right after the claim
+			// must stop this call before it changes any other task.
 			issue = (await kata.show(ref, cwd)).issue;
 			if (issue.status !== "open" || issue.owner !== currentActor) throw new Error(`Kata issue ${ref} is no longer owned by ${currentActor}; no work metadata was written.`);
 			if (teammate && !issue.metadata?.teammate) {
@@ -477,15 +491,22 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 	// True while Kata answers. An unregistered cwd is not an outage: it resolves
 	// to the default or inferred project. Only an unusable Kata (missing
 	// executable, unreachable daemon) is down, and it is probed again next time.
-	async function probe(cwd: string): Promise<boolean> {
-		if (scope !== "unknown" && scope !== "down") return true;
-		try { await kata.run(["list", "--limit", "1"], cwd, { timeout: 15_000 }); scope = "workspace"; refusal = undefined; }
-		catch (error) {
-			if (isKataCode(error, "project_not_initialized")) { scope = "unbound"; refusal = (error as KataError).info.data ?? {}; }
-			else if (isUnusable(error)) { wentDown(error); return false; }
-			else throw error; // a missing project or a refused login is an error, never a local plan
-		}
-		return true;
+	// Concurrent probes of one cwd (session start warms the contract while it binds the plan) share one call.
+	let probing: { cwd: string; done: Promise<boolean> } | undefined;
+	function probe(cwd: string): Promise<boolean> {
+		if (scope !== "unknown" && scope !== "down") return Promise.resolve(true);
+		if (probing?.cwd === cwd) return probing.done;
+		const done: Promise<boolean> = (async () => {
+			try { await kata.run(["list", "--limit", "1"], cwd, { timeout: 15_000 }); scope = "workspace"; refusal = undefined; }
+			catch (error) {
+				if (isKataCode(error, "project_not_initialized")) { scope = "unbound"; refusal = (error as KataError).info.data ?? {}; }
+				else if (isUnusable(error)) { wentDown(error); return false; }
+				else throw error; // a missing project or a refused login is an error, never a local plan
+			}
+			return true;
+		})().finally(() => { if (probing?.done === done) probing = undefined; });
+		probing = { cwd, done };
+		return done;
 	}
 	function wentDown(error: unknown) {
 		scope = "down"; outage = (error as Error)?.message ?? String(error); debug(error);
@@ -1751,6 +1772,8 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 		},
 		todo: {
 			apply: (ctx: any, op: string, params: any) => execute({ ...params, op }, ctx),
+			// Several todo calls a host makes for one tool call (OpenCode's todowrite) read Kata as one operation.
+			operation: <T>(fn: () => Promise<T>) => kata.operation(fn),
 			command,
 		},
 		delegates: {
