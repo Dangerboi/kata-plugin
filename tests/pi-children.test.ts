@@ -8,7 +8,7 @@ import { piFixture } from "./pi-fixture";
 // Child sessions: binding to a plan task or ticket, naming, reports, hand-back, models, throttled closes and automatic parents.
 const { cwd, outside, env, run, kata, show, host, down, evidence, message, unique } = await piFixture();
 
-for (const match of ["named", "active"]) test(`pi child ${match} binding owns its issue and closes with its teammate`, async () => {
+test("pi child named binding owns its issue and closes with its teammate", async () => {
   const parent = await host(); await parent.event("session_start", { reason: "startup" });
   const ref = await parent.init(["Delegated pi work", "Remaining lead work"]);
   const marker = JSON.parse(process.env.KATA_PI_PARENT!);
@@ -16,7 +16,7 @@ for (const match of ["named", "active"]) test(`pi child ${match} binding owns it
   process.env.KATA_REF = ref; // Stale inherited lead routing must be removed.
   const child = await host(); await child.event("session_start", { reason: "startup" });
   expect(process.env.KATA_REF).toBeUndefined();
-  const prompt: any = { prompt: match === "named" ? "Complete Delegated pi work" : "Do the current task", systemPromptOptions: { sections: {} } };
+  const prompt: any = { prompt: "Complete Delegated pi work", systemPromptOptions: { sections: {} } };
   await child.event("before_agent_start", prompt);
   const record = delegateRecord(child);
   expect(record.teammate).not.toBe(marker.teammate);
@@ -177,15 +177,16 @@ test("a grandchild of an untracked child gets its own teammate", async () => {
   leaveChild();
 });
 
-test("a child binds the plan task its prompt describes, not the lead's active task", async () => {
+test("a child whose prompt only describes a plan task is untracked and binds nothing", async () => {
   const parent = await host(); await parent.event("session_start", { reason: "startup" });
   const ref = await parent.init(piPlan);
   const child = await childOf(parent);
-  await child.event("before_agent_start", { prompt: "You are a test writer. Write a unittest suite in tests/test_textstats.py covering word_count and top_words including empty input.", systemPromptOptions: { sections: {} } });
+  const prompt: any = { prompt: "You are a test writer. Write a unittest suite in tests/test_textstats.py covering word_count and top_words including empty input.", systemPromptOptions: { sections: {} } };
+  await child.event("before_agent_start", prompt);
   const children = (await show(ref)).children;
   expect(children).toHaveLength(3);
-  expect(children.find((c: any) => c.title === piPlan[1]).metadata["pi.subagent_id"]).toBe(child.sid);
-  expect(children.find((c: any) => c.title === piPlan[0]).metadata["pi.subagent_id"]).toBeUndefined();
+  expect(children.every((c: any) => c.metadata["pi.subagent_id"] === undefined)).toBe(true);
+  expect(prompt.systemPromptOptions.sections.kata_binding).toContain("you have no Kata issue");
   leaveChild();
 });
 

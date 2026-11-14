@@ -12,7 +12,7 @@ test("batch delegates bind named plan tasks by spawn index without duplicates", 
   const app = host(); await app.event("session_start");
   const ref = await app.init(["Build alpha", "Build beta"]);
   const tasks = (await show(ref)).children;
-  await app.event("tool_call", { toolName: "task", toolCallId: "batch-binding", input: { tasks: [{ task: "Finish Build beta" }, { task: "Finish Build alpha" }] } });
+  await app.event("tool_call", { toolName: "task", toolCallId: "batch-binding", input: { tasks: [{ task: 'Finish "Build beta"' }, { task: 'Finish "Build alpha"' }] } });
   for (const [index, id] of ["batch-beta", "batch-alpha"].entries()) app.emit("task:subagent:lifecycle", { id, status: "started", sessionFile: `${scratch}/${id}.jsonl`, parentToolCallId: "batch-binding", index });
   await app.call({ op: "view" });
   const children = (await show(ref)).children;
@@ -31,7 +31,7 @@ test("a delegated plan task cannot be assigned to a second subagent", async () =
   expect(await app.event("tool_call", { toolName: "task", toolCallId: "second-worker", input })).toMatchObject({ block: true });
 });
 
-test("a task prompt naming a plan item by ref binds it over a better word overlap", async () => {
+test("a task prompt naming a plan item by ref binds it though the text describes another item", async () => {
   const app = host(); await app.event("session_start");
   const ref = await app.init(["Implement widget", "Write widget tests"]);
   const children0 = (await show(ref)).children;
@@ -148,7 +148,7 @@ const evalPlan = ["Implement word_count and top_words in textstats", "Write unit
 test("a delegation spawned in the same batch as todo init binds its plan task", async () => {
   const app = host(); await app.event("session_start");
   const hook = app.event("tool_call", { toolName: "task", toolCallId: "eval-batch", input: { context: "Add word_count and top_words to textstats.",
-    tasks: [{ name: "WriteTests", agent: "task", task: "Write the textstats unittest suite in tests/ per the contract above" }] } });
+    tasks: [{ name: "WriteTests", agent: "task", task: `Do "${evalPlan[1]}" in tests/ per the contract above` }] } });
   const ref = await app.init(evalPlan);
   await hook;
   app.emit("task:subagent:lifecycle", { id: "WriteTests", agent: "task", status: "started", sessionFile: `${scratch}/eval-batch.jsonl`, parentToolCallId: "eval-batch", index: 0 });
@@ -270,7 +270,7 @@ test("a finished delegate that leaves its plan task open hands it back for revie
   process.env.KATA_TEAMMATE = "lead-mate";
   const app = host(); await app.event("session_start");
   const ref = await app.init(["Implement widget", "Write widget tests"]);
-  await app.event("tool_call", { toolName: "task", toolCallId: "handback", input: { name: "WriteTests", task: "Write the widget tests" } });
+  await app.event("tool_call", { toolName: "task", toolCallId: "handback", input: { name: "WriteTests", task: 'Complete "Write widget tests"' } });
   const sessionFile = `${scratch}/handback.jsonl`;
   app.emit("task:subagent:lifecycle", { id: "handback", status: "started", sessionFile, parentToolCallId: "handback", index: 0 });
   await app.call({ op: "view" });
@@ -372,19 +372,6 @@ test("adopting an explicit parent retires an empty automatic parent", async () =
   expect(retired.issue.status).toBe("closed");
   expect(retired.issue.closed_reason).toBe("superseded");
   expect((await show(explicit)).children ?? []).toHaveLength(0);
-});
-
-test("a long delegation spec binds the plan task its name describes", async () => {
-  const plan = ["Implement word_count and top_words in textstats/__init__.py", "Write unittest suite in tests/ covering both functions incl. empty input (delegated to subagent)", "Run python3 -m unittest from repo root, all green", "Commit functions and tests"];
-  const app = host(); await app.event("session_start");
-  const hook = app.event("tool_call", { toolName: "task", toolCallId: "rerun-batch", input: { tasks: [{ name: "WriteTests", task: "# Target\nCreate `tests/__init__.py` (empty file) and `tests/test_textstats.py` in the current repo workspace. Do NOT create or modify anything else \u2014 in particular do NOT touch or create the `textstats/` package; its implementation lands in parallel and importing it now may fail.\n\n# Change\n1. `tests/__init__.py` \u2014 empty, so `python3 -m unittest` discovery from the repo root finds the suite.\n2. `tests/test_textstats.py` \u2014 unittest suite (e.g. TestWordCount, TestTopWords classes) covering: empty string and whitespace-only input for BOTH functions; basic multi-word counts; tabs/newlines/repeated spaces as separators; mixed-case collapsing to lowercase; tie-breaking alphabetical by word; `n == 0`; `n` greater than the number of distinct words; exact ordering of the returned list of tuples. Deterministic, stdlib only, no file/network I/O.\n\n# Acceptance\nBoth files exist and `python3 -m py_compile tests/test_textstats.py` succeeds. Do NOT run the suite against the package (implementation is mid-flight); a failing import at this stage is expected, not yours to fix." }] } });
-  const ref = await app.init(plan);
-  await hook;
-  app.emit("task:subagent:lifecycle", { id: "WriteTests", status: "started", sessionFile: `${scratch}/rerun-batch.jsonl`, parentToolCallId: "rerun-batch", index: 0 });
-  await app.call({ op: "view" });
-  const children = (await show(ref)).children;
-  expect(children).toHaveLength(4);
-  expect(children.find((c: any) => c.title === plan[1]).metadata["omp.subagent_id"]).toBe("WriteTests");
 });
 
 test("a handed-back plan task can be delegated again", async () => {

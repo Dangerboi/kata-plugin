@@ -17,7 +17,7 @@ The issue a delegate works and the teammate it works it as.
 _Avoid_: binding, worker binding
 
 **Untracked delegate**:
-A delegate with no assignment, because its task matched no plan task and named no ticket; the lead tracks its work.
+A delegate with no assignment, because its task named no plan task it could take and no ticket; the lead tracks its work.
 
 **Hand back**:
 Returning an exited delegate's still-open issue to the lead, marked for review.

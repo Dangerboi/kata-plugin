@@ -322,7 +322,7 @@ export const SCENARIOS: Scenario[] = [{
 			() => [{ tool: "todo", args: { op: "append", items: ["omp-smoke#zzzz: ghost work"], phase: "Beta" } }],
 			() => [{ tool: "todo", args: { op: "drop", task: `omp-smoke#${vars().b}: fetch the inbox data`, message: "The inbox fetch moved to another plan." } }],
 			() => [{ tool: "todo", args: { op: "append", items: [`omp-smoke#${vars().c}: write the widget parser`], phase: "Gamma" } }],
-			[{ tool: "task", args: { name: "WidgetParser", agent: "task", task: `${SUB} Write the widget parser and close its ticket.`, solutionSpace: "one fix: nothing to change, just close the ticket" } }],
+			() => [{ tool: "task", args: { name: "WidgetParser", agent: "task", task: `${SUB} Write the widget parser (omp-smoke#${vars().c}) and close its ticket.`, solutionSpace: "one fix: nothing to change, just close the ticket" } }],
 			[{ tool: "todo", args: { op: "append", items: ["update CHANGELOG"], phase: "Gamma" } }],
 			[{ tool: "todo", args: { op: "done", task: "update CHANGELOG", message, evidence: [evidence] } }],
 			["The tickets are worked."],

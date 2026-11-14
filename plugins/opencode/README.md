@@ -1,6 +1,6 @@
 # kata-opencode
 
-[Kata](https://github.com/kenn-io/kata) work tracking for [OpenCode](https://opencode.ai). OpenCode's todo plans, and the delegates that work their items or name a ticket, become Kata issues with attributed ownership and evidence for completion. Kata validates each close. The automatic parent of a session's plan closes when the session is deleted or archived and its children are closed.
+[Kata](https://github.com/kenn-io/kata) work tracking for [OpenCode](https://opencode.ai). OpenCode's todo plans, and the delegates that name their items or a ticket, become Kata issues with attributed ownership and evidence for completion. Kata validates each close. The automatic parent of a session's plan closes when the session is deleted or archived and its children are closed.
 
 Add the package to the `plugins` list in `opencode.json` (global or per project); OpenCode installs it on the next start:
 

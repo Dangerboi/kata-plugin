@@ -7,41 +7,26 @@ import { isKataCode, type Kata } from "./kata-cli";
 
 // ------------------------------------------------------------------ matching
 
-const STOPWORDS = new Set(["a", "an", "and", "are", "as", "at", "be", "by", "do", "for", "from", "in", "into", "is", "it", "its", "of", "on", "or", "per", "the", "then", "this", "that", "to", "with", "you", "your", "above", "below", "all", "any", "please", "task", "plan", "subagent", "agent", "current", "complete", "finish"]);
-// Lowercase words with camelCase split and simple suffixes stripped; snake_case
-// identifiers stay whole because they usually name the code under change.
-export function taskTokens(text: string): string[] {
-	const words = text.replace(/([a-z0-9])([A-Z])/g, "$1 $2").toLowerCase().split(/[^a-z0-9_]+/);
-	const tokens: string[] = [];
-	for (let word of words) {
-		word = word.replace(/^_+|_+$/g, "");
-		if (word.length < 2 || STOPWORDS.has(word)) continue;
-		if (word.length > 5 && word.endsWith("ing")) word = word.slice(0, -3);
-		else if (word.length > 4 && word.endsWith("ed")) word = word.slice(0, -2);
-		else if (word.length > 3 && word.endsWith("s") && !word.endsWith("ss")) word = word.slice(0, -1);
-		if (STOPWORDS.has(word)) continue;
-		tokens.push(word);
-		if (word.length > 4 && word.endsWith("test")) tokens.push("test"); // unittest, pytest
-	}
-	return [...new Set(tokens)];
-}
-
 const escape = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
 // The open tasks a text names: title (case-insensitive, whole words; a one- or
-// two-word title only quoted or as the whole text), qualified ref, or short id
-// after a marker, since a bare id can be an ordinary word ("test"). A title
-// inside a longer named title yields to the longer one.
-export function namedTasks(tasks: Task[], text: string): Task[] {
+// two-word title only quoted or as the whole text), qualified ref, short id
+// after a marker, since a bare id can be an ordinary word ("test"), or for a
+// ticket item its ticket's qualified ref, unless that ticket is the plan
+// `parent`, which is no work target. A title inside a longer title the text
+// names yields to the longer one; a task named only by a ref shadows nothing.
+export function namedTasks(tasks: Task[], text: string, parent?: string): Task[] {
 	const titled = (title: string) => {
 		const phrase = escape(title.trim());
 		if (text.trim().toLowerCase() === title.trim().toLowerCase()) return true;
 		if (new RegExp(`["'\`\u201c\u2018]\\s*${phrase}\\s*["'\`\u201d\u2019]`, "i").test(text)) return true;
 		return title.trim().split(/\s+/).length >= 3 && new RegExp(`(?<![\\w])${phrase}(?![\\w])`, "i").test(text);
 	};
-	const named = tasks.filter(t => OPEN.has(t.status) && (titled(t.content) || new RegExp(`(?<![\\w./#-])${escape(t.ref)}(?![\\w-])`).test(text) ||
+	const cited = (ref: string) => new RegExp(`(?<![\\w./#-])${escape(ref)}(?![\\w-])`).test(text);
+	const named = tasks.filter(t => OPEN.has(t.status) && (titled(t.content) || cited(t.ref) || (!!t.ticket && t.ticket !== parent && cited(t.ticket)) ||
 		new RegExp(`(?:\\b(?:issue|kata|ref|task)\\b\\s*[:=]?\\s*|(?<![\\w.-])#)${escape(t.ref.split("#").pop()!)}(?![\\w-])`, "i").test(text)));
-	return named.filter(t => !named.some(other => other !== t && other.content.length > t.content.length && other.content.toLowerCase().includes(t.content.toLowerCase())));
+	const byTitle = named.filter(t => titled(t.content));
+	return named.filter(t => !byTitle.some(other => other !== t && other.content.length > t.content.length && other.content.toLowerCase().includes(t.content.toLowerCase())));
 }
 
 // Everything a delegation prompt names: plan tasks, and qualified refs that are
@@ -49,55 +34,19 @@ export function namedTasks(tasks: Task[], text: string): Task[] {
 // registered `projects` are tickets; any other look-alike is text.
 export function namedTargets(tasks: Task[], text: string, projects: ReadonlySet<string>, parent?: string): { tasks: Task[]; tickets: string[] } {
 	const known = new Set(tasks.map(t => t.ref));
-	return { tasks: namedTasks(tasks, text), tickets: qualifiedRefs(text, projects).filter(ref => !known.has(ref) && ref !== parent) };
+	return { tasks: namedTasks(tasks, text, parent), tickets: qualifiedRefs(text, projects).filter(ref => !known.has(ref) && ref !== parent) };
 }
 
-export type MatchOptions = { unavailable?: ReadonlySet<string>; single?: boolean; label?: string };
-// Pick the plan task a delegation serves. A named task wins, and a named task
-// that is taken binds nothing else; so does a text naming several tasks, which
-// is ambiguous however well one of them overlaps. Then a clear weighted token
-// overlap with the short label (omp's task name) wins; then, for a single
-// delegation, the one open task the lead marked for delegation ("... (delegated
-// to subagent)") if it shares a word with the spawn; then a clear overlap with
-// the full text. Overlap counts the task's leading word twice. The lead's
-// active task scores at half weight and is the fallback only for an explicit
-// current-task handoff. A ticket item binds only when named, since its delegate
-// closes the whole ticket: an overlap it wins binds nothing at all.
+export type MatchOptions = { unavailable?: ReadonlySet<string>; label?: string; parent?: string };
+// The plan task a delegation serves: the one task its text or label names (see
+// namedTasks), while that task is available. Nothing is guessed: a text that
+// names no task, or several, binds none and its delegate is untracked.
 // `unavailable` holds plan refs and ticket refs; a ticket item is taken once
 // its ticket is.
-export function matchDelegation(tasks: Task[], text: string, { unavailable = new Set(), single = true, label = "" }: MatchOptions = {}): Task | undefined {
-	const available = (t: Task) => OPEN.has(t.status) && t.status !== "blocked" && !t.delegated && !t.holder && !unavailable.has(t.ref) && !(t.ticket && unavailable.has(t.ticket));
-	const full = label ? `${label}\n${text}` : text;
-	const named = namedTasks(tasks, full);
-	if (named.length > 1) return undefined;
-	if (named[0]) return available(named[0]) ? named[0] : undefined;
-	const candidates = tasks.filter(available);
-	const open = tasks.filter(t => OPEN.has(t.status)).map(t => taskTokens(t.content));
-	const df = (token: string) => open.filter(tokens => tokens.includes(token)).length;
-	const weight = (token: string) => Math.log((open.length + 1) / Math.max(1, df(token)));
-	const overlap = (source: string) => {
-		const wanted = new Set(taskTokens(source));
-		// Coverage counts against the task and against the source's plan vocabulary.
-		const vocabulary = [...wanted].filter(token => df(token) > 0).reduce((sum, token) => sum + weight(token), 0);
-		const scored = candidates.map(task => {
-			const own = taskTokens(task.content), shared = own.filter(token => wanted.has(token));
-			const total = own.reduce((sum, token) => sum + weight(token), 0), common = shared.reduce((sum, token) => sum + weight(token), 0);
-			const score = (common + (own[0] && wanted.has(own[0]) ? weight(own[0]) : 0)) * (task.status === "in_progress" ? 0.5 : 1);
-			return { task, score, eligible: shared.length >= 2 && common > 0 && Math.max(common / total, common / vocabulary) >= 0.3 };
-		}).sort((a, b) => b.score - a.score);
-		const [best, runner] = scored;
-		return best?.eligible && (!runner || best.score >= runner.score * 1.5) ? best.task : undefined;
-	};
-	const byLabel = label && overlap(label);
-	if (byLabel) return byLabel.ticket ? undefined : byLabel;
-	const wanted = new Set(taskTokens(full));
-	const plain = candidates.filter(t => !t.ticket);
-	const marked = plain.filter(t => /\b(?:delegat\w*|sub-?agents?)\b/i.test(t.content));
-	if (single && marked.length === 1 && taskTokens(marked[0].content).some(token => wanted.has(token))) return marked[0];
-	const found = overlap(full);
-	if (found) return found.ticket ? undefined : found;
-	const active = plain.filter(t => t.status === "in_progress");
-	if (single && active.length === 1 && /\b(?:current|active|this)\s+(?:task|todo|item|step)\b/i.test(full)) return active[0];
+export function matchDelegation(tasks: Task[], text: string, { unavailable = new Set(), label = "", parent }: MatchOptions = {}): Task | undefined {
+	const named = namedTasks(tasks, label ? `${label}\n${text}` : text, parent);
+	const task = named.length === 1 ? named[0] : undefined;
+	return task && task.status !== "blocked" && !task.delegated && !task.holder && !unavailable.has(task.ref) && !(task.ticket && unavailable.has(task.ticket)) ? task : undefined;
 }
 
 // ------------------------------------------------------------------ interface
@@ -134,7 +83,6 @@ export interface DelegateRecord {
 	teammate: string;
 	text: string;
 	label?: string;
-	single: boolean;
 	parentAgentId?: string;
 	// Where the lead's plan lives when the delegate cannot read it from the lead's session (a pi child).
 	parent?: string;
@@ -166,7 +114,7 @@ export type Reservation = { ref?: string; ticket?: boolean; title?: string };
 export const nameOf = (r: Pick<DelegateRecord, "id" | "name">) => r.name || r.id;
 
 export type DelegateEvent =
-	| { type: "started"; id: string; sessionId: string; leadSessionId: string; leadTeammate: string; teammate: string; text: string; label?: string; single: boolean;
+	| { type: "started"; id: string; sessionId: string; leadSessionId: string; leadTeammate: string; teammate: string; text: string; label?: string;
 		name?: string; parentAgentId?: string; parent?: string; workspace?: string; parentLabel?: string; reserved?: Reservation; untracked?: boolean }
 	// The delegate ran a tool: blocks rollback at exit.
 	| { type: "ranTool"; id: string }
@@ -302,20 +250,18 @@ export function createDelegates(env: DelegatesEnv): Delegates {
 				if (!ticket) {
 					if (named[0] && (taken.has(named[0].ref) || named[0].delegated)) throw new Error(`Plan task ${named[0].ref} is already delegated.`);
 					if (named[0]?.holder) throw new Error(`${heldMessage(named[0].ref, named[0].holder)}; take it over first (todo start with takeover: true).`);
-					// Never a ticket item: matchDelegation binds one only when named, and a named one names its ticket above.
-					const selected = src.planned ? matchDelegation(tasks, spawn.text, { unavailable: taken, single: spawns.length === 1, label }) : undefined;
+					// At most one plain task is named here (two would be two targets); a blocked one binds nothing.
+					const selected = named[0]?.status === "blocked" ? undefined : named[0];
 					if (selected) taken.add(selected.ref);
 					reservations.push({ ref: selected?.ref, title: selected?.content });
 					continue;
 				}
 				if (taken.has(ticket)) throw new Error(`Ticket ${ticket} is already delegated.`);
 				// Items naming one ticket share its ref, so the delegated one is the item whose text the prompt quotes,
-				// or the ticket's only open item when the prompt names just the ticket.
-				const onTicket = tasks.filter(t => t.ticket === ticket && OPEN.has(t.status));
-				const quoted = named.find(t => `${label}\n${spawn.text}`.toLowerCase().includes(t.content.toLowerCase())) ?? (named.length === 1 ? named[0] : undefined);
-				const item = quoted ?? (onTicket.length === 1 ? onTicket[0] : undefined);
+				// or the one item named (by title or by the ticket's ref).
+				const item = named.find(t => `${label}\n${spawn.text}`.toLowerCase().includes(t.content.toLowerCase())) ?? (named.length === 1 ? named[0] : undefined);
 				// The delegate closes the whole ticket, which would strand the lead's other open items on it.
-				const siblings = onTicket.filter(t => t !== item);
+				const siblings = tasks.filter(t => t !== item && t.ticket === ticket && OPEN.has(t.status));
 				if (siblings.length) throw new Error(`Task ${index + 1} would delegate ${ticket}, but other open plan items name it (${siblings.map(t => `"${t.content}"`).join(", ")}). A delegate closes its whole ticket. Delegate the ticket only when no other open item names it, or plan the work as child issues (todo init with ref ${ticket}) and delegate one of those.`);
 				let ticketIssue: KataIssue;
 				try { ticketIssue = await env.owned(ticket, src.workspace, "check", false, undefined, { ...as, ticket: true }); }
@@ -341,7 +287,7 @@ export function createDelegates(env: DelegatesEnv): Delegates {
 		if (!r.ticket && !r.planRef && (r.text || r.label)?.trim()) {
 			// todo init and task often share one batch, so the plan may not have existed when the task call was seen.
 			src = await source(scope, true);
-			const item = matchDelegation(src.all, r.text, { unavailable: reservedRefs(r), single: r.single, label: r.label });
+			const item = matchDelegation(src.all, r.text, { unavailable: reservedRefs(r), label: r.label, parent: src.parent });
 			if (item?.ticket) { r.planRef = item.ticket; r.ticket = true; }
 			else if (item) {
 				// A local plan cannot bind yet: stay undecided so a later use binds the replayed item.

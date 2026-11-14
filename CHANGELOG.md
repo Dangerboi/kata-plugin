@@ -12,6 +12,13 @@ All notable changes to kata-plugin are listed here. The format follows [Keep a C
   - An issue read twice in one call is read once, until anything in the same process writes to Kata. Changes made elsewhere show from the next call on, as before.
   - The effective actor is read once per session and project instead of before every task change, and session start checks that Kata answers once.
 
+#### Delegates
+
+- A delegate is bound to a plan item only when its task text names the item: its title (quoted, as the whole text, or three or more words), its ref, its short id after `issue`, `kata`, `ref`, `task` or `#`, or for a ticket item its ticket's ref.
+  - Word overlap, the item marked for delegation and the "current task" handoff no longer bind anything.
+  - A spawn that only describes an item's work, such as a reviewer or scout, runs untracked and no longer claims or closes that item; the lead finishes it with `todo done`.
+  - A ticket item whose ticket is the plan parent is not named by that ref, so a delegate's task text may cite the parent.
+
 #### Development
 
 - `bun run test` runs the test files in a pool of `bun test` processes instead of one, the slowest files first: 8 workers, or fewer on a machine with fewer CPUs.
@@ -24,8 +31,6 @@ All notable changes to kata-plugin are listed here. The format follows [Keep a C
 #### Delegates
 
 - A delegation call with several spawns that name no plan item is no longer refused with "Ticket … is already delegated" when the plan has an open ticket item.
-  - A ticket item binds a delegate only when the spawn names it by title or by its ticket's ref; a spawn naming just the ticket binds the ticket's only open item.
-  - Word overlap and the current-task handoff never pick a ticket item, since its delegate closes the whole ticket. A spawn whose words fit a ticket item best stays untracked.
   - A ticket item whose ticket another spawn or delegate has already reserved is not matched again.
 - A delegate leaves its issue open when its task text says not to close issues or to leave the issue open; it is handed back (`needs-review`) and the lead closes it after its own checks.
 

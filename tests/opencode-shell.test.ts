@@ -163,7 +163,7 @@ test("shell kata commands carry the configured author and teammate when the serv
 	expect(listed.input.command).toContain("KATA_TEAMMATE='configured-mate'");
 
 	let ref = "", childID = "";
-	await delegate(host, id, "Please implement the configured actor.", async (child, system) => {
+	await delegate(host, id, "Please finish the Configured actor item.", async (child, system) => {
 		ref = refIn(system); childID = child.id;
 		const ran = await shell(host, child.id, closeCommand(ref));
 		expect(ran.input.command).toContain("KATA_AUTHOR='configured-author'");
