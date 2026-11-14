@@ -5,7 +5,7 @@ import { mkdirSync, mkdtempSync, realpathSync, readFileSync, writeFileSync } fro
 import path from "node:path";
 import { Value } from "typebox/value";
 import { assertIsolated } from "./isolation";
-import { isolatedKata, later } from "./kata-fixture";
+import { eventually, isolatedKata, later } from "./kata-fixture";
 import { daemonUnavailable, siblingThrottle } from "./kata-errors";
 import piKata, { launchesPi } from "../plugins/pi/kata";
 import { TRANSCRIPT_ENV } from "../core/kata-cli";
@@ -969,7 +969,7 @@ test("a pi /fork inherits the tasks its source held; quitting the fork releases 
   await source.event("session_shutdown", { reason: "fork", targetSessionFile: "/sessions/2026-11-13T00-00-00_fork.jsonl" });
   process.env.KATA_REF = parent;
   const fork = await host({ header: { parentSession: source.sid } }); await fork.event("session_start", { reason: "fork" });
-  expect((await show(task.qualified_id)).issue.metadata["todo.session"]).toBe(fork.sid);
+  await eventually(async () => (await show(task.qualified_id)).issue.metadata["todo.session"], fork.sid);
   await fork.event("session_shutdown", { reason: "quit" });
   expect((await show(task.qualified_id)).issue.metadata["todo.session"]).toBeUndefined();
 });
@@ -990,7 +990,7 @@ test("a pi /fork whose history predates the plan releases the source's tasks", a
   expect((await show(task.qualified_id)).issue.metadata["todo.session"]).toBe(source.sid);
   // No KATA_REF and a fresh branch: the fork forked before the plan existed, so it has no plan parent.
   const fork = await host({ header: { parentSession: source.sid } }); await fork.event("session_start", { reason: "fork" });
-  expect((await show(task.qualified_id)).issue.metadata["todo.session"]).toBeUndefined();
+  await eventually(async () => (await show(task.qualified_id)).issue.metadata["todo.session"], undefined);
   await fork.event("session_shutdown", { reason: "quit" });
 });
 
@@ -1003,7 +1003,7 @@ test("a pi fork that starts before its source's shutdown finished still inherits
   process.env.KATA_REF = parent;
   const fork = await host({ header: { parentSession: source.sid } }); await fork.event("session_start", { reason: "fork" });
   await shutdown;
-  expect((await show(task.qualified_id)).issue.metadata["todo.session"]).toBe(fork.sid);
+  await eventually(async () => (await show(task.qualified_id)).issue.metadata["todo.session"], fork.sid);
   await fork.event("session_shutdown", { reason: "quit" });
 });
 
@@ -1014,6 +1014,6 @@ test("a pi fork that finds nothing left by its source still inherits the tasks t
   // The source's shutdown never ran, so no hand-off was left: the fork reads the tasks from the plan it binds.
   process.env.KATA_REF = parent;
   const fork = await host({ header: { parentSession: source.sid } }); await fork.event("session_start", { reason: "fork" });
-  expect((await show(task.qualified_id)).issue.metadata["todo.session"]).toBe(fork.sid);
+  await eventually(async () => (await show(task.qualified_id)).issue.metadata["todo.session"], fork.sid);
   await fork.event("session_shutdown", { reason: "quit" });
 });

@@ -1,5 +1,5 @@
 import { assertIsolated } from "./isolation";
-import { adoptIsolatedKata, isolatedKata } from "./kata-fixture";
+import { adoptIsolatedKata, eventually, isolatedKata } from "./kata-fixture";
 import { ompHost } from "./omp-host";
 assertIsolated();
 import { afterAll, afterEach, beforeAll, beforeEach, expect, test } from "bun:test";
@@ -227,7 +227,7 @@ test("a switch to another session releases the tasks the previous one started", 
   await a.begin();
   await a.call({ op: "start", task: ref });
   await a.switchTo("session-a2");
-  expect((await meta(ref))["todo.session"]).toBeUndefined();
+  await eventually(async () => (await meta(ref))["todo.session"], undefined);
 }, 30000);
 
 test("a switch to a fork of the session hands it the tasks the source held, and the fork's end releases them", async () => {
@@ -237,9 +237,9 @@ test("a switch to a fork of the session hands it the tasks the source held, and 
   await a.begin();
   await a.call({ op: "start", task: ref });
   await a.switchTo("session-a-fork", { parentSession: "session-a" });
-  expect((await meta(ref))["todo.session"]).toBe("session-a-fork");
+  await eventually(async () => (await meta(ref))["todo.session"], "session-a-fork");
   await a.shutdown();
-  expect((await meta(ref))["todo.session"]).toBeUndefined();
+  await eventually(async () => (await meta(ref))["todo.session"], undefined);
 }, 30000);
 
 test("a fork's shutdown leaves its source's started tasks held", async () => {

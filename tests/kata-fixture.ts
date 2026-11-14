@@ -1,4 +1,4 @@
-import { setSystemTime } from "bun:test";
+import { expect, setSystemTime } from "bun:test";
 import { existsSync, mkdirSync, symlinkSync } from "node:fs";
 import path from "node:path";
 import { execFile } from "node:child_process";
@@ -52,6 +52,21 @@ export async function until(condition: () => boolean, ms = 8000): Promise<boolea
   const end = Date.now() + ms;
   while (!condition() && Date.now() < end) await new Promise(resolve => setTimeout(resolve, 25));
   return condition();
+}
+/**
+ * Reads `read()` until it equals `expected` or `ms` pass, then asserts on the last value, so a wrong
+ * value still fails and shows what was seen. For state a plugin settles in the background after the
+ * event handler returned (the core bounds how long a handler waits for it). The deadline uses
+ * `performance.now()` because tests that pin the clock with `setSystemTime` freeze `Date.now()`.
+ */
+export async function eventually<T>(read: () => Promise<T>, expected: T, ms = 8000): Promise<void> {
+  const end = performance.now() + ms;
+  let value = await read();
+  while (Bun.deepEquals(value, expected) === false && performance.now() < end) {
+    await new Promise(resolve => setTimeout(resolve, 25));
+    value = await read();
+  }
+  expect(value).toEqual(expected);
 }
 // Against a real event stream, "nothing was delivered" can only be observed by waiting out the stream's latency.
 export const settle = (ms = 700) => new Promise(resolve => setTimeout(resolve, ms));
