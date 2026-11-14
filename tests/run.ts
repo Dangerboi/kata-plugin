@@ -84,8 +84,9 @@ async function runOne(command: string[]): Promise<number> {
 const SLOW_FIRST = ["reliability", "delegates", "opencode", "pi-children", "pi-sessions"].map(name => `./tests/${name}.test.ts`);
 const slowFirst = (files: string[]) => [...SLOW_FIRST.filter(file => files.includes(file)), ...files.filter(file => !SLOW_FIRST.includes(file))];
 
-// KATA_TEST_SHARD=<i>/<n> keeps slice i of n of every test file, dealt in pool order so each slice gets some slow files.
-// CI runs one slice per job; revision conformance runs with slice 1.
+// KATA_TEST_SHARD=<i>/<n> keeps slice i of n of every test file. Files are dealt in pool order, reversing direction each
+// round (1, 2, 2, 1, ... for two slices), so the slowest file and the third-slowest don't land in the same slice.
+// CI runs one slice per job; revision conformance runs with the last slice, which gets the lighter deal.
 const shardSpec = process.env.KATA_TEST_SHARD || undefined;
 const shardMatch = shardSpec?.match(/^(\d+)\/(\d+)$/);
 const [SHARD, SHARDS] = shardMatch ? [Number(shardMatch[1]), Number(shardMatch[2])] : [1, 1];
@@ -126,7 +127,8 @@ try {
   // would then miss or repeat files.
   const allTests = readdirSync("tests").filter(file => file.endsWith(".test.ts")).sort().map(file => "./tests/" + file);
   // A shard applies to runs of every file; named files, `changed` and `revisions` ignore it.
-  const todoTests = slowFirst(allTests).filter((_, k) => k % SHARDS === SHARD - 1);
+  const slice = (k: number) => Math.floor(k / SHARDS) % 2 === 0 ? k % SHARDS : SHARDS - 1 - (k % SHARDS);
+  const todoTests = slowFirst(allTests).filter((_, k) => slice(k) === SHARD - 1);
   if (SHARDS > 1) console.log(`Shard ${SHARD}/${SHARDS}: ${todoTests.length} of ${allTests.length} test files.`);
   const bunTest = [process.execPath, "test", "--timeout", "15000"];
   // `changed [ref]` keeps only the test files whose imports reach a file git sees as changed
@@ -138,7 +140,7 @@ try {
   const suites: (() => Promise<number>)[] = args[0] === "revisions" ? [() => runOne(revisions)]
     : everything && JOBS > 1 ? [() => runPool(todoTests, bunTest)]
     : [() => runOne([...bunTest, ...changed, ...(changed.length ? allTests : !args.length || args[0] === "all" ? todoTests : args)])];
-  if (args[0] === "all" && SHARD === 1) suites.push(() => runOne(revisions));
+  if (args[0] === "all" && SHARD === SHARDS) suites.push(() => runOne(revisions));
   for (const suite of suites) {
     const code = await suite();
     if (code !== 0) { process.exitCode = code; break; }
