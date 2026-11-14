@@ -628,6 +628,18 @@ test("check refuses to delegate a ticket that other open plan items name, and al
   const done = await a.core.todo.apply(a.ctx, "done", { task: `${ref}: write the omicron parser`, message: "Wrote the omicron parser and verified it against the fixture.", evidence: ["test:delegates fixture"] });
   expect(done.isError).toBeUndefined();
   expect(await a.delegates.check([{ text: `Do "${ref}: test the omicron parser"` }])).toEqual([{ ref, ticket: true, title: "test the omicron parser" }]);
+  expect(await a.delegates.check([{ text: `Work ${ref}` }])).toEqual([{ ref, ticket: true, title: "test the omicron parser" }]);
+});
+
+test("parallel spawns naming nothing are not refused next to open ticket items, and bind none of them", async () => {
+  const a = lead();
+  const epic = `delegates-test#${(await kata(["create", "Suite epic", "--force-new", "--json"])).issue.short_id}`;
+  const ship = `delegates-test#${(await kata(["create", "Ship it", "--force-new", "--json"])).issue.short_id}`;
+  const init = await a.core.todo.apply(a.ctx, "init", { ref: epic, items: [`${ship}: package, docs and changelog`, `${epic}: full suite, deep-review rounds until clean`] });
+  expect(init.isError).toBeUndefined();
+  expect((await a.core.todo.apply(a.ctx, "start", { task: `${ship}: package, docs and changelog` })).isError).toBeUndefined();
+  const spawns = ["standards", "spec", "correctness"].map(axis => ({ label: `Review${axis}`, text: `${axis} axis. Review the diff against the deep-review rounds so far and report findings.` }));
+  expect((await a.delegates.check(spawns)).map(r => r.ref)).toEqual([undefined, undefined, undefined]);
 });
 
 test("a spawn naming a ticket outside the plan is reserved as that ticket and assigned it", async () => {

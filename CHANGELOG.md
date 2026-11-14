@@ -19,6 +19,16 @@ All notable changes to kata-plugin are listed here. The format follows [Keep a C
 - The pull-request test check runs the test files in two parallel jobs, half the files each (`.github/workflows/compatibility.yml`).
   - `KATA_TEST_SHARD=<i>/<n>` keeps slice i of n of the test files in a full run, locally too.
 
+### Fixed
+
+#### Delegates
+
+- A delegation call with several spawns that name no plan item is no longer refused with "Ticket … is already delegated" when the plan has an open ticket item.
+  - A ticket item binds a delegate only when the spawn names it by title or by its ticket's ref; a spawn naming just the ticket binds the ticket's only open item.
+  - Word overlap and the current-task handoff never pick a ticket item, since its delegate closes the whole ticket. A spawn whose words fit a ticket item best stays untracked.
+  - A ticket item whose ticket another spawn or delegate has already reserved is not matched again.
+- A delegate leaves its issue open when its task text says not to close issues or to leave the issue open; it is handed back (`needs-review`) and the lead closes it after its own checks.
+
 ## [1.10.0] - 2026-11-13
 
 kata-omp 2.10.0 and @dangerboi/kata-pi 1.10.0.

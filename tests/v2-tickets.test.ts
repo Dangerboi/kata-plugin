@@ -358,7 +358,7 @@ test("a task delegated to an item that names a ticket works that ticket and crea
   const a = await issue("Ticket A");
   await app.call({ op: "init", items: [`v2test#${a}: write the widget parser`] });
   const before = await total();
-  await app.event("tool_call", { toolName: "task", toolCallId: "named-item", input: { name: "Parser", task: "Write the widget parser and report back." } });
+  await app.event("tool_call", { toolName: "task", toolCallId: "named-item", input: { name: "Parser", task: `Work v2test#${a} and report back.` } });
   app.emit("task:subagent:lifecycle", { id: "named-item", status: "started", sessionFile: `${scratch}/named-item.jsonl`, parentToolCallId: "named-item", index: 0 });
   await app.call({ op: "view" });
   expect((await show(a)).issue.metadata["omp.subagent_id"]).toBe("named-item");

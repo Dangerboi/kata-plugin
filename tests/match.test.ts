@@ -60,6 +60,23 @@ test("a named task that is taken binds nothing else", () => {
   expect(pick([task("y#cc33", "Write gadget tests"), task("y#dd44", "Write gadget test docs")], 'Complete "Write gadget tests"', ["y#cc33"])).toBeUndefined();
 });
 
+test("a ticket item binds only when named, and not once its ticket is taken", () => {
+  const epic = task("item:epic", "k#epc1: full suite, deep-review rounds until clean", "pending", { ticket: "k#epc1" });
+  const ship = task("item:ship", "k#shp2: package, docs and changelog", "in_progress", { ticket: "k#shp2" });
+  const review = "Standards axis. Review the diff against the repo's standards: docs, glossary, test isolation and the deep-review smell baseline.";
+  expect(matchDelegation([ship, epic], review, { label: "ReviewStandards", single: false })).toBeUndefined();
+  expect(matchDelegation([ship, epic], `Work "${epic.content}"`)?.ref).toBe("item:epic");
+  expect(matchDelegation([ship, epic], `Work "${epic.content}"`, { unavailable: new Set(["k#epc1"]) })).toBeUndefined();
+});
+
+test("a spawn that overlaps a ticket item best binds nothing, by label or by text", () => {
+  const plan = [task("item:wdg", "k#wdg1: write widget parser tests", "pending", { ticket: "k#wdg1" }), task("k#doc2", "Write widget docs")];
+  expect(pick(plan, "Write the widget parser tests for edge cases")).toBeUndefined();
+  expect(pick(plan, "Write the widget docs and the README")).toBe("k#doc2");
+  const marked = [plan[0], task("k#doc3", "Write widget docs (delegate to subagent)")];
+  expect(matchDelegation(marked, "Cover the widget parser edge cases.", { label: "WidgetParserTests" })).toBeUndefined();
+});
+
 test("a short id only counts as a whole word after a marker", () => {
   const plan = [task("m#resh", "Implement cache"), task("m#erjg", "Write cache tests")];
   expect(namedTasks(plan, "refresh the cache")).toEqual([]);
