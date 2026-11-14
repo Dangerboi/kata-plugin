@@ -8,7 +8,7 @@ All notable changes to kata-plugin are listed here. The format follows [Keep a C
 
 #### Plans
 
-- A todo call, a session start and a turn end make about 14% fewer Kata calls, which matters most with a Kata daemon over the network.
+- A todo call, a session start and a turn end make 11–14% fewer Kata calls, which matters most with a Kata daemon over the network.
   - An issue read twice in one call is read once, until anything in the same process writes to Kata. Changes made elsewhere show from the next call on, as before.
   - The effective actor is read once per session and project instead of before every task change, and session start checks that Kata answers once.
 
