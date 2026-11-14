@@ -2,7 +2,7 @@ import { afterAll, afterEach, beforeAll, beforeEach, expect, test } from "bun:te
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { assertIsolated } from "./isolation";
-import { isolatedKata, later, settle, until } from "./kata-fixture";
+import { eventually, isolatedKata, later, settle, until } from "./kata-fixture";
 import { siblingThrottle } from "./kata-errors";
 import { openCodeHost, type OpenCodeInstance } from "./opencode-host";
 import opencode from "../plugins/opencode/kata";
@@ -265,8 +265,11 @@ for (const type of ["session.execution.succeeded", "session.execution.failed", "
 		// A turn that ends before the retry is due changes nothing.
 		await host.emit(type, { sessionID: id });
 		expect((await childrenOf(ref)).map(statusOf)).toEqual(["in_progress"]);
-		await later(() => host.emit(type, { sessionID: id }));
-		expect((await childrenOf(ref)).map(statusOf)).toEqual(["closed:done"]);
+		// The retry may finish after the emit returned: keep the clock advanced while waiting for it.
+		await later(async () => {
+			await host.emit(type, { sessionID: id });
+			await eventually(async () => (await childrenOf(ref)).map(statusOf), ["closed:done"]);
+		});
 		// Every child is closed with evidence, yet only the session's end closes the parent.
 		expect((await show(ref)).issue.status).toBe("open");
 	});
