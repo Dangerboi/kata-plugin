@@ -91,8 +91,18 @@ export function createKata(env: {
 }): Kata {
 	let registered: { id?: string; list: Promise<Project[]> } | undefined;
 	// The `kata show` results of the current operation (see `operation`), by the exact arguments, with the write count
-	// they were read at. Code outside an operation, such as an event handler running beside it, never sees them.
-	const reads = new AsyncLocalStorage<Map<string, { writes: number; out: Promise<string> }>>();
+	// they were read at. Code outside an operation, such as an event handler running beside it, never sees them. Timers and
+	// callbacks started inside an operation inherit its store and may run long after it, so a store serves reads only while
+	// its operation runs.
+	type Reads = { open: boolean; seen: Map<string, { writes: number; out: Promise<string> }> };
+	const reads = new AsyncLocalStorage<Reads>();
+	async function operation<T>(fn: () => Promise<T>): Promise<T> {
+		if (reads.getStore()?.open) return fn();
+		const store: Reads = { open: true, seen: new Map() };
+		return reads.run(store, async () => {
+			try { return await fn(); } finally { store.open = false; store.seen.clear(); }
+		});
+	}
 
 	async function invoke(args: string[], cwd: string, { timeout = 120_000, workspace = true } = {}): Promise<string> {
 		// --json makes every failure carry Kata's error code; the contract hook prints its own format.
@@ -107,14 +117,14 @@ export function createKata(env: {
 			writes.count++;
 			try { return await call(args, cwd, timeout); } finally { writes.count++; }
 		}
-		const cache = args[0] === "show" ? reads.getStore() : undefined;
-		if (!cache) return call(args, cwd, timeout);
+		const store = args[0] === "show" ? reads.getStore() : undefined;
+		if (!store?.open) return call(args, cwd, timeout);
 		const key = args.join("\0");
-		const seen = cache.get(key);
+		const seen = store.seen.get(key);
 		if (seen && seen.writes === writes.count) return seen.out;
 		const out = call(args, cwd, timeout);
-		cache.set(key, { writes: writes.count, out });
-		out.catch(() => { if (cache.get(key)?.out === out) cache.delete(key); });
+		store.seen.set(key, { writes: writes.count, out });
+		out.catch(() => { if (store.seen.get(key)?.out === out) store.seen.delete(key); });
 		return out;
 	}
 
@@ -186,7 +196,7 @@ export function createKata(env: {
 
 	return {
 		run, show, projects, qualify,
-		operation: fn => reads.getStore() ? fn() : reads.run(new Map(), fn),
+		operation,
 		fresh: fn => reads.exit(fn),
 		projectNames: cwd => projects(cwd).then(list => new Set(list.map(p => p.name)), error => { env.debug(error); return new Set<string>(); }),
 		pin: async (ref, cwd) => qualify((await show(ref, cwd)).issue, cwd, ref),
