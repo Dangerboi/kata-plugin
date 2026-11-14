@@ -4,6 +4,13 @@ All notable changes to kata-plugin are listed here. The format follows [Keep a C
 
 ## [Unreleased]
 
+### Changed
+
+#### Development
+
+- `bun run test` runs the test files in a pool of 4 `bun test` processes instead of one, the slowest files first.
+  - `KATA_TEST_JOBS=<n>` sets the pool size; `KATA_TEST_JOBS=1` runs everything in one process for debugging.
+
 ## [1.10.0] - 2026-11-13
 
 kata-omp 2.10.0 and @dangerboi/kata-pi 1.10.0.
