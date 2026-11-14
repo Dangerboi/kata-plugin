@@ -10,6 +10,8 @@ All notable changes to kata-plugin are listed here. The format follows [Keep a C
 
 - `bun run test` runs the test files in a pool of `bun test` processes instead of one, the slowest files first: 8 workers, or fewer on a machine with fewer CPUs.
   - `KATA_TEST_JOBS=<n>` sets the pool size; `KATA_TEST_JOBS=1` runs everything in one process for debugging.
+- The pull-request test check runs the test files in two parallel jobs, half the files each (`.github/workflows/compatibility.yml`).
+  - `KATA_TEST_SHARD=<i>/<n>` keeps slice i of n of the test files in a full run, locally too.
 
 ## [1.10.0] - 2026-11-13
 
