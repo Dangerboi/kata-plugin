@@ -122,7 +122,9 @@ async function runPool(files: string[], bunTest: string[]): Promise<number> {
 const before = snapshot();
 try {
   const args = process.argv.slice(2);
-  const allTests = readdirSync("tests").filter(file => file.endsWith(".test.ts")).map(file => "./tests/" + file);
+  // Sorted: readdir order follows the filesystem, so two CI machines could list the files differently and their shards
+  // would then miss or repeat files.
+  const allTests = readdirSync("tests").filter(file => file.endsWith(".test.ts")).sort().map(file => "./tests/" + file);
   // A shard applies to runs of every file; named files, `changed` and `revisions` ignore it.
   const todoTests = slowFirst(allTests).filter((_, k) => k % SHARDS === SHARD - 1);
   if (SHARDS > 1) console.log(`Shard ${SHARD}/${SHARDS}: ${todoTests.length} of ${allTests.length} test files.`);
