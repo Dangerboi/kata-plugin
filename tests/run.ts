@@ -80,7 +80,7 @@ async function runOne(command: string[]): Promise<number> {
 }
 
 // The known slow files start first so the pool's last job is short; the rest follow alphabetically.
-const SLOW_FIRST = ["v2", "pi", "reliability", "opencode", "delegates"].map(name => `./tests/${name}.test.ts`);
+const SLOW_FIRST = ["pi", "reliability", "delegates", "opencode"].map(name => `./tests/${name}.test.ts`);
 
 // One `bun test` per file in a pool of JOBS workers, each with its own KATA_HOME under the root.
 // A file's output is printed whole when it ends, so parallel files never interleave.
