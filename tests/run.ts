@@ -80,8 +80,10 @@ async function runOne(command: string[]): Promise<number> {
   return code;
 }
 
-// The known slow files start first so the pool's last job is short; the rest follow alphabetically.
-const SLOW_FIRST = ["reliability", "delegates", "opencode", "pi-children", "pi-sessions"].map(name => `./tests/${name}.test.ts`);
+// Every file that takes over about 15 s, slowest first (measured with 8 workers), so the pool's last jobs are short;
+// the rest follow alphabetically. A slow file left out lands at the end and stretches the run by its own length.
+const SLOW_FIRST = ["reliability", "delegates", "opencode", "v2-delegate-binding", "pi-children", "v2-sessions", "v2-turn-end", "v2-tickets",
+  "v2-forks-projects", "opencode-delegates", "pi-host", "pi-sessions", "v2-hosted"].map(name => `./tests/${name}.test.ts`);
 const slowFirst = (files: string[]) => [...SLOW_FIRST.filter(file => files.includes(file)), ...files.filter(file => !SLOW_FIRST.includes(file))];
 
 // KATA_TEST_SHARD=<i>/<n> keeps slice i of n of every test file. Files are dealt in pool order, reversing direction each
