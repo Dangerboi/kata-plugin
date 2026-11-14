@@ -56,12 +56,13 @@ export async function until(condition: () => boolean, ms = 8000): Promise<boolea
 /**
  * Reads `read()` until it equals `expected` or `ms` pass, then asserts on the last value, so a wrong
  * value still fails and shows what was seen. For state a plugin settles in the background after the
- * event handler returned (the core bounds how long a handler waits for it).
+ * event handler returned (the core bounds how long a handler waits for it). The deadline uses
+ * `performance.now()` because tests that pin the clock with `setSystemTime` freeze `Date.now()`.
  */
 export async function eventually<T>(read: () => Promise<T>, expected: T, ms = 8000): Promise<void> {
-  const end = Date.now() + ms;
+  const end = performance.now() + ms;
   let value = await read();
-  while (Bun.deepEquals(value, expected) === false && Date.now() < end) {
+  while (Bun.deepEquals(value, expected) === false && performance.now() < end) {
     await new Promise(resolve => setTimeout(resolve, 25));
     value = await read();
   }
