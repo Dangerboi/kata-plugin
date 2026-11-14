@@ -1,6 +1,6 @@
 # Kata Plugin
 
-Kata work tracking for oh-my-pi, pi and OpenCode. Todo plans, and the delegations that work their items or name a ticket, become Kata issues with attributed ownership and evidence for completion. Kata validates each close; automatic session parents close after their children finish.
+Kata work tracking for oh-my-pi, pi and OpenCode. Todo plans, and the delegations that name their items or a ticket, become Kata issues with attributed ownership and evidence for completion. Kata validates each close; automatic session parents close after their children finish.
 
 | Plugin | Tracks |
 | --- | --- |

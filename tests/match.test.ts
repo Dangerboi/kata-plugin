@@ -1,53 +1,33 @@
 import { expect, test } from "bun:test";
 import { itemTicket, qualifiedRefs, type Status, type Task } from "../core/model";
-import { matchDelegation, namedTargets, namedTasks, taskTokens } from "../core/delegates";
+import { matchDelegation, namedTargets, namedTasks } from "../core/delegates";
 
 const task = (ref: string, content: string, status: Status = "pending", extra: Partial<Task> = {}): Task => ({ ref, content, phase: "Tasks", status, ...extra });
-const pick = (tasks: Task[], text: string, unavailable: string[] = [], single = true) => matchDelegation(tasks, text, { unavailable: new Set(unavailable), single })?.ref;
+const pick = (tasks: Task[], text: string, unavailable: string[] = []) => matchDelegation(tasks, text, { unavailable: new Set(unavailable) })?.ref;
 
-// Spawn texts from the 2026-10-19 eval, where every binding went wrong.
+// Spawn texts from the 2026-10-19 eval: they describe a plan task without naming it.
 const omp = [
   task("e#53ab", "Implement word_count and top_words in textstats", "in_progress"),
   task("e#3ke1", "Write unittest suite covering word_count, top_words, and empty input"),
   task("e#run1", "Run the test suite with python3 -m unittest"),
   task("e#cmt1", "Commit the work"),
 ];
-const pi = [
-  task("p#vd94", "Implement word_count and top_words", "in_progress"),
-  task("p#4kwf", "Delegate: subagent writes unittest suite in tests/ for both functions"),
-  task("p#run2", "Run python3 -m unittest"),
-];
 
-test("eval delegations bind the tests task, never the lead's active task", () => {
-  expect(pick(omp, "WriteTests\nWrite the textstats unittest suite in tests/ per the contract above")).toBe("e#3ke1");
-  expect(pick(pi, "You are a test writer. Write a unittest suite in tests/test_textstats.py covering word_count and top_words including empty input.")).toBe("p#4kwf");
+test("a spawn that only describes a task binds nothing, whatever its words or name", () => {
+  expect(pick(omp, "WriteTests\nWrite the textstats unittest suite in tests/ per the contract above")).toBeUndefined();
+  expect(matchDelegation(omp, "Write the textstats unittest suite, then run python3 -m unittest.", { label: "WriteTests" })).toBeUndefined();
+  expect(pick(omp, "Complete the current task and commit it.")).toBeUndefined();
   expect(pick(omp, "Reply with exactly: SUBAGENT-OK")).toBeUndefined();
-});
-
-// The 2026-10-20 re-eval: a long spec overlaps the run task too ("Do NOT run
-// the suite ... repo root"); omp's short task name decides it.
-const rerun = [
-  task("r#4mpk", "Implement word_count and top_words in textstats/__init__.py", "in_progress"),
-  task("r#t3st", "Write unittest suite in tests/ covering both functions incl. empty input (delegated to subagent)"),
-  task("r#rvn2", "Run python3 -m unittest from repo root, all green"),
-  task("r#cm7t", "Commit functions and tests"),
-];
-const rerunSpec = "# Target\nCreate `tests/__init__.py` (empty file) and `tests/test_textstats.py` in the current repo workspace. Do NOT create or modify anything else \u2014 in particular do NOT touch or create the `textstats/` package; its implementation lands in parallel and importing it now may fail.\n\n# Change\n1. `tests/__init__.py` \u2014 empty, so `python3 -m unittest` discovery from the repo root finds the suite.\n2. `tests/test_textstats.py` \u2014 unittest suite (e.g. TestWordCount, TestTopWords classes) covering: empty string and whitespace-only input for BOTH functions; basic multi-word counts; tabs/newlines/repeated spaces as separators; mixed-case collapsing to lowercase; tie-breaking alphabetical by word; `n == 0`; `n` greater than the number of distinct words; exact ordering of the returned list of tuples. Deterministic, stdlib only, no file/network I/O.\n\n# Acceptance\nBoth files exist and `python3 -m py_compile tests/test_textstats.py` succeeds. Do NOT run the suite against the package (implementation is mid-flight); a failing import at this stage is expected, not yours to fix.";
-test("a long delegation spec binds by its task name", () => {
-  expect(matchDelegation(rerun, rerunSpec, { label: "WriteTests" })?.ref).toBe("r#t3st");
-  expect(matchDelegation(rerun, rerunSpec, { label: "RunUnittest" })?.ref).toBe("r#rvn2");
-  expect(matchDelegation(rerun, rerunSpec)?.ref).toBe("r#t3st"); // without a name, the task marked for delegation
 });
 
 test("exact titles, qualified refs and bare short ids bind directly", () => {
   expect(pick(omp, `Do "${omp[3].content}" now`)).toBe("e#cmt1");
   expect(pick(omp, "Work on e#run1")).toBe("e#run1");
-  expect(pick([...pi, task("p#7x3g", "Write tests for textstats")], "read issue 7x3g and write tests/test_textstats.py")).toBe("p#7x3g");
+  expect(pick([...omp, task("p#7x3g", "Write tests for textstats")], "read issue 7x3g and write tests/test_textstats.py")).toBe("p#7x3g");
 });
 
 test("a short title inside a longer one does not count as naming it", () => {
   const plan = [task("m#t1ab", "Write tests"), task("m#t2ab", "Write tests for parser edge cases"), task("m#t3ab", "Implement parser", "in_progress")];
-  expect(pick(plan, "Write tests for the parser edge cases")).toBe("m#t2ab");
   expect(pick(plan, 'Complete "Write tests for parser edge cases"')).toBe("m#t2ab");
   expect(pick(plan, 'Do "Write tests" now')).toBe("m#t1ab");
 });
@@ -60,21 +40,19 @@ test("a named task that is taken binds nothing else", () => {
   expect(pick([task("y#cc33", "Write gadget tests"), task("y#dd44", "Write gadget test docs")], 'Complete "Write gadget tests"', ["y#cc33"])).toBeUndefined();
 });
 
-test("a ticket item binds only when named, and not once its ticket is taken", () => {
+test("a ticket item binds when named by title or by its ticket's ref, not as the plan parent, and not once its ticket is taken", () => {
   const epic = task("item:epic", "k#epc1: full suite, deep-review rounds until clean", "pending", { ticket: "k#epc1" });
-  const ship = task("item:ship", "k#shp2: package, docs and changelog", "in_progress", { ticket: "k#shp2" });
-  const review = "Standards axis. Review the diff against the repo's standards: docs, glossary, test isolation and the deep-review smell baseline.";
-  expect(matchDelegation([ship, epic], review, { label: "ReviewStandards", single: false })).toBeUndefined();
-  expect(matchDelegation([ship, epic], `Work "${epic.content}"`)?.ref).toBe("item:epic");
-  expect(matchDelegation([ship, epic], `Work "${epic.content}"`, { unavailable: new Set(["k#epc1"]) })).toBeUndefined();
+  expect(matchDelegation([epic], `Work "${epic.content}"`)?.ref).toBe("item:epic");
+  expect(matchDelegation([epic], "Work k#epc1 in the background")?.ref).toBe("item:epic");
+  expect(matchDelegation([epic], "Review the diff; the plan parent is k#epc1.", { parent: "k#epc1" })).toBeUndefined();
+  expect(matchDelegation([epic], `Work "${epic.content}"`, { unavailable: new Set(["k#epc1"]) })).toBeUndefined();
 });
 
-test("a spawn that overlaps a ticket item best binds nothing, by label or by text", () => {
-  const plan = [task("item:wdg", "k#wdg1: write widget parser tests", "pending", { ticket: "k#wdg1" }), task("k#doc2", "Write widget docs")];
-  expect(pick(plan, "Write the widget parser tests for edge cases")).toBeUndefined();
-  expect(pick(plan, "Write the widget docs and the README")).toBe("k#doc2");
-  const marked = [plan[0], task("k#doc3", "Write widget docs (delegate to subagent)")];
-  expect(matchDelegation(marked, "Cover the widget parser edge cases.", { label: "WidgetParserTests" })).toBeUndefined();
+test("an item named only by a ref hides no other named item", () => {
+  const plain = task("p#pa11", "write the parser"), docs = task("item:doc", "p#abcd: write the parser docs", "pending", { ticket: "p#abcd" });
+  expect(namedTasks([plain, docs], "Write the parser. See p#abcd for the API.").map(t => t.ref).sort()).toEqual(["item:doc", "p#pa11"]);
+  const short = task("item:fix", "p#abcd: fix parser", "pending", { ticket: "p#abcd" }), long = task("item:fxt", "p#abcd: fix parser tests", "pending", { ticket: "p#abcd" });
+  expect(matchDelegation([short, long], "Handle p#abcd")).toBeUndefined();
 });
 
 test("a short id only counts as a whole word after a marker", () => {
@@ -103,16 +81,16 @@ test("qualifiedRefs counts only refs of the given registered projects", () => {
   expect(qualifiedRefs("see kata-plugin#bc7q and README.md#tasks and other.proj#ce9x", projects)).toEqual(["kata-plugin#bc7q", "other.proj#ce9x"]);
 });
 
-test("an explicit ref wins over a better word overlap", () => {
+test("a ref binds even when the text also describes another task", () => {
   const plan = [task("w#aa11", "Write widget tests"), task("w#bb22", "Write widget docs")];
   expect(pick(plan, "Write the widget tests (w#bb22 covers it)")).toBe("w#bb22");
   expect(pick(plan, "Please write the widget tests for the parser: w#bb22.")).toBe("w#bb22");
 });
 
-test("a text naming several plan tasks binds none, whatever the overlap", () => {
+test("a text naming several plan tasks binds none", () => {
   const plan = [task("w#aa11", "Write widget tests"), task("w#bb22", "Write widget docs"), task("w#cc33", "Write widget tests for parser edge cases")];
   expect(pick(plan, "Write widget tests for w#bb22 and w#aa11")).toBeUndefined();
-  expect(pick(plan, "Write widget tests and then Write widget docs", [], false)).toBeUndefined();
+  expect(pick(plan, "Write widget tests and then Write widget docs")).toBeUndefined();
   expect(pick(plan, 'Do "Write widget tests" and "Write widget docs"')).toBeUndefined();
 });
 
@@ -123,38 +101,6 @@ test("tickets outside the plan are named targets, and the plan parent is not", (
   expect(namedTargets(plan, "w#aa11 and other#zz99", all, "w#pa4e")).toMatchObject({ tickets: ["other#zz99"], tasks: [{ ref: "w#aa11" }] });
   expect(namedTargets(plan, "inside w#pa4e do w#aa11", all, "w#pa4e")).toMatchObject({ tickets: [], tasks: [{ ref: "w#aa11" }] });
   expect(namedTargets(plan, "Reply with exactly: OK", all).tickets).toEqual([]);
-});
-
-// The 2026-10-20 third run: a short spec that also says "then run python3 -m
-// unittest", with the plan task marked for delegation.
-test("the one task marked for delegation takes a single related delegation", () => {
-  const plan = [
-    task("d#4mpk", "Implement word_count and top_words in textstats/__init__.py", "in_progress"),
-    task("d#t3st", "Delegate unittest suite for word_count/top_words (incl. empty input) to subagent"),
-    task("d#rvn2", "Run python3 -m unittest and fix any failures"),
-    task("d#cm7t", "Commit work and summarize"),
-  ];
-  const spec = "Write tests/test_textstats.py unittest suite for textstats.word_count and textstats.top_words per the contract, then run python3 -m unittest and report results.";
-  expect(matchDelegation(plan, spec, { label: "TestWriter" })?.ref).toBe("d#t3st");
-  expect(matchDelegation(plan, "Reply with exactly: SUBAGENT-OK")).toBeUndefined();
-  expect(matchDelegation(plan, spec, { label: "TestWriter", single: false })?.ref).not.toBe("d#4mpk");
-});
-
-test("the active task is a fallback only for an explicit current-task handoff", () => {
-  const plan = [task("a#1", "Implement widget", "in_progress"), task("a#2", "Write widget tests")];
-  expect(pick(plan, "Complete the current task and commit it.")).toBe("a#1");
-  expect(pick(plan, "Complete the current task and commit it.", [], false)).toBeUndefined();
-  expect(pick(plan, "Commit it.")).toBeUndefined();
-});
-
-test("ambiguous overlaps create a separate child instead of guessing", () => {
-  expect(pick([task("c#1", "Write API tests"), task("c#2", "Write UI tests")], "Write the tests")).toBeUndefined();
-  expect(pick([task("b#1", "Build alpha"), task("b#2", "Build beta")], "BuildBeta\ngo")).toBe("b#2");
-});
-
-test("tokens split camelCase, keep snake_case and count unittest as test", () => {
-  expect(taskTokens("WriteTests for word_count")).toEqual(["write", "test", "word_count"]);
-  expect(taskTokens("unittest suite")).toEqual(["unittest", "test", "suite"]);
 });
 
 // Property: whatever the text, the match is one available, open, unblocked,
@@ -169,7 +115,7 @@ test("matches are always available open tasks", () => {
     const tasks = Array.from({ length: 1 + Math.floor(random() * 5) }, (_, i) =>
       task(`r#t${i}`, phrase(1 + Math.floor(random() * 4)), statuses[Math.floor(random() * statuses.length)], { delegated: random() < 0.2 }));
     const unavailable = tasks.filter(() => random() < 0.2).map(t => t.ref);
-    const ref = pick(tasks, phrase(Math.floor(random() * 6)), unavailable, random() < 0.7);
+    const ref = pick(tasks, phrase(Math.floor(random() * 6)), unavailable);
     if (!ref) continue;
     const chosen = tasks.find(t => t.ref === ref)!;
     expect(["pending", "in_progress"]).toContain(chosen.status);

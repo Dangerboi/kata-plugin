@@ -108,7 +108,7 @@ export function install(seam: Seam): void {
 			if (follow) await send(lead, { type: "woken", id: event.sessionID, sessionId: event.sessionID });
 			else await send(lead, {
 				type: "started", id: event.sessionID, sessionId: event.sessionID, leadSessionId: lead.id, leadTeammate: seam.settings.teammate ?? "",
-				teammate: teammateFor(event.sessionID, lead.id), text: call.prompt, label: call.description, name: call.description || undefined, single: true, reserved: call.reserved,
+				teammate: teammateFor(event.sessionID, lead.id), text: call.prompt, label: call.description, name: call.description || undefined, reserved: call.reserved,
 			});
 			record = lead.delegates.get(event.sessionID);
 		}

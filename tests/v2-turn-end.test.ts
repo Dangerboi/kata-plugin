@@ -295,12 +295,12 @@ for (const entry of ["lazy", "titled"]) test(`${entry} failed claim resumes the 
   expect(finalParents[0].short_id).toBe(parent.short_id);
 });
 
-for (const match of ["active", "named"]) test(`delegation reuses the ${match} plan task with child-owned closure`, async () => {
+for (const match of ["active", "named"]) test(`delegation naming ${match === "active" ? "the lead's active" : "another"} plan task binds it with child-owned closure`, async () => {
   const app = host(); await app.event("session_start");
   const ref = await app.init(["Implement widget", "Write widget tests"]);
   expect((await app.call({ op: "start", task: "Implement widget" })).isError).toBeUndefined();
   const expected = (await show(ref)).children.find((c: any) => c.title === (match === "active" ? "Implement widget" : "Write widget tests"));
-  await app.event("tool_call", { toolName: "task", toolCallId: `call-${match}`, input: { agent: "task", task: match === "named" ? 'Complete plan task "Write widget tests" and commit it.' : "Complete the current task and commit it." } });
+  await app.event("tool_call", { toolName: "task", toolCallId: `call-${match}`, input: { agent: "task", task: match === "named" ? 'Complete plan task "Write widget tests" and commit it.' : 'Complete "Implement widget" and commit it.' } });
   const sessionFile = `${scratch}/reuse-${match}.jsonl`;
   app.emit("task:subagent:lifecycle", { id: `reuse-${match}`, status: "started", sessionFile, parentToolCallId: `call-${match}`, index: 0 });
   await app.call({ op: "view" });

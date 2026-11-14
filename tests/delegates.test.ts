@@ -51,7 +51,7 @@ function lead(from?: { entries: any[]; id: string; fork?: boolean }) {
     };
   };
   const started = (name: string, text: string, extra: Partial<Extract<DelegateEvent, { type: "started" }>> = {}): DelegateEvent => ({
-    type: "started", id: name, sessionId: name, leadSessionId: id, leadTeammate: LEAD, teammate: `mate-${name}`, text, single: true, ...extra,
+    type: "started", id: name, sessionId: name, leadSessionId: id, leadTeammate: LEAD, teammate: `mate-${name}`, text, ...extra,
   });
   // Whether the lead may still work an issue: a delegated task refuses the lead's start.
   const delegated = async (title: string) => {
@@ -582,8 +582,8 @@ test("a delegate handed back without a comment of its own gets its latest report
 test("a delegate that closed its issue gets its report posted only when it left no comment of its own", async () => {
   const a = lead(); const parent = await a.plan(["Build the mu gadget", "Build the xi gadget", "Lead step"]);
   const mu = `delegates-test#${(await taskOf(parent, "Build the mu gadget")).short_id}`, xi = `delegates-test#${(await taskOf(parent, "Build the xi gadget")).short_id}`;
-  await a.delegates.apply(a.started("mu", "Build the mu gadget", { single: false }));
-  await a.delegates.apply(a.started("xi", "Build the xi gadget", { single: false }));
+  await a.delegates.apply(a.started("mu", "Build the mu gadget"));
+  await a.delegates.apply(a.started("xi", "Build the xi gadget"));
   await kata(["comment", xi, "--body", "Built the xi gadget; its tests pass.", "--teammate", "mate-xi", "--json"]);
   for (const [id, ref] of [["mu", mu], ["xi", xi]]) {
     await kata(["close", ref, "--done", "--message", "Closed by the delegate itself with verified behaviour.", "--test", "delegates fixture", "--teammate", `mate-${id}`, "--json"]);
