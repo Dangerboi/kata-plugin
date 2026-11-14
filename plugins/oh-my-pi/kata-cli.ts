@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from "node:async_hooks";
 import path from "node:path";
 import { projectOf, type KataIssue, type KataShow } from "./model";
 
@@ -51,6 +52,12 @@ export type ExecResult = { code: number; stdout: string; stderr?: string; killed
 export type Exec = (file: string, args: string[], options: { cwd: string; timeout: number; ctx?: any }) => Promise<ExecResult>;
 export type Project = { id: number; name: string };
 
+const READS = new Set(["show", "list", "status", "version", "agent-contract-hook", "inbox", "events", "audit", "search", "whoami"]);
+const isRead = (args: string[]) => READS.has(args[0]) || (args[0] === "projects" && args[1] === "list");
+// Writes through any runner in this process (the lead's, a delegate's, another plugin copy's): each one ends every
+// operation's reuse of earlier reads.
+const writes = ((globalThis as Record<symbol, unknown>)[Symbol.for("kata.plugin.writes")] ??= { count: 0 }) as { count: number };
+
 export interface Kata {
 	// `workspace: false` leaves out `--workspace <cwd>`.
 	run(args: string[], cwd: string, options?: { timeout?: number; workspace?: boolean }): Promise<string>;
@@ -64,6 +71,11 @@ export interface Kata {
 	pin(ref: string, cwd: string): Promise<string>;
 	// Registers a project in the daemon (idempotent; no files in the repo).
 	createProject(name: string, cwd: string): Promise<void>;
+	// Runs `fn` as one operation: an identical `kata show` inside it is read once until any write in this process.
+	// An operation is one tool call; Kata changes made outside this process meanwhile show in the next one.
+	operation<T>(fn: () => Promise<T>): Promise<T>;
+	// Runs `fn` with every read going to Kata, inside an operation too: for a check that a read is still current.
+	fresh<T>(fn: () => Promise<T>): Promise<T>;
 }
 
 export function createKata(env: {
@@ -78,6 +90,9 @@ export function createKata(env: {
 	debug(error: unknown): void;
 }): Kata {
 	let registered: { id?: string; list: Promise<Project[]> } | undefined;
+	// The `kata show` results of the current operation (see `operation`), by the exact arguments, with the write count
+	// they were read at. Code outside an operation, such as an event handler running beside it, never sees them.
+	const reads = new AsyncLocalStorage<Map<string, { writes: number; out: Promise<string> }>>();
 
 	async function invoke(args: string[], cwd: string, { timeout = 120_000, workspace = true } = {}): Promise<string> {
 		// --json makes every failure carry Kata's error code; the contract hook prints its own format.
@@ -87,6 +102,23 @@ export function createKata(env: {
 		const at = args.indexOf("--"), end = at < 0 ? args.length : at;
 		const flags = [...(plain || args.slice(0, end).includes("--json") ? [] : ["--json"]), ...(teammate !== undefined && !plain ? ["--teammate", teammate] : []), ...(workspace ? ["--workspace", path.resolve(cwd)] : [])];
 		args = [...args.slice(0, end), ...flags, ...args.slice(end)];
+		if (!isRead(args)) {
+			// Counted when it starts and when it ends, so a read that overlapped it is not reused either.
+			writes.count++;
+			try { return await call(args, cwd, timeout); } finally { writes.count++; }
+		}
+		const cache = args[0] === "show" ? reads.getStore() : undefined;
+		if (!cache) return call(args, cwd, timeout);
+		const key = args.join("\0");
+		const seen = cache.get(key);
+		if (seen && seen.writes === writes.count) return seen.out;
+		const out = call(args, cwd, timeout);
+		cache.set(key, { writes: writes.count, out });
+		out.catch(() => { if (cache.get(key)?.out === out) cache.delete(key); });
+		return out;
+	}
+
+	async function call(args: string[], cwd: string, timeout: number): Promise<string> {
 		let result: ExecResult;
 		try { result = await env.exec(env.executable, args, { cwd, timeout, ctx: env.ctx() }); }
 		catch (error) {
@@ -154,6 +186,8 @@ export function createKata(env: {
 
 	return {
 		run, show, projects, qualify,
+		operation: fn => reads.getStore() ? fn() : reads.run(new Map(), fn),
+		fresh: fn => reads.exit(fn),
 		projectNames: cwd => projects(cwd).then(list => new Set(list.map(p => p.name)), error => { env.debug(error); return new Set<string>(); }),
 		pin: async (ref, cwd) => qualify((await show(ref, cwd)).issue, cwd, ref),
 		async createProject(name, cwd) {

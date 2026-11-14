@@ -127,7 +127,8 @@ export function createLead(deps: LeadDeps): Lead {
 		let tail: Promise<unknown> = Promise.resolve();
 		return {
 			core, coreCtx,
-			exclusive: fn => { const run = tail.then(fn); tail = run.catch(() => undefined); return run; },
+			// One tool call is one Kata operation: its view and the todo ops after it share their reads until a write.
+			exclusive: fn => { const run = tail.then(() => core.todo.operation(fn)); tail = run.catch(() => undefined); return run; },
 			async todo(op, params = {}) {
 				const result = await core.todo.apply(coreCtx, op, params);
 				return { text: result.content.map(part => part.text).join("\n"), kata: result.details.kata, isError: result.isError === true };

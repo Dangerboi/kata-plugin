@@ -6,6 +6,12 @@ All notable changes to kata-plugin are listed here. The format follows [Keep a C
 
 ### Changed
 
+#### Plans
+
+- A todo call, a session start and a turn end make about 14% fewer Kata calls, which matters most with a Kata daemon over the network.
+  - An issue read twice in one call is read once, until anything in the same process writes to Kata. Changes made elsewhere show from the next call on, as before.
+  - The effective actor is read once per session and project instead of before every task change, and session start checks that Kata answers once.
+
 #### Development
 
 - `bun run test` runs the test files in a pool of `bun test` processes instead of one, the slowest files first: 8 workers, or fewer on a machine with fewer CPUs.
