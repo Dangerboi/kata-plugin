@@ -12,8 +12,14 @@ concurrency:
 
 jobs:
   compatibility:
+    name: compatibility (tests ${{ matrix.shard }}/2)
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    # The runner has 4 CPUs and the suite keeps them all busy, so each job runs half the test files.
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -64,17 +70,21 @@ jobs:
       - name: Generate portable copies before tests
         run: bun run build:plugins
 
-      - name: Full test suite against Kata 0.23.0
+      - name: Test suite against Kata 0.23.0, half ${{ matrix.shard }} of 2
         run: bun run test
+        env:
+          KATA_TEST_SHARD: ${{ matrix.shard }}/2
 
       - name: Typecheck
+        if: matrix.shard == 1
         run: bun run typecheck
 
       - name: Check generated drift
+        if: matrix.shard == 1
         run: git diff --exit-code -- plugins/oh-my-pi plugins/pi
 
       - name: Upload portable copies even when checks fail
-        if: always()
+        if: always() && matrix.shard == 1
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: generated-portable-copies

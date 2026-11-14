@@ -82,11 +82,19 @@ async function runOne(command: string[]): Promise<number> {
 
 // The known slow files start first so the pool's last job is short; the rest follow alphabetically.
 const SLOW_FIRST = ["pi", "reliability", "delegates", "opencode"].map(name => `./tests/${name}.test.ts`);
+const slowFirst = (files: string[]) => [...SLOW_FIRST.filter(file => files.includes(file)), ...files.filter(file => !SLOW_FIRST.includes(file))];
+
+// KATA_TEST_SHARD=<i>/<n> keeps slice i of n of every test file, dealt in pool order so each slice gets some slow files.
+// CI runs one slice per job; revision conformance runs with slice 1.
+const shardSpec = process.env.KATA_TEST_SHARD || undefined;
+const shardMatch = shardSpec?.match(/^(\d+)\/(\d+)$/);
+const [SHARD, SHARDS] = shardMatch ? [Number(shardMatch[1]), Number(shardMatch[2])] : [1, 1];
+if (shardSpec && !(shardMatch && SHARD >= 1 && SHARD <= SHARDS)) throw new Error(`KATA_TEST_SHARD must be <i>/<n> with 1 <= i <= n, got ${shardSpec}.`);
 
 // One `bun test` per file in a pool of JOBS workers, each with its own KATA_HOME under the root.
 // A file's output is printed whole when it ends, so parallel files never interleave.
 async function runPool(files: string[], bunTest: string[]): Promise<number> {
-  const queue = [...SLOW_FIRST.filter(file => files.includes(file)), ...files.filter(file => !SLOW_FIRST.includes(file))];
+  const queue = slowFirst(files);
   const started = Date.now();
   let passed = 0, failed = 0;
   const failures: string[] = [];
@@ -114,7 +122,10 @@ async function runPool(files: string[], bunTest: string[]): Promise<number> {
 const before = snapshot();
 try {
   const args = process.argv.slice(2);
-  const todoTests = readdirSync("tests").filter(file => file.endsWith(".test.ts")).map(file => "./tests/" + file);
+  const allTests = readdirSync("tests").filter(file => file.endsWith(".test.ts")).map(file => "./tests/" + file);
+  // A shard applies to runs of every file; named files, `changed` and `revisions` ignore it.
+  const todoTests = slowFirst(allTests).filter((_, k) => k % SHARDS === SHARD - 1);
+  if (SHARDS > 1) console.log(`Shard ${SHARD}/${SHARDS}: ${todoTests.length} of ${allTests.length} test files.`);
   const bunTest = [process.execPath, "test", "--timeout", "15000"];
   // `changed [ref]` keeps only the test files whose imports reach a file git sees as changed
   // (staged, unstaged, untracked, or since ref). It misses files read from disk and a changed Kata binary.
@@ -124,8 +135,8 @@ try {
   const everything = args[0] === "all" || (!args.length && !changed.length);
   const suites: (() => Promise<number>)[] = args[0] === "revisions" ? [() => runOne(revisions)]
     : everything && JOBS > 1 ? [() => runPool(todoTests, bunTest)]
-    : [() => runOne([...bunTest, ...changed, ...(changed.length || !args.length || args[0] === "all" ? todoTests : args)])];
-  if (args[0] === "all") suites.push(() => runOne(revisions));
+    : [() => runOne([...bunTest, ...changed, ...(changed.length ? allTests : !args.length || args[0] === "all" ? todoTests : args)])];
+  if (args[0] === "all" && SHARD === 1) suites.push(() => runOne(revisions));
   for (const suite of suites) {
     const code = await suite();
     if (code !== 0) { process.exitCode = code; break; }
