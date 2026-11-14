@@ -8,7 +8,7 @@ All notable changes to kata-plugin are listed here. The format follows [Keep a C
 
 #### Development
 
-- `bun run test` runs the test files in a pool of 4 `bun test` processes instead of one, the slowest files first.
+- `bun run test` runs the test files in a pool of `bun test` processes instead of one, the slowest files first: 4 workers, or fewer on a machine with fewer CPUs.
   - `KATA_TEST_JOBS=<n>` sets the pool size; `KATA_TEST_JOBS=1` runs everything in one process for debugging.
 
 ## [1.10.0] - 2026-11-13

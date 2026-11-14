@@ -13,7 +13,9 @@ writeFileSync(path.join(root, MARKER), `throwaway\npid=${process.pid}\n`);
 const env = { ...process.env, KATA_TEST_ROOT: root, KATA_HOME: path.join(root, "home") };
 mkdirSync(env.KATA_HOME);
 // Parallel workers each get their own home beside this one, so no two processes share a store.
-const JOBS = Math.max(1, Math.floor(Number(process.env.KATA_TEST_JOBS ?? 4)) || 4);
+// The default never runs more workers than the machine has CPUs (CI runners have 2 to 4).
+const DEFAULT_JOBS = Math.min(4, os.availableParallelism());
+const JOBS = Math.max(1, Math.floor(Number(process.env.KATA_TEST_JOBS ?? DEFAULT_JOBS)) || DEFAULT_JOBS);
 for (const key of ["KATA_SERVER", "KATA_DAEMON", "KATA_AUTH_TOKEN", "KATA_REF", "KATA_TEAMMATE", "KATA_INBOX_USER", "KATA_SESSION_ID"]) delete env[key];
 assertIsolated(env);
 console.log(`Isolated test root: ${root}`);
