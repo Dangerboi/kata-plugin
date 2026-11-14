@@ -56,13 +56,17 @@ export type MatchOptions = { unavailable?: ReadonlySet<string>; single?: boolean
 // Pick the plan task a delegation serves. A named task wins, and a named task
 // that is taken binds nothing else; so does a text naming several tasks, which
 // is ambiguous however well one of them overlaps. Then a clear weighted token
-// overlap with the short label (omp's task name) wins; then, for a single delegation, the one
-// open task the lead marked for delegation ("... (delegated to subagent)") if it
-// shares a word with the spawn; then a clear overlap with the full text. Overlap
-// counts the task's leading word twice. The lead's active task scores
-// at half weight and is the fallback only for an explicit current-task handoff.
+// overlap with the short label (omp's task name) wins; then, for a single
+// delegation, the one open task the lead marked for delegation ("... (delegated
+// to subagent)") if it shares a word with the spawn; then a clear overlap with
+// the full text. Overlap counts the task's leading word twice. The lead's
+// active task scores at half weight and is the fallback only for an explicit
+// current-task handoff. A ticket item binds only when named, since its delegate
+// closes the whole ticket: an overlap it wins binds nothing at all.
+// `unavailable` holds plan refs and ticket refs; a ticket item is taken once
+// its ticket is.
 export function matchDelegation(tasks: Task[], text: string, { unavailable = new Set(), single = true, label = "" }: MatchOptions = {}): Task | undefined {
-	const available = (t: Task) => OPEN.has(t.status) && t.status !== "blocked" && !t.delegated && !t.holder && !unavailable.has(t.ref);
+	const available = (t: Task) => OPEN.has(t.status) && t.status !== "blocked" && !t.delegated && !t.holder && !unavailable.has(t.ref) && !(t.ticket && unavailable.has(t.ticket));
 	const full = label ? `${label}\n${text}` : text;
 	const named = namedTasks(tasks, full);
 	if (named.length > 1) return undefined;
@@ -85,13 +89,14 @@ export function matchDelegation(tasks: Task[], text: string, { unavailable = new
 		return best?.eligible && (!runner || best.score >= runner.score * 1.5) ? best.task : undefined;
 	};
 	const byLabel = label && overlap(label);
-	if (byLabel) return byLabel;
+	if (byLabel) return byLabel.ticket ? undefined : byLabel;
 	const wanted = new Set(taskTokens(full));
-	const marked = candidates.filter(t => /\b(?:delegat\w*|sub-?agents?)\b/i.test(t.content));
+	const plain = candidates.filter(t => !t.ticket);
+	const marked = plain.filter(t => /\b(?:delegat\w*|sub-?agents?)\b/i.test(t.content));
 	if (single && marked.length === 1 && taskTokens(marked[0].content).some(token => wanted.has(token))) return marked[0];
 	const found = overlap(full);
-	if (found) return found;
-	const active = candidates.filter(t => t.status === "in_progress");
+	if (found) return found.ticket ? undefined : found;
+	const active = plain.filter(t => t.status === "in_progress");
 	if (single && active.length === 1 && /\b(?:current|active|this)\s+(?:task|todo|item|step)\b/i.test(full)) return active[0];
 }
 
@@ -293,24 +298,24 @@ export function createDelegates(env: DelegatesEnv): Delegates {
 				const { tasks: named, tickets: others } = namedTargets(tasks, `${label}\n${spawn.text}`, projects, src.parent);
 				const targets = [...new Set([...named.map(t => t.ticket ?? t.ref), ...others])];
 				if (targets.length > 1) throw new Error(`Task ${index + 1} names more than one ticket or plan item (${targets.join(", ")}). Name one ticket per task and split the work across tasks.`);
-				let ticket: string, item: Task | undefined;
-				const direct = others[0] ?? named[0]?.ticket;
-				// Items naming one ticket share its ref, so the delegated one is the item whose text the prompt quotes.
-				if (direct) { ticket = direct; item = named.find(t => `${label}\n${spawn.text}`.toLowerCase().includes(t.content.toLowerCase())) ?? (named.length === 1 ? named[0] : undefined); }
-				else {
+				const ticket = others[0] ?? named[0]?.ticket;
+				if (!ticket) {
 					if (named[0] && (taken.has(named[0].ref) || named[0].delegated)) throw new Error(`Plan task ${named[0].ref} is already delegated.`);
 					if (named[0]?.holder) throw new Error(`${heldMessage(named[0].ref, named[0].holder)}; take it over first (todo start with takeover: true).`);
+					// Never a ticket item: matchDelegation binds one only when named, and a named one names its ticket above.
 					const selected = src.planned ? matchDelegation(tasks, spawn.text, { unavailable: taken, single: spawns.length === 1, label }) : undefined;
-					if (!selected?.ticket) {
-						if (selected) taken.add(selected.ref);
-						reservations.push({ ref: selected?.ref, title: selected?.content });
-						continue;
-					}
-					ticket = selected.ticket; item = selected;
+					if (selected) taken.add(selected.ref);
+					reservations.push({ ref: selected?.ref, title: selected?.content });
+					continue;
 				}
 				if (taken.has(ticket)) throw new Error(`Ticket ${ticket} is already delegated.`);
+				// Items naming one ticket share its ref, so the delegated one is the item whose text the prompt quotes,
+				// or the ticket's only open item when the prompt names just the ticket.
+				const onTicket = tasks.filter(t => t.ticket === ticket && OPEN.has(t.status));
+				const quoted = named.find(t => `${label}\n${spawn.text}`.toLowerCase().includes(t.content.toLowerCase())) ?? (named.length === 1 ? named[0] : undefined);
+				const item = quoted ?? (onTicket.length === 1 ? onTicket[0] : undefined);
 				// The delegate closes the whole ticket, which would strand the lead's other open items on it.
-				const siblings = tasks.filter(t => t !== item && t.ticket === ticket && OPEN.has(t.status));
+				const siblings = onTicket.filter(t => t !== item);
 				if (siblings.length) throw new Error(`Task ${index + 1} would delegate ${ticket}, but other open plan items name it (${siblings.map(t => `"${t.content}"`).join(", ")}). A delegate closes its whole ticket. Delegate the ticket only when no other open item names it, or plan the work as child issues (todo init with ref ${ticket}) and delegate one of those.`);
 				let ticketIssue: KataIssue;
 				try { ticketIssue = await env.owned(ticket, src.workspace, "check", false, undefined, { ...as, ticket: true }); }
