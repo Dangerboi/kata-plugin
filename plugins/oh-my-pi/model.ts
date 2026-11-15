@@ -58,6 +58,36 @@ export function textOf(content: unknown): string {
 	if (typeof content === "string") return content;
 	return Array.isArray(content) ? content.filter(b => b?.type === "text" && typeof b.text === "string").map(b => b.text).join("\n") : "";
 }
+// A delegate's report out of its messages' contents, oldest first: the text of the last one that has any (a failed or cut-off
+// turn can end on one without).
+export const lastText = (contents: readonly unknown[]): string | undefined => contents.map(content => textOf(content).trim()).filter(Boolean).at(-1);
+
+// How a host's todo tool is named and used, in the advice its model reads: every message of the core names the host's own tool.
+export interface ToolWording {
+	tool: string;
+	// Sentences: how to load the plan again, how to make one, and the same as the step a call skipped.
+	refresh: string;
+	plan: string;
+	planFirst: string;
+	// What to do about open tasks a new plan leaves out.
+	leftOut: string;
+	// Clauses: how to repeat a refused call as a takeover, how to take a held task over before delegating it, and how to plan
+	// work as child issues of `ticket`.
+	retryTakeover: string;
+	takeOverFirst: string;
+	planUnder(ticket: string): string;
+}
+// The `todo` tool of omp and pi, which takes ops.
+export const TODO_WORDING: ToolWording = {
+	tool: "todo",
+	refresh: "Use todo op=view to refresh.",
+	plan: "Use todo op=init.",
+	planFirst: "Call todo op=init first.",
+	leftOut: "To replace them, call init again with replace: true.",
+	retryTakeover: "repeat the call with takeover: true",
+	takeOverFirst: "todo start with takeover: true",
+	planUnder: ticket => `todo init with ref ${ticket}`,
+};
 
 export const projectOf = (ref: string) => ref.split("#")[0];
 // An issue's qualified ref: Kata's own `qualified_id`, else `<parent's project>#<short_id>`.

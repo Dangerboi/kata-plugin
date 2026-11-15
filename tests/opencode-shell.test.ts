@@ -5,6 +5,9 @@ import { assertIsolated } from "./isolation";
 import { isolatedKata, until } from "./kata-fixture";
 import { openCodeHost, userMessage, type FakeSession, type OpenCodeInstance } from "./opencode-host";
 import opencode from "../plugins/opencode/kata";
+import { eventsHandled } from "../plugins/opencode/seam";
+import { SUBAGENT_PREFIX } from "../plugins/opencode/subagents";
+import { teammateFor } from "../core/delegates";
 import { TRANSCRIPT_ENV } from "../core/kata-cli";
 assertIsolated();
 const binary = process.env.KATA_TEST_EXECUTABLE!;
@@ -23,7 +26,6 @@ async function kata(args: string[]): Promise<any> {
 }
 const show = (ref: string) => kata(["show", ref, "--json"]);
 
-const PREAMBLE = "You are a subagent spawned by another session.\n";
 let sequence = 0;
 const open: OpenCodeInstance[] = [];
 
@@ -49,7 +51,7 @@ afterAll(async () => {
 });
 
 async function lead() {
-	const host = await openCodeHost({ plugin: opencode, directory: cwd, options: { executable: binary, author: "opencode-builder" } });
+	const host = await openCodeHost({ plugin: opencode, directory: cwd, options: { executable: binary, author: "opencode-builder" }, eventsHandled });
 	open.push(host);
 	return { host, id: host.createSession({ id: `oc-sh-${++sequence}-${Date.now().toString(36)}` }).id };
 }
@@ -70,7 +72,7 @@ async function closeEvents(): Promise<any[]> {
 async function delegate(host: OpenCodeInstance, leadID: string, prompt: string, work: (child: FakeSession, system: string) => Promise<void>) {
 	await host.callTool(leadID, "subagent", { agent: "general", description: "Work item", prompt }, {
 		execute: async given => {
-			const child = host.createSession({ parentID: leadID, messages: [userMessage(PREAMBLE + given.prompt)] });
+			const child = host.createSession({ parentID: leadID, messages: [userMessage(SUBAGENT_PREFIX + given.prompt)] });
 			await work(child, (await host.context(child.id)).system.join("\n"));
 			host.addAssistantText(child.id, "Done.");
 			return { output: { sessionID: child.id, status: "completed", output: "Done." }, content: "Done.", metadata: { sessionID: child.id, status: "completed" } };
@@ -120,6 +122,25 @@ test("--as is refused for a delegate and the command does not run", async () => 
 	});
 });
 
+test("a child session the lead does not track runs Kata under a teammate derived from its session, and --as is refused", async () => {
+	const { host, id } = await lead();
+	await host.callTool(id, "todowrite", todos(["Lead item", "pending"]));
+	// No `subagent` call of the lead made these sessions: a delegate's own subagent, or a child from before a restart.
+	const child = host.createSession({ parentID: id }), grandchild = host.createSession({ parentID: child.id });
+	for (const session of [child, grandchild]) {
+		const teammate = teammateFor(session.id, id);
+		const listed = await shell(host, session.id, "kata list --agent");
+		expect(listed.input.command).toBe(`env KATA_AUTHOR='opencode-builder' kata --teammate '${teammate}' list --agent`);
+		const closed = await shell(host, session.id, "kata close x#1 --done");
+		expect(closed.input.command).toContain(`KATA_TRANSCRIPT_SESSION_ID='${session.id}'`);
+		expect(closed.input.command).toContain(`kata --teammate '${teammate}' close x#1 --done`);
+		const refused = await shell(host, session.id, 'kata comment x#1 --as someone-else --body "hi"');
+		expect(refused.status).toBe("error");
+		expect(refused.text).toContain("--as is not permitted");
+		expect(refused.executed).toBe(false);
+	}
+});
+
 test("a lead's command is unchanged apart from the author and the close transcript pair", async () => {
 	const { host, id } = await lead();
 	await host.callTool(id, "todowrite", todos(["Lead item", "pending"]));
@@ -145,7 +166,7 @@ test("commands that are not Kata are untouched", async () => {
 
 // The server's own environment holds neither setting: only the plugin options name the actor.
 test("shell kata commands carry the configured author and teammate when the server environment has none", async () => {
-	const host = await openCodeHost({ plugin: opencode, directory: cwd, options: { executable: binary, author: "configured-author", teammate: "configured-mate" } });
+	const host = await openCodeHost({ plugin: opencode, directory: cwd, options: { executable: binary, author: "configured-author", teammate: "configured-mate" }, eventsHandled });
 	open.push(host);
 	const id = host.createSession({ id: `oc-sh-env-${Date.now().toString(36)}` }).id;
 	await host.callTool(id, "todowrite", todos(["Configured actor item", "in_progress"]));

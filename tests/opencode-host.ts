@@ -33,6 +33,8 @@ export interface OpenCodeHostOptions {
 	builtins?: Record<string, BuiltinTool>;
 	/** How often each rebuild of the tool registry replays the plugin's transform callbacks (the spike saw several). Default 2. */
 	replays?: number;
+	/** Settles once the plugin set up with `ctx` has handled the events emitted so far, for a plugin whose consumer takes the next event before it has handled the last. `emit` waits for it. */
+	eventsHandled?: (ctx: any) => Promise<void>;
 }
 
 export interface FakeSession {
@@ -118,8 +120,8 @@ export interface OpenCodeInstance {
 	callTool(sessionID: string, toolName: string, input: unknown, options?: ToolCallOptions): Promise<ToolCallResult>;
 	/** Runs the `context` hooks; returns the final event and the system text parts. */
 	context(sessionID: string, options?: { first?: boolean; messages?: any[]; system?: any[] }): Promise<{ event: any; system: string[] }>;
-	/** Pushes one event to every matching `ctx.event.subscribe` stream and lets consumers run. */
-	emit(type: string, data?: Record<string, unknown>): Promise<void>;
+	/** Pushes one event to every matching `ctx.event.subscribe` stream and lets consumers run. `created`: when OpenCode made the event; default now. */
+	emit(type: string, data?: Record<string, unknown>, created?: number): Promise<void>;
 	/** `emit("session.created", ...)` with the data taken from the session. */
 	emitCreated(sessionID: string): Promise<void>;
 	/** Rebuilds the tool registry, as `ctx.tool.reload()` does. */
@@ -458,18 +460,20 @@ async function start(options: OpenCodeHostOptions, shared: Shared): Promise<Open
 			// system parts are { type: "text", text }; bare strings are tolerated.
 			return { event, system: event.system.map((part: any) => (typeof part === "string" ? part : part.text)) };
 		},
-		async emit(type: string, data: Record<string, unknown> = {}) {
-			const event = { id: nextID("evt"), type, created: Date.now(), data: clone(data) };
+		async emit(type: string, data: Record<string, unknown> = {}, created = Date.now()) {
+			const event = { id: nextID("evt"), type, created, data: clone(data) };
 			const receivers = [...subscribers].filter((subscriber) => !subscriber.types || subscriber.types.includes(type));
 			for (const subscriber of receivers) subscriber.push(clone(event));
-			// Resolves once every receiving consumer has finished the event and asked for the next one (or its stream ended),
-			// so a test can assert on what the plugin's handlers did. A consumer that never asks again is a plugin defect.
+			// Resolves once every receiving consumer has asked for its next event (or its stream ended) and the plugin says it
+			// has handled what it took, so a test can assert on what the plugin's handlers did. A plugin that never gets there
+			// has a defect.
 			const stuck = Symbol("stuck");
 			const timer = Promise.withResolvers<typeof stuck>();
 			const handle = setTimeout(() => timer.resolve(stuck), 30_000);
-			const outcome = await Promise.race([Promise.all(receivers.map((subscriber) => subscriber.idle())), timer.promise]);
+			const handled = Promise.all(receivers.map((subscriber) => subscriber.idle())).then(() => options.eventsHandled?.(guarded));
+			const outcome = await Promise.race([handled, timer.promise]);
 			clearTimeout(handle);
-			if (outcome === stuck) throw new Error(`fake OpenCode host: a ${type} consumer did not ask for its next event within 30 s`);
+			if (outcome === stuck) throw new Error(`fake OpenCode host: the plugin did not finish handling ${type} within 30 s`);
 			await tick();
 		},
 		async emitCreated(sessionID: string) {

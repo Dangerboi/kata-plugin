@@ -5,7 +5,8 @@ import { assertIsolated } from "./isolation";
 import { isolatedKata, until } from "./kata-fixture";
 import { openCodeHost, userMessage, type FakeSession, type OpenCodeInstance } from "./opencode-host";
 import opencode from "../plugins/opencode/kata";
-import { speak } from "../plugins/opencode/todowrite";
+import { eventsHandled } from "../plugins/opencode/seam";
+import { SUBAGENT_PREFIX } from "../plugins/opencode/subagents";
 import { TRANSCRIPT_ENV } from "../core/kata-cli";
 assertIsolated();
 const binary = process.env.KATA_TEST_EXECUTABLE!;
@@ -25,12 +26,14 @@ async function kata(args: string[]): Promise<any> {
 const show = (ref: string) => kata(["show", ref, "--json"]);
 
 // The adapter can run this wrapper as "kata": it records every call and, while `slow` exists, holds each `notify` for a moment,
-// so a settle is still running when the next event arrives. Everything goes to the real binary.
+// so a settle is still running when the next event arrives; while `hold` exists, a `notify` waits until it is removed.
+// Everything goes to the real binary.
 const wrapper = path.join(scratch, "kata-wrapper.sh");
-const calls = path.join(scratch, "calls.log"), slow = path.join(scratch, "slow");
+const calls = path.join(scratch, "calls.log"), slow = path.join(scratch, "slow"), hold = path.join(scratch, "hold");
 writeFileSync(wrapper, `#!/bin/sh
 echo "$@" >> "${calls}"
 if [ "$1" = notify ] && [ -e "${slow}" ]; then sleep 1; fi
+while [ "$1" = notify ] && [ -e "${hold}" ]; do sleep 0.05; done
 exec "${binary}" "$@"
 `);
 chmodSync(wrapper, 0o755);
@@ -38,7 +41,6 @@ const kataCalls = () => (existsSync(calls) ? readFileSync(calls, "utf8").split("
 
 const evidence = ["test:bun test opencode delegates"];
 const message = "Implemented the item and verified it with the isolated OpenCode delegate suite.";
-const PREAMBLE = "You are a subagent spawned by another session.\n";
 let sequence = 0;
 const open: OpenCodeInstance[] = [];
 
@@ -64,7 +66,7 @@ afterAll(async () => {
 });
 
 async function lead(executable = binary, options: Record<string, unknown> = {}, plugin: typeof opencode = opencode) {
-	const host = await openCodeHost({ plugin, directory: cwd, options: { executable, author: "opencode-builder", ...options } });
+	const host = await openCodeHost({ plugin, directory: cwd, options: { executable, author: "opencode-builder", ...options }, eventsHandled });
 	open.push(host);
 	return { host, id: host.createSession({ id: `oc-del-${++sequence}-${Date.now().toString(36)}` }).id };
 }
@@ -107,7 +109,7 @@ async function spawn(host: OpenCodeInstance, leadID: string, input: SpawnInput, 
 			if (given.sessionID) {
 				child = host.sessions.get(given.sessionID)!;
 				host.addMessage(child.id, userMessage(given.prompt));
-			} else child = host.createSession({ parentID: leadID, title: given.description, messages: [userMessage(PREAMBLE + given.prompt)] });
+			} else child = host.createSession({ parentID: leadID, title: given.description, messages: [userMessage(SUBAGENT_PREFIX + given.prompt)] });
 			if (given.background) return { output: { sessionID: child.id, status: "running", output: "The subagent is working in the background." }, content: "The subagent is working in the background.", metadata: { sessionID: child.id, status: "running" } };
 			const report = await work!(child, (await host.context(child.id)).system.join("\n"));
 			host.addAssistantText(child.id, report);
@@ -478,7 +480,7 @@ test("a follow-up to a delegate the lead holds no record of reserves nothing, so
 	const { host, id } = await lead();
 	await write(host, id, todos(["Implement parser module", "pending"]));
 	const prompt = "Implement parser module again.";
-	const stranger = host.createSession({ parentID: id, messages: [userMessage(PREAMBLE + prompt)] });
+	const stranger = host.createSession({ parentID: id, messages: [userMessage(SUBAGENT_PREFIX + prompt)] });
 	const followUp = await spawn(host, id, { prompt, sessionID: stranger.id, background: true });
 	expect(followUp.result.status, followUp.result.text).toBe("completed");
 	// Untracked: the child binds to nothing and its prompt carries no assignment.
@@ -543,8 +545,134 @@ test("a background call whose child never reaches a context hook frees its item 
 	expect(statusOf(await item(id, "Implement parser module"))).toBe("closed:done");
 });
 
-test("speak turns the shared-ticket advice into todowrite wording", () => {
-	const spoken = speak("or plan the work as child issues (todo init with ref kata-plugin#abcd) and delegate one of those.");
-	expect(spoken).toBe("or plan the work as child issues (start a session whose first todowrite passes ref kata-plugin#abcd) and delegate one of those.");
-	expect(spoken).not.toContain("todo init");
+test("a spawn that would delegate a ticket other open items name is told the way out in todowrite's words", async () => {
+	const created = await kata(["create", "Ticket two items work", "--body", "Worked by two plan items.", "--project", "pi-port-opencode", "--force-new", "--json"]);
+	const ticket = `pi-port-opencode#${created.issue.short_id}`;
+	const { host, id } = await lead();
+	await write(host, id, todos([`${ticket}: write the parser`, "pending"], [`${ticket}: test the parser`, "pending"]));
+	const { result, child } = await spawn(host, id, { prompt: `Work on ${ticket}.` }, async () => "never");
+	expect(result.status).toBe("error");
+	expect(child).toBeUndefined();
+	expect(result.text).toContain(`or plan the work as child issues (start a session whose first todowrite passes ref ${ticket}) and delegate one of those.`);
+	expect(result.text).not.toContain("todo init");
+});
+
+test("a child is bound to the call whose prompt is its whole first message, not to an earlier call whose prompt that message ends with", async () => {
+	const { host, id } = await lead();
+	await write(host, id, todos(["Implement parser module", "pending"]));
+	// Two background calls wait for their children, and the first one's prompt is the end of the second's.
+	const short = await spawn(host, id, { prompt: "Finish it.", background: true });
+	const long = await spawn(host, id, { prompt: 'Work on "Implement parser module". Finish it.', background: true });
+	// The second call's child reaches its first prompt first.
+	const system = (await host.context(long.child.id)).system.join("\n");
+	expect(refIn(system)).toBe(qref(await item(id, "Implement parser module")));
+	expect((await item(id, "Implement parser module")).metadata["opencode.subagent_id"]).toBe(long.child.id);
+	// The first call is still its own child's: that one named nothing, so it is untracked.
+	expect((await host.context(short.child.id)).system.join("\n")).toContain("you have no Kata issue");
+	for (const { child } of [long, short]) await host.emit("session.execution.interrupted", { sessionID: child.id });
+	await turnEnd(host, id);
+});
+
+test("the late end event of a run that its call's result already ended does not end the follow-up run that began since", async () => {
+	const { host, id } = await lead();
+	await write(host, id, todos(["Implement parser module", "pending"]));
+	const first = await spawn(host, id, { prompt: "Implement parser module first part." }, async child => {
+		await useTool(host, child);
+		return "Only the first part is done.";
+	});
+	// OpenCode made the first run's end event by now; the plugin gets to it only later.
+	const firstEnded = Date.now();
+	const ref = qref(await item(id, "Implement parser module"));
+	const { child } = await spawn(host, id, { prompt: "Now finish the rest.", sessionID: first.child.id, background: true });
+	const system = (await host.context(child.id)).system.join("\n");
+	expect(refIn(system)).toBe(ref);
+	await useTool(host, child);
+	await host.emit("session.execution.succeeded", { sessionID: child.id }, firstEnded);
+	// The follow-up still runs and still holds its issue.
+	const held = (await show(ref)).issue;
+	expect(held.metadata["opencode.subagent_id"]).toBe(child.id);
+	expect(held.metadata.teammate).toBe(teammateIn(system));
+	expect((await host.context(child.id)).system.join("\n")).toContain(`Your Kata issue is ${ref};`);
+	// Its own end event ends it.
+	await closeAs(system);
+	host.addAssistantText(child.id, "The rest is done.");
+	await host.emit("session.execution.succeeded", { sessionID: child.id });
+	await turnEnd(host, id);
+	const closed = (await show(ref)).issue;
+	expect(statusOf(closed)).toBe("closed:done");
+	expect(closed.metadata["opencode.subagent_id"]).toBeUndefined();
+});
+
+test("a background delegate whose session is gone when its end event is handled still exits, and its issue goes back to the lead", async () => {
+	const { host, id } = await lead();
+	await write(host, id, todos(["Implement parser module", "pending"]));
+	const gone = await running(host, id, "Implement parser module in the background.");
+	host.sessions.delete(gone.child.id);
+	await host.emit("session.execution.failed", { sessionID: gone.child.id });
+	await turnEnd(host, id);
+	const handed = (await show(gone.ref)).issue;
+	expect(handed.status).toBe("open");
+	expect(handed.metadata["opencode.subagent_id"]).toBeUndefined();
+	expect(await labelsOf(handed)).toContain("needs-review");
+	expect((await commentsOf(gone.ref)).join("\n")).toContain("failed without closing its Kata issue");
+	// Nothing holds the item: it can be delegated again.
+	const next = await spawn(host, id, { prompt: "Implement parser module again." }, async (_child, system) => { await closeAs(system); return "Done."; });
+	expect(next.result.status, next.result.text).toBe("completed");
+});
+
+for (const [type, end] of [
+	["session.deleted", (host: OpenCodeInstance, id: string) => { host.sessions.delete(id); }],
+	["session.archived", (host: OpenCodeInstance, id: string) => { host.sessions.get(id)!.archived = Date.now(); }],
+] as const) {
+	test(`a running delegate whose own session ends (${type}) exits as aborted, and its issue goes back to the lead`, async () => {
+		const { host, id } = await lead();
+		await write(host, id, todos(["Implement parser module", "pending"]));
+		const ended = await running(host, id, "Implement parser module in the background.");
+		end(host, ended.child.id);
+		await host.emit(type, { sessionID: ended.child.id });
+		await turnEnd(host, id);
+		const handed = (await show(ended.ref)).issue;
+		expect(handed.status).toBe("open");
+		expect(handed.metadata["opencode.subagent_id"]).toBeUndefined();
+		expect(await labelsOf(handed)).toContain("needs-review");
+		expect((await commentsOf(ended.ref)).join("\n")).toContain("aborted without closing its Kata issue");
+	});
+
+	test(`a lead that ended (${type}) while its delegate still ran is finished once the delegate ends, without a restart`, async () => {
+		const { host, id } = await lead();
+		await write(host, id, todos(["Implement parser module", "pending"]));
+		const parent = qref(await parentOf(id));
+		const delegate = await running(host, id, "Implement parser module in the background.");
+		end(host, id);
+		await host.emit(type, { sessionID: id });
+		const saved = () => [...host.shared.kv.keys()].filter(key => key.includes(`/${id}/`));
+		expect(saved().some(key => key.endsWith("/ended"))).toBe(true);
+		// The delegate closes its issue and ends: nothing is owed any more, so the ended lead closes its parent and is forgotten.
+		await closeAs(delegate.system);
+		await host.emit("session.execution.succeeded", { sessionID: delegate.child.id });
+		expect(await until(() => saved().length === 0)).toBe(true);
+		expect((await show(parent)).issue).toMatchObject({ status: "closed", closed_reason: "done" });
+	});
+}
+
+test("one session's events do not wait for another session whose handler is still in Kata", async () => {
+	const { host, id } = await lead(wrapper);
+	await write(host, id, todos(["Implement parser module", "pending"]));
+	const slowed = await running(host, id, "Implement parser module in the background.");
+	const other = host.createSession({ id: `oc-del-${++sequence}-other` }).id;
+	await write(host, other, todos(["Unrelated item", "in_progress"]));
+	const parent = qref(await parentOf(other));
+	await write(host, other, todos({ content: "Unrelated item", status: "completed", message, evidence }));
+	// The delegate's exit is held in its hand back while the other lead's session is deleted.
+	writeFileSync(hold, "");
+	try {
+		const exit = host.emit("session.execution.succeeded", { sessionID: slowed.child.id });
+		expect(await until(() => kataCalls().some(call => call.startsWith("notify") && call.includes(slowed.ref.split("#")[1])))).toBe(true);
+		host.sessions.delete(other);
+		const deleted = host.emit("session.deleted", { sessionID: other });
+		expect(await until(() => ![...host.shared.kv.keys()].some(key => key.includes(`/${other}/`)))).toBe(true);
+		expect((await show(parent)).issue.status).toBe("closed");
+		rmSync(hold);
+		await Promise.all([exit, deleted]);
+	} finally { rmSync(hold, { force: true }); }
 });

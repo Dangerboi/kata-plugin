@@ -6,6 +6,7 @@ import { eventually, isolatedKata, later, settle, until } from "./kata-fixture";
 import { siblingThrottle } from "./kata-errors";
 import { openCodeHost, type OpenCodeInstance } from "./opencode-host";
 import opencode from "../plugins/opencode/kata";
+import { eventsHandled } from "../plugins/opencode/seam";
 import { TRANSCRIPT_ENV } from "../core/kata-cli";
 assertIsolated();
 const binary = process.env.KATA_TEST_EXECUTABLE!;
@@ -45,8 +46,8 @@ const evidence = ["test:bun test opencode fixture"];
 let sequence = 0;
 const open: OpenCodeInstance[] = [];
 
-async function start(options: Record<string, unknown> = {}) {
-	const host = await openCodeHost({ plugin: opencode, directory: cwd, options: { executable: wrapper, author: "opencode-builder", ...options } });
+async function start(options: Record<string, unknown> = {}, plugin: typeof opencode = opencode) {
+	const host = await openCodeHost({ plugin, directory: cwd, options: { executable: wrapper, author: "opencode-builder", ...options }, eventsHandled });
 	open.push(host);
 	return host;
 }
@@ -573,6 +574,84 @@ test("a rejected storage read never fails the session's other tool calls", async
 	host.ctx.storage.get = async () => { throw new Error("storage unavailable"); };
 	const result = await host.callTool(id, "shell", { command: "ls" }, { execute: () => "ok" });
 	expect(result.status, result.text).toBe("completed");
+});
+
+test("a rejected storage read never fails a child session's tool calls", async () => {
+	const host = await start();
+	const child = host.createSession({ parentID: host.createSession().id });
+	host.ctx.storage.get = async () => { throw new Error("storage unavailable"); };
+	const result = await host.callTool(child.id, "shell", { command: "ls" }, { execute: () => "ok" });
+	expect(result.status, result.text).toBe("completed");
+});
+
+test("todowrite in a session OpenCode cannot read says so, and does not call the session a delegate", async () => {
+	const { host, id } = await lead();
+	host.ctx.session.get = async () => { throw new Error("session read failed"); };
+	const result = await write(host, id, todos(["Any item", "pending"]));
+	expect(result.status).toBe("error");
+	expect(result.text).toContain("could not read this session");
+	expect(result.text).not.toContain("delegate");
+});
+
+test("a first list under a ticket that leaves out the ticket's open items is refused in todowrite's words, and the list with them is accepted", async () => {
+	const created = await kata(["create", "Ticket with an open item", "--body", "An earlier session planned under it.", "--project", "pi-port-opencode", "--force-new", "--json"]);
+	const ticket = `pi-port-opencode#${created.issue.short_id}`;
+	const earlier = await lead({ ref: ticket });
+	await write(earlier.host, earlier.id, todos(["Left by an earlier session", "pending"]));
+	const { host, id } = await lead();
+	const refused = await write(host, id, { ...todos(["A different plan", "pending"]), ref: ticket });
+	expect(refused.status).toBe("error");
+	expect(refused.text).toContain("- [ ] Left by an earlier session");
+	expect(refused.text).toContain("Send the list again with these items in it");
+	expect(refused.text).not.toMatch(/replace: true|call init/);
+	const accepted = await write(host, id, { ...todos(["Left by an earlier session", "pending"], ["A different plan", "pending"]), ref: ticket });
+	expect(accepted.status, accepted.text).toBe("completed");
+	expect((await childrenOf(ticket)).map(c => c.title)).toEqual(["Left by an earlier session", "A different plan"]);
+});
+
+test("a saved session that was deleted while no instance ran is ended by the next setup", async () => {
+	const { host, id } = await lead();
+	await write(host, id, todos(["Only item", "in_progress"]));
+	const ref = qref(await parentOf(id));
+	await write(host, id, todos({ content: "Only item", status: "completed", message, evidence }));
+	await host.shutdown();
+	expect(keysOf(host.shared, id).some(key => key.endsWith("/entries"))).toBe(true);
+	// No event reaches a location that has no instance: the next setup learns it from OpenCode.
+	host.sessions.delete(id);
+	const restarted = await host.restart();
+	open.push(restarted);
+	expect(await until(() => keysOf(restarted.shared, id).length === 0)).toBe(true);
+	expect((await show(ref)).issue).toMatchObject({ status: "closed", closed_reason: "done" });
+});
+
+test("a saved session whose resume is still reading storage when the instance stops is not bound after the stop", async () => {
+	let gate: Promise<void> | undefined;
+	// Holds the resume at its read of the session's `ended` part.
+	const gated: typeof opencode = { id: opencode.id, async setup(ctx: any) {
+		const get = ctx.storage.get;
+		ctx.storage.get = async (key: string) => { if (key.endsWith("/ended")) await gate; return get(key); };
+		return opencode.setup(ctx);
+	} };
+	const host = await start({}, gated);
+	const id = host.createSession({ id: `oc-${++sequence}-${Date.now().toString(36)}` }).id;
+	// A deferred close is saved work: the next setup resumes the session for it.
+	await write(host, id, todos(["Throttled item", "in_progress"]));
+	writeFileSync(throttle, "");
+	const deferred = await write(host, id, todos({ content: "Throttled item", status: "completed", message, evidence }));
+	expect(deferred.text).toContain("deferred");
+	await host.shutdown();
+	rmSync(calls, { force: true });
+	const release = Promise.withResolvers<void>();
+	gate = release.promise;
+	const restarted = await host.restart();
+	open.push(restarted);
+	const stopping = restarted.shutdown();
+	// The cleanup has stopped the instance and waits for the resume.
+	await settle(100);
+	release.resolve();
+	await stopping;
+	await settle(300);
+	expect(kataCalls()).toEqual([]);
 });
 
 test("a second lead on the same ticket is refused an item the first started, and takeover: true takes it over", async () => {

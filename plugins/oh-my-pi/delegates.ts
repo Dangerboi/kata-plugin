@@ -1,4 +1,4 @@
-import { closedTaskStatus, digest, heldBySession, heldMessage, itemTicket, missionCloseArgs, missionKey, OPEN, openTaskStatus, projectOf, qualifiedRef, qualifiedRefs, type Binding, type KataIssue, type KataShow, type Plan, type Task } from "./model";
+import { closedTaskStatus, digest, heldBySession, heldMessage, itemTicket, missionCloseArgs, missionKey, OPEN, openTaskStatus, projectOf, qualifiedRef, qualifiedRefs, TODO_WORDING, type Binding, type KataIssue, type KataShow, type Plan, type Task, type ToolWording } from "./model";
 import { isKataCode, type Kata } from "./kata-cli";
 
 // The delegate lifecycle, shared by every host: an omp or OpenCode lead and the pi child (see GLOSSARY.md: Delegate,
@@ -53,8 +53,9 @@ export type Resolved = Reservation & { wait?: true };
 // The one decision of what a spawn's text works in a plan, for check() and for a delegate that starts with nothing reserved.
 // Nothing is guessed: a text that names no task or ticket works nothing, and so does one that names a blocked item. A text
 // that names several targets, a task or ticket in `taken` (refs other spawns and delegates hold), a task another delegate or
-// session holds, or a ticket other open items name is refused. `spawn` is how a refusal calls the spawn.
-export function resolve(text: string, plan: Pick<Plan, "tasks" | "parent" | "local">, taken: ReadonlySet<string>, projects: ReadonlySet<string>, spawn = "The task"): Resolved {
+// session holds, or a ticket other open items name is refused. `spawn` is how a refusal calls the spawn; its advice is in
+// the words of the host's todo tool.
+export function resolve(text: string, plan: Pick<Plan, "tasks" | "parent" | "local">, taken: ReadonlySet<string>, projects: ReadonlySet<string>, spawn = "The task", wording: ToolWording = TODO_WORDING): Resolved {
 	const { tasks: named, tickets: others } = namedTargets(plan.tasks, text, projects, plan.parent);
 	const targets = [...new Set([...named.map(t => t.ticket ?? t.ref), ...others])];
 	if (targets.length > 1) throw new Refusal(`${spawn} names more than one ticket or plan item (${targets.join(", ")}). Name one ticket per task and split the work across tasks.`, targets);
@@ -64,7 +65,7 @@ export function resolve(text: string, plan: Pick<Plan, "tasks" | "parent" | "loc
 		const task = named[0];
 		if (!task) return {};
 		if (taken.has(task.ref) || task.delegated) throw new Refusal(`Plan task ${task.ref} is already delegated.`);
-		if (task.holder) throw new Refusal(`${heldMessage(task.ref, task.holder)}; take it over first (todo start with takeover: true).`);
+		if (task.holder) throw new Refusal(`${heldMessage(task.ref, task.holder)}; take it over first (${wording.takeOverFirst}).`);
 		if (task.status === "blocked") return {};
 		return plan.local ? { wait: true } : { ref: task.ref, title: task.content };
 	}
@@ -74,7 +75,7 @@ export function resolve(text: string, plan: Pick<Plan, "tasks" | "parent" | "loc
 	const item = named.find(t => text.toLowerCase().includes(t.content.toLowerCase())) ?? (named.length === 1 ? named[0] : undefined);
 	// The delegate closes the whole ticket, which would strand the lead's other open items on it.
 	const siblings = plan.tasks.filter(t => t !== item && t.ticket === ticket && OPEN.has(t.status));
-	if (siblings.length) throw new Refusal(`${spawn} would delegate ${ticket}, but other open plan items name it (${siblings.map(t => `"${t.content}"`).join(", ")}). A delegate closes its whole ticket. Delegate the ticket only when no other open item names it, or plan the work as child issues (todo init with ref ${ticket}) and delegate one of those.`);
+	if (siblings.length) throw new Refusal(`${spawn} would delegate ${ticket}, but other open plan items name it (${siblings.map(t => `"${t.content}"`).join(", ")}). A delegate closes its whole ticket. Delegate the ticket only when no other open item names it, or plan the work as child issues (${wording.planUnder(ticket)}) and delegate one of those.`);
 	if (item?.status === "blocked") return {};
 	return { ref: ticket, ticket: true, title: item && (itemTicket(item.content)?.action ?? item.content) };
 }
@@ -189,6 +190,7 @@ export type Who = { teammate?: string; delegate?: boolean; takeover?: boolean; t
 
 export interface DelegatesEnv {
 	namespace: string;
+	wording: ToolWording;
 	store: DelegateStore;
 	// Saves the lead's snapshot: called after every change to a record, so a cleanup the process never finished survives it.
 	persist(): void;
@@ -321,7 +323,7 @@ export function createDelegates(env: DelegatesEnv): Delegates {
 			const reserved: Reservation[] = [];
 			for (const [index, spawn] of spawns.entries()) {
 				const which = `Task ${index + 1}`;
-				const found: Reservation = resolve(spawn.text, plan, held, projects, which);
+				const found: Reservation = resolve(spawn.text, plan, held, projects, which, env.wording);
 				if (found.ticket) {
 					let ticket: KataIssue;
 					try { ticket = await env.owned(found.ref!, src.workspace, "check", false, undefined, { ...as, ticket: true }); }
@@ -353,7 +355,7 @@ export function createDelegates(env: DelegatesEnv): Delegates {
 			// one batch, and a background spawn can start after its call was released).
 			src = await source(scope);
 			let found: Resolved;
-			try { found = resolve(r.text, src, taken(r), await env.kata.projectNames(src.workspace)); }
+			try { found = resolve(r.text, src, taken(r), await env.kata.projectNames(src.workspace), undefined, env.wording); }
 			catch (error) {
 				if (!(error instanceof Refusal)) throw error;
 				env.debug(error);
@@ -666,7 +668,7 @@ export function createDelegates(env: DelegatesEnv): Delegates {
 		},
 		unassigned(ctx) {
 			const r = env.store.of(ctx);
-			if (!r) return "Kata assignment unavailable; the lead must assign this delegate an issue before it uses todo.";
+			if (!r) return `Kata assignment unavailable; the lead must assign this delegate an issue before it uses ${env.wording.tool}.`;
 			if (isUntracked(r)) return `Subagent ${nameOf(r)} matched no plan item or ticket, so it has no Kata issue and no todo list.`;
 			return `Kata assignment failed: ${r.error || (r.state === "handed-back" || r.state === "settled" ? "its issue was handed back" : "no issue was assigned")}`;
 		},

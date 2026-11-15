@@ -1,9 +1,17 @@
-import type { DelegateEvent } from "./delegates";
-import { teammateFor } from "./delegates";
-import { speak } from "./todowrite";
+import type { DelegateOutcome } from "./delegates";
+import { lastText, textOf } from "./model";
 import type { Lead } from "./lead";
-import { EXECUTION_ENDED, SESSION_ENDED, type Seam } from "./seam";
+import { CallRefused, EXECUTION_ENDED, SESSION_ENDED, type Seam } from "./seam";
 
+// What OpenCode puts in front of a `subagent` call's prompt to make the child's first message.
+export const SUBAGENT_PREFIX = "You are a subagent spawned by another session.\n";
+
+// One run of a delegate's child session, from the context hook that bound its call until its exit.
+interface Run {
+	childID: string;
+	startedAt: number;
+	over: boolean;
+}
 // A `subagent` call a lead made: read against the plan before it runs (the core keeps what it reserved under the call's id),
 // then matched to the child session it creates.
 interface Call {
@@ -15,17 +23,19 @@ interface Call {
 	background: boolean;
 	// A follow-up: the delegate record (the child's session id) it goes on with.
 	followUp?: string;
-	// Set once the child's first context hook bound it.
-	childID?: string;
+	// The run it started, once the child's first context hook bound it.
+	run?: Run;
 }
 // Everything the lead gave the spawn, as the core reads it for what it names.
 const textFor = (call: Call) => [call.prompt, call.description].filter(Boolean).join("\n");
 
-// The text of a message as OpenCode keeps it: a user message has `text`, an assistant message a list of content parts.
-function textOf(message: any): string {
-	if (typeof message?.text === "string") return message.text;
-	const parts = Array.isArray(message?.content) ? message.content : [];
-	return parts.filter((part: any) => part?.type === "text" && typeof part.text === "string").map((part: any) => part.text).join("");
+// The call a child's first message comes from: the one whose prompt is the whole message after OpenCode's preamble, else the
+// one with the longest prompt the message ends with (one prompt can be the end of another).
+function callFor(calls: Call[], message: any): Call | undefined {
+	// A user message keeps its text in `text`, an assistant message in content parts.
+	const text = textOf(message?.text ?? message?.content);
+	const fresh = calls.filter(call => !call.followUp && call.prompt && text.endsWith(call.prompt));
+	return fresh.find(call => text === SUBAGENT_PREFIX + call.prompt) ?? fresh.sort((a, b) => b.prompt.length - a.prompt.length)[0];
 }
 
 // The report of a finished foreground call: the child's final reply, without the `<subagent ...>` wrapper of the result text.
@@ -46,22 +56,28 @@ export function install(seam: Seam): void {
 		const list = calls.get(lead.id);
 		const index = list?.indexOf(call) ?? -1;
 		if (index >= 0) list!.splice(index, 1);
-		lead.core.delegates.release(call.id);
+		lead.releaseSpawn(call.id);
 	};
-	const send = (lead: Lead, event: DelegateEvent) => lead.core.delegates.apply(event);
+	// The run each child session is in.
+	const runs = new Map<string, Run>();
+	// A run ends once, with its report: by its foreground call's result or by the child's own end, whichever comes first.
+	async function exit(lead: Lead, run: Run, outcome: DelegateOutcome, report?: string) {
+		if (run.over) return;
+		run.over = true;
+		if (runs.get(run.childID) === run) runs.delete(run.childID);
+		if (report?.trim()) await lead.delegateEvent({ type: "reported", id: run.childID, text: report });
+		await lead.delegateEvent({ type: "exited", id: run.childID, outcome });
+	}
 
 	seam.before(async event => {
-		const session = await seam.sessionOf(event.sessionID);
-		if (!session) return;
-		if (session.parentID !== undefined) {
+		const role = await seam.roleOf(event.sessionID);
+		if (role.kind === "delegate") {
 			// A delegate's tool call: it did something, so its assignment is no longer rolled back at exit.
-			const delegate = await seam.delegateOf(event.sessionID);
-			if (delegate && !delegate.record.ranTool) await send(delegate.lead, { type: "ranTool", id: delegate.record.id });
+			if (role.record && !role.record.ranTool) await role.lead.delegateEvent({ type: "ranTool", id: role.record.id });
 			return;
 		}
-		if (event.tool !== "subagent") return;
-		const lead = await seam.leadOf(event.sessionID);
-		if (!lead) return;
+		if (role.kind !== "lead" || event.tool !== "subagent") return;
+		const { lead } = role;
 		await lead.ready;
 		const input = event.input ?? {};
 		const call: Call = {
@@ -73,94 +89,79 @@ export function install(seam: Seam): void {
 		};
 		// A follow-up stays on its delegate's record and issue: nothing is matched or reserved for it.
 		if (typeof input.sessionID === "string" && input.sessionID) call.followUp = input.sessionID;
-		// After any todowrite call still running, so the check reads the plan that call leaves.
-		else await lead.exclusive(async () => {
-			try { await lead.core.delegates.check([{ text: textFor(call) }], call.id); }
-			catch (error) {
-				// The refusal reaches the model of a plugin whose tool is todowrite, not the omp todo tool.
-				throw new Error(speak(error instanceof Error ? error.message : String(error)));
-			}
-		});
+		else {
+			try { await lead.checkSpawn(call.id, textFor(call)); }
+			catch (error) { throw new CallRefused(error instanceof Error ? error.message : String(error)); }
+		}
 		callsOf(lead.id).push(call);
 	});
 
 	seam.context(async (event, { first }) => {
-		const session = await seam.sessionOf(event.sessionID);
-		if (session?.parentID === undefined) return;
-		const lead = await seam.leadOf(event.sessionID);
-		if (!lead) return;
+		const role = await seam.roleOf(event.sessionID);
+		if (role.kind !== "delegate") return;
+		const { lead } = role;
 		await lead.ready;
-		const pending = callsOf(lead.id);
-		let record = lead.delegates.get(event.sessionID);
-		const follow = pending.find(call => call.followUp === event.sessionID && !call.childID);
-		const fresh = !record && first ? pending.find(call => !call.followUp && !call.childID && call.prompt && (event.messages?.[0] ? textOf(event.messages[0]).endsWith(call.prompt) : false)) : undefined;
-		const call = follow ?? fresh;
-		if (call) {
-			call.childID = event.sessionID;
-			// A follow-up goes on with its delegate's record and matches nothing again (`untracked`); a follow-up to a session the
-			// lead holds no record of is not tracked.
-			if (record || fresh) await send(lead, {
-				type: "started", id: event.sessionID, sessionId: event.sessionID, leadSessionId: lead.id, leadTeammate: seam.settings.teammate ?? "",
-				teammate: teammateFor(event.sessionID, lead.id), text: textFor(call), name: call.description || undefined, agent: call.agent, call: call.id, untracked: !!follow,
-			});
-			// A background call has returned by now: nothing is left to wait for.
-			if (call.background) drop(lead, call);
-			record = lead.delegates.get(event.sessionID);
+		const pending = callsOf(lead.id).filter(call => !call.run);
+		const call = pending.find(other => other.followUp === event.sessionID) ?? (!role.record && first ? callFor(pending, event.messages?.[0]) : undefined);
+		// A follow-up goes on with its delegate's record and matches nothing again (`untracked`); a follow-up to a session the
+		// lead holds no record of is not tracked.
+		const begins = !!call && (!!role.record || !call.followUp);
+		if (call && begins) {
+			runs.set(event.sessionID, call.run = { childID: event.sessionID, startedAt: Date.now(), over: false });
+			await lead.began(event.sessionID, { text: textFor(call), name: call.description || undefined, agent: call.agent, call: call.id, untracked: !!call.followUp });
 		}
-		if (!record) return;
-		const delegateCore = lead.delegateCore(event.sessionID);
+		// A background call has returned by now: nothing is left to wait for.
+		if (call?.background) drop(lead, call);
+		if (!role.record && !begins) return;
 		// A later prompt retries an assignment that failed; the first one already waited for the binding.
-		const { sections } = await delegateCore.core.session.beforePrompt(delegateCore.coreCtx, { context: false, after: call ? undefined : send(lead, { type: "nextUse", id: record.id }) });
-		if (sections.assignment) event.system.push({ type: "text", text: sections.assignment });
+		const text = await lead.assignmentSection(event.sessionID, call ? undefined : lead.delegateEvent({ type: "nextUse", id: event.sessionID }));
+		if (text) event.system.push({ type: "text", text });
 	});
 
-	// A foreground call ends with its result; a background one is still running (its child's exit event ends it).
+	// A foreground call ends with its result; a background one is still running (its child's end event ends it).
 	seam.after(async event => {
 		if (event.tool !== "subagent") return;
-		const session = await seam.sessionOf(event.sessionID);
-		if (session?.parentID !== undefined) return;
-		const lead = await seam.savedLead(event.sessionID);
-		const call = lead && callsOf(lead.id).find(other => other.id === event.id);
-		if (!lead || !call) return;
+		const role = await seam.roleOf(event.sessionID);
+		const call = role.kind === "lead" ? callsOf(role.lead.id).find(other => other.id === event.id) : undefined;
+		if (role.kind !== "lead" || !call) return;
 		const running = event.status !== "error" && (event.result?.metadata?.status ?? event.result?.output?.status) === "running";
-		if (running && !call.childID) return;
-		drop(lead, call);
-		if (!call.childID || running) return;
-		const record = lead.delegates.get(call.childID);
-		if (!record) return;
+		if (running && !call.run) return;
+		drop(role.lead, call);
+		if (!call.run || running) return;
 		if (event.status === "error") {
 			const message: string = event.error?.message ?? "the call failed";
-			await send(lead, { type: "reported", id: record.id, text: `Failed: ${message}` });
-			await send(lead, { type: "exited", id: record.id, outcome: /\bcancelled\b/i.test(message) ? "aborted" : "failed" });
-			return;
-		}
-		const report = reportOf(event.result);
-		if (report.trim()) await send(lead, { type: "reported", id: record.id, text: report });
-		await send(lead, { type: "exited", id: record.id, outcome: "completed" });
+			await exit(role.lead, call.run, /\bcancelled\b/i.test(message) ? "aborted" : "failed", `Failed: ${message}`);
+		} else await exit(role.lead, call.run, "completed", reportOf(event.result));
 	});
 
 	seam.events(Object.keys(EXECUTION_ENDED), async event => {
-		const sessionID: string | undefined = event.data?.sessionID;
-		if (!sessionID) return;
-		const session = await seam.sessionOf(sessionID);
-		if (!session) return;
-		if (session.parentID === undefined) {
+		const sessionID = event.data.sessionID;
+		const role = await seam.knownRole(sessionID);
+		if (role.kind === "lead") {
 			// The lead's turn ended. A call still without a child is over: a later hook refused it (neither the tool nor
 			// `execute.after` ran), or its background child never reached a context hook. What it reserved is free again, so the
 			// item can be delegated anew; a background child that reaches its first context hook only now is not tracked.
-			const lead = await seam.savedLead(sessionID);
-			if (lead) for (const call of [...callsOf(lead.id)]) if (!call.childID) drop(lead, call);
+			for (const call of [...callsOf(role.lead.id)]) if (!call.run) drop(role.lead, call);
 			return;
 		}
-		// A child's end, for the background calls: its last assistant text is its report.
-		const lead = await seam.savedLead(session.parentID);
-		const record = lead?.delegates.get(sessionID);
-		if (!lead || !record || record.exited) return;
-		const messages: any[] = await seam.ctx.session.context({ sessionID });
-		const last = [...messages].reverse().find(message => message?.type === "assistant" && textOf(message).trim());
-		if (last) await send(lead, { type: "reported", id: record.id, text: textOf(last) });
-		await send(lead, { type: "exited", id: record.id, outcome: EXECUTION_ENDED[event.type] });
+		// A child's end ends the run it is in. With no run, a call's result ended it already; and an event OpenCode made
+		// before the run began is the end of an earlier run, handled late.
+		const run = runs.get(sessionID);
+		if (role.kind !== "delegate" || !run || (typeof event.created === "number" && event.created < run.startedAt)) return;
+		// Its last assistant text is its report. A session that is gone by now has none to read, and still exits.
+		let report: string | undefined;
+		try {
+			const messages: any[] = await seam.ctx.session.context({ sessionID });
+			report = lastText(messages.filter(message => message?.type === "assistant").map(message => message.content));
+		} catch (error) { seam.debug(error); }
+		await exit(role.lead, run, EXECUTION_ENDED[event.type], report);
 	});
 
-	seam.events(SESSION_ENDED, event => { if (event.data?.sessionID) calls.delete(event.data.sessionID); });
+	seam.events(SESSION_ENDED, async event => {
+		const sessionID = event.data.sessionID;
+		calls.delete(sessionID);
+		// A delegate's own session ended under it: nothing more runs there.
+		const role = await seam.knownRole(sessionID), run = runs.get(sessionID);
+		if (role.kind === "delegate" && run) await exit(role.lead, run, "aborted");
+	});
 }

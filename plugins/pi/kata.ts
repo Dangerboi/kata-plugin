@@ -4,7 +4,7 @@ import { createKataCore, DESCRIPTION, TODO_OPS, TODO_PARAMS, type Lead, type Chi
 import { exportTranscriptSession } from "./kata-cli";
 import { delegateCommand, kataCommands, quote } from "./shell";
 import type { DelegateRecord, DelegateStore } from "./delegates";
-import { textOf } from "./model";
+import { lastText } from "./model";
 
 // Match the native adapter's capability/scope selection, including a project
 // root boundary. Recheck at prompt time: either factory can load first.
@@ -35,12 +35,6 @@ export function inheritsModel(argv: string[]): { model: boolean; thinking: boole
 // Arguments such as `grep pi` or `which pi` do not.
 const PI_LAUNCH = /(?:^|[;&|(`\n]|\$\(|\b(?:ba|z|da|k)?sh\s+(?:-[a-z]+\s+)*-[a-z]*c\s+['"])\s*(?:(?:env|nohup|exec|command|time|setsid|caffeinate)\s+|[A-Za-z_][A-Za-z0-9_]*=(?:'[^']*'|"[^"]*"|[^\s;&|]*)\s+)*(?:[^\s;&|()'"`]*\/)?pi(?=$|[\s;&|)])/;
 export const launchesPi = (command: string) => PI_LAUNCH.test(command);
-
-// A child's report: the text of its last assistant message that has any (a failed or cut-off turn can end on one without).
-function lastAssistantText(ctx: ExtensionContext): string | undefined {
-	return (ctx.sessionManager.getBranch() as any[]).filter(e => e.type === "message" && e.message?.role === "assistant")
-		.map(e => textOf(e.message.content).trim()).filter(Boolean).at(-1);
-}
 
 export default async function piKata(pi: ExtensionAPI) {
 	// OMP also discovers legacy pi manifests. Do not register a second todo
@@ -230,6 +224,7 @@ export default async function piKata(pi: ExtensionAPI) {
 		const record = inherited ? current : undefined;
 		// A fork into a saved session gets the source's tasks at its start (its header names the source); an in-memory one cannot, so they are released.
 		const lead = { continues: event?.reason === "reload", forking: event?.reason === "fork" && !!event.targetSessionFile };
-		await core.session.shutdown(ctx, record ? { delegate: { id: record.id, ended: event?.reason !== "reload", report: lastAssistantText(ctx) } } : lead);
+		const assistant = (ctx.sessionManager.getBranch() as any[]).filter(e => e.type === "message" && e.message?.role === "assistant");
+		await core.session.shutdown(ctx, record ? { delegate: { id: record.id, ended: event?.reason !== "reload", report: lastText(assistant.map(e => e.message.content)) } } : lead);
 	});
 }

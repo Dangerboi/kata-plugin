@@ -87,7 +87,7 @@ The closes the plugin still owes for a session: its pending closes and its autom
 _Avoid_: reconcile, close queue
 
 **Ended session**:
-A lead session deleted or archived while it still owes closes or delegate cleanups; its saved state waits for the next plugin setup, which finishes the work and forgets it.
+A lead session deleted or archived while it still owes closes or delegate cleanups; it is finished once that work is done, by the instance that holds it or else by the next plugin setup, and its saved state is then forgotten.
 _Avoid_: pending end, ended mark
 
 ## Inbox

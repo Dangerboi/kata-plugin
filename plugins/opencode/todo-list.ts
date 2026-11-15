@@ -37,6 +37,8 @@ function groupsOf(plan: readonly PlanItem[]): Map<string, PlanItem[]> {
 export function listOf(plan: readonly PlanItem[]): ListView[] {
 	return [...groupsOf(plan).values()].map(representative).map(t => t.status === "blocked" ? { content: t.content, status: "in_progress", blocker: t.blocker || "blocked" } : { content: t.content, status: LISTED[t.status] });
 }
+// What a refused or failed call ends with: the plan as the list to send back.
+export const planTail = (plan: readonly PlanItem[]) => `The current Kata plan is below. Send it again with your changes applied on top:\n${JSON.stringify({ todos: listOf(plan) })}`;
 
 const proofMissing = (item: ListItem): string | undefined => {
 	const missing = missingProof(item);
@@ -131,12 +133,7 @@ export function diffTodoList(plan: readonly PlanItem[], accepted: ReadonlySet<st
 	}
 
 	if (problems.length) {
-		const refusal = [
-			"Refused: this list disagrees with the Kata plan. Nothing was changed.",
-			...problems.map(p => `- ${p}`),
-			"The current Kata plan is below. Send it again with your changes applied on top:",
-			JSON.stringify({ todos: listOf(plan) }),
-		].join("\n");
+		const refusal = ["Refused: this list disagrees with the Kata plan. Nothing was changed.", ...problems.map(p => `- ${p}`), planTail(plan)].join("\n");
 		return { refusal, problems };
 	}
 	return { ops: [...(appended.length ? [{ op: "append", items: appended } as ListOp] : []), ...closes, ...unblocks, ...blocks, ...starts] };

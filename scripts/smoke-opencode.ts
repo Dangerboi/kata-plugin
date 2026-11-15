@@ -16,6 +16,7 @@ import path from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { cleanEnv, closeEvent, closeEvidence, closeTranscript, defer, flag, kataProject, lastLines, option, pickScenarios, report, reportChecks, runToEnd, scratchRoot, teardown, verdict, type Check, type Issue } from "./smoke-lib";
 import { MODEL, PROVIDER, startProvider, type Request, type Turn } from "./smoke-opencode-provider";
+import { SUBAGENT_PREFIX } from "../plugins/opencode/subagents";
 
 type Store = {
 	/** Requests recorded by the scripted provider, oldest first. */
@@ -135,8 +136,6 @@ SCENARIOS.push({
 // ---- Delegates: a lead's `subagent` calls bound to its plan items ----
 const DELEGATE_PLAN = ["Build the parser", "Document the parser"];
 const planOf = (items: string[]) => [{ tool: "todowrite", args: { todos: items.map((content, n) => ({ content, status: n ? "pending" : "in_progress" })) } }];
-// OpenCode 2.2.7 starts a subagent's first message with this, before the prompt it was given.
-const SUBAGENT_PREFIX = "You are a subagent spawned by another session.\n";
 // The child's session id as the lead's subagent result names it.
 const childOf = (texts: string[]) => texts.map(t => /ses_[A-Za-z0-9]+/.exec(t.slice(t.indexOf("sessionID")))?.[0] ?? /sessionID[^A-Za-z0-9]+(ses_[A-Za-z0-9]+)/.exec(t)?.[1]).find(Boolean);
 const commentsOn = (i?: Issue) => (i?.events ?? []).filter(e => e.type === "issue.commented").map(e => String(e.payload?.body ?? ""));

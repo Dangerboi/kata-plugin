@@ -391,3 +391,21 @@ test("/todo takeover of a blocked task takes it over as it is and reports no err
   expect(taken.issue.metadata["todo.status"]).toBe("blocked");
   expect((taken.comments ?? []).some((c: { body: string }) => c.body.startsWith("Taken over by session session-b"))).toBe(true);
 });
+
+test("a lead's start marks the task with its session when a sub identity's session start reaches its handlers mid-call", async () => {
+  const parent = await issue();
+  const ref = await issue(["todo.phase=Tasks", "todo.status=pending"], parent);
+  let midCall: (() => void) | undefined;
+  const app = ompHost({ run: args => run(args), cwd, sid: "session-midcall", agent: { kind: "main", id: "main-session-midcall" },
+    entries: [{ type: "custom", customType: "io.kata.omp.parent", data: { parent } }],
+    before: () => { midCall?.(); midCall = undefined; } });
+  await app.event("session_start");
+  await app.call({ op: "view" });
+  // A sub identity of the session (omp's advisor) starts while the lead's call waits for Kata.
+  let started: Promise<unknown> | undefined;
+  midCall = () => { started = app.event("session_start", {}, { ...app.ctx, agent: { kind: "sub", id: "Advisor" } }); };
+  expect((await app.call({ op: "start", task: ref })).isError).toBeUndefined();
+  await started;
+  expect(started).toBeDefined();
+  expect((await meta(ref))["todo.session"]).toBe("session-midcall");
+});
