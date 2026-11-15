@@ -1,10 +1,8 @@
-import { diffTodoList, listOf, planTail, type ListItem, type ListOp, type PlanItem } from "./todo-list";
+import { diffTodoList, LIST_STATUSES, listOf, planTail, type ListItem, type ListOp, type PlanItem } from "./todo-list";
 import { RULES } from "./kata-core";
 import type { Planner, TodoResult } from "./lead";
 import type { Seam } from "./seam";
 import { DESCRIPTION } from "./wording";
-
-const STATUSES = ["pending", "in_progress", "completed", "cancelled"] as const;
 
 const SCHEMA = {
 	type: "object",
@@ -16,7 +14,7 @@ const SCHEMA = {
 				type: "object",
 				properties: {
 					content: { type: "string", description: "Exact task text; also the item's identity." },
-					status: { type: "string", enum: [...STATUSES] },
+					status: { type: "string", enum: [...LIST_STATUSES] },
 					message: { type: "string", description: "completed: what changed and how it was verified (40+ characters)." },
 					evidence: { type: "array", items: { type: "string" }, description: `completed: ${RULES.evidence}.` },
 					reason: { type: "string", description: "cancelled: why." },
@@ -40,7 +38,7 @@ function parseInput(input: any): { todos: ListItem[]; ref?: string; takeover: bo
 	const todos = input.todos.map((item: any, index: number): ListItem => {
 		const where = `todos[${index}]`;
 		if (!item || typeof item.content !== "string") throw new Error(`${where}.content must be a string.`);
-		if (!STATUSES.includes(item.status)) throw new Error(`${where}.status must be one of ${STATUSES.join(", ")}.`);
+		if (!LIST_STATUSES.includes(item.status)) throw new Error(`${where}.status must be one of ${LIST_STATUSES.join(", ")}.`);
 		if (item.evidence !== undefined && (!Array.isArray(item.evidence) || item.evidence.some((e: unknown) => typeof e !== "string"))) throw new Error(`${where}.evidence must be an array of strings.`);
 		return { content: item.content, status: item.status, message: text(item.message, `${where}.message`), evidence: item.evidence, reason: text(item.reason, `${where}.reason`), blocker: text(item.blocker, `${where}.blocker`) };
 	});

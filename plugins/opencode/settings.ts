@@ -3,10 +3,6 @@
 // (`opencode --standalone`): put a setting in opencode.json to make it hold for every server.
 export interface Settings {
 	executable: string;
-	// The ticket every session plans under (like todowrite's `ref`, but fixed for the project).
-	ref?: string;
-	defaultProject?: string;
-	author?: string;
 	teammate?: string;
 	debugFile?: string;
 	// The core's lookup for the variables it would read from process.env (KATA_REF, KATA_AUTHOR, ...).
@@ -32,12 +28,14 @@ export function resolveSettings(options: Record<string, unknown> | undefined, en
 		const [option, variable] = SETTINGS[key];
 		for (const value of [options?.[option], environment[variable]]) if (typeof value === "string" && value.trim()) return value.trim();
 	};
-	const settings = { ref: read("ref"), defaultProject: read("defaultProject"), author: read("author"), teammate: read("teammate") };
+	// What the core's `env` lookup and Kata's own environment get: the settings that are variables Kata reads.
+	const named = (keys: (keyof typeof SETTINGS)[]) => Object.fromEntries(keys.flatMap(key => { const value = read(key); return value ? [[SETTINGS[key][1], value] as [string, string]] : []; }));
+	const forCore = named(["ref", "defaultProject", "author", "teammate"]);
 	return {
 		executable: read("executable") ?? "kata",
-		...settings,
+		teammate: read("teammate"),
 		debugFile: read("debugFile"),
-		env: name => ({ KATA_REF: settings.ref, KATA_DEFAULT_PROJECT: settings.defaultProject, KATA_AUTHOR: settings.author, KATA_TEAMMATE: settings.teammate } as Record<string, string | undefined>)[name],
-		kataEnv: { ...(settings.author ? { KATA_AUTHOR: settings.author } : {}), ...(settings.teammate ? { KATA_TEAMMATE: settings.teammate } : {}) },
+		env: name => forCore[name],
+		kataEnv: named(["author", "teammate"]),
 	};
 }

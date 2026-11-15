@@ -1,3 +1,4 @@
+// Generated from core/inbox.ts; edit there.
 // The session inbox: the requests Kata holds for one session address. Two feeds fill it, the `kata inbox`
 // read (every turn, or the seed of a live follower) and the `kata events --tail` stream (live). Both go
 // through one trust rule and one render, and a live follower owns the retry and backoff policy for the

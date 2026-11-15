@@ -1,7 +1,9 @@
+// Generated from core/todo-list.ts; edit there.
 // Pure diff between the whole todo list a model sends and the Kata plan: no Kata, no host, no I/O.
 import { proofProblem, OPEN, type Status } from "./model";
 
-export type ListStatus = "pending" | "in_progress" | "completed" | "cancelled";
+export const LIST_STATUSES = ["pending", "in_progress", "completed", "cancelled"] as const;
+export type ListStatus = (typeof LIST_STATUSES)[number];
 export type ListItem = { content: string; status: ListStatus; message?: string; evidence?: string[]; reason?: string; blocker?: string };
 // `ref` tells apart plan tasks that share a content (the same title in two phases): ops then name the task by ref.
 export type PlanItem = { content: string; status: Status; blocker?: string; ref?: string };

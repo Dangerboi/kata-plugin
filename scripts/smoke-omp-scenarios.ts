@@ -7,7 +7,7 @@
 import { setTimeout as sleep } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import { ownComment } from "../plugins/oh-my-pi/delegates";
-import { closeEvent, closeEvidence, closeTranscript, type Check, type Issue } from "./smoke-lib";
+import { closeCount, closeEvent, closeEvidence, closeTranscript, eventsOf, type Check, type Issue } from "./smoke-lib";
 import type { SmokeContext, SmokeTurn } from "./smoke-provider";
 
 export type TurnContext = SmokeContext & {
@@ -335,9 +335,8 @@ export const SCENARIOS: Scenario[] = [{
 		const issues = await store.issues();
 		const byId = (id: string) => issues.find(i => i.ref === id);
 		const [alpha, beta, gamma] = [byId(a), byId(b), byId(c)];
-		const events = (i?: Issue, type?: string) => i?.events.filter(e => e.type === type) ?? [];
 		const comments = (i?: Issue) => i?.events.filter(e => /comment/.test(e.type)) ?? [];
-		const closed = events(alpha, "issue.closed");
+		const closed = eventsOf(alpha, "issue.closed");
 		const parents = issues.filter(i => i.metadata["omp.auto_parent"] === true);
 		const changelog = issues.find(i => i.title === "update CHANGELOG");
 		return [
@@ -346,7 +345,7 @@ export const SCENARIOS: Scenario[] = [{
 			{ name: "named tickets never join a plan (no todo.phase)", ok: [alpha, beta, gamma].every(i => !i?.metadata["todo.phase"]), detail: JSON.stringify([alpha, beta, gamma].map(i => i?.metadata)) },
 			{ name: "finishing every item closes the ticket once with the last item's evidence", ok: alpha?.status === "closed" && closed.length === 1 && JSON.stringify(closed[0].payload.evidence) === JSON.stringify([{ type: "test", command: "bun smoke scenario second" }]), detail: JSON.stringify(closed) },
 			{ name: "each finished item left a comment", ok: comments(alpha).length === 2, detail: `${comments(alpha).length} comments` },
-			{ name: "drop comments and leaves the ticket open", ok: beta?.status === "open" && comments(beta).length === 1 && events(beta, "issue.closed").length === 0, detail: `${beta?.status} ${comments(beta).length} comments` },
+			{ name: "drop comments and leaves the ticket open", ok: beta?.status === "open" && comments(beta).length === 1 && closeCount(beta) === 0, detail: `${beta?.status} ${comments(beta).length} comments` },
 			{ name: "an unresolvable ref created nothing", ok: !issues.some(i => /ghost/.test(i.title)) },
 			{ name: "a delegate bound the ticket its item names, closed it and returned it to the lead", ok: returnedToLead(gamma) && gamma?.status === "closed" && !issues.some(i => i.title.startsWith("Subagent")), detail: `${gamma?.status} ${JSON.stringify(gamma?.metadata)}` },
 		];
@@ -375,7 +374,7 @@ export const SCENARIOS: Scenario[] = [{
 	async check(store, { t }) {
 		const issues = await store.issues();
 		const ticket = issues.find(i => i.ref === t);
-		const closed = ticket?.events.filter(e => e.type === "issue.closed") ?? [];
+		const closed = eventsOf(ticket, "issue.closed");
 		const blocking = ticket?.events.filter(e => /comment/.test(e.type) && /open child/.test(JSON.stringify(e.payload))) ?? [];
 		return [
 			{ name: "the claimed ticket is the plan parent: the plain item is its child", ok: issues.some(i => i.title === "Add the ignore file" && i.status === "closed"), detail: issues.map(i => `${i.title}:${i.status}`).join(", ") },
@@ -408,7 +407,7 @@ export const SCENARIOS: Scenario[] = [{
 		const requests = issues.filter(notified).map(i => i.ref);
 		const review = issues.filter(labelled);
 		const mission = missions[0];
-		const reports = mission?.events.filter(e => e.type === "issue.commented" && String(e.payload?.body).startsWith("Report from subagent")) ?? [];
+		const reports = eventsOf(mission, "issue.commented").filter(e => String(e.payload?.body).startsWith("Report from subagent"));
 		return [
 			{ name: "only the parent, the two plan items and the scout's mission exist", ok: issues.length === 4 && children.length === 2 && missions.length === 1 && !!parent, detail: issues.map(i => i.title).join(", ") },
 			{ name: "the scout's run is a mission closed as audit-no-change, naming its agent", ok: mission?.status === "closed" && closeEvent(mission)?.reason === "audit-no-change" && mission.metadata["omp.mission_agent"] === "scout", detail: `${mission?.status} ${closeEvent(mission)?.reason} ${JSON.stringify(mission?.metadata)}` },

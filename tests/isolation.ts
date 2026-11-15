@@ -3,14 +3,7 @@ import { Database } from "bun:sqlite";
 import { copyFileSync, existsSync, mkdtempSync, realpathSync, rmSync, statSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { TRANSCRIPT_ENV } from "../core/kata-cli";
-
-// Every variable Kata routes by or the plugins read. The runner drops them from what it inherits, and each fixture from
-// its Kata environment and, before each test, from the test process: a developer's own settings and an earlier test's
-// leftovers must not change what a test sees.
-export const SCRUBBED_ENV = ["KATA_SERVER", "KATA_DAEMON", "KATA_AUTH_TOKEN", "KATA_REF", "KATA_TEAMMATE", "KATA_INBOX_USER", "KATA_SESSION_ID", "KATA_DEFAULT_PROJECT",
-  "KATA_AUTHOR", "KATA_PI_PARENT", "KATA_OMP_LIVE_INBOX", "KATA_ATTENTION_HOST", "KATA_OMP_EXECUTABLE", "KATA_PI_EXECUTABLE", "KATA_OPENCODE_EXECUTABLE", "KATA_OMP_DEBUG",
-  "KATA_PI_DEBUG", "KATA_OPENCODE_DEBUG", ...TRANSCRIPT_ENV];
+export { SCRUBBED_ENV } from "../scripts/scrubbed-env";
 
 export function assertIsolated(env: NodeJS.ProcessEnv = process.env) {
   const root = env.KATA_TEST_ROOT;

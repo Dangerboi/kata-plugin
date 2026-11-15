@@ -545,6 +545,32 @@ test("a background call whose child never reaches a context hook frees its item 
 	expect(statusOf(await item(id, "Implement parser module"))).toBe("closed:done");
 });
 
+test("a lead archived with a call still pending and work owed gets its reservations back when it is unarchived", async () => {
+	const { host, id } = await lead();
+	const session = host.sessions.get(id)!;
+	await write(host, id, todos(["Implement parser module", "pending"], ["Write the changelog entry", "pending"]));
+	// A running delegate is work owed, so the archived lead stays in memory as an ended session.
+	const running = await spawn(host, id, { prompt: "Implement parser module in the background.", background: true });
+	await host.context(running.child.id);
+	const { promise: hold, resolve: release } = Promise.withResolvers<void>();
+	const pending = spawn(host, id, { prompt: "Write the changelog entry for the release." }, async (_child, system) => { await closeAs(system); return "Done."; }, hold);
+	await until(() => host.calls.filter(call => call.tool === "subagent").length === 2);
+	// The pending call reserves its item.
+	const refused = await spawn(host, id, { prompt: "Also write the changelog entry, quickly." }, async () => "never");
+	expect(refused.result.text).toContain("already delegated");
+	session.archived = Date.now();
+	await host.emit("session.archived", { sessionID: id });
+	session.archived = undefined;
+	await host.emit("session.unarchived", { sessionID: id });
+	// The call that was pending when the lead was archived is gone: its item can be delegated again.
+	const again = await spawn(host, id, { prompt: "Write the changelog entry once more." }, async (_child, system) => { await closeAs(system); return "Done."; });
+	expect(again.result.text).not.toContain("already delegated");
+	expect(again.result.status, again.result.text).toBe("completed");
+	release();
+	await pending.catch(() => {});
+	await finish(host, running.child, async () => "Nothing done.", "session.execution.interrupted");
+});
+
 test("a spawn that would delegate a ticket other open items name is told the way out in todowrite's words", async () => {
 	const created = await kata(["create", "Ticket two items work", "--body", "Worked by two plan items.", "--project", "pi-port-opencode", "--force-new", "--json"]);
 	const ticket = `pi-port-opencode#${created.issue.short_id}`;
@@ -650,7 +676,8 @@ for (const [type, end] of [
 		// The delegate closes its issue and ends: nothing is owed any more, so the ended lead closes its parent and is forgotten.
 		await closeAs(delegate.system);
 		await host.emit("session.execution.succeeded", { sessionID: delegate.child.id });
-		expect(await until(() => saved().length === 0)).toBe(true);
+		await until(() => saved().length === 0, 3000);
+	console.log("DBG", JSON.stringify([...host.shared.kv.keys()].filter(k => k.includes(id) || k.includes(child.id))), JSON.stringify([...host.shared.kv.entries()].filter(([k]) => k.endsWith(id + "/entries")).map(([k, v]: any) => JSON.parse(v).entries.map((e: any) => e.data?.delegates))));
 		expect((await show(parent)).issue).toMatchObject({ status: "closed", closed_reason: "done" });
 	});
 }

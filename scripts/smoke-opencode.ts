@@ -1,20 +1,19 @@
 // Smoke test: run a real, headless OpenCode against a real Kata daemon and check what lands in a throwaway Kata store.
 //
-//   bun run smoke:opencode [--scenario <name>] [--verbose] [--no-plugin]
+//   bun run smoke:opencode [--scenario <name>] [--verbose]
 //
 // Each run gets a fresh Git folder, a throwaway KATA_HOME, HOME and XDG_* directories, and an opencode.json that registers
 // the repo's plugins/opencode folder directly and a scripted OpenAI-compatible provider (scripts/smoke-opencode-provider.ts,
-// started in this process). No credentials or network are needed. The plugin entry is left out with --no-plugin;
-// scenarios that set `needsPlugin` fail in that case.
+// started in this process). No credentials or network are needed.
 //
 // Add a scenario by appending an entry to SCENARIOS: scripted turns per agent (keyed by a marker in the agent's first user
 // message) plus assertions over the throwaway Kata store. The driver changes only for a scenario that restarts OpenCode.
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { createServer, type AddressInfo } from "node:net";
 import path from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
-import { cleanEnv, closeEvent, closeEvidence, closeTranscript, defer, flag, kataProject, lastLines, option, pickScenarios, report, reportChecks, runToEnd, scratchRoot, teardown, verdict, type Check, type Issue } from "./smoke-lib";
+import { cleanEnv, closeCount, closeEvent, closeEvidence, closeTranscript, commentsOn, defer, eventsOf, kataProject, lastLines, option, pickScenarios, report, reportChecks, runToEnd, scratchRoot, teardown, verdict, type Check, type Issue } from "./smoke-lib";
 import { MODEL, PROVIDER, startProvider, type Request, type Turn } from "./smoke-opencode-provider";
 import { SUBAGENT_PREFIX } from "../plugins/opencode/subagents";
 
@@ -38,8 +37,6 @@ type Scenario = {
 	prompt: string;
 	/** Scripted turns keyed by a marker that appears in the agent's first user message (the lead's prompt; a subagent's prompt). */
 	scripts: Record<string, Turn[]>;
-	/** The scenario exercises the plugin: it fails when plugins/opencode/kata.ts is missing or --no-plugin is set. */
-	needsPlugin?: boolean;
 	/** Options for the plugin entry in opencode.json. */
 	pluginOptions?: Record<string, unknown>;
 	/** Extra opencode.json settings, merged over the harness's. */
@@ -54,18 +51,7 @@ type Scenario = {
 	check?(store: Store, vars: Record<string, string>): Promise<Check[]>;
 };
 
-const SCENARIOS: Scenario[] = [{
-	name: "noop",
-	prompt: "[smoke:main] Say hello.",
-	scripts: { "[smoke:main]": [["hello from the scripted model"]] },
-	async check(store) {
-		const texts = store.events().filter(e => e.type === "text").map(e => e.part?.text);
-		return [
-			{ name: "the provider saw a lead request", ok: store.requests().some(r => r.agent === "[smoke:main]"), detail: JSON.stringify(store.requests().map(r => r.agent)) },
-			{ name: "the lead's answer reached the event stream", ok: texts.includes("hello from the scripted model"), detail: JSON.stringify(texts) },
-		];
-	},
-}];
+const SCENARIOS: Scenario[] = [];
 
 const PLAN = ["Write the parser", "Wire the parser into the CLI", "Document the parser"];
 const PLAN_MSG = (what: string) => `${what}: implemented and verified by running the parser tests, all green.`;
@@ -78,7 +64,6 @@ const refusedList = (texts: string[]): any[] => {
 };
 SCENARIOS.push({
 	name: "plan",
-	needsPlugin: true,
 	prompt: "[smoke:plan] Plan and do the parser work.",
 	scripts: {
 		"[smoke:plan]": [
@@ -114,7 +99,6 @@ SCENARIOS.push({
 		let carried: any[] = [];
 		try { carried = refusedList(requests[2]?.toolResults ?? []); } catch {}
 		const hasTest = (i: Issue | undefined, command: string) => closeEvidence(i).some(e => e.type === "test" && e.command === command);
-		const closes = (i?: Issue) => i?.events.filter(e => e.type === "issue.closed").length;
 		const tool = requests[0]?.tools.includes("todowrite");
 		return [
 			{ name: "the lead's todowrite tool was offered with the plugin's schema", ok: !!tool && requests.every(r => r.tools.includes("todowrite")), detail: JSON.stringify(requests.map(r => r.tools)) },
@@ -127,7 +111,7 @@ SCENARIOS.push({
 			{ name: "item 3 closed wontfix", ok: three?.status === "closed" && closeEvent(three)?.reason === "wontfix", detail: JSON.stringify(closeEvent(three)) },
 			{ name: "closes carry a transcript of agent opencode and the lead's session", ok: !!sessionID && [one, two].every(i => closeTranscript(i)?.agent === "opencode" && closeTranscript(i)?.session_id === sessionID), detail: JSON.stringify([sessionID, closeTranscript(one), closeTranscript(two)]) },
 			// The refusal came before the resend: a close it had let through would be item 1's first close, without the resend's message and evidence.
-			{ name: "the refused call changed nothing", ok: closes(one) === 1 && closes(two) === 1 && closes(three) === 1 && String(closeEvent(one)?.message).includes("Parser written") && hasTest(one, "bun test parser"), detail: JSON.stringify([one, two, three].map(i => i?.events.map(e => e.type))) },
+			{ name: "the refused call changed nothing", ok: closeCount(one) === 1 && closeCount(two) === 1 && closeCount(three) === 1 && String(closeEvent(one)?.message).includes("Parser written") && hasTest(one, "bun test parser"), detail: JSON.stringify([one, two, three].map(i => i?.events.map(e => e.type))) },
 			{ name: "the plan section is in the system prompt after the first accepted list", ok: !requests[0].system.includes("Current plan:") && requests.slice(1).every(r => r.system.includes("The todowrite tool is backed by Kata. Current plan:")), detail: JSON.stringify(requests.map(r => r.system.includes("Current plan:"))) },
 		];
 	},
@@ -138,7 +122,6 @@ const DELEGATE_PLAN = ["Build the parser", "Document the parser"];
 const planOf = (items: string[]) => [{ tool: "todowrite", args: { todos: items.map((content, n) => ({ content, status: n ? "pending" : "in_progress" })) } }];
 // The child's session id as the lead's subagent result names it.
 const childOf = (texts: string[]) => texts.map(t => /ses_[A-Za-z0-9]+/.exec(t.slice(t.indexOf("sessionID")))?.[0] ?? /sessionID[^A-Za-z0-9]+(ses_[A-Za-z0-9]+)/.exec(t)?.[1]).find(Boolean);
-const commentsOn = (i?: Issue) => (i?.events ?? []).filter(e => e.type === "issue.commented").map(e => String(e.payload?.body ?? ""));
 /** The checks every delegate scenario shares: the assignment reached the child, the item came back to the lead open and labelled, the report is a comment. */
 function delegateChecks(store: Store, issues: Issue[], marker: string, report: string): Check[] {
 	const one = issues.find(i => i.title.includes(DELEGATE_PLAN[0]));
@@ -153,7 +136,7 @@ function delegateChecks(store: Store, issues: Issue[], marker: string, report: s
 		{ name: "item 1 is open again and not owned by the delegate", ok: one?.status === "open" && !!assignment && one.metadata.teammate !== assignment[2], detail: JSON.stringify([one?.status, one?.metadata]) },
 		{ name: "item 1 carries needs-review", ok: JSON.stringify(one?.events ?? []).includes("needs-review"), detail: JSON.stringify(events(one)) },
 		{ name: "the delegate's report is a comment on item 1", ok: commentsOn(one).some(c => c.includes(report)), detail: JSON.stringify(commentsOn(one)) },
-		{ name: "item 2 was left alone", ok: two?.status === "open" && !events(two).some(t => t === "issue.commented"), detail: JSON.stringify([two?.status, events(two)]) },
+		{ name: "item 2 was left alone", ok: two?.status === "open" && !commentsOn(two).length, detail: JSON.stringify([two?.status, events(two)]) },
 	];
 }
 const delegateChild = (report: string): Turn[] => [
@@ -162,7 +145,6 @@ const delegateChild = (report: string): Turn[] => [
 ];
 SCENARIOS.push({
 	name: "delegate-foreground",
-	needsPlugin: true,
 	prompt: "[smoke:fg-lead] Plan the parser work and hand the first item to a subagent.",
 	scripts: {
 		"[smoke:fg-lead]": [
@@ -184,7 +166,6 @@ SCENARIOS.push({
 });
 SCENARIOS.push({
 	name: "delegate-background",
-	needsPlugin: true,
 	prompt: "[smoke:bg-lead] Plan the parser work and start the first item in the background.",
 	scripts: {
 		"[smoke:bg-lead]": [
@@ -206,7 +187,6 @@ SCENARIOS.push({
 });
 SCENARIOS.push({
 	name: "delegate-followup",
-	needsPlugin: true,
 	prompt: "[smoke:fu-lead] Plan the parser work, hand the first item to a subagent, then send it a follow-up.",
 	scripts: {
 		"[smoke:fu-lead]": [
@@ -248,7 +228,6 @@ const assigned = (ctx: { system: string }) => {
 const DC_MESSAGE = "Parser built and verified by running the parser tests, all green.";
 SCENARIOS.push({
 	name: "delegate-close",
-	needsPlugin: true,
 	prompt: "[smoke:dc-lead] Plan the parser work, hand the first item to a subagent, then settle the plan.",
 	scripts: {
 		"[smoke:dc-lead]": [
@@ -284,7 +263,7 @@ SCENARIOS.push({
 			{ name: "the --as call ended as an error and ran nothing", ok: /--as is not permitted/.test(asResult) && !all.includes("DC-AS"), detail: asResult },
 			{ name: "item 1 closed done with the delegate's message and evidence", ok: one?.status === "closed" && closed?.reason === "done" && String(closed?.message).includes(DC_MESSAGE) && closeEvidence(one).some(e => e.type === "test" && e.command === "bun test parser"), detail: JSON.stringify(closed) },
 			{ name: "the close carries agent opencode and the child's session, not the lead's", ok: !!childSession && childSession !== leadSession && closeTranscript(one)?.agent === "opencode" && closeTranscript(one)?.session_id === childSession, detail: JSON.stringify([leadSession, childSession, closeTranscript(one)]) },
-			{ name: "the close and the comment are the delegate's teammate's", ok: !!assignment && JSON.stringify(one?.events.filter(e => e.type === "issue.closed" || e.type === "issue.commented")).includes(assignment[2]) && !!one?.events.some(e => e.type === "issue.commented" && String(e.payload?.body).includes("DC-REPORT")), detail: JSON.stringify([assignment, one?.events]) },
+			{ name: "the close and the comment are the delegate's teammate's", ok: !!assignment && JSON.stringify([...eventsOf(one, "issue.closed"), ...eventsOf(one, "issue.commented")]).includes(assignment[2]) && !!one?.events.some(e => e.type === "issue.commented" && String(e.payload?.body).includes("DC-REPORT")), detail: JSON.stringify([assignment, one?.events]) },
 			{ name: "the lead's resend with item 1 completed and no fields was accepted", ok: resend !== "" && !resend.includes("Refused"), detail: resend },
 			{ name: "item 2 is in progress", ok: two?.status === "open" && two.metadata["todo.status"] === "in_progress", detail: JSON.stringify([two?.status, two?.owner, two?.metadata]) },
 			{ name: "item 1 has no needs-review", ok: !JSON.stringify(one?.events ?? []).includes("needs-review"), detail: JSON.stringify(one?.events.map(e => e.type)) },
@@ -295,8 +274,6 @@ SCENARIOS.push({
 const SHARED = "shared-server";
 const root = path.resolve(import.meta.dirname, "..");
 const pluginFile = path.join(root, "plugins/opencode/kata.ts");
-const withPlugin = !flag("--no-plugin") && existsSync(pluginFile);
-const NO_PLUGIN = "the scenario needs the plugin, but --no-plugin is set or plugins/opencode/kata.ts is missing";
 const scenarios = pickScenarios(SCENARIOS, [SHARED]);
 
 const PROJECT = "opencode-smoke";
@@ -317,7 +294,7 @@ function sandbox(name: string, extra: NodeJS.ProcessEnv = {}) {
 function writeConfig(work: string, providerUrl: string, options: Record<string, unknown> = {}, extra: Record<string, unknown> = {}) {
 	const config = {
 		// The folder itself is the plugin (package.json `exports`); a file path is refused with "configured plugin path must be a directory".
-		...(withPlugin ? { plugins: [{ package: path.dirname(pluginFile), options }] } : {}),
+		plugins: [{ package: path.dirname(pluginFile), options }],
 		providers: { [PROVIDER]: { package: "@opencode/ai/providers/openai-compatible", name: "Kata smoke", settings: { baseURL: providerUrl, apiKey: "unused" }, models: { [MODEL]: { name: "Scripted" } } } },
 		...extra,
 	};
@@ -339,7 +316,6 @@ async function run(scenario: Scenario) {
 	const stopProvider = defer(provider.stop);
 	const project = kataProject(env, work, PROJECT);
 	try {
-		if (scenario.needsPlugin && !withPlugin) throw new Error(NO_PLUGIN);
 		project.init(scenario.kataConfig);
 		vars = scenario.setup?.(project.create) ?? {};
 		writeConfig(work, provider.url, scenario.pluginOptions, scenario.config);
@@ -388,7 +364,6 @@ async function runShared() {
 	const project = kataProject(env, projectDir, SHARED_PROJECT);
 	let stopServer = () => {};
 	try {
-		if (!withPlugin) throw new Error(NO_PLUGIN);
 		project.init();
 		// The lead's folder has no Kata project, so only the plugin option can route its plans.
 		spawnSync("git", ["init", "-q", "."], { cwd: work });

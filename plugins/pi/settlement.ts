@@ -1,3 +1,4 @@
+// Generated from core/settlement.ts; edit there.
 import { isUnusable, type Kata } from "./kata-cli";
 import { isMission, missionCloseArgs, projectOf, qualifiedRef, sessionParentKeys, type Binding, type Change, type KataIssue, type KataShow, type Status, type Task } from "./model";
 

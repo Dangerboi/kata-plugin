@@ -206,6 +206,21 @@ test("an untracked scout's run is recorded as a closed mission with its agent an
   expect(await commentsOf(`v2test#${mission.short_id}`)).toEqual(["Report from subagent Survey:\n\nTop level: core, docs, plugins."]);
 });
 
+test("a cancelled subagent lifecycle ends its delegate as aborted, like a cancelled job", async () => {
+  const app = host(); await app.event("session_start");
+  const ref = await app.init(["Implement widget"]);
+  const target = (await show(ref)).children[0], key = `v2test#${target.short_id}`;
+  await app.event("tool_call", { toolName: "task", toolCallId: "cancelled", input: { name: "Widget", task: `Implement the widget; the work is ${key}.` } });
+  const sessionFile = `${scratch}/cancelled.jsonl`;
+  app.emit("task:subagent:lifecycle", { id: "cancelled", status: "started", sessionFile, parentToolCallId: "cancelled", index: 0 });
+  await app.call({ op: "view" });
+  expect((await show(key)).issue.metadata["omp.subagent_id"]).toBe("cancelled");
+  app.emit("task:subagent:lifecycle", { id: "cancelled", status: "cancelled", sessionFile });
+  await app.call({ op: "view" });
+  // The delegate never ran a tool, so its assignment is rolled back.
+  expect((await show(key)).issue.metadata["omp.subagent_id"]).toBeUndefined();
+});
+
 // A delegate of an unrelated spawn: the lead's plan has no item for it.
 async function untrackedDelegate(id: string, options: any = {}) {
   const lead = host(); await lead.event("session_start");

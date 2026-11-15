@@ -1,3 +1,4 @@
+// Generated from core/delegates.ts; edit there.
 import { closedTaskStatus, digest, heldBySession, heldMessage, itemTicket, missionCloseArgs, missionKey, OPEN, projectOf, qualifiedRef, qualifiedRefs, tasksOf, TODO_WORDING, type Binding, type KataIssue, type KataShow, type Plan, type Task, type ToolWording } from "./model";
 import { isKataCode, type Kata } from "./kata-cli";
 

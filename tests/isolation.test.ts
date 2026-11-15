@@ -3,7 +3,9 @@ import { expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { assertIsolated, snapshot, assertUnchanged } from "./isolation";
+import { TRANSCRIPT_ENV } from "../core/kata-cli";
+import { cleanEnv } from "../scripts/smoke-lib";
+import { assertIsolated, SCRUBBED_ENV, snapshot, assertUnchanged } from "./isolation";
 assertIsolated();
 // Scratch directories live under the run's root, which the runner removes.
 const scratch = (prefix: string) => mkdtempSync(path.join(process.env.KATA_TEST_ROOT!, prefix));
@@ -64,4 +66,20 @@ test("semantic canary fails closed on invalid databases and missing schema versi
   const f = fixture();
   try { f.db.exec("DELETE FROM meta"); expect(() => snapshot(f.root)).toThrow(); }
   finally { f.db.close(); }
+});
+
+test("the scrubbed variables include every transcript variable the core exports", () => {
+  for (const name of TRANSCRIPT_ENV) expect(SCRUBBED_ENV).toContain(name);
+});
+
+test("the smoke runners drop the identity and executable variables a developer's shell sets", () => {
+  const names = ["KATA_TEAMMATE", "KATA_INBOX_USER", "KATA_AUTHOR", "KATA_OMP_EXECUTABLE", "KATA_OPENCODE_DEBUG", "KATA_HOME", "KEEP_ME"];
+  const saved = names.map(name => [name, process.env[name]] as const);
+  try {
+    for (const name of names) process.env[name] = "x";
+    const env = cleanEnv();
+    expect(names.filter(name => name in env)).toEqual(["KEEP_ME"]);
+  } finally {
+    for (const [name, value] of saved) { if (value === undefined) delete process.env[name]; else process.env[name] = value; }
+  }
 });

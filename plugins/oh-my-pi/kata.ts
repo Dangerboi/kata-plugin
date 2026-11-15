@@ -25,7 +25,7 @@ import { closeEnv, execKata, exportTranscriptSession } from "./kata-cli";
 import { delegateCommand, kataCommands as parseKataCommands } from "./shell";
 import { FINAL, isUntracked, teammateFor } from "./delegates";
 import { textOf } from "./model";
-import type { DelegateRecord, Delegates, DelegateStore } from "./delegates";
+import type { DelegateOutcome, DelegateRecord, Delegates, DelegateStore } from "./delegates";
 import type { InboxStream } from "./inbox";
 import { describeTodoCall, describeTodoResult, todoWidget } from "./tsp";
 
@@ -35,6 +35,9 @@ type DelegateEvents = Pick<Delegates, "apply" | "start">;
 const EXECUTABLE = process.env.KATA_OMP_EXECUTABLE || "kata";
 const EXECUTABLE_VARS = ["KATA_OMP_EXECUTABLE"];
 export const kataCommands = (command: string) => parseKataCommands(command, EXECUTABLE, EXECUTABLE_VARS);
+
+// How a finished task job or lifecycle status ends its delegate; a status not listed is still running.
+const OUTCOME: Readonly<Record<string, DelegateOutcome>> = { completed: "completed", failed: "failed", aborted: "aborted", cancelled: "aborted" };
 
 // The texts of a task call's spawns, for the delegates it starts. The entry lasts as long as the core keeps what the spawns
 // reserved (see Delegates.check): until the call is over, which is its result for a call that ran its spawns inside it, and
@@ -198,10 +201,11 @@ export default function ompKata(pi: any) {
 			if (jobs && !running.some(job => jobs.has(job.id) || jobs.has(job.agentId))) over(call);
 		}
 		for (const job of snapshot.recent ?? []) {
-			if (job.type !== "task" || !["completed", "failed", "aborted", "cancelled"].includes(job.status)) continue;
+			const outcome = job.type === "task" ? OUTCOME[job.status] : undefined;
+			if (!outcome) continue;
 			const record = records.find(r => r.id === job.id || r.id === job.agentId);
 			if (!record || record.exited || running.some(r => r.id === job.id || r.agentId === record.id)) continue;
-			void core.delegates.apply({ type: "exited", id: record.id, outcome: job.status === "cancelled" ? "aborted" : job.status });
+			void core.delegates.apply({ type: "exited", id: record.id, outcome });
 		}
 	}
 	const enter = async (ctx: any) => { see(ctx); await syncJobs(ctx); };
@@ -297,8 +301,8 @@ export default function ompKata(pi: any) {
 				text: [taskCalls.get(event.parentToolCallId)?.texts[index], event.description].filter(Boolean).join("\n"),
 				agent: typeof event.agent === "string" && event.agent ? event.agent : undefined, parentAgentId: ctx.agent?.id, call: event.parentToolCallId, index,
 			});
-		} else if (["completed", "failed", "aborted"].includes(event.status)) {
-			void lead.delegates.apply({ type: "exited", id: event.id, outcome: event.status });
+		} else if (OUTCOME[event.status]) {
+			void lead.delegates.apply({ type: "exited", id: event.id, outcome: OUTCOME[event.status]! });
 		}
 	});
 

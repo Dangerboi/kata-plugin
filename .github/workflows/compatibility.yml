@@ -44,13 +44,6 @@ jobs:
             echo "PI_CODING_AGENT_DIR=$isolated/pi"
             echo "OMP_CONFIG_DIR=$isolated/omp"
             echo "KATA_TEST_EXECUTABLE=$isolated/bin/kata"
-            echo "KATA_SERVER="
-            echo "KATA_DAEMON="
-            echo "KATA_AUTH_TOKEN="
-            echo "KATA_REF="
-            echo "KATA_PI_PARENT="
-            echo "KATA_TEAMMATE="
-            echo "KATA_INBOX_USER="
           } >> "$GITHUB_ENV"
 
       - name: Install Bun and public Kata
@@ -73,10 +66,3 @@ jobs:
       - name: Typecheck
         if: matrix.shard == 2
         run: bun run typecheck
-
-      - name: Remove isolated homes
-        if: always()
-        run: |
-          if [ -n "$COMPATIBILITY_ROOT" ]; then
-            rm -rf "$COMPATIBILITY_ROOT"
-          fi

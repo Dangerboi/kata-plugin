@@ -1,11 +1,11 @@
 import path from "node:path";
-import { appendFileSync, realpathSync } from "node:fs";
+import { realpathSync } from "node:fs";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { decidePlanParent, explicitParent, isExplicitParent, namesPlanParent } from "./plan-parent";
 import { createInboxFollower, knownProjectHead, trustedInbox, type InboxFollower, type LiveInbox } from "./inbox";
 import { createDelegates, FINAL, heldByDelegate as heldBy, isUntracked, nameOf, Refusal, teammateFor, type DelegateAssignment, type DelegateStore, type Refused, type Reservation, type SavedDelegate, type Who } from "./delegates";
 import { createSettlement, MAX_FAILURES, openChildren, type PendingClose, type SettlementSnapshot } from "./settlement";
-import { createKata, isKataCode, isUnusable, KataError, type Exec } from "./kata-cli";
+import { createKata, debugTo, isKataCode, isUnusable, KataError, waitAtMost, type Exec } from "./kata-cli";
 import { createTicketCompletion } from "./autocomplete";
 import { kataCommands, quote, shellOptions } from "./shell";
 import { closedTaskStatus, digest, FULL_ID_REF, heldBySession, heldMessage, itemTicket, OPEN, openTaskStatus, PROOF_MIN, projectOf, proofProblem, QUALIFIED_REF_ONLY, qualifiedRef, SESSION_KEY, sessionParentKeys, slug, tasksOf, textOf, TODO_WORDING, WORKING, type Binding, type Change, type KataIssue, type KataShow, type Plan, type Status, type Task, type ToolWording } from "./model";
@@ -236,6 +236,8 @@ function render(plan: Plan, wording: ToolWording = TODO_WORDING): string {
 export function createKataCore(host: CoreHost, options: CoreOptions) {
 	const namespace = options.namespace;
 	const wording = options.wording ?? TODO_WORDING;
+	const debug = debugTo(options.debugFile);
+	const bounded = <T>(promise: Promise<T>, ms = 250) => waitAtMost(promise, ms, debug);
 	const heldByDelegate = (metadata: Record<string, unknown> | undefined) => heldBy(namespace, metadata);
 	const PARENT_ENTRY = `io.kata.${namespace}.parent`;
 	const SNAPSHOT_ENTRY = snapshotEntry(namespace);
@@ -335,15 +337,6 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 		if (encoded === lastSnapshot) return;
 		host.appendEntry(SNAPSHOT_ENTRY, data satisfies Snapshot);
 		lastSnapshot = encoded;
-	}
-	function debug(error: unknown) {
-		if (!options.debugFile) return;
-		try { appendFileSync(options.debugFile, `${new Date().toISOString()} ${String(error)}\n`); } catch { /* Debugging must never interrupt work. */ }
-	}
-	async function bounded<T>(promise: Promise<T>, ms = 250): Promise<T | undefined> {
-		let timer: ReturnType<typeof setTimeout>;
-		try { return await Promise.race([promise.catch(error => { debug(error); return undefined; }), new Promise<undefined>(resolve => { timer = setTimeout(() => resolve(undefined), ms); })]); }
-		finally { clearTimeout(timer!); }
 	}
 
 	// Serialize every plan mutation: tool calls, /todo, session reloads and delegate events. Each job is one Kata operation

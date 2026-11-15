@@ -1,4 +1,4 @@
-import { createSeam, EXECUTION_ENDED, SESSION_ENDED, type Seam, type SessionEvent } from "./seam";
+import { createSeam, EXECUTION_ENDED, SESSION_ENDED, type Seam } from "./seam";
 import type { Lead } from "./lead";
 import { resolveSettings } from "./settings";
 import { install as installShellRoute } from "./shell-route";
@@ -27,23 +27,22 @@ export default {
 		// A lead that runs a hook or tool is alive: it is no longer an ended session. A delegate's tool call says nothing of its lead.
 		seam.before(async event => {
 			const role = await seam.roleOf(event.sessionID);
-			if (role.kind === "lead") await role.lead.clearEnded();
+			if (role.kind === "lead") await role.lead.revive("alive");
 		});
 		seam.context(async event => {
 			const role = await seam.roleOf(event.sessionID);
 			if (role.kind !== "lead") return;
-			await role.lead.clearEnded();
+			await role.lead.revive("alive");
 			const text = await role.lead.planSection();
 			if (text) event.system.push({ type: "text", text });
 		});
 		// Events of sessions that are not leads of this instance find no lead and do nothing.
-		const onLead = (types: readonly string[], act: (lead: Lead) => Promise<unknown>) => seam.events(types, async (event: SessionEvent) => {
-			const role = await seam.knownRole(event.data.sessionID);
+		const onLead = (types: readonly string[], act: (lead: Lead) => Promise<unknown>) => seam.events(types, async (_event, role) => {
 			if (role.kind === "lead") await act(role.lead);
 		});
 		onLead(Object.keys(EXECUTION_ENDED), lead => lead.settle());
 		onLead(SESSION_ENDED, lead => lead.end());
-		onLead(["session.unarchived"], lead => lead.clearEnded());
+		onLead(["session.unarchived"], lead => lead.revive("alive"));
 		for (const install of MODULES) await install(seam);
 
 		await ctx.tool.hook("execute.before", registry.hooks.before);

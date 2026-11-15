@@ -8,7 +8,7 @@ import { lastText } from "./model";
 
 // Match the native adapter's capability/scope selection, including a project
 // root boundary. Recheck at prompt time: either factory can load first.
-export function nativeContractActive(cwd: string): boolean {
+function nativeContractActive(cwd: string): boolean {
 	const registry = (globalThis as any)[Symbol.for("kata.pi.native.v1")];
 	for (const adapter of registry?.adapters?.values?.() ?? []) {
 		const options = adapter?.options;
@@ -21,11 +21,11 @@ export function nativeContractActive(cwd: string): boolean {
 	return false;
 }
 
-export type PiParent = ChildParent & { pid: number; provider?: string; model?: string; thinking?: string };
+type PiParent = ChildParent & { pid: number; provider?: string; model?: string; thinking?: string };
 
 // A child pi started without its own model flags runs on the parent's model,
 // not on the configured default (which may have no working login).
-export function inheritsModel(argv: string[]): { model: boolean; thinking: boolean } {
+function inheritsModel(argv: string[]): { model: boolean; thinking: boolean } {
 	return { model: !argv.some(a => /^--(?:model|models|provider)(?:=|$)/.test(a)), thinking: !argv.some(a => /^--thinking(?:=|$)/.test(a)) };
 }
 
@@ -223,8 +223,8 @@ export default async function piKata(pi: ExtensionAPI) {
 		// The transcript pair is not cleared here: pi fires this on the old instance for reload/new/resume/fork, then the new instance's session_start in the same process, and a slow cleanup would delete the new pair. session_start overwrites it and process exit ends the rest.
 		const record = inherited ? current : undefined;
 		// A fork into a saved session gets the source's tasks at its start (its header names the source); an in-memory one cannot, so they are released.
-		const lead = { continues: event?.reason === "reload", forking: event?.reason === "fork" && !!event.targetSessionFile };
+		const closing = { continues: event?.reason === "reload", forking: event?.reason === "fork" && !!event.targetSessionFile };
 		const assistant = (ctx.sessionManager.getBranch() as any[]).filter(e => e.type === "message" && e.message?.role === "assistant");
-		await core.session.shutdown(ctx, record ? { delegate: { id: record.id, ended: event?.reason !== "reload", report: lastText(assistant.map(e => e.message.content)) } } : lead);
+		await core.session.shutdown(ctx, record ? { delegate: { id: record.id, ended: event?.reason !== "reload", report: lastText(assistant.map(e => e.message.content)) } } : closing);
 	});
 }

@@ -5,7 +5,7 @@ import { spawn, spawnSync } from "node:child_process";
 import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { TRANSCRIPT_ENV } from "../core/kata-cli";
+import { SCRUBBED_ENV } from "./scrubbed-env";
 
 export type Issue = {
 	ref: string; title: string; status: string; owner?: string;
@@ -16,8 +16,14 @@ export type Issue = {
 export type Check = { name: string; ok: boolean; detail?: string };
 
 // ---- Assertion helpers over an issue ----
+/** The events of `type` of an issue, in order. */
+export const eventsOf = (i: Issue | undefined, type: string) => i?.events.filter(e => e.type === type) ?? [];
+/** How many times an issue was closed. */
+export const closeCount = (i?: Issue) => eventsOf(i, "issue.closed").length;
+/** The bodies of the comments on an issue. */
+export const commentsOn = (i?: Issue) => eventsOf(i, "issue.commented").map(e => String(e.payload?.body ?? ""));
 /** The first `issue.closed` event of an issue. */
-export const closeEvent = (i?: Issue) => i?.events.find(e => e.type === "issue.closed")?.payload;
+export const closeEvent = (i?: Issue) => eventsOf(i, "issue.closed")[0]?.payload;
 /** Evidence recorded by the first close. */
 export const closeEvidence = (i?: Issue): { type?: string; command?: string }[] => closeEvent(i)?.evidence ?? [];
 /** Transcript (agent, session_id) recorded by the first close. */
@@ -44,11 +50,11 @@ export function pickScenarios<S extends { name: string }>(all: S[], own: string[
 }
 
 // ---- Environment and teardown ----
-// Inherited routing would point the child at someone else's Kata, and an inherited transcript session would hide whether the plugin exports its own.
-const ROUTING = /^KATA_(SERVER|DAEMON|AUTH_TOKEN|REF|HOME|DEFAULT_PROJECT)$/;
-/** This process's environment without Kata's routing and transcript variables, and without the ones `also` matches. */
+// Inherited routing would point the child at someone else's Kata, an inherited transcript session would hide whether the
+// plugin exports its own, and an inherited identity would decide the teammate and actor a scenario sees.
+/** This process's environment without the variables Kata and the plugins read, and without the ones `also` matches. */
 export const cleanEnv = (also?: RegExp): NodeJS.ProcessEnv => Object.fromEntries(Object.entries(process.env)
-	.filter(([key]) => !ROUTING.test(key) && !(TRANSCRIPT_ENV as readonly string[]).includes(key) && !also?.test(key)));
+	.filter(([key]) => key !== "KATA_HOME" && !SCRUBBED_ENV.includes(key) && !also?.test(key)));
 
 const cleanups: (() => void)[] = [];
 /** Undoes everything still registered, newest first. */

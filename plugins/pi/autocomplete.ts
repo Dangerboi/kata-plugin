@@ -1,3 +1,4 @@
+// Generated from core/autocomplete.ts; edit there.
 import { isKataCode, type Kata } from "./kata-cli";
 
 // `#` ticket completion in the host's editor: the provider wrapper and the per-session ticket lists it reads.

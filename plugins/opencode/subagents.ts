@@ -134,9 +134,8 @@ export function install(seam: Seam): void {
 		} else await exit(role.lead, call.run, "completed", reportOf(event.result));
 	});
 
-	seam.events(Object.keys(EXECUTION_ENDED), async event => {
+	seam.events(Object.keys(EXECUTION_ENDED), async (event, role) => {
 		const sessionID = event.data.sessionID;
-		const role = await seam.knownRole(sessionID);
 		if (role.kind === "lead") {
 			// The lead's turn ended. A call still without a child is over: a later hook refused it (neither the tool nor
 			// `execute.after` ran), or its background child never reached a context hook. What it reserved is free again, so the
@@ -157,11 +156,13 @@ export function install(seam: Seam): void {
 		await exit(role.lead, run, EXECUTION_ENDED[event.type], report);
 	});
 
-	seam.events(SESSION_ENDED, async event => {
+	seam.events(SESSION_ENDED, async (event, role) => {
 		const sessionID = event.data.sessionID;
+		// The lead's calls end with it: what they reserved is free again, for a lead that stays in memory (see Lead.end) and is unarchived.
+		if (role.kind === "lead") for (const call of [...callsOf(sessionID)]) drop(role.lead, call);
 		calls.delete(sessionID);
 		// A delegate's own session ended under it: nothing more runs there.
-		const role = await seam.knownRole(sessionID), run = runs.get(sessionID);
+		const run = runs.get(sessionID);
 		if (role.kind === "delegate" && run) await exit(role.lead, run, "aborted");
 	});
 }

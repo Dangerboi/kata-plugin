@@ -12,13 +12,12 @@ import { CallRefused, type Seam } from "./seam";
 export function install(seam: Seam): void {
 	const executable = seam.settings.executable;
 
-	// Edits go from the end of the command so earlier offsets stay valid.
-	function route(command: string, actor: Record<string, string>, leadID?: string): string {
+	// A lead's Kata commands: edits go from the end of the command so earlier offsets stay valid.
+	function route(command: string, leadID: string): string {
 		for (const invocation of kataCommands(command, executable, EXECUTABLE_VARS).reverse()) {
-			const word = invocation.executable;
-			const close = leadID !== undefined && shellOptions(invocation.words).args[0] === "close";
-			const prefix = envPrefix({ ...(close ? transcriptEnv("opencode", leadID) : {}), ...actor });
-			if (prefix) command = command.slice(0, word.start) + prefix + command.slice(word.start);
+			const close = shellOptions(invocation.words).args[0] === "close";
+			const prefix = envPrefix({ ...(close ? transcriptEnv("opencode", leadID) : {}), ...seam.settings.kataEnv });
+			if (prefix) command = command.slice(0, invocation.executable.start) + prefix + command.slice(invocation.executable.start);
 		}
 		return command;
 	}
@@ -28,14 +27,14 @@ export function install(seam: Seam): void {
 		let command: string = event.input.command;
 		if (!kataCommands(command, executable, EXECUTABLE_VARS).length) return;
 		const role = await seam.roleOf(event.sessionID);
+		// A session that cannot be read runs the command as written: a failed lookup never refuses a call.
 		if (role.kind === "other") return;
-		if (role.kind === "lead") command = route(command, seam.settings.kataEnv, event.sessionID);
+		if (role.kind === "lead") command = route(command, event.sessionID);
 		else {
-			try { command = delegateCommand(command, executable, EXECUTABLE_VARS, role.teammate, role.assignment?.binding, { agent: "opencode", id: event.sessionID }); }
-			catch (error) { throw new CallRefused(error instanceof Error ? error.message : String(error)); }
 			// The child keeps its own teammate (--teammate); only the author comes from the settings.
 			const { KATA_AUTHOR } = seam.settings.kataEnv;
-			command = route(command, KATA_AUTHOR ? { KATA_AUTHOR } : {});
+			try { command = delegateCommand(command, executable, EXECUTABLE_VARS, role.teammate, role.assignment?.binding, { agent: "opencode", id: event.sessionID }, KATA_AUTHOR ? { KATA_AUTHOR } : {}); }
+			catch (error) { throw new CallRefused(error instanceof Error ? error.message : String(error)); }
 		}
 		if (command !== event.input.command) event.input = { ...event.input, command };
 	});

@@ -1,6 +1,5 @@
-import { appendFileSync } from "node:fs";
-import { waitAtMost } from "./wait-at-most";
-import { createLead, type Child, type Lead } from "./lead";
+import { debugTo, waitAtMost } from "./kata-cli";
+import { createLead, type Child, type Fate, type Lead } from "./lead";
 import { owes } from "./kata-core";
 import { coreState, sessionStorage, type SavedEntry, type SessionStorage } from "./saved";
 import type { DelegateOutcome } from "./delegates";
@@ -41,10 +40,6 @@ export interface Seam {
 	// The session's role, for a hook or tool call of a running session: OpenCode is asked about a session once, and a lead's
 	// core is created at first use. Rejects when storage cannot be read.
 	roleOf(sessionID: string): Promise<Role>;
-	// The session's role, for an event about a session that may be gone or may never have run here: only what this instance
-	// and its storage hold. A lead with nothing saved, and a child no lead in memory tracks, are `other`. Never creates a lead
-	// from scratch.
-	knownRole(sessionID: string): Promise<Role>;
 
 	// Handlers run in registration order. A `before` handler that throws CallRefused ends the tool call as an error (the
 	// call does not run); any other throw, in any handler, is logged to the debug file and skipped, so a failed lookup never
@@ -58,8 +53,10 @@ export interface Seam {
 	context(handler: (event: any, info: { first: boolean }) => void | Promise<void>): void;
 	// Session events of the given types (`session.execution.*`, `session.deleted`, ...) from `ctx.event.subscribe`. A
 	// session's events are handled one after another, in the order they arrived; the events of other sessions do not wait
-	// for them.
-	events(types: readonly string[], handler: (event: SessionEvent) => void | Promise<void>): void;
+	// for them. `role`: the session's, resolved once for the event from what this instance and its storage hold, for a session
+	// that may be gone or may never have run here. A lead with nothing saved, and a child no lead in memory tracks, are `other`;
+	// no lead is created from scratch.
+	events(types: readonly string[], handler: (event: SessionEvent, role: Role) => void | Promise<void>): void;
 }
 
 // `created`: when OpenCode made the event, in milliseconds.
@@ -107,10 +104,7 @@ export const eventsHandled = (ctx: object): Promise<void> => instances.get(ctx)?
 
 export function createSeam(ctx: any, settings: Settings): SeamRegistry {
 	const directory: string = ctx.location.directory;
-	const debug = (error: unknown) => {
-		if (!settings.debugFile) return;
-		try { appendFileSync(settings.debugFile, `${new Date().toISOString()} ${String(error)}\n`); } catch { /* Debugging must never interrupt work. */ }
-	};
+	const debug = debugTo(settings.debugFile);
 	const exec = createKataExec(settings);
 	const storage = sessionStorage(ctx.storage, directory);
 	const sessions = new Map<string, Promise<SessionInfo | undefined>>();
@@ -120,7 +114,7 @@ export function createSeam(ctx: any, settings: Settings): SeamRegistry {
 		before: [] as ((event: any) => void | Promise<void>)[],
 		after: [] as ((event: any) => void | Promise<void>)[],
 		context: [] as ((event: any, info: { first: boolean }) => void | Promise<void>)[],
-		events: [] as { types: readonly string[]; handler: (event: SessionEvent) => void | Promise<void> }[],
+		events: [] as { types: readonly string[]; handler: (event: SessionEvent, role: Role) => void | Promise<void> }[],
 	};
 
 	// The session as OpenCode reports it, asked once. Undefined when it cannot be read (deleted).
@@ -140,7 +134,7 @@ export function createSeam(ctx: any, settings: Settings): SeamRegistry {
 		if (held) return held;
 		const lead: Lead = createLead({
 			id, directory, settings, exec, storage, entries, debug,
-			stillEnded: async () => ({ gone: true, archived: true, alive: false, unknown: undefined })[await openCodeSays(id)],
+			fate: () => openCodeSays(id),
 			forget: () => { if (leads.get(id) === lead) leads.delete(id); },
 		});
 		leads.set(id, lead);
@@ -167,8 +161,7 @@ export function createSeam(ctx: any, settings: Settings): SeamRegistry {
 		return entries ? { kind: "lead", lead: leadFor(sessionID, entries) } : OTHER;
 	}
 
-	// What OpenCode says of the session: "gone" (it no longer holds it), "archived", "alive", or "unknown" when the read failed otherwise.
-	async function openCodeSays(sessionID: string): Promise<"alive" | "archived" | "gone" | "unknown"> {
+	async function openCodeSays(sessionID: string): Promise<Fate> {
 		try {
 			const session = await ctx.session.get({ sessionID });
 			return typeof session?.time?.archived === "number" ? "archived" : "alive";
@@ -182,23 +175,18 @@ export function createSeam(ctx: any, settings: Settings): SeamRegistry {
 	}
 
 	let stopped = false, resuming: Promise<unknown> = Promise.resolve();
-	// One saved session, as OpenCode has it now. One it no longer holds ended, whether or not an instance saw that. An archived
-	// one ended only when it was saved as an ended session: a session can run after its archive, and then it is alive. One
-	// saved as ended that OpenCode holds alive was unarchived, so it is not finished.
+	// One saved session, as OpenCode has it now: a lead is made for one that owes work, is saved as ended, or is gone, and
+	// decides for itself what the fate means (see Lead.revive).
 	async function resumeOne(id: string, entries: SavedEntry[]) {
 		const flagged = await storage.ended(id);
 		const fate = await openCodeSays(id);
-		if (flagged && fate === "alive") await storage.setEnded(id, false);
-		const ended = fate === "gone" || (flagged && fate === "archived");
 		// The instance stopped meanwhile: a lead made now would never be suspended.
-		if (stopped || !(ended || (flagged && fate === "unknown") || owes(coreState(entries)))) return;
-		const lead = leadFor(id, entries);
-		// A session that ended finishes its work now, and forgets its state once nothing is left.
-		if (ended) await lead.end();
+		if (stopped || !(flagged || fate === "gone" || owes(coreState(entries)))) return;
+		await leadFor(id, entries).revive(fate);
 	}
 
 	const seam: Seam = {
-		ctx, settings, storage, debug, roleOf, knownRole,
+		ctx, settings, storage, debug, roleOf,
 		before: handler => void handlers.before.push(handler),
 		after: handler => void handlers.after.push(handler),
 		context: handler => void handlers.context.push(handler),
@@ -232,7 +220,11 @@ export function createSeam(ctx: any, settings: Settings): SeamRegistry {
 			const sessionID: unknown = event?.data?.sessionID;
 			if (typeof sessionID !== "string" || !sessionID) return;
 			const matching = handlers.events.filter(entry => entry.types.includes(event.type)).map(entry => entry.handler);
-			const handled = (queues.get(sessionID) ?? Promise.resolve()).then(() => run(matching, event as SessionEvent));
+			const handled = (queues.get(sessionID) ?? Promise.resolve()).then(async () => {
+				let role: Role;
+				try { role = await knownRole(sessionID); } catch (error) { debug(error); return; }
+				await run(matching.map(handler => (e: SessionEvent) => handler(e, role)), event as SessionEvent);
+			});
 			queues.set(sessionID, handled);
 			void handled.then(() => { if (queues.get(sessionID) === handled) queues.delete(sessionID); });
 		},
@@ -246,7 +238,7 @@ export function createSeam(ctx: any, settings: Settings): SeamRegistry {
 		},
 		async suspendAll() {
 			stopped = true;
-			await waitAtMost(resuming, RESUME_WAIT_MS);
+			await waitAtMost(resuming, RESUME_WAIT_MS, debug);
 			await Promise.all([...leads.values()].map(lead => lead.suspend().catch(debug)));
 		},
 	};

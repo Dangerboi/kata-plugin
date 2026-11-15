@@ -4,9 +4,9 @@ import { spawnSync } from "node:child_process";
 import { mkdirSync, writeFileSync, realpathSync } from "node:fs";
 import path from "node:path";
 import { cleanEnv, kataProject, linesIn, scratchRoot, teardown } from "./smoke-lib";
-const repo = process.cwd(), scratch = scratchRoot("omp-attention-");
+const repo = path.resolve(import.meta.dirname, ".."), scratch = scratchRoot("omp-attention-");
 const pi = process.env.PI_BIN || path.join(repo, "node_modules/.bin/pi"), omp = process.env.OMP_BIN || "omp";
-const env = { ...cleanEnv(/^(KATA_(TEAMMATE|INBOX_USER|PI_PARENT|PI_EXECUTABLE|OMP_EXECUTABLE|ATTENTION_HOST)|CODEX_HOME|CLAUDE_CONFIG_DIR|OMP_AGENT_DIR)$/), HOME: scratch, XDG_CONFIG_HOME: path.join(scratch, "config"), XDG_DATA_HOME: path.join(scratch, "data"), XDG_STATE_HOME: path.join(scratch, "state"), XDG_CACHE_HOME: path.join(scratch, "cache"), KATA_HOME: path.join(scratch, "kata"), KATA_AUTHOR: "probe", PI_CODING_AGENT_DIR: path.join(scratch, "agent") };
+const env = { ...cleanEnv(/^(CODEX_HOME|CLAUDE_CONFIG_DIR|OMP_AGENT_DIR)$/), HOME: scratch, XDG_CONFIG_HOME: path.join(scratch, "config"), XDG_DATA_HOME: path.join(scratch, "data"), XDG_STATE_HOME: path.join(scratch, "state"), XDG_CACHE_HOME: path.join(scratch, "cache"), KATA_HOME: path.join(scratch, "kata"), KATA_AUTHOR: "probe", PI_CODING_AGENT_DIR: path.join(scratch, "agent") };
 const work = path.join(scratch, "repo"); mkdirSync(work); mkdirSync(env.PI_CODING_AGENT_DIR);
 const project = kataProject(env, work, "session-probe"), kata = project.kata;
 function run(file: string, args: string[], extra = {}) {

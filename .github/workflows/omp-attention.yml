@@ -16,6 +16,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: omp-attention-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 jobs:
   attention:
     runs-on: ubuntu-latest
@@ -41,7 +45,7 @@ jobs:
           OMP_VERSION: ${{ matrix.omp }}
         run: |
           bun install --ignore-scripts --frozen-lockfile
-          npm install --prefix "$RUNNER_TEMP/harnesses" "@oh-my-pi/pi-coding-agent@$OMP_VERSION"
+          npm install --ignore-scripts --prefix "$RUNNER_TEMP/harnesses" "@oh-my-pi/pi-coding-agent@$OMP_VERSION"
           echo "OMP_BIN=$RUNNER_TEMP/harnesses/node_modules/.bin/omp" >> "$GITHUB_ENV"
           echo "PI_BIN=$GITHUB_WORKSPACE/node_modules/.bin/pi" >> "$GITHUB_ENV"
       - name: Use synthetic configuration

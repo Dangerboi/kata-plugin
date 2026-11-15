@@ -1,3 +1,4 @@
+// Generated from core/model.ts; edit there.
 import { createHash } from "node:crypto";
 
 // The plan vocabulary every core module shares: tasks, plan parents, Kata's issue shape and refs.

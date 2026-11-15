@@ -1,5 +1,7 @@
+// Generated from core/kata-cli.ts; edit there.
 import { AsyncLocalStorage } from "node:async_hooks";
 import { execFile } from "node:child_process";
+import { appendFileSync } from "node:fs";
 import path from "node:path";
 import { projectOf, type KataIssue, type KataShow } from "./model";
 
@@ -22,6 +24,20 @@ export class KataError extends Error {
 }
 export const isUnusable = (error: unknown) => error instanceof KataError && error.unusable;
 export const isKataCode = (error: unknown, code: string) => error instanceof KataError && error.code === code;
+
+// The sink for errors the plugin survives: a line in `file`, nothing without one. Debugging must never interrupt work.
+export const debugTo = (file?: string) => (error: unknown) => {
+	if (!file) return;
+	try { appendFileSync(file, `${new Date().toISOString()} ${String(error)}\n`); } catch { /* Ignored: see above. */ }
+};
+
+// Waits for `promise` at most `ms`: undefined when the time runs out or the promise rejects (the error goes to `onError`).
+// The promise itself is never cancelled.
+export async function waitAtMost<T>(promise: Promise<T>, ms: number, onError: (error: unknown) => void): Promise<T | undefined> {
+	let timer: ReturnType<typeof setTimeout>;
+	try { return await Promise.race([promise.catch(error => { onError(error); return undefined; }), new Promise<undefined>(resolve => { timer = setTimeout(() => resolve(undefined), ms); })]); }
+	finally { clearTimeout(timer!); }
+}
 
 // The oldest Kata whose commands and flags these plugins use.
 const MINIMUM = [0, 23, 0];

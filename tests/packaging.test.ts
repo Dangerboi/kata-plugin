@@ -36,7 +36,10 @@ test("the OpenCode manifest resolves a local folder and an npm install to the pl
   expect(manifest.dependencies).toBeUndefined();
   // Trusted publishing names publish-pi.yml, so every package publishes from a job in that file.
   expect(existsSync(path.join(root, ".github/workflows/publish-opencode.yml"))).toBe(false);
-  expect(Object.keys(publishJobs)).toEqual(["publish", "publish-omp", "publish-opencode"]);
+  expect(Object.keys(publishJobs)).toEqual(["verify", "publish", "publish-omp", "publish-opencode"]);
+  // The job with publish rights runs pinned actions, and only after the verify job.
+  for (const name of ["publish", "publish-omp", "publish-opencode"]) expect(publishJobs[name]).toContain("needs: verify");
+  expect([...flow.matchAll(/uses: (\S+)/g)].map(match => match[1]).filter(use => !use.startsWith("./") && !/@[0-9a-f]{40}$/.test(use))).toEqual([]);
   expect(publishJobs["publish-opencode"]).toContain("working-directory: plugins/opencode");
   expect(flow).toContain("id-token: write");
 });

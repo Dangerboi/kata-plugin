@@ -1,4 +1,4 @@
-import { waitAtMost } from "./wait-at-most";
+import { waitAtMost } from "./kata-cli";
 import { createKataCore, type HostContext, type KataCore, type PlanView } from "./kata-core";
 import { teammateFor, type DelegateAssignment, type DelegateEvent, type DelegateRecord, type DelegateStore } from "./delegates";
 import { NAMESPACE, type SavedEntry, type SessionStorage } from "./saved";
@@ -8,6 +8,9 @@ import { WORDING } from "./wording";
 
 // How long a hook waits for a session's first binding to its plan before it carries on without the plan.
 const READY_MS = 10_000;
+
+// What OpenCode says of a session: "gone" (it no longer holds it), "archived", "alive", or "unknown" when the read failed otherwise.
+export type Fate = "alive" | "archived" | "gone" | "unknown";
 
 // The core's `details.kata`: the plan view, or only a notice when the call never reached the plan.
 export type TodoResult = { text: string; kata: Partial<PlanView> & { notice?: string }; isError: boolean };
@@ -64,8 +67,11 @@ export interface Lead extends Planner {
 	// ended session and returns false; it ends again when its core saves a change and OpenCode still says the session ended,
 	// and at the next setup.
 	end(): Promise<boolean>;
-	// The session is seen alive again (unarchived, or its own hook ran): it is no longer an ended session, so nothing finishes it.
-	clearEnded(): Promise<void>;
+	// What OpenCode says of the session now decides whether it ended. One it no longer holds ended, whether or not an instance saw
+	// that, and is finished like `end()`. An archived one ended only when it is saved as an ended session: a session can run after
+	// its archive, and then it is alive. An alive one is no ended session any more (unarchived, or its own hook ran), so nothing
+	// finishes it. An unknown fate changes nothing.
+	revive(fate: Fate): Promise<void>;
 	// The plugin instance is going away but the session may resume: drain what fits, keep the rest saved; closes and releases nothing.
 	suspend(): Promise<void>;
 }
@@ -80,8 +86,8 @@ export interface LeadDeps {
 	// What an earlier instance saved for the lead.
 	entries?: SavedEntry[];
 	debug(error: unknown): void;
-	// Whether OpenCode still says the session ended (deleted, or archived); undefined when it cannot be asked.
-	stillEnded(): Promise<boolean | undefined>;
+	// What OpenCode says of the session now.
+	fate(): Promise<Fate>;
 	// The lead ended with nothing left to finish.
 	forget(): void;
 }
@@ -169,7 +175,7 @@ export function createLead(deps: LeadDeps): Lead {
 	}
 
 	// Whether storage records this lead as an ended session: unknown until read once.
-	let savedEnded: boolean | undefined;
+	let flagged: boolean | undefined;
 	// One end at a time. A change saved while it runs may be later than its last look at the core, so it ends once more.
 	let ending: Promise<boolean> | undefined;
 	function end(): Promise<boolean> {
@@ -180,7 +186,7 @@ export function createLead(deps: LeadDeps): Lead {
 			await writes;
 			if (owing) {
 				await storage.setEnded(id, true);
-				savedEnded = true;
+				flagged = true;
 				return false;
 			}
 			ended = true;
@@ -197,22 +203,25 @@ export function createLead(deps: LeadDeps): Lead {
 	// session that is back is no ended session any more. Not while the instance goes away: the next setup looks again.
 	async function endAgain() {
 		if (!owing || ending || suspended) return;
-		const still = await deps.stillEnded();
-		if (still && !suspended) await end();
-		else if (still === false) await clearEnded();
+		const fate = await deps.fate();
+		if (fate === "alive" || !suspended) await revive(fate);
+	}
+	async function revive(fate: Fate) {
+		if (fate === "alive") await clearEnded();
+		else if (fate === "gone" || (fate === "archived" && (flagged ??= await storage.ended(id)))) await end();
 	}
 	async function clearEnded() {
-		if (savedEnded === false) return;
+		if (flagged === false) return;
 		owing = false;
 		if (await storage.ended(id)) await storage.setEnded(id, false);
-		savedEnded = false;
+		flagged = false;
 	}
 
 	return {
 		...planner,
-		get ready() { return waitAtMost(ready, READY_MS).then(() => undefined); },
+		get ready() { return waitAtMost(ready, READY_MS, debug).then(() => undefined); },
 		async planSection() {
-			await waitAtMost(ready, READY_MS);
+			await waitAtMost(ready, READY_MS, debug);
 			return (await core.session.beforePrompt(ctx, { context: false })).sections.todo;
 		},
 		child(sessionID) {
@@ -234,7 +243,7 @@ export function createLead(deps: LeadDeps): Lead {
 			await writes;
 		},
 		end,
-		clearEnded,
+		revive,
 		async suspend() {
 			suspended = true;
 			await ready;

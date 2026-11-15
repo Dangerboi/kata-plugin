@@ -1,3 +1,4 @@
+// Generated from core/shell.ts; edit there.
 import path from "node:path";
 import { closeEnv } from "./kata-cli";
 import { projectOf, type Binding } from "./model";
