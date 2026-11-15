@@ -30,6 +30,17 @@ omp plugin upgrade kata@kata-plugin
 
 Then restart omp.
 
+The plugin is also on npm as `@dangerboi/kata-omp`, listed on [omp packages](https://omppackages.com). npm gets each released version; the marketplace installs from the repository's `main` branch.
+
+```sh
+omp plugin install @dangerboi/kata-omp
+omp plugin upgrade @dangerboi/kata-omp
+```
+
+Use one install or the other. Both register the package name `@dangerboi/kata-omp`, so omp loads the plugin once: the marketplace install refuses while the npm package is installed, and an npm install over a marketplace install shares its slot. To switch, `omp plugin uninstall` the one you have first.
+
+A marketplace install from before the npm package is registered as `kata-omp`, which omp does not match to the npm name: with both installed, omp loads the plugin twice, and the marketplace upgrade then fails on the name conflict. Upgrade that install (the two update commands above) or uninstall it before installing from npm. If both are already installed, uninstall one of them.
+
 Optional: send the plans of repos that have no Kata project to one Kata project, labeled with the repo name, by exporting it where omp runs:
 
 ```sh
@@ -58,7 +69,7 @@ The root manifest supports `pi install git:github.com/Dangerboi/kata-plugin`. Pi
 
 For one run: `pi --no-extensions -e /path/to/kata-plugin/plugins/pi/kata.ts`. Remove any other todo extension first. Keep each plugin directory intact: every `.ts` file next to its `kata.ts` is a required core module. Do not overwrite the native adapter at the user extension path `kata.ts`.
 
-The omp marketplace identifies the plugin as `kata@kata-plugin`. The same catalog lists `kata-pi` (source `plugins/pi`) so tools that read the catalog, such as Skillshare, can install the pi build from the Git URL; it is for pi, and under omp its entry exits without loading. On npm the pi build is `@dangerboi/kata-pi`; `kata-omp` names the OMP package and is not published. The root pi shim does not make the OMP package a pi extension.
+The omp marketplace identifies the plugin as `kata@kata-plugin`. The same catalog lists `kata-pi` (source `plugins/pi`) so tools that read the catalog, such as Skillshare, can install the pi build from the Git URL; it is for pi, and under omp its entry exits without loading. On npm the pi build is `@dangerboi/kata-pi` and the omp build is `@dangerboi/kata-omp`. omp packages lists the pi build too, as untested on omp; installed into omp it registers nothing, so install `@dangerboi/kata-omp` there. The root pi shim does not make the OMP package a pi extension.
 
 ## OpenCode
 
