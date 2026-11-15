@@ -69,7 +69,7 @@ A delegate is a session the lead's `subagent` tool call creates. The plugin matc
 | Foreground call ends (`execute.after`) | The delegate's final reply is its report, without the `<subagent …>` wrapper, and the delegate exits `completed`. A call that ended in an error exits it `failed`, or `aborted` when the message says it was cancelled, and posts `Failed: <message>` as the report. |
 | Background call | The call returns while the delegate runs. The delegate's `session.execution.succeeded`, `failed` or `interrupted` event ends it (`completed`, `failed`, `aborted`); its last assistant text is the report. |
 
-Two calls of one lead that name the same plan item or ticket, in the same turn or in parallel, are checked one after the other: the second is refused as already delegated. Two calls that match nothing are both untracked, and each run that ends with a report becomes its own mission.
+Two calls of one lead that name the same plan item or ticket, in the same turn or in parallel, are checked one after the other: the second is refused as already delegated. Two calls that match nothing are both untracked, and each run that ends with a report becomes its own mission. A call that never gets a child (another plugin's hook refused it after the check, or its background child never reached its first prompt) gives up what it reserved at the end of the lead's turn, so the item can be delegated again.
 
 At exit the core settles each delegate as for omp: a delegate that closed its issue returns it to the lead; one that exited without running any tool is rolled back, restoring the issue as it was before the assignment; one that ran a tool and left the issue open comments, flags it for the user and hands it back to the lead with the `needs-review` label. A delegate that left no comment gets its report posted for it. An untracked delegate that exits with a report gets a mission, as for omp (see the [oh-my-pi reference](oh-my-pi.md)), with the call's `agent` as `opencode.mission_agent`. Settling runs at the end of the lead's turn; see [Sessions, settling and restart](#sessions-settling-and-restart).
 
@@ -77,7 +77,7 @@ A `subagent` call with `sessionID` is a follow-up: it stays on the delegate's re
 
 A bound delegate's `todowrite` plans under its assigned issue: new items become children of that issue, and its closes follow [closing rules](closing-rules.md). It cannot take over the lead's plan.
 
-After a restart, the unfinished delegates of a lead resume with the lead's saved state, and delegates that ended with an issue, a mission included, are found again from the `settled` part of storage, so a follow-up still reaches its issue. An untracked delegate that left no mission is not saved: a follow-up to it after a restart is not tracked.
+After a restart, the delegates of a lead come back with the lead's saved state: the unfinished ones resume, and the ones that ended with an issue, a mission included, are kept too, so a follow-up still reaches its issue. An untracked delegate that left no mission is not saved: a follow-up to it after a restart is not tracked.
 
 ## Shell
 
@@ -105,7 +105,7 @@ OpenCode runs many sessions in one server, with one plugin instance per location
 | Location eviction (idle, default 60 minutes) or server exit | Cleanup drains what fits and saves the rest. It closes and releases nothing, because the session can resume. |
 | Next plugin setup (reload, restart, resumed session) | Binds each lead of the location that has saved retries, pending closes or delegates, and finishes that work. An ended session is finished in the background, so setup does not wait for Kata, and then forgotten. `session.unarchived`, or new activity in the session, stops it being an ended session: an unarchived session is never finished by a later restart. |
 
-State lives in OpenCode's per-plugin `ctx.storage`, which is shared by every location and survives restarts. Keys are `session/<session id>/<part>`: `entries` (the core's saved state, with the folder it belongs to; a lead resumes from it only in the same folder), `accepted` (the last accepted list's contents), `settled` (records of delegates that ended with an issue, so a later follow-up finds it) and `ended` (marks an ended session: deleted or archived with work left). Ending a lead clears all its parts once nothing is left to finish.
+State lives in OpenCode's per-plugin `ctx.storage`, which is shared by every location and survives restarts. Keys are `session/<session id>/<part>`: `entries` (the core's saved state, delegate records included, with the folder it belongs to; a lead resumes from it only in the same folder), `accepted` (the last accepted list's contents) and `ended` (marks an ended session: deleted or archived with work left). Ending a lead clears all its parts once nothing is left to finish.
 
 Every close the plugin makes runs `kata close` with `KATA_TRANSCRIPT_AGENT=opencode` and `KATA_TRANSCRIPT_SESSION_ID=<session id>` in that call's environment, plus `KATA_CLOSE_TRANSCRIPT_ENABLED=true` unless the server's environment already sets it. The server hosts every session, so the pair is set per call, never in the process environment. `KATA_CLOSE_TRANSCRIPT_ENABLED=false` in the server's environment stops closes recording the session ([Record agent sessions on closes](../how-to/record-session-transcripts.md)).
 

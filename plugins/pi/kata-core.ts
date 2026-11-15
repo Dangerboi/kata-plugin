@@ -3,7 +3,7 @@ import { appendFileSync, realpathSync } from "node:fs";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { decidePlanParent, explicitParent, isExplicitParent, namesPlanParent } from "./plan-parent";
 import { createInboxFollower, knownProjectHead, trustedInbox, type InboxFollower, type LiveInbox } from "./inbox";
-import { createDelegates, heldByDelegate as heldBy, isUntracked, nameOf, Refusal, teammateFor, type DelegateAssignment, type DelegateRecord, type DelegateStore, type Refused, type Reservation, type SavedDelegate, type Spawn, type Who } from "./delegates";
+import { createDelegates, heldByDelegate as heldBy, isUntracked, nameOf, Refusal, teammateFor, type DelegateAssignment, type DelegateStore, type Refused, type Reservation, type Spawn, type Who } from "./delegates";
 import { createSettlement, MAX_FAILURES, openChildren, type PendingClose } from "./settlement";
 import { createKata, isKataCode, isUnusable, KataError, type Exec } from "./kata-cli";
 import { createTicketCompletion } from "./autocomplete";
@@ -249,12 +249,10 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 	const nextStamp = () => (stamp = Math.max(Date.now(), stamp + 1));
 	// The plan's tasks: Kata children (or the local plan) merged with named items by creation time.
 	const withNamed = (base: Task[]) => named.length ? [...base.filter(t => !t.ticket), ...named].sort((a, b) => (a.at || 0) - (b.at || 0)) : base;
-	// Every record change is saved with the lead's snapshot, so a cleanup the process never finished survives it.
-	const store: DelegateStore = { ...host.delegateStore, put: record => { host.delegateStore.put(record); persist(); } };
 	const delegates = createDelegates({
-		namespace, store, kata,
-		actor: (cwd, ref) => actor(cwd, ref), owned, work, serial, plan: () => plan,
-		load: cwd => load(cwd), drain: () => drain(), cwd: () => path.resolve(currentCtx?.cwd ?? process.cwd()),
+		namespace, store: host.delegateStore, persist, kata,
+		actor, owned, work, serial, plan: () => plan,
+		load, drain, cwd: () => path.resolve(currentCtx?.cwd ?? process.cwd()),
 		async missionParent() {
 			// A local plan replays into its own parent first; a parent made now would orphan its tasks.
 			if (plan.local || !currentCtx || !main(currentCtx)) return undefined;
@@ -270,11 +268,10 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 	});
 	function persist() {
 		if (!currentId || !main(currentCtx)) return;
-		// A record with no binding and no mission wrote nothing to Kata, so the snapshot leaves it out (see Delegates.saved).
-		const open = delegates.saved(currentId);
+		const kept = delegates.saved();
 		const data = { version: 1, sessionId: currentId, ...(ownSessions.length ? { ownSessions: [...ownSessions] } : {}),
 			plan: structuredClone({ ...plan, tasks: plan.tasks.filter(t => !t.ticket) }), ...settlement.snapshot(),
-			...(open.length ? { delegates: structuredClone(open) } : {}),
+			...(kept.length ? { delegates: structuredClone(kept) } : {}),
 			...(named.length ? { named: structuredClone(named) } : {}), ...(deletedParent ? { deletedParent } : {}) };
 		const encoded = JSON.stringify(data);
 		if (encoded === lastSnapshot) return;
@@ -637,12 +634,8 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 		const lineage = Array.isArray(snapshot?.ownSessions) ? snapshot.ownSessions.filter((o: unknown): o is string => typeof o === "string" && !!o) : [];
 		ownSessions = id && main(ctx) ? [...new Set([id, ...(source ? [source] : []), ...lineage])] : [];
 		settlement.restore(snapshot && !source ? snapshot : undefined);
-		// Delegate records are in memory only: a resumed lead takes back the ones a past run left unfinished. A fork leaves them to the source.
-		const unsettled: SavedDelegate[] = newSession && !source && Array.isArray(snapshot?.delegates) ? snapshot.delegates : [];
-		// They settle in the background on the lead's queue, so the bind does not wait for Kata.
-		if (unsettled.length && main(ctx)) void serial(async () => {
-			if (delegates.restore(unsettled)) await drain();
-		}).catch(debug);
+		// Delegate records are in memory only: a resumed lead takes back the ones its snapshot kept. A fork leaves them to the source.
+		if (newSession && !source && main(ctx) && Array.isArray(snapshot?.delegates)) delegates.restore(snapshot.delegates);
 		if (snapshot) {
 			if (!source && snapshot.plan?.local && !requested) plan = { ...structuredClone(snapshot.plan), workspace: plan.workspace };
 			named = structuredClone(snapshot.named ?? []);
@@ -1610,11 +1603,13 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 	// A pi child joins the session that started it: its identity, its parent (found or created in the lead's name) and its assignment.
 	// Fills in `parent.ref` and `parent.label`, and sets KATA_TEAMMATE and KATA_INBOX_USER for every later Kata call, bash included.
 	async function join(ctx: any, parent: ChildParent, prompt: string): Promise<void> {
-		const known = store.of(ctx);
+		const known = host.delegateStore.of(ctx);
 		if (known) {
 			process.env.KATA_TEAMMATE = known.teammate;
 			process.env.KATA_INBOX_USER = `${await actor(known.binding?.workspace ?? parent.workspace, known.ref ?? parent.ref)}/${known.teammate}`;
-			await delegates.apply({ type: "nextUse", id: known.id });
+			// The child runs again as the delegate its session saved: on what that record holds, or anew when it holds nothing.
+			await delegates.apply({ type: "started", id: known.id, sessionId: known.sessionId, leadSessionId: known.leadSessionId, leadTeammate: known.leadTeammate, teammate: known.teammate, text: prompt,
+				name: known.name, parent: known.parent, workspace: known.workspace, parentLabel: known.parentLabel, refused: known.refused });
 			if (currentId !== sid(ctx)) await bounded(serial(() => bind(ctx)), DELEGATE_BIND_MS);
 			return;
 		}
@@ -1648,14 +1643,14 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 		// A prompt the assignment rules refuse is untracked and makes no mission: its report goes on the tickets or plan items it
 		// named, when it named several, and nowhere for a conflict (a taken or held task). A check Kata could not run leaves it untracked.
 		let reserved: Reservation | undefined, untracked = false, refused: Refused | undefined;
-		try { reserved = (await delegates.check([{ text: prompt }], [], delegateScope))[0]; }
+		try { reserved = (await delegates.check([{ text: prompt }], id, delegateScope))[0]; }
 		catch (error) { debug(error); if (error instanceof Refusal) refused = { targets: error.targets }; else untracked = true; }
 		const name = childName(host.getSessionName?.(), reserved, id);
 		const teammate = kept ?? teammateFor(name, salt);
 		process.env.KATA_TEAMMATE = teammate;
 		process.env.KATA_INBOX_USER = `${await actor(binding.workspace, binding.parent)}/${teammate}`;
 		await delegates.apply({ type: "started", id, sessionId: id, leadSessionId: parent.sessionId, leadTeammate: parent.teammate, teammate, text: prompt,
-			name, parent: binding.parent, workspace: binding.workspace, parentLabel: binding.label, reserved, untracked, refused });
+			name, parent: binding.parent, workspace: binding.workspace, parentLabel: binding.label, call: id, untracked, refused });
 		if (currentId !== sid(ctx)) await bounded(serial(() => bind(ctx)), DELEGATE_BIND_MS);
 	}
 
@@ -1711,9 +1706,9 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 			branch: rebind,
 			tree: rebind,
 			input() { reminders = 0; },
-			// Whether the session still owes Kata closes: a pending close, an unfinished delegate, and unless `parents` is false an
+			// Whether the session still owes Kata closes: a pending close, a delegate still to settle, and unless `parents` is false an
 			// automatic parent's close the last audit still means to make. A parent it left open on purpose (flagged for a person) is not owed.
-			owes: (options?: { parents?: boolean }) => settlement.owes(options) || (!!currentId && delegates.saved(currentId).length > 0),
+			owes: (options?: { parents?: boolean }) => settlement.owes(options) || delegates.owes(),
 			stop(ctx: any, messages: any[], signal?: AbortSignal): Promise<string | undefined> {
 				see(ctx);
 				return remind(messages, ctx, signal);
@@ -1767,7 +1762,7 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 					const inbox = main(ctx) && liveInbox !== undefined ? liveInbox : cache.inbox;
 					if (inbox) sections.inbox = inbox;
 				}
-				const record = !main(ctx) ? store.of(ctx) : undefined;
+				const record = !main(ctx) ? host.delegateStore.of(ctx) : undefined;
 				const assigned = record ? delegates.assignment(ctx) : undefined;
 				if (record && assigned) sections.assignment = delegateContext(options.executable, nameOf(record), assigned.ref, assigned.teammate, assigned.binding);
 				else if (isUntracked(record)) sections.assignment = untrackedDelegateContext(nameOf(record));
@@ -1797,10 +1792,10 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 		},
 		delegates: {
 			apply: delegates.apply,
-			// The issue the delegate running in `ctx` works, once assigned.
 			assignment: delegates.assignment,
-			// Refuses a spawn that cannot be delegated; otherwise says what each is matched to. `held`: refs other spawns of the same call reserved.
-			check: (spawns: Spawn[], held?: Iterable<string>) => delegates.check(spawns, held),
+			// See Delegates.check: a host's spawns are read against this session's own plan.
+			check: (spawns: Spawn[], call?: string) => delegates.check(spawns, call),
+			release: delegates.release,
 			join,
 		},
 		// Adds `#` ticket completion to the editor of the current session, once per editor.

@@ -1,9 +1,14 @@
 import { expect, test } from "bun:test";
 import { itemTicket, qualifiedRefs, type Status, type Task } from "../core/model";
-import { matchDelegation, namedTargets, namedTasks } from "../core/delegates";
+import { namedTargets, namedTasks, Refusal, resolve } from "../core/delegates";
 
 const task = (ref: string, content: string, status: Status = "pending", extra: Partial<Task> = {}): Task => ({ ref, content, phase: "Tasks", status, ...extra });
-const pick = (tasks: Task[], text: string, unavailable: string[] = []) => matchDelegation(tasks, text, { unavailable: new Set(unavailable) })?.ref;
+const NONE: ReadonlySet<string> = new Set();
+// What a text works in a plan of these tasks: the ref resolve() decides, or nothing when it names nothing or is refused.
+function pick(tasks: Task[], text: string, unavailable: string[] = [], parent?: string) {
+  try { return resolve(text, { tasks, parent }, new Set(unavailable), NONE).ref; }
+  catch (error) { if (error instanceof Refusal) return undefined; throw error; }
+}
 
 // Spawn texts from the 2026-10-19 eval: they describe a plan task without naming it.
 const omp = [
@@ -15,7 +20,7 @@ const omp = [
 
 test("a spawn that only describes a task binds nothing, whatever its words or name", () => {
   expect(pick(omp, "WriteTests\nWrite the textstats unittest suite in tests/ per the contract above")).toBeUndefined();
-  expect(matchDelegation(omp, "Write the textstats unittest suite, then run python3 -m unittest.", { label: "WriteTests" })).toBeUndefined();
+  expect(pick(omp, "Write the textstats unittest suite, then run python3 -m unittest.\nWriteTests")).toBeUndefined();
   expect(pick(omp, "Complete the current task and commit it.")).toBeUndefined();
   expect(pick(omp, "Reply with exactly: SUBAGENT-OK")).toBeUndefined();
 });
@@ -40,19 +45,19 @@ test("a named task that is taken binds nothing else", () => {
   expect(pick([task("y#cc33", "Write gadget tests"), task("y#dd44", "Write gadget test docs")], 'Complete "Write gadget tests"', ["y#cc33"])).toBeUndefined();
 });
 
-test("a ticket item binds when named by title or by its ticket's ref, not as the plan parent, and not once its ticket is taken", () => {
+test("a ticket item's ticket is worked when the item is named by title or by the ticket's ref, not as the plan parent, and not once the ticket is taken", () => {
   const epic = task("item:epic", "k#epc1: full suite, deep-review rounds until clean", "pending", { ticket: "k#epc1" });
-  expect(matchDelegation([epic], `Work "${epic.content}"`)?.ref).toBe("item:epic");
-  expect(matchDelegation([epic], "Work k#epc1 in the background")?.ref).toBe("item:epic");
-  expect(matchDelegation([epic], "Review the diff; the plan parent is k#epc1.", { parent: "k#epc1" })).toBeUndefined();
-  expect(matchDelegation([epic], `Work "${epic.content}"`, { unavailable: new Set(["k#epc1"]) })).toBeUndefined();
+  expect(resolve(`Work "${epic.content}"`, { tasks: [epic] }, NONE, NONE)).toEqual({ ref: "k#epc1", ticket: true, title: "full suite, deep-review rounds until clean" });
+  expect(pick([epic], "Work k#epc1 in the background")).toBe("k#epc1");
+  expect(pick([epic], "Review the diff; the plan parent is k#epc1.", [], "k#epc1")).toBeUndefined();
+  expect(pick([epic], `Work "${epic.content}"`, ["k#epc1"])).toBeUndefined();
 });
 
 test("an item named only by a ref hides no other named item", () => {
   const plain = task("p#pa11", "write the parser"), docs = task("item:doc", "p#abcd: write the parser docs", "pending", { ticket: "p#abcd" });
   expect(namedTasks([plain, docs], "Write the parser. See p#abcd for the API.").map(t => t.ref).sort()).toEqual(["item:doc", "p#pa11"]);
   const short = task("item:fix", "p#abcd: fix parser", "pending", { ticket: "p#abcd" }), long = task("item:fxt", "p#abcd: fix parser tests", "pending", { ticket: "p#abcd" });
-  expect(matchDelegation([short, long], "Handle p#abcd")).toBeUndefined();
+  expect(() => resolve("Handle p#abcd", { tasks: [short, long] }, NONE, NONE)).toThrow(/other open plan items name it/);
 });
 
 test("a short id only counts as a whole word after a marker", () => {

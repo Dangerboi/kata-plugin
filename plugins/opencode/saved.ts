@@ -1,13 +1,13 @@
-import type { SavedDelegate } from "./delegates";
+import { FINAL, type SavedDelegate } from "./delegates";
 import type { SettlementSnapshot } from "./settlement";
 
 // `ctx.storage` is one key-value store per plugin id, shared by every location and kept across server restarts, so every
 // key here is `session/<sessionID>/<part>`. Parts in use: `entries` (the core's saved state, written by lead.ts) and
-// `accepted` (the contents of the last todowrite list Kata accepted) and `settled` (the delegate records that ended with
-// an issue, kept so a later follow-up still finds its issue) and `ended` (an ended session: deleted or archived with work
-// left, which the next setup finishes before it forgets the session; cleared when the session is seen alive again).
+// `accepted` (the contents of the last todowrite list Kata accepted) and `ended` (an ended session: deleted or archived
+// with work left, which the next setup finishes before it forgets the session; cleared when the session is seen alive again).
 // Another module adds its own part name.
-// The core's state entry: `io.kata.<namespace>.state`, written by the core with the pending closes and unfinished delegates.
+// The core's state entry: `io.kata.<namespace>.state`, written by the core with the pending closes and the delegate records
+// it keeps: the unfinished ones, and the ended ones a follow-up can still resume.
 const STATE_ENTRY = "io.kata.opencode.state";
 export type SavedEntry = { type: "custom"; customType: string; data: unknown };
 export type SavedSession = { directory: string; entries: SavedEntry[] };
@@ -18,7 +18,7 @@ export const coreState = (entries: SavedEntry[]): CoreState | undefined => entri
 // Whether a resumed lead has closes or delegates to finish: what a new instance binds a saved lead for.
 export function holdsWork(entries: SavedEntry[]): boolean {
 	const state = coreState(entries);
-	return !!(state?.retries?.length || state?.pendingCloses?.length || state?.delegates?.length);
+	return !!(state?.retries?.length || state?.pendingCloses?.length || state?.delegates?.some(delegate => !FINAL.has(delegate.state)));
 }
 
 export interface SessionStorage {

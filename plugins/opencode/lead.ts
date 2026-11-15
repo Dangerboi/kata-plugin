@@ -1,7 +1,7 @@
 import { waitAtMost } from "./wait-at-most";
 import { createKataCore, type KataCore, type PlanView } from "./kata-core";
-import { FINAL, type DelegateRecord, type DelegateStore, type SavedDelegate } from "./delegates";
-import { coreState, type SavedEntry, type SavedSession, type SessionStorage } from "./saved";
+import type { DelegateRecord, DelegateStore } from "./delegates";
+import type { SavedEntry, SavedSession, SessionStorage } from "./saved";
 import { EXECUTABLE_VARS, type Settings } from "./settings";
 import type { KataExec } from "./spawn";
 
@@ -39,7 +39,7 @@ export interface DelegateCore extends CoreCaller {
 export interface Lead extends CoreCaller {
 	readonly id: string;
 	readonly directory: string;
-	// Delegate records of this lead, in memory (the core saves the unfinished ones with the lead's state).
+	// Delegate records of this lead, in memory (the core saves the ones it still needs with the lead's state, and brings them back).
 	readonly delegates: DelegateStore;
 	// The core of a delegate's session (a non-main caller of the lead's delegate records), created at first use.
 	delegateCore(sessionID: string): DelegateCore;
@@ -66,8 +66,6 @@ export interface LeadDeps {
 	storage: SessionStorage;
 	// State saved by an earlier instance of this plugin.
 	saved?: SavedSession;
-	// The delegate records that had ended when an earlier instance last saved them (see saved.ts).
-	settled?: SavedDelegate[];
 	debug(error: unknown): void;
 }
 
@@ -86,24 +84,10 @@ export function createLead(deps: LeadDeps): Lead {
 	}
 
 	const records = new Map<string, DelegateRecord>();
-	// The unfinished delegates are saved by the core with the lead's state; the ended ones that have an issue (their assignment's,
-	// or the mission that records an untracked run) are kept apart, so a follow-up after a restart still finds its record.
-	const unfinished = new Set<string>(coreState(entries)?.delegates?.map(d => d.id));
-	for (const record of deps.settled ?? []) if (!unfinished.has(record.id)) records.set(record.id, { ...record, text: "" });
-	let lastSettled = JSON.stringify(settledOf());
-	function settledOf(): SavedDelegate[] {
-		return [...records.values()].filter(record => FINAL.has(record.state) && ((record.ref && record.binding) || record.mission)).map(({ text: _text, ...record }) => record);
-	}
 	const delegates: DelegateStore = {
 		records: () => [...records.values()],
 		get: key => records.get(key),
-		put: record => {
-			records.set(record.id, record);
-			const settled = JSON.stringify(settledOf());
-			if (settled === lastSettled || ended) return;
-			lastSettled = settled;
-			writes = writes.then(() => storage.set(id, "settled", JSON.parse(settled))).catch(debug);
-		},
+		put: record => { records.set(record.id, record); },
 		of: ctx => [...records.values()].find(record => record.sessionId === ctx.sessionManager.getSessionId()),
 	};
 

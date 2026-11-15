@@ -1,10 +1,11 @@
-import type { DelegateEvent, Reservation } from "./delegates";
+import type { DelegateEvent } from "./delegates";
 import { teammateFor } from "./delegates";
 import { speak } from "./todowrite";
 import type { Lead } from "./lead";
 import { EXECUTION_ENDED, SESSION_ENDED, type Seam } from "./seam";
 
-// A `subagent` call a lead made: matched against the plan before it runs, then against the child session it creates.
+// A `subagent` call a lead made: read against the plan before it runs (the core keeps what it reserved under the call's id),
+// then matched to the child session it creates.
 interface Call {
 	id: string;
 	prompt: string;
@@ -12,13 +13,13 @@ interface Call {
 	// The agent the call starts (`general`, `explore`, ...), when it names one.
 	agent?: string;
 	background: boolean;
-	// What the plan check matched the prompt to; held against other calls of this lead until the child is bound.
-	reserved?: Reservation;
-	// A follow-up: the delegate record (the child's session id) it wakes.
+	// A follow-up: the delegate record (the child's session id) it goes on with.
 	followUp?: string;
 	// Set once the child's first context hook bound it.
 	childID?: string;
 }
+// Everything the lead gave the spawn, as the core reads it for what it names.
+const textFor = (call: Call) => [call.prompt, call.description].filter(Boolean).join("\n");
 
 // The text of a message as OpenCode keeps it: a user message has `text`, an assistant message a list of content parts.
 function textOf(message: any): string {
@@ -40,10 +41,12 @@ export function install(seam: Seam): void {
 	// A lead's calls still waiting for their child (or, foreground, for their result), in creation order.
 	const calls = new Map<string, Call[]>();
 	const callsOf = (leadID: string) => calls.get(leadID) ?? (calls.set(leadID, []), calls.get(leadID)!);
-	const drop = (leadID: string, call: Call) => {
-		const list = calls.get(leadID);
+	// The call is over: it leaves the list, and what it reserved and no child took is free again.
+	const drop = (lead: Lead, call: Call) => {
+		const list = calls.get(lead.id);
 		const index = list?.indexOf(call) ?? -1;
 		if (index >= 0) list!.splice(index, 1);
+		lead.core.delegates.release(call.id);
 	};
 	const send = (lead: Lead, event: DelegateEvent) => lead.core.delegates.apply(event);
 
@@ -68,23 +71,17 @@ export function install(seam: Seam): void {
 			agent: typeof input.agent === "string" && input.agent ? input.agent : undefined,
 			background: input.background === true,
 		};
-		// One call at a time: the refs another pending call reserved are read and this one's are added in the same step.
-		await lead.exclusive(async () => {
-			const list = callsOf(lead.id);
-			if (typeof input.sessionID === "string" && input.sessionID) {
-				// A follow-up stays on its delegate's record and issue; nothing is matched or reserved, and one with no record is untracked.
-				call.followUp = input.sessionID;
-			} else {
-				const held = list.flatMap(other => other.reserved?.ref ? [other.reserved.ref] : []);
-				try {
-					[call.reserved] = await lead.core.delegates.check([{ text: call.prompt, label: call.description }], held);
-				} catch (error) {
-					// The refusal reaches the model of a plugin whose tool is todowrite, not the omp todo tool.
-					throw new Error(speak(error instanceof Error ? error.message : String(error)));
-				}
+		// A follow-up stays on its delegate's record and issue: nothing is matched or reserved for it.
+		if (typeof input.sessionID === "string" && input.sessionID) call.followUp = input.sessionID;
+		// After any todowrite call still running, so the check reads the plan that call leaves.
+		else await lead.exclusive(async () => {
+			try { await lead.core.delegates.check([{ text: textFor(call) }], call.id); }
+			catch (error) {
+				// The refusal reaches the model of a plugin whose tool is todowrite, not the omp todo tool.
+				throw new Error(speak(error instanceof Error ? error.message : String(error)));
 			}
-			list.push(call);
 		});
+		callsOf(lead.id).push(call);
 	});
 
 	seam.context(async (event, { first }) => {
@@ -100,13 +97,14 @@ export function install(seam: Seam): void {
 		const call = follow ?? fresh;
 		if (call) {
 			call.childID = event.sessionID;
-			// A background call has returned by now: nothing is left to wait for.
-			if (call.background) drop(lead.id, call);
-			if (follow) await send(lead, { type: "woken", id: event.sessionID, sessionId: event.sessionID });
-			else await send(lead, {
+			// A follow-up goes on with its delegate's record and matches nothing again (`untracked`); a follow-up to a session the
+			// lead holds no record of is not tracked.
+			if (record || fresh) await send(lead, {
 				type: "started", id: event.sessionID, sessionId: event.sessionID, leadSessionId: lead.id, leadTeammate: seam.settings.teammate ?? "",
-				teammate: teammateFor(event.sessionID, lead.id), text: call.prompt, label: call.description, name: call.description || undefined, agent: call.agent, reserved: call.reserved,
+				teammate: teammateFor(event.sessionID, lead.id), text: textFor(call), name: call.description || undefined, agent: call.agent, call: call.id, untracked: !!follow,
 			});
+			// A background call has returned by now: nothing is left to wait for.
+			if (call.background) drop(lead, call);
 			record = lead.delegates.get(event.sessionID);
 		}
 		if (!record) return;
@@ -126,7 +124,7 @@ export function install(seam: Seam): void {
 		if (!lead || !call) return;
 		const running = event.status !== "error" && (event.result?.metadata?.status ?? event.result?.output?.status) === "running";
 		if (running && !call.childID) return;
-		drop(lead.id, call);
+		drop(lead, call);
 		if (!call.childID || running) return;
 		const record = lead.delegates.get(call.childID);
 		if (!record) return;
@@ -141,21 +139,28 @@ export function install(seam: Seam): void {
 		await send(lead, { type: "exited", id: record.id, outcome: "completed" });
 	});
 
-	// A child's end, for the background calls: its last assistant text is its report.
 	seam.events(Object.keys(EXECUTION_ENDED), async event => {
-		const childID: string | undefined = event.data?.sessionID;
-		if (!childID) return;
-		const session = await seam.sessionOf(childID);
-		if (session?.parentID === undefined) return;
+		const sessionID: string | undefined = event.data?.sessionID;
+		if (!sessionID) return;
+		const session = await seam.sessionOf(sessionID);
+		if (!session) return;
+		if (session.parentID === undefined) {
+			// The lead's turn ended. A call still without a child is over: a later hook refused it (neither the tool nor
+			// `execute.after` ran), or its background child never reached a context hook. What it reserved is free again, so the
+			// item can be delegated anew; a background child that reaches its first context hook only now is not tracked.
+			const lead = await seam.savedLead(sessionID);
+			if (lead) for (const call of [...callsOf(lead.id)]) if (!call.childID) drop(lead, call);
+			return;
+		}
+		// A child's end, for the background calls: its last assistant text is its report.
 		const lead = await seam.savedLead(session.parentID);
-		const record = lead?.delegates.get(childID);
+		const record = lead?.delegates.get(sessionID);
 		if (!lead || !record || record.exited) return;
-		const messages: any[] = await seam.ctx.session.context({ sessionID: childID });
+		const messages: any[] = await seam.ctx.session.context({ sessionID });
 		const last = [...messages].reverse().find(message => message?.type === "assistant" && textOf(message).trim());
 		if (last) await send(lead, { type: "reported", id: record.id, text: textOf(last) });
 		await send(lead, { type: "exited", id: record.id, outcome: EXECUTION_ENDED[event.type] });
 	});
 
-	// A deleted or archived lead's pending calls are gone with it.
 	seam.events(SESSION_ENDED, event => { if (event.data?.sessionID) calls.delete(event.data.sessionID); });
 }

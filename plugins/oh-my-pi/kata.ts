@@ -25,7 +25,7 @@ import { execKata, exportTranscriptSession, transcriptEnv } from "./kata-cli";
 import { delegateCommand, kataCommands as parseKataCommands } from "./shell";
 import { FINAL, isUntracked, teammateFor } from "./delegates";
 import { textOf } from "./model";
-import type { DelegateRecord, Delegates, DelegateStore, Reservation } from "./delegates";
+import type { DelegateRecord, Delegates, DelegateStore } from "./delegates";
 import type { InboxStream } from "./inbox";
 import { describeTodoCall, describeTodoResult, todoWidget } from "./tsp";
 
@@ -36,10 +36,10 @@ const EXECUTABLE = process.env.KATA_OMP_EXECUTABLE || "kata";
 const EXECUTABLE_VARS = ["KATA_OMP_EXECUTABLE"];
 export const kataCommands = (command: string) => parseKataCommands(command, EXECUTABLE, EXECUTABLE_VARS);
 
-// What a task call asked for: names and texts per spawn; once a plan or ticket was seen, what each spawn is matched to.
-// The entry goes once the call settled: at its result for a call that ran its spawns synchronously, once the call's
-// background jobs stopped running for an async one (`jobs` holds their ids), or once every spawn has started.
-type Assignment = { labels: string[]; texts: string[]; reserved?: (Reservation | undefined)[]; started: Set<number>; jobs?: Set<string> };
+// The texts of a task call's spawns, for the delegates it starts. The entry lasts as long as the core keeps what the spawns
+// reserved (see Delegates.check): until the call is over, which is its result for a call that ran its spawns inside it, and
+// the end of its background jobs for an async one (`jobs` holds their ids), whose spawns may start after the result.
+type TaskCall = { texts: string[]; jobs?: Set<string> };
 
 // OMP rebinds extension factories in the same module graph, so every instance on a thread shares the delegate records and
 // the lead Delegates that own them. A delegate's session file is the correlation key: agent names alone can collide across simultaneous sessions.
@@ -140,8 +140,6 @@ export default function ompKata(pi: any) {
 	// The context of the latest event: the lifecycle bus carries none. A sub identity that reaches a main-session handler (omp's advisor) never replaces the main one.
 	let seen: any;
 	const see = (ctx: any) => { if (main(ctx) || !seen || !main(seen)) seen = ctx; };
-	let assignmentsLead: string | undefined;
-	const assignments = new Map<string, Assignment>();
 	const leadSession = () => seen && main(seen) ? sessionId(seen) : undefined;
 	const store: DelegateStore = {
 		records: () => [...recordsBySession.values()].filter(record => record.leadSessionId === leadSession()),
@@ -174,6 +172,16 @@ export default function ompKata(pi: any) {
 	}, { namespace: "omp", executable: EXECUTABLE, executableVars: EXECUTABLE_VARS, debugFile: process.env.KATA_OMP_DEBUG, attentionHarness: "pi", prefetch: true,
 		// RPC and print modes take string widgets only: a component is for the interactive TUI.
 		widget: (line, view, ctx) => todoWidget(ctx?.mode === "tui" ? pi.pi?.Text : undefined, line, view) });
+	// The task calls of the lead session `callsLead` that are not over yet.
+	const taskCalls = new Map<string, TaskCall>();
+	let callsLead: string | undefined;
+	const over = (call: string) => { taskCalls.delete(call); core.delegates.release(call); };
+	// A previous session's calls are over.
+	const forLead = (id: string | undefined) => {
+		if (callsLead === id) return;
+		for (const call of [...taskCalls.keys()]) over(call);
+		callsLead = id;
+	};
 	// /tan runs a side conversation in a sub session whose agent id omp mints as
 	// `Tan-<snowflake>`; task spawns get ids from the task name or a generated name,
 	// never that prefix. The id is known at the very first todo call, unlike a
@@ -186,8 +194,8 @@ export default function ompKata(pi: any) {
 		const snapshot = ctx?.getAsyncJobSnapshot?.();
 		if (!snapshot) return;
 		const running: any[] = snapshot.running ?? [], records = store.records();
-		for (const [call, assignment] of assignments) {
-			if (assignment.jobs && !running.some(job => assignment.jobs!.has(job.id) || assignment.jobs!.has(job.agentId))) assignments.delete(call);
+		for (const [call, { jobs }] of taskCalls) {
+			if (jobs && !running.some(job => jobs.has(job.id) || jobs.has(job.agentId))) over(call);
 		}
 		for (const job of snapshot.recent ?? []) {
 			if (job.type !== "task" || !["completed", "failed", "aborted", "cancelled"].includes(job.status)) continue;
@@ -281,21 +289,14 @@ export default function ompKata(pi: any) {
 		const lead = leadOf(ctx);
 		if (!lead?.delegates) return;
 		if (event.status === "started") {
-			if (assignmentsLead !== lead.id) { assignments.clear(); assignmentsLead = lead.id; } // a previous session's spawns
+			forLead(lead.id);
 			for (const [key, record] of recordsBySession) if (record.leadSessionId !== lead.id && record.exited && FINAL.has(record.state)) recordsBySession.delete(key);
 			const index = event.index ?? 0;
-			const assignment = main(ctx) ? assignments.get(event.parentToolCallId) : undefined;
-			const reserved = assignment?.reserved?.[index];
-			if (assignment?.reserved) assignment.reserved[index] = undefined;
-			if (assignment) {
-				assignment.started.add(index);
-				if (assignment.started.size >= assignment.texts.length) assignments.delete(event.parentToolCallId);
-			}
 			void lead.delegates.apply({
 				type: "started", id: event.id, sessionId: event.sessionFile ? sessionKey(event.sessionFile, ctx.cwd) : `${lead.id}:${event.id}`,
 				leadSessionId: lead.id, leadTeammate: process.env.KATA_TEAMMATE || "", teammate: teammateFor(event.id, lead.id),
-				text: [assignment?.texts[index], event.description].filter(Boolean).join("\n"), label: assignment?.labels[index],
-				agent: typeof event.agent === "string" && event.agent ? event.agent : undefined, parentAgentId: ctx.agent?.id, reserved,
+				text: [taskCalls.get(event.parentToolCallId)?.texts[index], event.description].filter(Boolean).join("\n"),
+				agent: typeof event.agent === "string" && event.agent ? event.agent : undefined, parentAgentId: ctx.agent?.id, call: event.parentToolCallId, index,
 			});
 		} else if (["completed", "failed", "aborted"].includes(event.status)) {
 			void lead.delegates.apply({ type: "exited", id: event.id, outcome: event.status });
@@ -328,17 +329,11 @@ export default function ompKata(pi: any) {
 		if (record) ranTool(record);
 		if (main(ctx) && event.toolName === "task" && event.toolCallId) {
 			const items: any[] = Array.isArray(event.input?.tasks) ? event.input.tasks : [event.input];
-			// omp's short task name is the clearest signal; the task text is the fallback.
-			const labels = items.map(item => typeof item?.name === "string" ? item.name : "");
-			const texts = items.map(item => [item?.task, item?.description].filter(value => typeof value === "string").join("\n"));
-			const id = leadSession();
-			if (assignmentsLead !== id) { assignments.clear(); assignmentsLead = id; }
-			const held = [...assignments.values()].flatMap(a => (a.reserved ?? []).map(reservation => reservation?.ref)).filter((ref): ref is string => !!ref);
-			const assignment: Assignment = { labels, texts, started: new Set() };
-			assignments.set(event.toolCallId, assignment);
-			return core.delegates.check(texts.map((text, index) => ({ text, label: labels[index] })), held)
-				.then(reserved => { assignment.reserved = reserved; })
-				.catch(error => { assignments.delete(event.toolCallId); return { block: true, reason: String(error) }; });
+			const texts = items.map(item => [item?.task, item?.description, item?.name].filter(value => typeof value === "string").join("\n"));
+			forLead(leadSession());
+			taskCalls.set(event.toolCallId, { texts });
+			return core.delegates.check(texts.map(text => ({ text })), event.toolCallId)
+				.then(() => undefined, error => { over(event.toolCallId); return { block: true, reason: String(error) }; });
 		}
 		if (ctx.agent?.kind !== "sub" || event.toolName !== "bash" || typeof event.input?.command !== "string") return;
 		const commands = kataCommands(event.input.command);
@@ -371,17 +366,13 @@ export default function ompKata(pi: any) {
 
 	pi.on("tool_result", async (event: any, ctx: any) => {
 		await enter(ctx);
-		// Started delegates hold their own tasks; a denied or partial spawn releases the rest. The text stays for a delegate
-		// whose start is reported late, until every spawn has started (a call that failed spawned nothing).
-		const assignment = event.toolName === "task" ? assignments.get(event.toolCallId) : undefined;
-		if (assignment) {
-			assignment.reserved = undefined;
-			if (event.isError || assignment.started.size >= assignment.texts.length) assignments.delete(event.toolCallId);
-			else if (event.details?.async) { // background jobs: their spawns may start after this result
-				assignment.jobs = new Set([event.details.async.jobId, ...(event.details.progress ?? []).map((spawn: any) => spawn?.id)].filter((id): id is string => typeof id === "string"));
-				await syncJobs(ctx);
-			} else assignments.delete(event.toolCallId); // the spawns ran to the end inside the call
-		}
+		// A call that ran its spawns inside it is over at its result, and so is one that failed (it spawned nothing). An async
+		// call's background jobs may start their spawns after this result: it stays until they stop running.
+		const call = event.toolName === "task" ? taskCalls.get(event.toolCallId) : undefined;
+		if (call && !event.isError && event.details?.async) {
+			call.jobs = new Set([event.details.async.jobId, ...(event.details.progress ?? []).map((spawn: any) => spawn?.id)].filter((id): id is string => typeof id === "string"));
+			await syncJobs(ctx);
+		} else if (call) over(event.toolCallId);
 		await core.tools.result(ctx, event);
 	});
 	pi.on("session_stop", async (event: any, ctx: any) => {

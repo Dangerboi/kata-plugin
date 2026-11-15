@@ -58,17 +58,19 @@ export default async function piKata(pi: ExtensionAPI) {
 	// A child keeps its delegate record in its session branch, so resuming the session keeps its assignment.
 	const DELEGATE_ENTRY = "io.kata.pi.delegate";
 	let current: DelegateRecord | undefined;
-	const savedOf = (ctx: ExtensionContext): (DelegateRecord & { parentMarker?: PiParent }) | undefined =>
-		(ctx.sessionManager.getBranch() as any[]).filter(e => e.type === "custom" && e.customType === DELEGATE_ENTRY && e.data?.id === ctx.sessionManager.getSessionId()).at(-1)?.data;
+	// The child's record as its session branch last saved it, and the parent marker the child had then.
+	function savedOf(ctx: ExtensionContext): { record: DelegateRecord; marker?: PiParent } | undefined {
+		const data = (ctx.sessionManager.getBranch() as any[]).filter(e => e.type === "custom" && e.customType === DELEGATE_ENTRY && e.data?.id === ctx.sessionManager.getSessionId()).at(-1)?.data;
+		if (!data) return undefined;
+		const { parentMarker: marker, ...record } = data;
+		return { record, marker };
+	}
 	const store: DelegateStore = {
 		records: () => current ? [current] : [],
 		get: id => current?.id === id ? current : undefined,
 		put: record => { current = record; pi.appendEntry(DELEGATE_ENTRY, { ...record, parentMarker: inherited }); },
 		of: ctx => {
-			if (current?.sessionId !== ctx.sessionManager.getSessionId()) {
-				const saved = savedOf(ctx);
-				if (saved) { const { parentMarker: _marker, ...record } = saved; current = record; }
-			}
+			if (current?.sessionId !== ctx.sessionManager.getSessionId()) current = savedOf(ctx)?.record ?? current;
 			return current?.sessionId === ctx.sessionManager.getSessionId() ? current : undefined;
 		},
 	};
@@ -196,11 +198,10 @@ export default async function piKata(pi: ExtensionAPI) {
 		// A child replaces the session its lead exported.
 		exportTranscriptSession("pi", ctx.sessionManager.getSessionId());
 		const saved = savedOf(ctx);
-		if (saved?.parentMarker && (!explicit || inherited)) {
-			const { parentMarker, ...record } = saved;
-			inherited = parentMarker;
-			current = record as DelegateRecord;
-			process.env.KATA_TEAMMATE = saved.teammate;
+		if (saved?.marker && (!explicit || inherited)) {
+			inherited = saved.marker;
+			current = saved.record;
+			process.env.KATA_TEAMMATE = current.teammate;
 			delete process.env.KATA_REF;
 		}
 		// A /fork replaces the source session in this process: the fork takes the tasks the source holds.

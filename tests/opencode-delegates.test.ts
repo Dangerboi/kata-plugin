@@ -63,8 +63,8 @@ afterAll(async () => {
 	restore(touched);
 });
 
-async function lead(executable = binary, options: Record<string, unknown> = {}) {
-	const host = await openCodeHost({ plugin: opencode, directory: cwd, options: { executable, author: "opencode-builder", ...options } });
+async function lead(executable = binary, options: Record<string, unknown> = {}, plugin: typeof opencode = opencode) {
+	const host = await openCodeHost({ plugin, directory: cwd, options: { executable, author: "opencode-builder", ...options } });
 	open.push(host);
 	return { host, id: host.createSession({ id: `oc-del-${++sequence}-${Date.now().toString(36)}` }).id };
 }
@@ -507,6 +507,40 @@ test("a follow-up that runs no tool is rolled back, and its report stays on the 
 	expect(after.metadata.teammate).toBe(before.metadata.teammate);
 	expect(after.status).toBe(before.status);
 	expect((await commentsOf(ref)).some(body => body.includes("after a follow-up") && body.includes("Only the error handling is left."))).toBe(true);
+});
+
+test("a call another plugin's hook refuses after the plan check frees its item at the lead's turn end", async () => {
+	let refuse = true;
+	// Registered after Kata's hooks, so it refuses the call once the plan check has reserved the item: OpenCode then runs
+	// neither the tool nor `execute.after`.
+	const withRefusal: typeof opencode = { id: opencode.id, async setup(ctx: any) {
+		const cleanup = await opencode.setup(ctx);
+		await ctx.tool.hook("execute.before", (event: any) => { if (event.tool === "subagent" && refuse) throw new Error("Refused by another plugin."); });
+		return cleanup;
+	} };
+	const { host, id } = await lead(binary, {}, withRefusal);
+	await write(host, id, todos(["Implement parser module", "pending"]));
+	const refused = await spawn(host, id, { prompt: "Implement parser module please." }, async () => "never");
+	expect(refused.result.executed).toBe(false);
+	expect(refused.result.text).toContain("Refused by another plugin.");
+	await turnEnd(host, id);
+	refuse = false;
+	const next = await spawn(host, id, { prompt: "Implement parser module please." }, async (_child, system) => { await closeAs(system); return "Done."; });
+	expect(next.result.status, next.result.text).toBe("completed");
+	expect(statusOf(await item(id, "Implement parser module"))).toBe("closed:done");
+});
+
+test("a background call whose child never reaches a context hook frees its item at the lead's turn end", async () => {
+	const { host, id } = await lead();
+	await write(host, id, todos(["Implement parser module", "pending"]));
+	const lost = await spawn(host, id, { prompt: "Implement parser module in the background.", background: true });
+	expect(lost.result.status, lost.result.text).toBe("completed");
+	// The child fails before its first model call, so no context hook ever binds it; then the lead's turn ends.
+	await host.emit("session.execution.failed", { sessionID: lost.child.id });
+	await turnEnd(host, id);
+	const next = await spawn(host, id, { prompt: "Implement parser module in the background." }, async (_child, system) => { await closeAs(system); return "Done."; });
+	expect(next.result.status, next.result.text).toBe("completed");
+	expect(statusOf(await item(id, "Implement parser module"))).toBe("closed:done");
 });
 
 test("speak turns the shared-ticket advice into todowrite wording", () => {

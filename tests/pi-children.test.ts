@@ -510,3 +510,26 @@ test("Pi child creates a new automatic parent when the lead's was deleted before
   expect(parents[0].metadata["pi.auto_parent"]).toBe(true);
   leaveChild();
 });
+
+test("a resumed child whose first run closed its plan task reports its next run on that task", async () => {
+  const parent = await host(); await parent.event("session_start", { reason: "startup" });
+  await parent.init(["Implement resumed fixture", "Write resumed fixture tests"]);
+  const marker = process.env.KATA_PI_PARENT!;
+  const child = await childOf(parent);
+  await child.event("before_agent_start", { prompt: "Write resumed fixture tests", systemPromptOptions: { sections: {} } });
+  await child.event("tool_call", { toolName: "bash", input: { command: "ls" } });
+  const record = delegateRecord(child);
+  await kata(["close", record.ref, "--done", "--message", "Closed by the child itself with verified behaviour.", "--test", "pi fixture", "--teammate", record.teammate, "--json"]);
+  await child.event("session_shutdown", { reason: "quit" });
+  expect(delegateRecord(child).state).toBe("settled");
+  // `pi --continue` in the child's session: a new process that finds the child's record in its session branch.
+  process.env.KATA_PI_PARENT = JSON.stringify({ ...JSON.parse(marker), pid: process.pid + 1 });
+  const resumed = await host({ sid: child.sid, entries: JSON.parse(JSON.stringify(child.entries)) });
+  await resumed.event("session_start", { reason: "resume" });
+  const event: any = { prompt: "Also cover the empty input", systemPromptOptions: { sections: {} } };
+  await resumed.event("before_agent_start", event);
+  expect(event.systemPromptOptions.sections.kata_binding).toContain(record.ref);
+  await endWithReport(resumed, "Empty input is covered now.");
+  expect(await reportsOn(record.ref)).toEqual([[record.teammate, `Report from subagent ${record.name} (after a follow-up):\n\nEmpty input is covered now.`]]);
+  expect((await show(record.ref)).issue.status).toBe("closed");
+});

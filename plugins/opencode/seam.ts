@@ -2,7 +2,7 @@ import { appendFileSync } from "node:fs";
 import { waitAtMost } from "./wait-at-most";
 import { createLead, type Lead } from "./lead";
 import { holdsWork, sessionStorage, type SavedSession, type SessionStorage } from "./saved";
-import type { DelegateAssignment, DelegateOutcome, DelegateRecord, SavedDelegate } from "./delegates";
+import type { DelegateAssignment, DelegateOutcome, DelegateRecord } from "./delegates";
 import { createKataExec, type KataExec } from "./spawn";
 import type { Settings } from "./settings";
 
@@ -123,9 +123,9 @@ export function createSeam(ctx: any, settings: Settings): SeamRegistry {
 		return known;
 	}
 
-	function leadFor(id: string, saved?: SavedSession, settled?: SavedDelegate[]): Lead {
+	function leadFor(id: string, saved?: SavedSession): Lead {
 		let lead = leads.get(id);
-		if (!lead) leads.set(id, lead = createLead({ id, directory: saved?.directory ?? directory, settings, exec, storage, saved, settled, debug }));
+		if (!lead) leads.set(id, lead = createLead({ id, directory: saved?.directory ?? directory, settings, exec, storage, saved, debug }));
 		return lead;
 	}
 
@@ -139,7 +139,7 @@ export function createSeam(ctx: any, settings: Settings): SeamRegistry {
 		let info = await sessionOf(sessionID);
 		for (let depth = 0; info?.parentID !== undefined && depth < MAX_DEPTH; depth++) info = await sessionOf(info.parentID);
 		if (!info || info.parentID !== undefined) return undefined;
-		return leads.get(info.id) ?? leadFor(info.id, await savedState(info.id), await storage.get<SavedDelegate[]>(info.id, "settled"));
+		return leads.get(info.id) ?? leadFor(info.id, await savedState(info.id));
 	}
 
 	async function ownLead(sessionID: string): Promise<Lead | undefined> {
@@ -151,7 +151,7 @@ export function createSeam(ctx: any, settings: Settings): SeamRegistry {
 		const held = leads.get(leadID);
 		if (held) return held;
 		const saved = await savedState(leadID);
-		return saved && leadFor(leadID, saved, await storage.get<SavedDelegate[]>(leadID, "settled"));
+		return saved && leadFor(leadID, saved);
 	}
 
 	async function delegateOf(sessionID: string): Promise<DelegateOf | undefined> {
@@ -190,7 +190,7 @@ export function createSeam(ctx: any, settings: Settings): SeamRegistry {
 		const fate = ended ? await openCodeSays(id) : "alive";
 		if (fate === "alive" && ended) { await storage.remove(id, "ended"); ended = false; }
 		if (!ended && !holdsWork(saved.entries)) return;
-		leadFor(id, saved, await storage.get<SavedDelegate[]>(id, "settled"));
+		leadFor(id, saved);
 		// A session that ended with work left finishes it now, and forgets its state once nothing is left.
 		if (ended && fate === "ended" && !stopped) await endLead(id);
 	}

@@ -473,3 +473,58 @@ test("a background task call keeps its assignment for a late start until its job
   await app.call({ op: "view" });
   expect((await show(ref)).children.find((c: any) => c.title === "Write sprocket docs").metadata["omp.subagent_id"]).toBeUndefined();
 });
+
+// omp reports every later turn of the same agent (a revival, its answer to a message) as `started` again, with the same
+// id and session file.
+const assistantText = (id: string, text: string) => ({ id, event: { type: "message_end", message: { role: "assistant", content: [{ type: "text", text }] } } });
+
+test("a later turn of a delegate that closed its plan task reports on that task and makes no mission", async () => {
+  const app = host(); await app.event("session_start");
+  const ref = await app.init(["Implement widget", "Write widget tests"]);
+  await app.event("tool_call", { toolName: "task", toolCallId: "wake-bound", input: { name: "WriteTests", task: 'Complete "Write widget tests"' } });
+  const lifecycle = { id: "wake-bound", sessionFile: `${scratch}/wake-bound.jsonl`, parentToolCallId: "wake-bound", index: 0 };
+  app.emit("task:subagent:lifecycle", { ...lifecycle, status: "started" });
+  await app.call({ op: "view" });
+  const task = (await show(ref)).children.find((c: any) => c.title === "Write widget tests"), taskRef = `v2test#${task.short_id}`;
+  await kata(["close", taskRef, "--done", "--message", message, "--test", "wake fixture", "--teammate", task.metadata.teammate, "--json"]);
+  app.emit("task:subagent:lifecycle", { ...lifecycle, status: "completed" });
+  await app.call({ op: "view" });
+  app.emit("task:subagent:lifecycle", { ...lifecycle, status: "started" });
+  app.emit("task:subagent:event", assistantText("wake-bound", "The tests also cover empty input."));
+  app.emit("task:subagent:lifecycle", { ...lifecycle, status: "completed" });
+  await app.call({ op: "view" });
+  expect(await commentsOf(taskRef)).toContain("Report from subagent wake-bound (after a follow-up):\n\nThe tests also cover empty input.");
+  const children = (await show(ref)).children;
+  expect(children.filter((c: any) => c.metadata?.["omp.mission"] === "true")).toEqual([]);
+  expect(children.find((c: any) => c.short_id === task.short_id).status).toBe("closed");
+});
+
+test("a later turn of an untracked delegate adds its report to the mission its first run made", async () => {
+  const app = host(); await app.event("session_start");
+  const ref = await app.init(["Implement gadget"]);
+  await app.event("tool_call", { toolName: "task", toolCallId: "wake-scout", input: { tasks: [{ name: "Scout", agent: "scout", task: "Survey the repository layout and report the top-level directories." }] } });
+  const lifecycle = { id: "Scout", agent: "scout", sessionFile: `${scratch}/wake-scout.jsonl`, parentToolCallId: "wake-scout", index: 0 };
+  for (const text of ["Top level: core, docs, plugins.", "Also scripts and tests."]) {
+    app.emit("task:subagent:lifecycle", { ...lifecycle, status: "started" });
+    await app.call({ op: "view" });
+    app.emit("task:subagent:event", assistantText("Scout", text));
+    app.emit("task:subagent:lifecycle", { ...lifecycle, status: "completed" });
+    await app.call({ op: "view" });
+  }
+  const missions = (await show(ref)).children.filter((c: any) => c.metadata["omp.mission"] === "true");
+  expect(missions.map((c: any) => c.status)).toEqual(["closed"]);
+  expect(await commentsOf(`v2test#${missions[0].short_id}`)).toEqual(["Report from subagent Scout:\n\nTop level: core, docs, plugins.", "Report from subagent Scout (after a follow-up):\n\nAlso scripts and tests."]);
+});
+
+test("a background task call keeps the ticket its spawn named reserved after its result, and its late start binds it", async () => {
+  let running: any[] = [];
+  const app = host({ snapshot: () => ({ running, recent: [] }) }); await app.event("session_start"); await app.init(["Implement widget"]);
+  const ticket = await issue("Late ticket"), input = { task: `Finish v2test#${ticket}: make the change and close it.` };
+  running = [{ id: "job-late", agentId: "late-ticket", type: "task", status: "running" }];
+  await app.event("tool_call", { toolName: "task", toolCallId: "late-ticket", input });
+  await app.event("tool_result", { toolName: "task", toolCallId: "late-ticket", isError: false, input, details: { async: { state: "running", jobId: "job-late", type: "task" }, progress: [{ id: "late-ticket" }] } });
+  expect(await app.event("tool_call", { toolName: "task", toolCallId: "late-ticket-again", input })).toMatchObject({ block: true, reason: expect.stringMatching(/already delegated/) });
+  app.emit("task:subagent:lifecycle", { id: "late-ticket", status: "started", sessionFile: `${scratch}/late-ticket.jsonl`, parentToolCallId: "late-ticket", index: 0 });
+  await app.call({ op: "view" });
+  expect((await show(`v2test#${ticket}`)).issue.metadata["omp.subagent_id"]).toBe("late-ticket");
+});
