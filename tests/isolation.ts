@@ -16,8 +16,10 @@ export function assertIsolated(env: NodeJS.ProcessEnv = process.env) {
 
 // Include every fixture actor/project, including live proof runs. Keep this list
 // next to the guard so additions to fixtures have one explicit canary boundary.
-const actors = new Set(["actor-a", "actor-b", "v2-builder", "revision-a", "revision-b", "omp-v2-proof", "pi-builder", "opencode-builder", "configured-author", "pi-port-proof", "integration-actor", "assemble-proof"]);
-const testProject = /(?:^|[^a-z0-9_-])(?:realtest|fixture|assemble-[a-z0-9_-]+|omptest|v2test|v2other|v2evidence|pitest|piother|pi-port-[a-z0-9_-]+|revision-conformance|omp-v2-[a-z0-9_-]+)(?=$|[^a-z0-9_-])/i;
+// Only actors and project names count: real sessions write to the default store
+// during a run, and their free text (task titles, comments) can name any fixture.
+const actors = new Set(["actor-a", "actor-b", "lead-actor", "mallory", "someone-else", "token-actor", "v2-builder", "revision-a", "revision-b", "omp-v2-proof", "pi-builder", "opencode-builder", "configured-author", "pi-port-proof", "integration-actor", "assemble-proof"]);
+const testProject = /^(?:realtest|fixture|authenticated-fixture|assemble-[a-z0-9_-]+|omptest|v2test|v2other|v2alpha|v2evidence|pitest|piother|pimoved|pi-port-[a-z0-9_-]+|revision-conformance|omp-v2-[a-z0-9_-]+|delegates-test|settlement-test|reliability-test|local-reliability|takeover-home|takeinit|contractrepo)$/i;
 type Snapshot = { present: boolean; schema?: string; projects: string[]; forbidden: string[] };
 
 function stamp(file: string): string {
@@ -55,8 +57,8 @@ export function snapshot(root = path.join(os.homedir(), ".kata")): string {
       const schema = (db.query("SELECT value FROM meta WHERE key='schema_version'").get() as any)?.value;
       if (!/^\d+$/.test(String(schema))) throw new Error("Default Kata DB has no valid schema version.");
       const projects = (db.query("SELECT uid, name FROM projects").all() as any[]).map(p => JSON.stringify([p.uid, p.name])).sort();
-      const forbidden = (db.query("SELECT uid, actor, project_name, payload FROM events").all() as any[])
-        .filter(e => actors.has(e.actor) || testProject.test(e.project_name) || testProject.test(e.payload))
+      const forbidden = (db.query("SELECT uid, actor, project_name FROM events").all() as any[])
+        .filter(e => actors.has(e.actor) || testProject.test(e.project_name))
         .map(e => createHash("sha256").update(JSON.stringify(e)).digest("hex")).sort();
       return JSON.stringify({ present: true, schema: String(schema), projects, forbidden });
     } finally { db.close(); }

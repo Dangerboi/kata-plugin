@@ -17,6 +17,12 @@ All notable changes to kata-plugin are listed here. The format follows [Keep a C
 - omp: a marketplace install registers as `@dangerboi/kata-omp` instead of `kata-omp`, the npm package's name, so omp loads the plugin once whichever way it was installed.
   - Upgrading the marketplace install moves it to the new name. Do that, or uninstall it, before installing from npm: an install still named `kata-omp` and the npm package load the plugin twice.
 
+### Fixed
+
+#### Development
+
+- `bun run test` no longer fails its default-store check when a real session writes to `~/.kata` during the run with text that names a test fixture, such as a sub-agent task mentioning "fixture". The check counts only events from test actors or in test projects, and its lists gain the test actors and projects they were missing.
+
 ## [1.11.0] - 2026-11-15
 
 kata-omp 2.11.0 and @dangerboi/kata-pi 1.11.0.

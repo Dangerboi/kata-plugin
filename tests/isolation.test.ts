@@ -30,11 +30,13 @@ function fixture() {
   return { root, db };
 }
 
-test("semantic canary ignores normal sync and WAL/checkpoint changes without modifying source", () => {
+test("semantic canary ignores normal sync, fixture names in real sessions' text and WAL/checkpoint changes without modifying source", () => {
   const { root, db } = fixture();
   try {
     const before = snapshot(root);
     db.exec(`INSERT INTO events VALUES (1, 'normal', 'user', 'personal', '{}')`);
+    // A real session working during the run whose task text names fixtures and fixture refs.
+    db.exec(`INSERT INTO events VALUES (2, 'mission', 'user', 'personal', '{"title":"Run the fixture suite against omptest#abcd"}')`);
     expect(() => assertUnchanged(before, root)).not.toThrow();
     db.exec("PRAGMA wal_checkpoint(TRUNCATE)");
     expect(() => assertUnchanged(before, root)).not.toThrow();
@@ -46,7 +48,6 @@ for (const [name, sql] of [
   ["new project", "INSERT INTO projects VALUES ('new', 'new-project')"],
   ["test actor", "INSERT INTO events VALUES (1, 'leak', 'v2-builder', 'personal', '{}')"],
   ["test project name", "INSERT INTO events VALUES (1, 'leak', 'user', 'v2test', '{}')"],
-  ["test project in payload", `INSERT INTO events VALUES (1, 'leak', 'user', 'personal', '{"ref":"omptest#abcd"}')`],
   ["unreadable schema", "DROP TABLE events"],
 ]) test(`semantic canary rejects ${name}, including changes still in WAL`, () => {
   const { root, db } = fixture();
