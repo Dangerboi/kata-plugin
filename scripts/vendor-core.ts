@@ -2,7 +2,7 @@ import { existsSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-// Every core module goes into both self-contained plugin directories.
+// Every core module goes into each of the three self-contained plugin directories.
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const check = process.argv.includes("--check");
 for (const name of readdirSync(path.join(root, "core")).filter(name => name.endsWith(".ts"))) {

@@ -33,7 +33,7 @@ jobs:
       - name: Isolate homes and configuration
         run: |
           isolated=$(mktemp -d /tmp/kata-compatibility.XXXXXX)
-          mkdir -p "$isolated"/{home,kata,config,data,cache,pi,omp,bin,downloads}
+          mkdir -p "$isolated"/{home,kata,config,data,cache,pi,omp}
           {
             echo "COMPATIBILITY_ROOT=$isolated"
             echo "HOME=$isolated/home"
@@ -52,25 +52,20 @@ jobs:
             echo "KATA_TEAMMATE="
             echo "KATA_INBOX_USER="
           } >> "$GITHUB_ENV"
-          echo "$isolated/bin" >> "$GITHUB_PATH"
 
-      - name: Install Bun and public Kata 0.23.0
-        run: |
-          npm install --global bun@1.4.4
-          cd "$COMPATIBILITY_ROOT/downloads"
-          release=https://github.com/kenn-io/kata/releases/download/v0.23.0
-          curl --fail --location --retry 3 --output kata_0.23.0_linux_amd64.tar.gz "$release/kata_0.23.0_linux_amd64.tar.gz"
-          curl --fail --location --retry 3 --output SHA256SUMS "$release/SHA256SUMS"
-          sha256sum --check --ignore-missing SHA256SUMS
-          tar -xzf kata_0.23.0_linux_amd64.tar.gz -C "$COMPATIBILITY_ROOT/bin" kata
+      - name: Install Bun and public Kata
+        uses: ./.github/actions/setup-kata
+        with:
+          bin: ${{ env.COMPATIBILITY_ROOT }}/bin
 
       - name: Install dependencies
         run: bun install --ignore-scripts --frozen-lockfile
 
-      - name: Generate portable copies before tests
-        run: bun run build:plugins
+      # The tests and the published packages use the committed copies in plugins/*, so nothing regenerates them here.
+      - name: Check the vendored copies match core
+        run: bun run check:plugins
 
-      - name: Test suite against Kata 0.23.0, half ${{ matrix.shard }} of 2
+      - name: Test suite, half ${{ matrix.shard }} of 2
         run: bun run test
         env:
           KATA_TEST_SHARD: ${{ matrix.shard }}/2
@@ -78,21 +73,6 @@ jobs:
       - name: Typecheck
         if: matrix.shard == 2
         run: bun run typecheck
-
-      - name: Check generated drift
-        if: matrix.shard == 2
-        run: git diff --exit-code -- plugins/oh-my-pi plugins/pi
-
-      - name: Upload portable copies even when checks fail
-        if: always() && matrix.shard == 2
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
-        with:
-          name: generated-portable-copies
-          path: |
-            plugins/oh-my-pi/*.ts
-            plugins/pi/*.ts
-          if-no-files-found: error
-          retention-days: 3
 
       - name: Remove isolated homes
         if: always()

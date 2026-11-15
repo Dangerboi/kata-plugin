@@ -1,0 +1,27 @@
+name: Install Bun and public Kata
+description: Installs the pinned Bun and the public Kata release the plugins support as their minimum, verified against the release's checksums.
+
+inputs:
+  bin:
+    description: Directory that receives the kata binary and joins PATH.
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      env:
+        BIN: ${{ inputs.bin }}
+        BUN_VERSION: "1.4.4"
+        KATA_VERSION: "0.23.0"
+      run: |
+        npm install --global "bun@$BUN_VERSION"
+        downloads=$(mktemp -d "$RUNNER_TEMP/kata-download.XXXXXX")
+        archive="kata_${KATA_VERSION}_linux_amd64.tar.gz"
+        release="https://github.com/kenn-io/kata/releases/download/v$KATA_VERSION"
+        curl --fail --silent --show-error --location --retry 3 --output "$downloads/$archive" "$release/$archive"
+        curl --fail --silent --show-error --location --retry 3 --output "$downloads/SHA256SUMS" "$release/SHA256SUMS"
+        (cd "$downloads" && sha256sum --check --ignore-missing SHA256SUMS)
+        mkdir -p "$BIN"
+        tar -xzf "$downloads/$archive" -C "$BIN" kata
+        echo "$BIN" >> "$GITHUB_PATH"

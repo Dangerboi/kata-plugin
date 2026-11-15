@@ -4,25 +4,18 @@
 // provider need changes only for a scenario that restarts omp (`restart`: kill and
 // `--resume`), needs a new RPC command, or needs a model call that hangs (`{ hang: true }`).
 
+import { setTimeout as sleep } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import { ownComment } from "../plugins/oh-my-pi/delegates";
-import type { SmokeBlock } from "./smoke-provider";
+import { closeEvent, closeEvidence, closeTranscript, type Check, type Issue } from "./smoke-lib";
+import type { SmokeContext, SmokeTurn } from "./smoke-provider";
 
-export type Block = SmokeBlock;
-export type TurnContext = {
-	/** Text of every message so far (tool results included), oldest first. */
-	texts: string[];
-	/** System prompt text. */
-	system: string;
+export type TurnContext = SmokeContext & {
 	/** Every agent prompt recorded so far, oldest first. */
 	prompts(): Prompt[];
 };
-export type Turn = Block[] | ((ctx: TurnContext) => Block[]);
+export type Turn = SmokeTurn<TurnContext>;
 
-export type Issue = {
-	ref: string; title: string; status: string; owner?: string; metadata: Record<string, string>;
-	events: { type: string; payload: any }[];
-};
 /** One model request as the scripted provider saw it. */
 export type Request = { agent: string; system: string; /** Text of every user-role message in the request. */ users: string[]; /** Role of every message in the request, in order. */ roles: string[] };
 /** One agent prompt: the system prompt the plugin left, and whether the agent ran on omp's main thread. */
@@ -38,10 +31,9 @@ export type Store = {
 	tools(): ToolUse[];
 	/** A real model did the work (--live). */
 	live: boolean;
-	/** Every issue in the project except the ones filtered out by `parent`. */
+	/** Every issue in the project. */
 	issues(): Promise<Issue[]>;
 };
-export type Check = { name: string; ok: boolean; detail?: string };
 
 /** What an interactive scenario can do to a running omp session. */
 export type Session = {
@@ -107,6 +99,7 @@ const workerRole = (n: number, prompts: Prompt[]) => {
 const vars = (): Record<string, string> => JSON.parse(process.env.KATA_SMOKE_VARS ?? "{}");
 const lastRef = (ctx: TurnContext, pattern: RegExp) => ctx.texts.join("\n").match(pattern)?.[0];
 const labelled = (i?: Issue) => !!i?.events.some(e => /label/.test(e.type) && JSON.stringify(e.payload).includes("needs-review"));
+// kata notify stores a request as notify.<recipient> metadata.
 const notified = (i?: Issue) => Object.keys(i?.metadata ?? {}).some(key => key.startsWith("notify."));
 // A delegate that closed its issue and exited: bound by the lead's session, outcome completed, no subagent key.
 const returnedToLead = (i?: Issue) => !!i?.metadata["omp.session_id"] && i.metadata["omp.status"] === "completed" && !i.metadata["omp.subagent_id"];
@@ -157,9 +150,7 @@ export const SCENARIOS: Scenario[] = [{
 		const parent = issues.find(i => i.metadata["omp.auto_parent"] === true);
 		const parser = children.find(i => i.title === "Implement parser module");
 		const tests = children.find(i => i.title === "Write parser tests");
-		const hasRecorded = (e: any) => e?.type === recorded.type && e?.command === recorded.command;
-		const transcript = (i?: Issue) => i?.events.find(e => e.type === "issue.closed")?.payload?.transcript;
-		const closeEvidence = (i?: Issue) => i?.events.find(e => e.type === "issue.closed")?.payload?.evidence ?? [];
+		const hasRecorded = (e: { type?: string; command?: string }) => e.type === recorded.type && e.command === recorded.command;
 		const commentPayloads = (i?: Issue) => (i?.events.filter(e => /comment/.test(e.type)) ?? []).map(e => e.payload);
 		const comments = (i?: Issue) => commentPayloads(i).map(p => JSON.stringify(p));
 		// Only a real model follows the assignment's instruction; the scripted delegate just closes. Once the delegate exits,
@@ -175,10 +166,10 @@ export const SCENARIOS: Scenario[] = [{
 			{ name: "no stray issue was created for the delegation", ok: issues.length === 4, detail: `${issues.length} issues` },
 			{ name: "todo done closes with the evidence", ok: tests?.status === "closed" && closeEvidence(tests).some(hasRecorded), detail: `${tests?.status} ${JSON.stringify(closeEvidence(tests))}` },
 			{ name: "delegate closed its own task with evidence", ok: parser?.status === "closed" && closeEvidence(parser).some(hasRecorded), detail: `${parser?.status} ${JSON.stringify(closeEvidence(parser))}` },
-			{ name: "the plugin's todo done close records the omp session", ok: transcript(tests)?.agent === "omp" && !!transcript(tests)?.session_id, detail: JSON.stringify(transcript(tests)) },
-			{ name: "the automatic parent's close records the same omp session as todo done", ok: transcript(parent)?.agent === "omp" && transcript(parent)?.session_id === transcript(tests)?.session_id, detail: JSON.stringify(transcript(parent)) },
-			{ name: "the main agent's bash close inherits the omp session", ok: bashClosed?.status === "closed" && transcript(bashClosed)?.agent === "omp" && transcript(bashClosed)?.session_id === transcript(tests)?.session_id, detail: `${bashClosed?.status} ${JSON.stringify(transcript(bashClosed))}` },
-			{ name: "the delegate's bash close records the omp session", ok: transcript(parser)?.agent === "omp" && !!transcript(parser)?.session_id, detail: JSON.stringify(transcript(parser)) },
+			{ name: "the plugin's todo done close records the omp session", ok: closeTranscript(tests)?.agent === "omp" && !!closeTranscript(tests)?.session_id, detail: JSON.stringify(closeTranscript(tests)) },
+			{ name: "the automatic parent's close records the same omp session as todo done", ok: closeTranscript(parent)?.agent === "omp" && closeTranscript(parent)?.session_id === closeTranscript(tests)?.session_id, detail: JSON.stringify(closeTranscript(parent)) },
+			{ name: "the main agent's bash close inherits the omp session", ok: bashClosed?.status === "closed" && closeTranscript(bashClosed)?.agent === "omp" && closeTranscript(bashClosed)?.session_id === closeTranscript(tests)?.session_id, detail: `${bashClosed?.status} ${JSON.stringify(closeTranscript(bashClosed))}` },
+			{ name: "the delegate's bash close records the omp session", ok: closeTranscript(parser)?.agent === "omp" && !!closeTranscript(parser)?.session_id, detail: JSON.stringify(closeTranscript(parser)) },
 			{ name: "session shutdown closed the automatic parent", ok: parent?.status === "closed", detail: parent?.status },
 		];
 	},
@@ -194,7 +185,7 @@ export const SCENARIOS: Scenario[] = [{
 		const main = () => session.requests().filter(r => r.agent === MAIN);
 		const carrying = (mark: string) => main().filter(r => r.users.some(u => u.includes(mark)));
 		const shows = (mark: string) => (main().at(-1)?.system ?? "").includes(`<kata_inbox>`) && (main().at(-1)?.system ?? "").includes(mark);
-		const until = async (condition: () => boolean, ms = 20_000) => { for (const end = Date.now() + ms; !condition() && Date.now() < end;) await new Promise(r => setTimeout(r, 100)); return condition(); };
+		const until = async (condition: () => boolean, ms = 20_000) => { for (const end = Date.now() + ms; !condition() && Date.now() < end;) await sleep(100); return condition(); };
 		const notify = (message: string) => session.kata(["notify", target, "--to", "smoke-user/lead", "--message", message]);
 		const clear = () => session.kata(["notify", target, "--to", "smoke-user/lead", "--clear"]);
 		await session.prompt(`${MAIN} start`);
@@ -207,7 +198,7 @@ export const SCENARIOS: Scenario[] = [{
 		const text = carrying("smoke-idle-marker")[0]?.users.find(u => u.includes("smoke-idle-marker")) ?? "";
 		checks.push({ name: "the delivered message names the sender, the issue and how to clear it", ok: text.includes("smoke-user") && text.includes(`omp-smoke#${target}`) && text.includes(`kata notify omp-smoke#${target} --to smoke-user/lead --clear`), detail: text });
 		// Let the turn the request started finish before the next prompt.
-		await new Promise(r => setTimeout(r, 1500));
+		await sleep(1500);
 		await session.prompt("after the idle delivery");
 		checks.push({ name: "the inbox section shows the request on the next prompt", ok: shows("smoke-idle-marker") });
 		// Later requests keep the delivered message in their history, so a second delivery shows as a second copy there.
@@ -215,7 +206,7 @@ export const SCENARIOS: Scenario[] = [{
 		checks.push({ name: "the idle request was delivered once", ok: copies("smoke-idle-marker") === 1, detail: `${copies("smoke-idle-marker")} copies` });
 
 		clear();
-		await new Promise(r => setTimeout(r, 1500));
+		await sleep(1500);
 		const afterClear = main().length;
 		await session.prompt("after the clear");
 		checks.push({ name: "clearing delivers nothing", ok: main().length === afterClear + 1, detail: `${main().length - afterClear} requests after the clear` });
@@ -224,7 +215,7 @@ export const SCENARIOS: Scenario[] = [{
 		// A request another actor wrote for this session never starts a turn nor reaches a prompt.
 		const before = main().length;
 		session.kata(["notify", target, "--to", "smoke-user/lead", "--message", "smoke-forged-marker"], { KATA_AUTHOR: "mallory" });
-		await new Promise(r => setTimeout(r, 2500));
+		await sleep(2500);
 		checks.push({ name: "a request from another actor starts no turn", ok: main().length === before, detail: `${main().length - before} new requests` });
 		await session.prompt("after the forged request");
 		const everywhere = session.requests().filter(r => r.system.includes("smoke-forged-marker") || r.users.some(u => u.includes("smoke-forged-marker")));
@@ -233,7 +224,7 @@ export const SCENARIOS: Scenario[] = [{
 
 		// A working agent: the request waits for the step boundary, behind the tool result.
 		const running = session.prompt("slow-work please");
-		await new Promise(r => setTimeout(r, 1500));
+		await sleep(1500);
 		notify("smoke-working-marker");
 		await running;
 		const working = carrying("smoke-working-marker");
@@ -262,7 +253,7 @@ export const SCENARIOS: Scenario[] = [{
 		await session.prompt(`${MAIN} start`);
 		checks.push({ name: "no inbox section before any notify", ok: !seen() });
 		session.kata(["notify", target, "--to", "smoke-user/lead", "--message", MARK]);
-		await new Promise(r => setTimeout(r, 2000));
+		await sleep(2000);
 		checks.push({ name: "with live delivery off, a notify starts no turn", ok: !session.requests().some(r => r.users.some(u => u.includes(MARK))) && session.requests().length === 1, detail: `${session.requests().length} requests` });
 		const shown = await within(2, true);
 		checks.push({ name: "notify sent mid-session reaches the system prompt within two turns", ok: shown > 0, detail: "never appeared" });
@@ -414,20 +405,17 @@ export const SCENARIOS: Scenario[] = [{
 		const children = issues.filter(i => i.metadata["todo.phase"]);
 		const missions = issues.filter(i => i.metadata["omp.mission"] === "true");
 		const parent = issues.find(i => i.metadata["omp.session_id"] && !i.metadata["todo.phase"]);
-		// kata notify stores a request as notify.<recipient> metadata.
-		const requests = issues.filter(i => Object.keys(i.metadata).some(key => key.startsWith("notify."))).map(i => i.ref);
-		const labelled = issues.filter(i => i.events.some(e => /label/.test(e.type) && JSON.stringify(e.payload).includes("needs-review")));
+		const requests = issues.filter(notified).map(i => i.ref);
+		const review = issues.filter(labelled);
 		const mission = missions[0];
-		const missionClose = mission?.events.find(e => e.type === "issue.closed");
 		const reports = mission?.events.filter(e => e.type === "issue.commented" && String(e.payload?.body).startsWith("Report from subagent")) ?? [];
-		const parentClose = parent?.events.find(e => e.type === "issue.closed");
 		return [
 			{ name: "only the parent, the two plan items and the scout's mission exist", ok: issues.length === 4 && children.length === 2 && missions.length === 1 && !!parent, detail: issues.map(i => i.title).join(", ") },
-			{ name: "the scout's run is a mission closed as audit-no-change, naming its agent", ok: mission?.status === "closed" && missionClose?.payload?.reason === "audit-no-change" && mission.metadata["omp.mission_agent"] === "scout", detail: `${mission?.status} ${missionClose?.payload?.reason} ${JSON.stringify(mission?.metadata)}` },
+			{ name: "the scout's run is a mission closed as audit-no-change, naming its agent", ok: mission?.status === "closed" && closeEvent(mission)?.reason === "audit-no-change" && mission.metadata["omp.mission_agent"] === "scout", detail: `${mission?.status} ${closeEvent(mission)?.reason} ${JSON.stringify(mission?.metadata)}` },
 			{ name: "the mission holds the scout's report under its teammate", ok: reports.length === 1 && String(reports[0].payload.body).includes("no interesting layout") && !!reports[0].payload.teammate, detail: JSON.stringify(reports.map(e => e.payload)) },
-			{ name: "no issue carries needs-review", ok: labelled.length === 0, detail: labelled.map(i => i.ref).join(", ") },
+			{ name: "no issue carries needs-review", ok: review.length === 0, detail: review.map(i => i.ref).join(", ") },
 			{ name: "the lead got no inbox request", ok: requests.length === 0, detail: requests.join(", ") },
-			{ name: "session shutdown closed the automatic parent as done, from the plan items' evidence", ok: parent?.status === "closed" && parentClose?.payload?.reason === "done", detail: `${parent?.status} ${JSON.stringify(parentClose?.payload?.evidence)}` },
+			{ name: "session shutdown closed the automatic parent as done, from the plan items' evidence", ok: parent?.status === "closed" && closeEvent(parent)?.reason === "done", detail: `${parent?.status} ${JSON.stringify(closeEvidence(parent))}` },
 		];
 	},
 }, {
@@ -517,7 +505,7 @@ export const SCENARIOS: Scenario[] = [{
 		const closers = numbers.filter(n => n % 2 === 1), leavers = numbers.filter(n => n % 2 === 0);
 		const used = (n: number, op: string) => tools.some(t => t.agent === `Port${n}` && t.tool === "todo" && t.op === op && !t.isError);
 		const workedThroughTodo = (n: number) => used(n, "init") && used(n, "done") && stepOf(n)?.status === "closed" && taskOf(n)?.status === "closed";
-		const sessionOf = (i?: Issue) => i?.events.find(e => e.type === "issue.closed")?.payload?.transcript?.session_id;
+		const sessionOf = (i?: Issue) => closeTranscript(i)?.session_id;
 		// The todo close and the bash close of one delegate both carry that delegate's own session; without its record, the lead's.
 		const ownSession = (n: number) => !!sessionOf(stepOf(n)) && sessionOf(stepOf(n)) === sessionOf(taskOf(n)) && sessionOf(taskOf(n)) !== parent?.metadata["omp.session_id"];
 		return [...checks,
@@ -556,10 +544,10 @@ export const SCENARIOS: Scenario[] = [{
 		await session.prompt(`${MAIN} plan the work and delegate it`);
 		const bothHeld = (h: { metadata?: Record<string, string> }[]) => h.length === 2 && h.every(i => i.metadata?.["omp.subagent_id"] && i.metadata["omp.status"] === "running");
 		let held = tasks();
-		for (let end = Date.now() + 30_000; Date.now() < end && !bothHeld(held); held = tasks()) await Bun.sleep(250);
+		for (let end = Date.now() + 30_000; Date.now() < end && !bothHeld(held); held = tasks()) await sleep(250);
 		const holding = bothHeld(held);
 		// The tool use reaches the snapshot at the call, the tool record at its result: wait for both before the cut.
-		for (let end = Date.now() + 30_000; Date.now() < end && !session.tools().some(t => t.agent === "ResumeOne" && t.tool === "bash");) await Bun.sleep(100);
+		for (let end = Date.now() + 30_000; Date.now() < end && !session.tools().some(t => t.agent === "ResumeOne" && t.tool === "bash");) await sleep(100);
 		await session.restart('"ranTool":true');
 		await session.prompt(RESUMED);
 		return [{ name: "before the resume, both delegates' issues are still held by a delegate that never finished (omp.subagent_id set, omp.status running)", ok: holding, detail: JSON.stringify(held.map(i => [i.title, i.metadata?.["omp.subagent_id"], i.metadata?.["omp.status"]])) }];

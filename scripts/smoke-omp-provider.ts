@@ -1,18 +1,16 @@
 // Smoke-only omp extension: registers a scripted model provider. Each model call
-// answers with the next scripted turn of the agent it belongs to. The turn index
-// is the number of assistant messages already in the context, so the provider
-// keeps no state of its own. It also records each agent's system prompt as the
-// plugin left it and each finished tool call, from the thread the agent runs on,
-// in live runs too.
+// answers with the next scripted turn of the agent it belongs to (`pickTurn`), so
+// the provider keeps no state of its own. It also records each agent's system
+// prompt as the plugin left it and each finished tool call, from the thread the
+// agent runs on, in live runs too.
 import { appendFileSync } from "node:fs";
 import { isMainThread } from "node:worker_threads";
+// omp resolves its own packages for the extensions it loads; the repo does not install this one.
+// @ts-expect-error
 import { AssistantMessageEventStream } from "@oh-my-pi/pi-ai";
-import { SCENARIOS, type Prompt, type TurnContext } from "./smoke-omp-scenarios";
-import { linesIn } from "./smoke-jsonl";
-import { registerSmokeProvider } from "./smoke-provider";
-
-export const PROVIDER = "kata-smoke";
-export const MODEL = "scripted";
+import { SCENARIOS, type Prompt, type Request } from "./smoke-omp-scenarios";
+import { linesIn } from "./smoke-lib";
+import { pickTurn, registerSmokeProvider } from "./smoke-provider";
 
 const textOf = (message: any): string => typeof message.content === "string" ? message.content
 	: (message.content ?? []).map((part: any) => part.text ?? (part.type === "toolCall" ? JSON.stringify(part.arguments) : "")).join("\n");
@@ -28,13 +26,11 @@ export default function (pi: any) {
 		if (process.env.KATA_SMOKE_TOOLS) appendFileSync(process.env.KATA_SMOKE_TOOLS, JSON.stringify({ agent: ctx?.agent?.id ?? "", tool: event.toolName, op: event.toolName === "todo" ? event.input?.op : undefined, isError: !!event.isError, mainThread: isMainThread }) + "\n");
 	});
 	registerSmokeProvider(pi, AssistantMessageEventStream, (context: any) => {
-		const messages: any[] = context.messages ?? [];
-		const first = textOf(messages.find(m => m.role === "user") ?? { content: "" });
-		const key = Object.keys(scenario.scripts).find(k => first.includes(k));
-		const turnIndex = messages.filter(m => m.role === "assistant").length;
-		const turn = key ? scenario.scripts[key][turnIndex] : undefined;
-		const ctx: TurnContext = { texts: messages.map(textOf), system: [context.systemPrompt].flat().filter(Boolean).join("\n"), prompts: () => linesIn<Prompt>(process.env.KATA_SMOKE_PROMPTS) };
-		if (process.env.KATA_SMOKE_RECORD) appendFileSync(process.env.KATA_SMOKE_RECORD, JSON.stringify({ agent: key ?? "", system: ctx.system, users: messages.filter(m => m.role === "user").map(textOf), roles: messages.map(m => m.role) }) + "\n");
-		return turn ? (typeof turn === "function" ? turn(ctx) : turn) : [`(smoke script has no turn ${turnIndex} for ${key ?? "this agent"})`];
-	}, PROVIDER, MODEL);
+		const messages: { role: string; text: string }[] = (context.messages ?? []).map((m: { role: string }) => ({ role: m.role, text: textOf(m) }));
+		const system = [context.systemPrompt].flat().filter(Boolean).join("\n");
+		const { agent, blocks } = pickTurn(scenario.scripts, messages);
+		const request: Request = { agent, system, users: messages.filter(m => m.role === "user").map(m => m.text), roles: messages.map(m => m.role) };
+		if (process.env.KATA_SMOKE_RECORD) appendFileSync(process.env.KATA_SMOKE_RECORD, JSON.stringify(request) + "\n");
+		return blocks({ texts: messages.map(m => m.text), system, prompts: () => linesIn<Prompt>(process.env.KATA_SMOKE_PROMPTS) });
+	});
 }
