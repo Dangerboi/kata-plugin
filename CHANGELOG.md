@@ -45,7 +45,7 @@ All notable changes to kata-plugin are listed here. The format follows [Keep a C
 - Switching to a session whose plan parent cannot be read still releases the previous session's tasks and ends its attention.
 - Two tasks with the same title dropped for the same reason get distinct close messages, which Kata's close throttle no longer refuses.
 - `/todo takeover` of a blocked task takes it over without reporting an error; the task stays blocked.
-- `todo done` whose evidence is blank is refused with the plugin's guidance instead of Kata's error.
+- `todo done` whose evidence is blank is refused with the plugin's guidance instead of Kata's error, and blank entries beside real evidence are left out of the close.
 - omp: a lead's todo call keeps its session mark and holder checks when a subagent's session start reaches the lead mid-call.
 - OpenCode: `todowrite` in a session OpenCode cannot read says so instead of calling it a delegate, and a first list under a `ref` that leaves out the issue's open items is told to send them, not to pass `replace: true`. The refusals for a delegated task and for held tasks left out of an `init` no longer name ops `todowrite` does not have.
 - `view` retries a held ticket close in a plan of ticket items alone, as every other op does.
@@ -65,7 +65,7 @@ All notable changes to kata-plugin are listed here. The format follows [Keep a C
 - A delegate whose assignment failed on an issue another teammate owns no longer comments on, labels or notifies that issue when it exits.
 - A mission whose close Kata throttled is saved at once, so a lead that ends or is killed before the retry still closes it when resumed.
 - A spawn that names a blocked ticket item runs untracked, as one naming a blocked plan task does. A subagent that starts without a checked `task` call follows the same rules as the check, and one that names a ticket it cannot take (closed, or another teammate's) is untracked and leaves a mission, instead of failing with its report lost.
-- omp: a delegate's bash `kata close` made before its own session is known records no transcript, instead of the lead's session. A delegate with no record runs Kata under the same teammate its record would have.
+- omp: a delegate's close made before its own session is known, from its bash or its own todo plan, records no transcript instead of the lead's session. A delegate with no record runs Kata under the same teammate its record would have.
 - omp: a subagent whose task lifecycle reports `cancelled` is settled as aborted.
 - OpenCode: archiving or deleting a lead frees the plan items its pending `subagent` calls held, so they can be delegated again after an unarchive.
 - A delegate's `kata close` in the shell carries `KATA_CLOSE_TRANSCRIPT_ENABLED` with its transcript pair.
