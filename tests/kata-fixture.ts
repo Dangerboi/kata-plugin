@@ -47,10 +47,10 @@ export async function later<T>(fn: () => Promise<T>): Promise<T> {
 	try { return await fn(); } finally { setSystemTime(); }
 }
 
-/** Polls `condition` until it holds or `ms` pass; returns its final value. */
+/** Polls `condition` until it holds or `ms` pass; returns its final value. The deadline ticks under `setSystemTime` (see `eventually`). */
 export async function until(condition: () => boolean, ms = 8000): Promise<boolean> {
-  const end = Date.now() + ms;
-  while (!condition() && Date.now() < end) await new Promise(resolve => setTimeout(resolve, 25));
+  const end = performance.now() + ms;
+  while (!condition() && performance.now() < end) await new Promise(resolve => setTimeout(resolve, 25));
   return condition();
 }
 /**

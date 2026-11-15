@@ -1,10 +1,16 @@
-import { mkdtempSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { assertIsolated, assertUnchanged, snapshot } from "./isolation";
+import { TRANSCRIPT_ENV } from "../core/kata-cli";
 
 // The adapter suites load the vendored copies in plugins/*, not core/: refuse to test a stale copy.
 if (Bun.spawnSync([process.execPath, "scripts/vendor-core.ts", "--check"], { stdout: "ignore", stderr: "inherit" }).exitCode !== 0) process.exit(1);
+const binary = process.env.KATA_TEST_EXECUTABLE;
+if (!binary || !path.isAbsolute(binary)) {
+  console.error('Set KATA_TEST_EXECUTABLE to the absolute Kata binary, e.g. KATA_TEST_EXECUTABLE="$(readlink -f "$(command -v kata)")" bun run test.');
+  process.exit(1);
+}
 
 const MARKER = ".omp-kata-test", ROOT_PREFIX = "omp-kata-tests-";
 const root = mkdtempSync(path.join(os.tmpdir(), ROOT_PREFIX));
@@ -17,17 +23,18 @@ mkdirSync(env.KATA_HOME);
 // other down: on 12 CPUs the suite took 67 s with 8 workers and 70 s with 12.
 const DEFAULT_JOBS = Math.min(8, os.availableParallelism());
 const JOBS = Math.max(1, Math.floor(Number(process.env.KATA_TEST_JOBS ?? DEFAULT_JOBS)) || DEFAULT_JOBS);
-for (const key of ["KATA_SERVER", "KATA_DAEMON", "KATA_AUTH_TOKEN", "KATA_REF", "KATA_TEAMMATE", "KATA_INBOX_USER", "KATA_SESSION_ID"]) delete env[key];
+// Every inherited variable the plugins read: a developer's own settings must not change what the tests see.
+for (const key of ["KATA_SERVER", "KATA_DAEMON", "KATA_AUTH_TOKEN", "KATA_REF", "KATA_TEAMMATE", "KATA_INBOX_USER", "KATA_SESSION_ID", "KATA_DEFAULT_PROJECT", "KATA_AUTHOR",
+  "KATA_PI_PARENT", "KATA_OMP_LIVE_INBOX", "KATA_ATTENTION_HOST", "KATA_OMP_EXECUTABLE", "KATA_PI_EXECUTABLE", "KATA_OPENCODE_EXECUTABLE", "KATA_OMP_DEBUG", "KATA_PI_DEBUG",
+  "KATA_OPENCODE_DEBUG", ...TRANSCRIPT_ENV]) delete env[key];
 assertIsolated(env);
 console.log(`Isolated test root: ${root}`);
 
-const binary = env.KATA_TEST_EXECUTABLE;
 const alive = (pid: number) => { try { process.kill(pid, 0); return true; } catch (error: any) { return error.code === "EPERM"; } };
 
 // Fixture daemons are detached, so they outlive the tests. Stops the daemon of every store under `dir`
 // whose runtime record names a running process. Returns how many it stopped.
 async function stopDaemons(dir: string): Promise<number> {
-  if (!binary || !path.isAbsolute(binary)) return 0;
   const stores = new Set<string>();
   let entries: string[];
   try { entries = readdirSync(dir, { recursive: true }) as string[]; } catch { return 0; }
@@ -52,10 +59,13 @@ function abandoned(dir: string): boolean {
   } catch { return false; }
 }
 
+// A finished run's root is removed: a passing one at its end, a killed or failed one by the next run, once its daemons are stopped.
 let stale = 0;
 for (const entry of readdirSync(os.tmpdir(), { withFileTypes: true })) {
   const dir = path.join(os.tmpdir(), entry.name);
-  if (entry.isDirectory() && entry.name.startsWith(ROOT_PREFIX) && abandoned(dir)) stale += await stopDaemons(dir);
+  if (!entry.isDirectory() || !entry.name.startsWith(ROOT_PREFIX) || !abandoned(dir)) continue;
+  stale += await stopDaemons(dir);
+  rmSync(dir, { recursive: true, force: true });
 }
 if (stale) console.log(`Stopped ${stale} Kata daemon(s) left by earlier test runs that never finished.`);
 
@@ -153,5 +163,6 @@ try {
   await stopDaemons(root);
   if (signalled) process.exitCode = signalled;
   assertUnchanged(before);
-  console.log(`Default Kata home canary unchanged. Isolated test root: ${root}`);
+  if (!process.exitCode) rmSync(root, { recursive: true, force: true });
+  console.log(`Default Kata home canary unchanged. ${process.exitCode ? `Isolated test root kept for inspection: ${root}` : "Isolated test root removed."}`);
 }

@@ -5,9 +5,11 @@ import os from "node:os";
 import path from "node:path";
 import { assertIsolated, snapshot, assertUnchanged } from "./isolation";
 assertIsolated();
+// Scratch directories live under the run's root, which the runner removes.
+const scratch = (prefix: string) => mkdtempSync(path.join(process.env.KATA_TEST_ROOT!, prefix));
 
 test("isolation rejects defaults, remote routing, unmarked stores and escaped homes", () => {
-  const root = mkdtempSync(path.join(os.tmpdir(), "omp-kata-guard-"));
+  const root = scratch("omp-kata-guard-");
   const env = { KATA_TEST_ROOT: root, KATA_HOME: path.join(root, "home") };
   mkdirSync(env.KATA_HOME);
   expect(() => assertIsolated(env)).toThrow();
@@ -19,7 +21,7 @@ test("isolation rejects defaults, remote routing, unmarked stores and escaped ho
 });
 
 function fixture() {
-  const root = mkdtempSync(path.join(os.tmpdir(), "omp-kata-canary-"));
+  const root = scratch("omp-kata-canary-");
   const db = new Database(path.join(root, "kata.db"));
   db.exec(`PRAGMA journal_mode=WAL; PRAGMA wal_autocheckpoint=0;
     CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT);
@@ -56,7 +58,7 @@ for (const [name, sql] of [
 });
 
 test("semantic canary fails closed on invalid databases and missing schema versions", () => {
-  const root = mkdtempSync(path.join(os.tmpdir(), "omp-kata-canary-"));
+  const root = scratch("omp-kata-canary-");
   writeFileSync(path.join(root, "kata.db"), "not a database");
   expect(() => snapshot(root)).toThrow();
   const f = fixture();
