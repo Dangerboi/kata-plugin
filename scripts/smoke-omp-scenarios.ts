@@ -169,7 +169,7 @@ export const SCENARIOS: Scenario[] = [{
 			{ name: "the plugin's todo done close records the omp session", ok: closeTranscript(tests)?.agent === "omp" && !!closeTranscript(tests)?.session_id, detail: JSON.stringify(closeTranscript(tests)) },
 			{ name: "the automatic parent's close records the same omp session as todo done", ok: closeTranscript(parent)?.agent === "omp" && closeTranscript(parent)?.session_id === closeTranscript(tests)?.session_id, detail: JSON.stringify(closeTranscript(parent)) },
 			{ name: "the main agent's bash close inherits the omp session", ok: bashClosed?.status === "closed" && closeTranscript(bashClosed)?.agent === "omp" && closeTranscript(bashClosed)?.session_id === closeTranscript(tests)?.session_id, detail: `${bashClosed?.status} ${JSON.stringify(closeTranscript(bashClosed))}` },
-			{ name: "the delegate's bash close records the omp session", ok: closeTranscript(parser)?.agent === "omp" && !!closeTranscript(parser)?.session_id, detail: JSON.stringify(closeTranscript(parser)) },
+			{ name: "the delegate's bash close records the omp session of the delegate, not the lead's", ok: closeTranscript(parser)?.agent === "omp" && !!closeTranscript(parser)?.session_id && closeTranscript(parser)?.session_id !== closeTranscript(tests)?.session_id, detail: JSON.stringify(closeTranscript(parser)) },
 			{ name: "session shutdown closed the automatic parent", ok: parent?.status === "closed", detail: parent?.status },
 		];
 	},

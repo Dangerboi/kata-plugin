@@ -220,9 +220,9 @@ export function createLead(deps: LeadDeps): Lead {
 			return { teammate: record?.teammate ?? teammateFor(sessionID, id), record, assignment: core.delegates.assignment(contextOf(sessionID, [], true)) };
 		},
 		delegatePlan: sessionID => delegateCaller(sessionID).planner,
-		checkSpawn: (call, text) => core.todo.batch(ctx, async () => { await core.delegates.check([{ text }], call); }),
+		checkSpawn: (call, text) => core.todo.batch(ctx, async () => { await core.delegates.check([text], call); }),
 		releaseSpawn: call => core.delegates.release(call),
-		began: (sessionID, spawn) => core.delegates.apply({ type: "started", id: sessionID, sessionId: sessionID, leadSessionId: id, leadTeammate: deps.settings.teammate ?? "", teammate: teammateFor(sessionID, id), ...spawn }),
+		began: (sessionID, spawn) => core.delegates.start({ id: sessionID, sessionId: sessionID, leadSessionId: id, ...spawn }),
 		delegateEvent: event => core.delegates.apply(event),
 		async assignmentSection(sessionID, after) {
 			const own = delegateCaller(sessionID);

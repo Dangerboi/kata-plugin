@@ -8,7 +8,7 @@ import { createSettlement, MAX_FAILURES, openChildren, type PendingClose, type S
 import { createKata, isKataCode, isUnusable, KataError, type Exec } from "./kata-cli";
 import { createTicketCompletion } from "./autocomplete";
 import { kataCommands, quote, shellOptions } from "./shell";
-import { closedTaskStatus, digest, FULL_ID_REF, heldBySession, heldMessage, itemTicket, missingProof, OPEN, openTaskStatus, projectOf, QUALIFIED_REF_ONLY, qualifiedRef, SESSION_KEY, sessionParentKeys, slug, textOf, TODO_WORDING, WORKING, type Binding, type Change, type KataIssue, type KataShow, type Plan, type Status, type Task, type ToolWording } from "./model";
+import { closedTaskStatus, digest, FULL_ID_REF, heldBySession, heldMessage, itemTicket, OPEN, openTaskStatus, PROOF_MIN, projectOf, proofProblem, QUALIFIED_REF_ONLY, qualifiedRef, SESSION_KEY, sessionParentKeys, slug, tasksOf, textOf, TODO_WORDING, WORKING, type Binding, type Change, type KataIssue, type KataShow, type Plan, type Status, type Task, type ToolWording } from "./model";
 
 // Canonical shared source. scripts/vendor-core.ts copies this file into each
 // self-contained plugin; host adapters own their event/schema/identity APIs.
@@ -127,6 +127,10 @@ const itemKey = (item: { phase: string; content: string }) => `${item.phase}\u00
 // omp stops waiting for the handler after 2 s whatever this says (docs/explanation/limits.md, Shutdown budget); pi
 // waits for it with no limit of its own, so this only keeps a stuck Kata call from holding pi's exit forever.
 const SHUTDOWN_BOUND_MS = 10_000;
+// How long a delegate's shutdown waits for Kata, and how long its prompt waits to read the contract and inbox: a delegate
+// has no plan to close, so both are short (docs/explanation/limits.md).
+const DELEGATE_SHUTDOWN_MS = 3000;
+const DELEGATE_PROMPT_MS = 3000;
 // How long a delegate's first prompt waits for its assignment, which it cannot learn later. The lead assigns delegates
 // one at a time, about fifteen Kata calls each, so with many at once the last one waits for all the others.
 const DELEGATE_BIND_MS = 15_000;
@@ -164,7 +168,7 @@ export const TODO_PARAMS = {
 	ref: "existing Kata issue this plan serves (init)",
 	replace: "init: replace a plan that still has open tasks (they close as wontfix); without it init refuses",
 	takeover: "start/done/drop/rm/block/unblock: take over the named tasks from another session that started them and crashed or was killed (a session that ends normally releases its tasks); recorded on each issue",
-	message: "done: what changed and how it was verified (40+ characters); drop/rm: reason; init without ref: title for the automatic parent",
+	message: `done: what changed and how it was verified (${PROOF_MIN}+ characters); drop/rm: reason; init without ref: title for the automatic parent`,
 	evidence: `required for done: ${RULES.evidence}`,
 };
 
@@ -177,7 +181,7 @@ NEVER call todo alone: init with first work; done/start with next action.
 Kata specifics:
 - ${RULES.ticketItem} (for example \`myproj#a1b2: write the smoke script\`). It creates no issue: start claims the ticket and marks it in progress, done comments on it, and the last item of a ticket to be done closes it with that item's evidence (a ticket with open children stays open and gets a comment), drop/rm only comment and never close it. ${RULES.ticketError} Only that prefix names a ticket; a bare id is text. A plan whose items all name tickets creates no parent issue.
 - Every other task is a Kata child issue of one parent issue. On init pass \`ref\` with the Kata issue this plan serves (${RULES.search}); an explicit KATA_REF or a delegate's assignment must match it. Without a ref, use that issue, the session's existing parent, or a new parent titled by \`message\`.
-- done closes the issue (an item naming a ticket: see above). Kata requires \`evidence\` (${RULES.evidence}) and a \`message\` of 40+ characters saying what changed and how it was verified. Unverified work: block it instead.
+- done closes the issue (an item naming a ticket: see above). Kata requires \`evidence\` (${RULES.evidence}) and a \`message\` of ${PROOF_MIN}+ characters saying what changed and how it was verified. Unverified work: block it instead.
 - The tool does the Kata bookkeeping for its tasks and ticket items: it claims them, sets \`work.attention\` (block: stuck with the reason; start/unblock: ok) and closes them on done. ${RULES.bookkeeping("a plan item")}
 - A delegate (an omp \`task\` subagent, or a pi started from this session) is bound to a plan item ${RULES.named("task text", "title")} A delegate whose text names neither is untracked: it ${RULES.untracked}, and you finish the item yourself with done. A bound delegate is told to close ${RULES.ownClose("task text")}. That close is expected: the item then shows done without your \`done\`, and a later \`done\` on it changes nothing. To close it yourself after your own checks, write "leave the Kata issue open" in the delegate's task text. A delegate that exits with its issue still open hands it back to you, labeled \`needs-review\`.
 - init whose new list leaves out open tasks changes nothing and returns an error listing the missing ones; pass \`replace: true\` only to deliberately drop them (they close as wontfix).
@@ -187,7 +191,7 @@ Kata specifics:
 
 function delegateContext(executable: string, name: string, ref: string, teammate: string, binding: Binding): string {
 	const command = `${quote(executable)} --workspace ${quote(binding.workspace)} --project ${quote(projectOf(binding.parent))} --teammate ${quote(teammate)}`;
-	return `You are subagent ${name}. Your Kata issue is ${ref}; your teammate is ${teammate}. Keep the existing actor and use this issue instead of inherited KATA_REF. Track attention on your own issue. Before you finish, whatever the outcome, YOU must comment on your issue what you did, since other subagents may work it before or after you: ${command} comment ${quote(ref)} --body '<what you changed, how you verified it, and what remains, in a few sentences>'. When verified, YOU must then run: ${command} close ${quote(ref)} --done --message '<describe this task and its verification in at least 40 characters>' --evidence '<typed evidence for your actual verification>'. Exception: if your task text tells you not to close issues, or to leave this issue open, do not close it; the lead closes it after its own checks. If unfinished, leave it open; your comment says what remains.`;
+	return `You are subagent ${name}. Your Kata issue is ${ref}; your teammate is ${teammate}. Keep the existing actor and use this issue instead of inherited KATA_REF. Track attention on your own issue. Before you finish, whatever the outcome, YOU must comment on your issue what you did, since other subagents may work it before or after you: ${command} comment ${quote(ref)} --body '<what you changed, how you verified it, and what remains, in a few sentences>'. When verified, YOU must then run: ${command} close ${quote(ref)} --done --message '<describe this task and its verification in at least ${PROOF_MIN} characters>' --evidence '<typed evidence for your actual verification>'. Exception: if your task text tells you not to close issues, or to leave this issue open, do not close it; the lead closes it after its own checks. If unfinished, leave it open; your comment says what remains.`;
 }
 
 // A delegate that matched no plan item and named no ticket has no issue. Its
@@ -198,15 +202,13 @@ function untrackedDelegateContext(name: string): string {
 
 // Items that name no ticket become children of a parent issue; a plan of only named items needs none.
 const needsParent = (contents: string[]) => contents.some(content => !itemTicket(content));
-// Kata closes a task as done only with proof.
-const hasProof = (change: { message?: string; evidence?: string[] }) => { const missing = missingProof(change); return !missing.message && !missing.evidence; };
 // Whether `target` names the task's issue: its qualified ref, or its short id alone.
 const hasRef = (task: Task, target: string) => task.ref === target || task.ref.split("#")[1] === target;
 // Why a task or item left the plan: the caller's words, else a reason Kata's wontfix accepts.
 const whyRetired = (change: Change) => change.message || change.reason || "no longer needed";
 // The comment a ticket gets when its item leaves the plan: a drop never closes a ticket.
 const leftPlan = (verb: "Dropped" | "Removed", task: Task, change: Change) => `${verb} from the todo plan: "${task.content}". Reason: ${whyRetired(change)}. The ticket stays open.`;
-const delegatedMessage = (kind: "task" | "ticket", ref: string) => `Kata ${kind} ${ref} is delegated. Its subagent must manage and close it; use view to refresh its state.`;
+const delegatedMessage = (kind: "task" | "ticket", ref: string, wording: ToolWording) => `Kata ${kind} ${ref} is delegated. Its subagent must manage and close it. ${wording.refresh}`;
 
 function phasesOf(tasks: Task[]): { name: string; tasks: Task[] }[] {
 	const phases: { name: string; tasks: Task[] }[] = [];
@@ -218,7 +220,7 @@ function phasesOf(tasks: Task[]): { name: string; tasks: Task[] }[] {
 	return phases;
 }
 
-export function render(plan: Plan, wording: ToolWording = TODO_WORDING): string {
+function render(plan: Plan, wording: ToolWording = TODO_WORDING): string {
 	if (plan.error) return `Kata state unavailable${plan.parent ? ` for ${plan.parent}` : ""}: ${plan.error}. ${wording.refresh}`;
 	if (!plan.parent && !plan.local && plan.tasks.length === 0) return `No todo plan. ${wording.plan}`;
 	if (plan.tasks.length === 0) return `Kata parent ${plan.parent}: no tasks.`;
@@ -235,7 +237,7 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 	const namespace = options.namespace;
 	const wording = options.wording ?? TODO_WORDING;
 	const heldByDelegate = (metadata: Record<string, unknown> | undefined) => heldBy(namespace, metadata);
-	const STATE_ENTRY = `io.kata.${namespace}.parent`;
+	const PARENT_ENTRY = `io.kata.${namespace}.parent`;
 	const SNAPSHOT_ENTRY = snapshotEntry(namespace);
 	const keys = sessionParentKeys(namespace);
 	const WIDGET = `${namespace}-kata`;
@@ -308,7 +310,7 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 	const delegates = createDelegates({
 		namespace, wording, store: host.delegateStore, persist, kata,
 		actor, owned, work, serial, plan: () => plan,
-		load, drain, cwd: () => path.resolve(currentCtx?.cwd ?? process.cwd()),
+		load, drain, cwd: () => path.resolve(currentCtx?.cwd ?? process.cwd()), teammate: ownTeammate,
 		async missionParent() {
 			// A local plan replays into its own parent first; a parent made now would orphan its tasks.
 			if (plan.local || !currentCtx || !main(currentCtx)) return undefined;
@@ -478,32 +480,15 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 		settlement.renamePlan(old, current);
 		plan.parent = current;
 		aliases.add(old);
-		host.appendEntry(STATE_ENTRY, { parent: current, workspace: plan.workspace, sessionId: plan.sessionId, auto: plan.auto, label: plan.label });
+		host.appendEntry(PARENT_ENTRY, { parent: current, workspace: plan.workspace, sessionId: plan.sessionId, auto: plan.auto, label: plan.label });
 	}
 
-	function tasksOf(children: KataIssue[], parent: string): Task[] {
-		return children
-			.filter(c => typeof c?.metadata?.["todo.phase"] === "string" && c.metadata["todo.removed"] !== true)
-			.sort((a, b) => Date.parse(a.created_at) - Date.parse(b.created_at))
-			.map(c => {
-				const meta = c.metadata!;
-				let status: Status;
-				if (c.status === "closed") status = meta["todo.status"] === "abandoned" ? "abandoned" : closedTaskStatus(c.closed_reason);
-				else status = openTaskStatus(meta["todo.status"]);
-				return {
-					ref: qualifiedRef(c, parent),
-					content: c.title,
-					phase: meta["todo.phase"] as string,
-					revision: c.revision,
-					at: Date.parse(c.created_at),
-					delegated: heldByDelegate(meta) && (meta.teammate || "") !== ownTeammate(),
-					holder: heldBySession(c, ownSessions),
-					review: (c.labels ?? []).some(l => (typeof l === "string" ? l : l?.label) === "needs-review"),
-					status,
-					blocker: status === "blocked" ? meta["work.attention_msg"] as string | undefined : undefined,
-				};
-			});
-	}
+	// A lead's plan tasks: the children with a phase that were not removed. A task is delegated when a delegate of another
+	// teammate holds it, and held by a session that started it and is none of this session's lineage.
+	const planTasks = (children: KataIssue[], parent: string) => tasksOf(children.filter(c => typeof c?.metadata?.["todo.phase"] === "string" && c.metadata["todo.removed"] !== true), parent, {
+		delegated: c => heldByDelegate(c.metadata) && (c.metadata?.teammate || "") !== ownTeammate(),
+		holder: c => heldBySession(c, ownSessions),
+	});
 
 	// An item follows its ticket: closed by anyone (a delegate, the user) it is completed,
 	// or abandoned when closed as wontfix. A ticket that cannot be read keeps its item as is.
@@ -527,7 +512,7 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 			await rehome(shown, ref, cwd);
 			const children = shown.children ?? [];
 			await followTickets(cwd);
-			plan.tasks = withNamed(tasksOf(children, plan.parent));
+			plan.tasks = withNamed(planTasks(children, plan.parent));
 			delete plan.error;
 			return children;
 		} catch (error) {
@@ -544,7 +529,7 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 		settlement.dropPlan(parent);
 		aliases.clear();
 		// A saved binding without a parent: a resumed or forked session does not look for the deleted one again.
-		host.appendEntry(STATE_ENTRY, { parent: null, ...(plan.sessionId ? { sessionId: plan.sessionId } : {}) });
+		host.appendEntry(PARENT_ENTRY, { parent: null, ...(plan.sessionId ? { sessionId: plan.sessionId } : {}) });
 		plan = { tasks: withNamed([]), workspace: plan.workspace };
 		deletedParent = parent;
 	}
@@ -636,7 +621,7 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 				const task = plan.tasks.find(x => itemKey(x) === itemKey(t));
 				if (!task || t.status === "pending") continue;
 				try {
-					if (t.status === "completed" && !hasProof(t.proof ?? {})) await transition(task, "blocked", { reason: "Completed while Kata was unreachable; add evidence and close it." }, cwd);
+					if (t.status === "completed" && proofProblem(t.proof ?? {})) await transition(task, "blocked", { reason: "Completed while Kata was unreachable; add evidence and close it." }, cwd);
 					else await transition(task, t.status, { ...t.proof, reason: t.blocker }, cwd);
 				} catch (error) {
 					debug(error);
@@ -728,7 +713,7 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 		}
 		let stored: any = snapshot?.plan?.parent ? snapshot.plan : undefined;
 		for (const entry of branch) {
-			if (entry?.type !== "custom" || entry.customType !== STATE_ENTRY || (entry.data?.sessionId && entry.data.sessionId !== parentOwner)) continue;
+			if (entry?.type !== "custom" || entry.customType !== PARENT_ENTRY || (entry.data?.sessionId && entry.data.sessionId !== parentOwner)) continue;
 			if (typeof entry.data?.parent === "string") stored = entry.data;
 			else if (entry.data?.parent === null) stored = undefined;
 		}
@@ -774,7 +759,7 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 		if (plan.parent !== binding.parent) aliases.clear();
 		plan = { ...binding, tasks: withNamed(plan.parent === binding.parent ? plan.tasks : []) };
 		if (binding.auto) settlement.addAutoParent(binding);
-		host.appendEntry(STATE_ENTRY, binding);
+		host.appendEntry(PARENT_ENTRY, binding);
 	}
 
 	async function adopt(ref: string, ctx: HostContext, workspace = ctx.cwd) {
@@ -878,7 +863,7 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 		}
 		if (task.ticket) return transitionNamed(task, to, change, cwd);
 		const ref = task.ref;
-		if (task.delegated || delegates.holds(ref)) throw new Error(delegatedMessage("task", ref));
+		if (task.delegated || delegates.holds(ref)) throw new Error(delegatedMessage("task", ref, wording));
 		if (plan.local) {
 			task.status = to; task.blocker = to === "blocked" ? change.reason || "Blocked in the local plan." : undefined;
 			if (to === "completed" || to === "abandoned") task.proof = { message: change.message, evidence: change.evidence };
@@ -922,8 +907,8 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 	}
 
 	function requireProof(task: Task, ref: string, change: Change): void {
-		if (!hasProof(change)) {
-			throw new Error(`Kata needs evidence and a 40+ character message to close ${ref} ("${task.content}") as done: pass evidence (${RULES.evidence}) and a message saying what changed and how it was verified. If it is not verified, block it instead.`);
+		if (proofProblem(change)) {
+			throw new Error(`Kata needs evidence and a ${PROOF_MIN}+ character message to close ${ref} ("${task.content}") as done: pass evidence (${RULES.evidence}) and a message saying what changed and how it was verified. If it is not verified, block it instead.`);
 		}
 	}
 
@@ -948,7 +933,7 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 	// drop only comments. A closed ticket is never reopened and never replaced by a new issue.
 	async function transitionNamed(task: Task, to: Status, change: Change, cwd: string): Promise<void> {
 		const from = task.status, ticket = task.ticket!;
-		if (delegates.holds(ticket)) throw new Error(delegatedMessage("ticket", ticket));
+		if (delegates.holds(ticket)) throw new Error(delegatedMessage("ticket", ticket, wording));
 		if (to === "completed") requireProof(task, ticket, change);
 		if (to === "abandoned") {
 			await note(task, "drop", leftPlan("Dropped", task, change), cwd);
@@ -1157,7 +1142,7 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 		}
 		const sessionId = sid(ctx);
 		if (typeof sessionId !== "string" || !sessionId.trim()) throw new Error("Kata needs a real session id before creating an automatic parent.");
-		const title = (params.message as string | undefined)?.trim() || host.getSessionName?.() || `Todo plan: ${(params.list ?? []).map((p: any) => p.phase).join(", ") || "tasks"}`.slice(0, 120);
+		const title = ((params.message as string | undefined)?.trim() || host.getSessionName?.() || `Todo plan: ${(params.list ?? []).map((p: any) => p.phase).join(", ") || "tasks"}`).slice(0, 120);
 		const cwd = path.resolve(ctx.cwd);
 		let where: Awaited<ReturnType<typeof destination>>, created: Created;
 		try {
@@ -1226,7 +1211,7 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 	function refuseDropped(replace: boolean, tasks: Task[], wanted: Set<string>): void {
 		const open = tasks.filter(t => OPEN.has(t.status) && !wanted.has(itemKey(t)));
 		const held = open.filter(t => t.holder);
-		if (replace && held.length) throw new Error(`The new todo list leaves out tasks another session started, so init changed nothing:\n${held.map(t => `- ${MARK[t.status]} ${t.content} (session ${t.holder})`).join("\n")}\nIf that session crashed or was killed, take them over first (start or drop with takeover: true), or keep them in the list.`);
+		if (replace && held.length) throw new Error(`The new todo list leaves out tasks another session started, so init changed nothing:\n${held.map(t => `- ${MARK[t.status]} ${t.content} (session ${t.holder})`).join("\n")}\nIf that session crashed or was killed, take them over first (${wording.takeOverFirst}), or keep them in the list.`);
 		if (replace || !open.length) return;
 		throw new Error(`The new todo list leaves out open tasks, so init changed nothing:\n${open.map(t => `- ${MARK[t.status]} ${t.content}`).join("\n")}\n${wording.leftOut}`);
 	}
@@ -1295,10 +1280,11 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 		const op = params.op as string;
 		if (op === "view") {
 			await load(cwd);
-			if (plan.parent) await drain();
+			await drain();
 			return render(plan, wording);
 		}
 		if (op === "init") {
+			if (params.takeover === true) throw new Error(`init does not take tasks over, so nothing changed. Take them over first (${wording.takeOverFirst}), then init.`);
 			const desired: { phase: string; content: string }[] = params.list?.length
 				? params.list.flatMap((p: any) => p.items.map((content: string) => ({ phase: p.phase, content })))
 				: (params.items ?? []).map((content: string) => ({ phase: params.phase || "Tasks", content }));
@@ -1314,7 +1300,7 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 				const keepsParent = choice.provenance === "init" ? target === plan.parent || aliases.has(target) : namesPlanParent(plan.parent, aliases, target);
 				const parent = keepsParent && plan.parent ? plan.parent : await kata.pin(target, workspace);
 				if (choice.overridden && parent !== await kata.pin(choice.overridden, workspace)) throw new Error(`Kata init ref ${params.ref} conflicts with the explicit binding ${target}; neither plan was replaced.`);
-				const tasks = tasksOf((await showParent(parent, workspace)).children ?? [], parent);
+				const tasks = planTasks((await showParent(parent, workspace)).children ?? [], parent);
 				refuseDropped(params.replace === true, [...tasks, ...named], wanted);
 				const kept = tasks.filter(t => wanted.has(itemKey(t)));
 				const affected = new Set(tasks.filter(t => !kept.includes(t)));
@@ -1496,13 +1482,13 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 		const match = /^(\S+)?(?:\s+([\s\S]*))?$/.exec(args.trim());
 		const sub = match?.[1] ?? "";
 		const arg = match?.[2]?.trim() || undefined;
-		const actor = setting("USER") || "user";
+		const user = setting("USER") || "user";
 		const supported: Record<string, any> = {
 			"": { op: "view" },
 			start: { op: "start", task: arg },
-			done: { op: "done", task: arg, message: `Marked done by ${actor} through /todo in ${namespace}; the user attests the work is complete.`, evidence: [`external:${actor}`] },
-			drop: { op: "drop", task: arg, message: `dropped by ${actor} through /todo` },
-			rm: { op: "rm", task: arg, message: `removed by ${actor} through /todo` },
+			done: { op: "done", task: arg, message: `Marked done by ${user} through /todo in ${namespace}; the user attests the work is complete.`, evidence: [`external:${user}`] },
+			drop: { op: "drop", task: arg, message: `dropped by ${user} through /todo` },
+			rm: { op: "rm", task: arg, message: `removed by ${user} through /todo` },
 			append: { op: "append", items: arg ? [arg] : [] },
 			block: { op: "block", reason: arg },
 			unblock: { op: "unblock", task: arg },
@@ -1549,14 +1535,14 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 			signal?.addEventListener("abort", onAbort, { once: true });
 		});
 		const until = <T>(promise: Promise<T | undefined>) => Promise.race([promise, aborted]);
-		const refresh = serial(async () => { await load(plan.workspace); await drain(); return true; });
+		const reload = serial(async () => { await load(plan.workspace); await drain(); return true; });
 		let refreshed: boolean | undefined;
 		try {
 			// Checked after the short bound, not before queuing: a delegate that exited while the queue was busy still counts.
 			const pendingAtStop = delegates.cleanupPending();
-			refreshed = await until(bounded(refresh));
+			refreshed = await until(bounded(reload));
 			// A cleanup that finished during the short bound leaves the refresh queued behind it, so what was pending at the stop counts too.
-			if (!refreshed && (pendingAtStop || delegates.cleanupPending())) refreshed = await until(bounded(refresh, deadline - Date.now()));
+			if (!refreshed && (pendingAtStop || delegates.cleanupPending())) refreshed = await until(bounded(reload, deadline - Date.now()));
 			// A delegate that exits during the wait queues its own cleanup after the refresh: wait for those too. Stop when a pass
 			// leaves the same cleanups pending (Kata unreachable, a step failing), so an outage does not hold every turn end.
 			while (refreshed && !signal?.aborted && delegates.cleanupPending() && Date.now() < deadline) {
@@ -1736,7 +1722,7 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 		// A prompt the assignment rules refuse is untracked and makes no mission: its report goes on the tickets or plan items it
 		// named, when it named several, and nowhere for a conflict (a taken or held task). A check Kata could not run leaves it untracked.
 		let reserved: Reservation | undefined, untracked = false, refused: Refused | undefined;
-		try { reserved = (await delegates.check([{ text: prompt }], id, delegateScope))[0]; }
+		try { reserved = (await delegates.check([prompt], id, delegateScope))[0]; }
 		catch (error) { debug(error); if (error instanceof Refusal) refused = { targets: error.targets }; else untracked = true; }
 		const name = childName(host.getSessionName?.(), reserved, id);
 		const teammate = kept ?? teammateFor(name, salt);
@@ -1745,6 +1731,42 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 		await delegates.apply({ type: "started", id, sessionId: id, leadSessionId: parent.sessionId, leadTeammate: parent.teammate, teammate, text: prompt,
 			name, parent: binding.parent, workspace: binding.workspace, parentLabel: binding.label, call: id, untracked, refused });
 		if (currentId !== sid(ctx)) await bounded(serial(() => bind(ctx)), DELEGATE_BIND_MS);
+	}
+
+	const owing = () => settlement.owes() || delegates.owes();
+
+	// The session ended: a lead's work in Kata is left as it stands, a delegate's exit is reported.
+	// A delegate that ends with its session passes `delegate`; `ended` makes this call report its exit, after its `report`.
+	// `continues`: this shutdown does not end the lead's work (pi's reload: the same session goes on), so it keeps its tasks.
+	// `forking`: a fork replaces this session in a new instance (pi's /fork into a saved session); the tasks are left for it.
+	async function shutdown(ctx: HostContext, closing: { delegate?: { id: string; ended: boolean; report?: string }; continues?: boolean; forking?: boolean } = {}): Promise<void> {
+		see(ctx);
+		if (!main(ctx) && !closing.delegate) return;
+		stopFollower();
+		// Left for the fork before the bounded work: pi starts the fork's instance once this shutdown returns or times out.
+		const forking = main(ctx) && closing.forking ? leaving() : undefined;
+		if (forking) forkSources.set(forking.session, forking);
+		// After the drain: the automatic parent's close still records this session.
+		await bounded((async () => {
+			await serial(async () => {
+				const session = attentionSession;
+				attentionSession = undefined;
+				await load(plan.workspace || ctx.cwd).catch(debug);
+				const ends = main(ctx) && !closing.continues && !closing.forking;
+				// A pi child that started before this lead had a plan made the session's automatic parent itself (see join),
+				// and may have left missions under it: an ending lead with no plan binds that parent, so its close is audited.
+				if (ends && !plan.parent && !plan.local) {
+					const found = await probe(ctx.cwd).then(up => up ? sessionBinding(ctx) : undefined).catch(error => { debug(error); return undefined; });
+					if (found) { setParent(found); await load(found.workspace).catch(debug); }
+				}
+				await sweep(options.closeParent !== "shutdown" || ends);
+				const ending = ends ? leaving() : undefined;
+				if (session) await attention("end", session);
+				await moveMarks(ending, undefined);
+			});
+			if (closing.delegate?.report) await delegates.apply({ type: "reported", id: closing.delegate.id, text: closing.delegate.report });
+			if (closing.delegate?.ended) await delegates.apply({ type: "exited", id: closing.delegate.id, outcome: "ended" });
+		})(), closing.delegate ? DELEGATE_SHUTDOWN_MS : SHUTDOWN_BOUND_MS);
 	}
 
 	return {
@@ -1768,7 +1790,7 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 				if (live) liveInbox = "";
 				prefetch(ctx);
 				if (live) startFollower(ctx, user!);
-				const transition = serial(async () => {
+				const switching = serial(async () => {
 					// A switch away from a bound lead ends it; a switch to its own fork hands its tasks on (settleFork).
 					const forkOf = forkSource(ctx);
 					const switchedToFork = !!currentId && forkOf === currentId && bound;
@@ -1795,7 +1817,7 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 					if (ending || source) { await load(plan.workspace).catch(debug); refresh(ctx); }
 				});
 				// OMP snapshots the bash environment after this handler returns.
-				await bounded(transition, explicit && options.attentionHarness && id ? ATTENTION_START_MS : undefined);
+				await bounded(switching, explicit && options.attentionHarness && id ? ATTENTION_START_MS : undefined);
 				return lead();
 			},
 			branch: rebind,
@@ -1803,7 +1825,7 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 			input() { reminders = 0; },
 			// Whether the session still owes Kata closes: a pending close, a delegate still to settle, or an automatic parent's close the
 			// last audit still means to make. A parent it left open on purpose (flagged for a person) is not owed.
-			owes: () => settlement.owes() || delegates.owes(),
+			owes: owing,
 			// The lead's turn ended: exited delegates are handed back and due closes retried, with the wait `stop` has. For a host
 			// that wants no reminder: none is built, and none is counted.
 			async settle(ctx: HostContext, signal?: AbortSignal): Promise<void> {
@@ -1817,41 +1839,10 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 			// The session ended for good on a host that keeps sessions (deleted, archived): the shutdown of an ending lead. True while
 			// it still owes closes (see `owes`): the host keeps what the session saved and ends it again once they can be made.
 			async end(ctx: HostContext): Promise<boolean> {
-				await this.shutdown(ctx);
-				return this.owes();
+				await shutdown(ctx);
+				return owing();
 			},
-			// A delegate that ends with its session passes `delegate`; `ended` makes this call report its exit, after its `report`.
-			// `continues`: this shutdown does not end the lead's work (pi's reload: the same session goes on), so it keeps its tasks.
-			// `forking`: a fork replaces this session in a new instance (pi's /fork into a saved session); the tasks are left for it.
-			async shutdown(ctx: HostContext, closing: { delegate?: { id: string; ended: boolean; report?: string }; continues?: boolean; forking?: boolean } = {}): Promise<void> {
-				see(ctx);
-				if (!main(ctx) && !closing.delegate) return;
-				stopFollower();
-				// Left for the fork before the bounded work: pi starts the fork's instance once this shutdown returns or times out.
-				const forking = main(ctx) && closing.forking ? leaving() : undefined;
-				if (forking) forkSources.set(forking.session, forking);
-				// After the drain: the automatic parent's close still records this session.
-				await bounded((async () => {
-					await serial(async () => {
-						const session = attentionSession;
-						attentionSession = undefined;
-						await load(plan.workspace || ctx.cwd).catch(debug);
-						const ends = main(ctx) && !closing.continues && !closing.forking;
-						// A pi child that started before this lead had a plan made the session's automatic parent itself (see join),
-						// and may have left missions under it: an ending lead with no plan binds that parent, so its close is audited.
-						if (ends && !plan.parent && !plan.local) {
-							const found = await probe(ctx.cwd).then(up => up ? sessionBinding(ctx) : undefined).catch(error => { debug(error); return undefined; });
-							if (found) { setParent(found); await load(found.workspace).catch(debug); }
-						}
-						await sweep(options.closeParent !== "shutdown" || ends);
-						const ending = ends ? leaving() : undefined;
-						if (session) await attention("end", session);
-						await moveMarks(ending, undefined);
-					});
-					if (closing.delegate?.report) await delegates.apply({ type: "reported", id: closing.delegate.id, text: closing.delegate.report });
-					if (closing.delegate?.ended) await delegates.apply({ type: "exited", id: closing.delegate.id, outcome: "ended" });
-				})(), closing.delegate ? 3000 : SHUTDOWN_BOUND_MS);
-			},
+			shutdown,
 			// What the next prompt carries. `context: false` leaves the contract and inbox to another extension.
 			async beforePrompt(ctx: HostContext, prompt: { after?: Promise<unknown>; context?: boolean } = {}): Promise<{ sections: PromptSections; lead: Lead }> {
 				see(ctx);
@@ -1862,7 +1853,7 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 				await bounded(Promise.all([
 					main(ctx) && currentId !== sid(ctx) ? serial(() => bind(ctx)) : undefined,
 					context ? warmFor(ctx) : undefined,
-				]), main(ctx) ? 250 : 3000);
+				]), main(ctx) ? 250 : DELEGATE_PROMPT_MS);
 				const sections: PromptSections = {};
 				if (context) {
 					if (cache.contract) sections.contract = cache.contract;
@@ -1901,6 +1892,7 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 		},
 		delegates: {
 			apply: delegates.apply,
+			start: delegates.start,
 			assignment: delegates.assignment,
 			check: delegates.check,
 			release: delegates.release,

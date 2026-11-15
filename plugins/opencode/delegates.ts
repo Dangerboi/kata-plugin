@@ -1,4 +1,4 @@
-import { closedTaskStatus, digest, heldBySession, heldMessage, itemTicket, missionCloseArgs, missionKey, OPEN, openTaskStatus, projectOf, qualifiedRef, qualifiedRefs, TODO_WORDING, type Binding, type KataIssue, type KataShow, type Plan, type Task, type ToolWording } from "./model";
+import { closedTaskStatus, digest, heldBySession, heldMessage, itemTicket, missionCloseArgs, missionKey, OPEN, projectOf, qualifiedRef, qualifiedRefs, tasksOf, TODO_WORDING, type Binding, type KataIssue, type KataShow, type Plan, type Task, type ToolWording } from "./model";
 import { isKataCode, type Kata } from "./kata-cli";
 
 // The delegate lifecycle, shared by every host: an omp or OpenCode lead and the pi child (see GLOSSARY.md: Delegate,
@@ -48,7 +48,7 @@ export class Refusal extends Error {
 // or the title of a ticket outside the plan.
 export type Reservation = { ref?: string; ticket?: boolean; title?: string };
 // `wait`: the spawn names a task of a local plan, which has no issue until the plan is replayed.
-export type Resolved = Reservation & { wait?: true };
+type Resolved = Reservation & { wait?: true };
 
 // The one decision of what a spawn's text works in a plan, for check() and for a delegate that starts with nothing reserved.
 // Nothing is guessed: a text that names no task or ticket works nothing, and so does one that names a blocked item. A text
@@ -107,7 +107,7 @@ export const isUntracked = (r: DelegateRecord | undefined): r is DelegateRecord 
 export type Refused = Pick<Refusal, "targets">;
 
 // The issue's state before the assignment wrote anything; rollback puts it back.
-export type Restore = { claimed: boolean; meta: Record<string, unknown> };
+type Restore = { claimed: boolean; meta: Record<string, unknown> };
 
 export interface DelegateRecord {
 	id: string;
@@ -153,7 +153,7 @@ export type SavedDelegate = Omit<DelegateRecord, "text">;
 
 // What a later run of an ended delegate goes on with: the issue it was assigned, or the mission that records its run. An
 // ended record without either has nothing in Kata to resume, so it is not saved and a later run starts a new record.
-export const resumable = (r: SavedDelegate): boolean => !!((r.ref && r.binding) || r.mission);
+const resumable = (r: SavedDelegate): boolean => !!((r.ref && r.binding) || r.mission);
 
 export const nameOf = (r: Pick<DelegateRecord, "id" | "name">) => r.name || r.id;
 
@@ -171,6 +171,8 @@ export type DelegateEvent =
 	// What it reported last, superseding an earlier report.
 	| { type: "reported"; id: string; text: string }
 	| { type: "exited"; id: string; outcome: DelegateOutcome };
+// What a host says of a delegate that began: `Delegates.start` adds the lead's teammate and the delegate's own.
+export type DelegateStart = Omit<Extract<DelegateEvent, { type: "started" }>, "type" | "leadTeammate" | "teammate">;
 
 export type DelegateAssignment = { ref: string; workspace: string; teammate: string; binding: Binding };
 
@@ -203,6 +205,8 @@ export interface DelegatesEnv {
 	load(cwd: string): Promise<unknown>;
 	drain(): Promise<void>;
 	cwd(): string;
+	// The lead's own teammate: what its delegates report to.
+	teammate(): string;
 	// The plan parent an untracked delegate's mission goes under, for a lead's delegate: the plan's own, else the automatic parent
 	// made for it (never one beside an explicit parent). Undefined while there is none to have: Kata is unreachable, or a local
 	// plan waits for its replay.
@@ -214,17 +218,19 @@ export interface DelegatesEnv {
 	debug(error: unknown): void;
 }
 
-export type Spawn = { text: string };
 // `leadSession`: the lead's session id; a plan task another session started is not the lead's to delegate.
-export type Scope = { parent?: string; workspace?: string; label?: string; leadTeammate?: string; teammate?: string; leadSession?: string };
+type Scope = { parent?: string; workspace?: string; label?: string; leadTeammate?: string; teammate?: string; leadSession?: string };
 
 export interface Delegates {
 	// The one write entry. Runs in the core's serial queue and never throws to the host.
 	apply(event: DelegateEvent): Promise<void>;
+	// A delegate began (see DelegateEvent `started`): the event with the lead's teammate and the delegate's own, which a host
+	// would otherwise spell for itself. The delegate's teammate is salted by the lead's session (see teammateFor).
+	start(host: DelegateStart): Promise<void>;
 	// Says what each spawn of a call works (see resolve), or throws the Refusal of the first that cannot be delegated; a ticket
 	// must also be the lead's to delegate. `call`: the host's id of the call. What its spawns were matched to stays reserved
 	// under it, against every other spawn, until each spawn's `started` takes its own or the host releases the call.
-	check(spawns: Spawn[], call?: string, scope?: Scope): Promise<Reservation[]>;
+	check(texts: string[], call?: string, scope?: Scope): Promise<Reservation[]>;
 	// The call is over: what its spawns reserved and no delegate took is free again.
 	release(call: string): void;
 	// The issue the delegate running in `ctx` works, once assigned.
@@ -301,9 +307,8 @@ export function createDelegates(env: DelegatesEnv): Delegates {
 			const actor = await env.actor(workspace, scope.parent);
 			const lead = scope.leadTeammate ?? "", mate = scope.teammate ?? "";
 			const foreign = (c: KataIssue) => heldByDelegate(ns, c.metadata) || (!!c.owner && (c.owner !== actor || ![lead, mate].includes((c.metadata?.teammate as string | undefined) || "")));
-			const tasks: Task[] = (shown.children ?? []).filter(c => c.status === "open").map(c => ({ ref: qualifiedRef(c, scope.parent!), content: c.title,
-				phase: (c.metadata?.["todo.phase"] as string | undefined) ?? "", status: openTaskStatus(c.metadata?.["todo.status"]), delegated: foreign(c),
-				holder: heldBySession(c, scope.leadSession ? [scope.leadSession] : []) }));
+			// Every open child of the parent can be named; the lead's lineage is the one session it names.
+			const tasks = tasksOf((shown.children ?? []).filter(c => c.status === "open"), scope.parent, { delegated: foreign, holder: c => heldBySession(c, scope.leadSession ? [scope.leadSession] : []) });
 			return { tasks, parent: scope.parent, workspace, label: scope.label, auto: false, local: false };
 		}
 		const first = env.plan();
@@ -312,24 +317,28 @@ export function createDelegates(env: DelegatesEnv): Delegates {
 		return { tasks: plan.tasks, parent: plan.parent, workspace: plan.workspace, label: plan.label, auto: plan.auto, local: !!plan.local };
 	}
 
-	async function check(spawns: Spawn[], call?: string, scope: Scope = {}): Promise<Reservation[]> {
+	// Makes what a spawn named certain: a ticket must be the lead's to delegate (a ticket keeps the actor and teammate rule
+	// alone), and gives its title when the text did not. Throws the Refusal that makes the spawn untracked.
+	async function reserve(found: Reservation, which: string, workspace: string, leadTeammate: string | undefined): Promise<void> {
+		if (!found.ticket) return;
+		let ticket: KataIssue;
+		try { ticket = await env.owned(found.ref!, workspace, "check", false, undefined, { ...(leadTeammate === undefined ? undefined : { teammate: leadTeammate }), ticket: true }); }
+		catch (error) { throw new Refusal(`${which} names ${found.ref}, which cannot be delegated: ${failure(error)}`); }
+		found.title ??= ticket.title;
+	}
+
+	async function check(texts: string[], call?: string, scope: Scope = {}): Promise<Reservation[]> {
 		return env.serial(async () => {
 			const src = await source(scope);
 			// A local plan's own tasks have no issue to reserve: a spawn naming one is decided when its delegate starts.
 			const plan = src.local ? { ...src, tasks: src.tasks.filter(t => t.ticket) } : src;
 			const held = taken(undefined, call);
 			const projects = await env.kata.projectNames(src.workspace);
-			const as = scope.leadTeammate === undefined ? undefined : { teammate: scope.leadTeammate };
 			const reserved: Reservation[] = [];
-			for (const [index, spawn] of spawns.entries()) {
+			for (const [index, text] of texts.entries()) {
 				const which = `Task ${index + 1}`;
-				const found: Reservation = resolve(spawn.text, plan, held, projects, which, env.wording);
-				if (found.ticket) {
-					let ticket: KataIssue;
-					try { ticket = await env.owned(found.ref!, src.workspace, "check", false, undefined, { ...as, ticket: true }); }
-					catch (error) { throw new Refusal(`${which} names ${found.ref}, which cannot be delegated: ${failure(error)}`); }
-					found.title ??= ticket.title;
-				}
+				const found: Reservation = resolve(text, plan, held, projects, which, env.wording);
+				await reserve(found, which, src.workspace, scope.leadTeammate);
 				if (found.ref) held.add(found.ref);
 				reserved.push(found);
 			}
@@ -355,7 +364,7 @@ export function createDelegates(env: DelegatesEnv): Delegates {
 			// one batch, and a background spawn can start after its call was released).
 			src = await source(scope);
 			let found: Resolved;
-			try { found = resolve(r.text, src, taken(r), await env.kata.projectNames(src.workspace), undefined, env.wording); }
+			try { found = resolve(r.text, src, taken(r), await env.kata.projectNames(src.workspace), undefined, env.wording); await reserve(found, "The task", src.workspace, r.leadTeammate); }
 			catch (error) {
 				if (!(error instanceof Refusal)) throw error;
 				env.debug(error);
@@ -378,14 +387,14 @@ export function createDelegates(env: DelegatesEnv): Delegates {
 		let issue: KataIssue = (await env.kata.show(ref, cwd)).issue;
 		if (issue.status !== "open" && r.followUp) { r.ref = ref; r.state = "assigned"; return; }
 		const before = r.restore ?? capture(issue);
-		const take = issue.metadata?.teammate !== r.teammate || issue.owner !== await env.actor(cwd);
+		const retake = issue.metadata?.teammate !== r.teammate || issue.owner !== await env.actor(cwd);
 		// A ticket keeps the actor and teammate rule alone, as check() decided; a plan task another session holds is refused.
-		if (take) issue = await env.owned(ref, cwd, true, false, undefined, { teammate: r.leadTeammate, ticket: r.ticket });
+		if (retake) issue = await env.owned(ref, cwd, true, false, undefined, { teammate: r.leadTeammate, ticket: r.ticket });
 		// The restore point is saved before the delegate's own first write, so an assignment cut off by a crash is rolled back
 		// on resume. An assignment the ownership check refused has none: nothing of the delegate's is on the issue.
 		r.restore = before;
 		save(r);
-		if (take) await env.kata.run(["meta", "set", ref, "teammate", r.teammate, "--if-match", String(issue.revision)], cwd);
+		if (retake) await env.kata.run(["meta", "set", ref, "teammate", r.teammate, "--if-match", String(issue.revision)], cwd);
 		if (issue.status !== "open") throw new Error(`Delegated task ${ref} is already closed.`);
 		const extras = ns === "omp" ? { "omp.parent_agent_id": r.parentAgentId || "main", "omp.status": "running" } : {};
 		for (const [key, value] of Object.entries({ [keySubagent]: r.id, [keySession]: r.leadSessionId, ...extras, "todo.status": "in_progress" })) {
@@ -604,7 +613,7 @@ export function createDelegates(env: DelegatesEnv): Delegates {
 		return work;
 	}
 
-	function start(event: Started): Promise<void> {
+	function open(event: Started): Promise<void> {
 		const known = env.store.get(event.id);
 		if (known && (!FINAL.has(known.state) || resumable(known))) {
 			// At once, so the delegate is found by its session before the queued wake runs.
@@ -642,7 +651,7 @@ export function createDelegates(env: DelegatesEnv): Delegates {
 	function apply(event: DelegateEvent): Promise<void> {
 		const woken = waking.get(event.id);
 		if (woken) return woken.then(() => apply(event));
-		if (event.type === "started") return start(event);
+		if (event.type === "started") return open(event);
 		const r = note(event);
 		if (!r || event.type === "ranTool" || event.type === "reported") return Promise.resolve();
 		if (event.type === "nextUse") {
@@ -660,6 +669,7 @@ export function createDelegates(env: DelegatesEnv): Delegates {
 
 	return {
 		apply,
+		start: host => apply({ type: "started", leadTeammate: env.teammate(), teammate: teammateFor(host.id, host.leadSessionId), ...host }),
 		check,
 		release: call => { reservations.delete(call); },
 		assignment(ctx) {

@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { createKata, type Exec } from "../core/kata-cli";
+import { closeEnv, createKata, type Exec } from "../core/kata-cli";
 
 // Counts the `kata show` calls that reach Kata; every other call succeeds with an empty issue.
 function client() {
@@ -41,4 +41,11 @@ test("a callback registered inside an operation that runs after it ended reads K
   gate.resolve();
   await later;
   expect(shows).toEqual(["p#a", "p#a"]);
+});
+
+test("only a close carries the transcript environment; a close with no known session switches recording off", () => {
+  expect(closeEnv(["show", "ab12"], "omp", "child")).toBeUndefined();
+  expect(closeEnv(["close", "ab12"], "omp", "child")).toMatchObject({ KATA_TRANSCRIPT_AGENT: "omp", KATA_TRANSCRIPT_SESSION_ID: "child" });
+  expect(closeEnv(["close", "ab12"], "omp", undefined)).toEqual({ KATA_CLOSE_TRANSCRIPT_ENABLED: "false" });
+  expect(closeEnv(["comment", "ab12"], "omp", undefined)).toBeUndefined();
 });

@@ -12,9 +12,15 @@ export type Task = { ref: string; content: string; phase: string; status: Status
 export type Binding = { parent: string; workspace: string; sessionId?: string; auto?: boolean; label?: string };
 export type Plan = Partial<Binding> & { workspace: string; tasks: Task[]; local?: boolean; error?: string };
 export type Change = { message?: string; evidence?: string[]; reason?: string; remove?: boolean };
-// What Kata's close as done needs that `change` lacks: evidence, and a message of 40+ characters (whitespace runs count as one).
-export function missingProof(change: { message?: string; evidence?: string[] }): { message: boolean; evidence: boolean } {
-	return { message: (change.message || "").replace(/\s+/g, " ").trim().length < 40, evidence: !change.evidence?.some(e => e.trim()) };
+// What Kata's close as done needs: evidence, and a message of PROOF_MIN characters (whitespace runs count as one).
+export const PROOF_MIN = 40;
+// What `change` lacks of that, as the clause that finishes "cannot be completed without"; undefined when it has proof.
+export function proofProblem(change: { message?: string; evidence?: string[] }): string | undefined {
+	const message = (change.message || "").replace(/\s+/g, " ").trim().length < PROOF_MIN;
+	const evidence = !change.evidence?.some(e => e.trim());
+	if (message && evidence) return `a message (${PROOF_MIN}+ characters saying what changed and how it was verified) and evidence`;
+	if (message) return `a message of ${PROOF_MIN}+ characters saying what changed and how it was verified`;
+	if (evidence) return "evidence";
 }
 
 // An issue as `kata show --json` prints it, and each of its children; only the fields the plugin reads.
@@ -38,6 +44,32 @@ export function heldBySession(issue: Pick<KataIssue, "status" | "metadata">, own
 }
 // The start of every refusal for a plan task another session holds.
 export const heldMessage = (ref: string, holder: string) => `Plan task ${ref} was started by another session (${holder}), which has not released it`;
+
+// Kata children as plan tasks, oldest first. Which children are plan tasks is the caller's choice (a lead's plan holds those with
+// a phase; a pi child may also name any other open child). What only the asker knows is its own: whether a delegate of another
+// teammate holds a task, and which session started it.
+export function tasksOf(children: readonly KataIssue[], parent: string, rule: { delegated(issue: KataIssue): boolean; holder(issue: KataIssue): string | undefined }): Task[] {
+	return [...children]
+		.sort((a, b) => Date.parse(a.created_at) - Date.parse(b.created_at))
+		.map(c => {
+			const meta = c.metadata ?? {};
+			let status: Status;
+			if (c.status === "closed") status = meta["todo.status"] === "abandoned" ? "abandoned" : closedTaskStatus(c.closed_reason);
+			else status = openTaskStatus(meta["todo.status"]);
+			return {
+				ref: qualifiedRef(c, parent),
+				content: c.title,
+				phase: typeof meta["todo.phase"] === "string" ? meta["todo.phase"] : "",
+				revision: c.revision,
+				at: Date.parse(c.created_at),
+				delegated: rule.delegated(c),
+				holder: rule.holder(c),
+				review: (c.labels ?? []).some(l => (typeof l === "string" ? l : l?.label) === "needs-review"),
+				status,
+				blocker: status === "blocked" ? meta["work.attention_msg"] as string | undefined : undefined,
+			};
+		});
+}
 
 // A mission: the issue the plugin makes, under the plan parent, to record the run of a delegate that had no issue of its own
 // (see delegates.ts). It is closed without proof of a change, so it adds no evidence to its parent's close.

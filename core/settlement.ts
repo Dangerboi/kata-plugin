@@ -238,7 +238,7 @@ export function createSettlement(deps: SettlementDeps): Settlement {
 			retries.set(task.ref, { task: { ...task }, to, change: { ...change }, cwd, at: clock() + RETRY_MS, ...(parent ? { parent } : {}) });
 			failures.delete(`task:${task.ref}`);
 			schedule();
-			return `Kata deferred closing "${task.content}" under its sibling throttle. It remains open and will retry after 60 seconds.`;
+			return `Kata deferred closing "${task.content}" under its sibling throttle. It remains open and will retry after ${RETRY_MS / 1000} seconds.`;
 		},
 		cancelTaskClose: dropTask,
 		hasTaskClose: ref => retries.has(ref),

@@ -45,6 +45,13 @@ const [AGENT, SESSION, ENABLED] = TRANSCRIPT_ENV;
 export function transcriptEnv(agent: string, sessionId: string): Record<(typeof TRANSCRIPT_ENV)[number], string> {
 	return { [AGENT]: agent, [SESSION]: sessionId, [ENABLED]: process.env[ENABLED] ?? "true" };
 }
+// The environment a Kata call carries for a close to record the session that made it; undefined for any other call. With
+// no session id (a delegate whose own session is not known yet) recording is switched off: the process carries the lead's
+// pair, which that close must not record.
+export function closeEnv(args: readonly string[], agent: string, sessionId: string | undefined): Record<string, string> | undefined {
+	if (args[0] !== "close") return undefined;
+	return sessionId ? transcriptEnv(agent, sessionId) : { [ENABLED]: "false" };
+}
 // Every later close from this process and what it spawns (the bash tool, delegates, harnesses launched from bash) then records this session.
 export function exportTranscriptSession(agent: string, sessionId: string | undefined): void {
 	if (sessionId) Object.assign(process.env, transcriptEnv(agent, sessionId));

@@ -1,6 +1,7 @@
 import { beforeEach, expect, test } from "bun:test";
 import { createKataCore } from "../core/kata-core";
-import type { DelegateEvent } from "../core/delegates";
+import { teammateFor, type DelegateEvent } from "../core/delegates";
+import { TODO_WORDING, type ToolWording } from "../core/model";
 import { eventually, memoryDelegateStore, realKata } from "./kata-fixture";
 import { siblingThrottle } from "./kata-errors";
 
@@ -12,7 +13,7 @@ let seq = 0, failing: ((args: string[]) => boolean) | undefined, throttled: ((ar
 
 // A lead session and its delegates: each is an agent with its own core, as in omp, sharing the one delegate store.
 // `from` resumes a past session (same id and entries, no records in memory) or, with `fork`, forks it (new id, parentSession in the header).
-function lead(from?: { entries: any[]; id: string; fork?: boolean }) {
+function lead(from?: { entries: any[]; id: string; fork?: boolean }, wording?: ToolWording) {
   const entries: any[] = from ? structuredClone(from.entries) : [], id = from?.fork ? `${from.id}-fork` : from?.id ?? `delegates-lead-${++seq}`;
   const header = from?.fork ? { parentSession: from.id } : {};
   const store = memoryDelegateStore();
@@ -21,7 +22,7 @@ function lead(from?: { entries: any[]; id: string; fork?: boolean }) {
     exec: async (_file, args, opts) => { await holding?.(args); if (throttled?.(args)) return siblingThrottle(); return failing?.(args) ? { code: 1, stdout: "", stderr: "delegation service permission denied" } : run(args, opts.cwd); },
     isMain: ctx => ctx.agent?.kind === "main",
     delegateStore: store,
-  }, { namespace: "omp", executable: binary, executableVars: ["KATA_OMP_EXECUTABLE"] });
+  }, { namespace: "omp", executable: binary, executableVars: ["KATA_OMP_EXECUTABLE"], wording });
   const core = agent();
   // omp's ctx timer: the settlement's retries are armed here and fired by the test.
   const timers: (() => void)[] = [];
@@ -587,7 +588,7 @@ test("a delegate that exits with its issue closed leaves it closed and returns i
 test("a refused delegate that exits leaves the closed issue of the delegate holding it alone", async () => {
   const a = lead(); const parent = await a.plan(["Build the omicron widget", "Lead step"]);
   const task = await taskOf(parent, "Build the omicron widget"), ref = `delegates-test#${task.short_id}`;
-  await a.delegates.check([{ text: "Build the omicron widget" }], "rho-call");
+  await a.delegates.check(["Build the omicron widget"], "rho-call");
   // Between the check and the start, another session's delegate takes the task: the holder refuses rho's assignment.
   for (const [key, value] of [["teammate", "mate-omicron"], ["omp.subagent_id", "omicron"], ["omp.status", "running"]]) await kata(["meta", "set", ref, key, value, "--json"]);
   await a.delegates.apply(a.started("rho", "Build the omicron widget", { call: "rho-call" }));
@@ -601,7 +602,7 @@ test("a refused delegate that exits leaves the closed issue of the delegate hold
 async function forkReserving(a: ReturnType<typeof lead>, text: string) {
   const f = lead({ entries: a.entries, id: a.id, fork: true });
   await f.view();
-  await f.delegates.check([{ text }], "fork-call");
+  await f.delegates.check([text], "fork-call");
   return f;
 }
 
@@ -732,14 +733,14 @@ test("an automatic parent stays open while a delegate runs, and closes once it h
 
 test("check refuses a task naming two plan items, an already delegated task, and an unclaimable ticket", async () => {
   const a = lead(); await a.plan(["Build the iota widget", "Build the kappa widget"]);
-  await expect(a.delegates.check([{ text: 'Do "Build the iota widget" and "Build the kappa widget"' }])).rejects.toThrow(/names more than one/);
-  const [first] = await a.delegates.check([{ text: 'Complete "Build the iota widget"' }], "iota-call");
+  await expect(a.delegates.check(['Do "Build the iota widget" and "Build the kappa widget"'])).rejects.toThrow(/names more than one/);
+  const [first] = await a.delegates.check(['Complete "Build the iota widget"'], "iota-call");
   expect(first.ref).toMatch(/^delegates-test#/);
   await a.delegates.apply(a.started("iota", 'Complete "Build the iota widget"', { call: "iota-call" }));
-  await expect(a.delegates.check([{ text: 'Complete "Build the iota widget"' }])).rejects.toThrow(/already delegated/);
+  await expect(a.delegates.check(['Complete "Build the iota widget"'])).rejects.toThrow(/already delegated/);
   const foreign = (await kata(["create", "Someone else's ticket", "--force-new", "--json"])).issue.short_id;
   await kata(["claim", foreign, "--as", "someone-else", "--json"]);
-  await expect(a.delegates.check([{ text: `Work delegates-test#${foreign}` }])).rejects.toThrow(/cannot be delegated/);
+  await expect(a.delegates.check([`Work delegates-test#${foreign}`])).rejects.toThrow(/cannot be delegated/);
 });
 
 test("check refuses to delegate a ticket that other open plan items name, and allows it once it is the last one", async () => {
@@ -747,12 +748,12 @@ test("check refuses to delegate a ticket that other open plan items name, and al
   const ref = `delegates-test#${(await kata(["create", "Shared ticket", "--force-new", "--json"])).issue.short_id}`;
   await a.plan([`${ref}: write the omicron parser`, `${ref}: test the omicron parser`]);
   // The delegate would close the ticket and strand the lead's other item on it.
-  await expect(a.delegates.check([{ text: `Do "${ref}: test the omicron parser"` }])).rejects.toThrow(/other open plan items name it/);
-  await expect(a.delegates.check([{ text: `Work ${ref}` }])).rejects.toThrow(/other open plan items name it/);
+  await expect(a.delegates.check([`Do "${ref}: test the omicron parser"`])).rejects.toThrow(/other open plan items name it/);
+  await expect(a.delegates.check([`Work ${ref}`])).rejects.toThrow(/other open plan items name it/);
   const done = await a.core.todo.apply(a.ctx, "done", { task: `${ref}: write the omicron parser`, message: "Wrote the omicron parser and verified it against the fixture.", evidence: ["test:delegates fixture"] });
   expect(done.isError).toBeUndefined();
-  expect(await a.delegates.check([{ text: `Do "${ref}: test the omicron parser"` }])).toEqual([{ ref, ticket: true, title: "test the omicron parser" }]);
-  expect(await a.delegates.check([{ text: `Work ${ref}` }])).toEqual([{ ref, ticket: true, title: "test the omicron parser" }]);
+  expect(await a.delegates.check([`Do "${ref}: test the omicron parser"`])).toEqual([{ ref, ticket: true, title: "test the omicron parser" }]);
+  expect(await a.delegates.check([`Work ${ref}`])).toEqual([{ ref, ticket: true, title: "test the omicron parser" }]);
 });
 
 test("parallel spawns naming nothing are not refused next to open ticket items, and bind none of them", async () => {
@@ -762,14 +763,14 @@ test("parallel spawns naming nothing are not refused next to open ticket items, 
   const init = await a.core.todo.apply(a.ctx, "init", { ref: epic, items: [`${ship}: package, docs and changelog`, `${epic}: full suite, deep-review rounds until clean`] });
   expect(init.isError).toBeUndefined();
   expect((await a.core.todo.apply(a.ctx, "start", { task: `${ship}: package, docs and changelog` })).isError).toBeUndefined();
-  const spawns = ["standards", "spec", "correctness"].map(axis => ({ text: `${axis} axis. Review the diff against the deep-review rounds so far and report findings.\nReview${axis}` }));
+  const spawns = ["standards", "spec", "correctness"].map(axis => `${axis} axis. Review the diff against the deep-review rounds so far and report findings.\nReview${axis}`);
   expect((await a.delegates.check(spawns)).map(r => r.ref)).toEqual([undefined, undefined, undefined]);
 });
 
 test("a spawn naming a ticket outside the plan is reserved as that ticket and assigned it", async () => {
   const a = lead(); await a.plan(["Build the lambda widget"]);
   const ticket = (await kata(["create", "Outside ticket", "--force-new", "--json"])).issue.short_id, ref = `delegates-test#${ticket}`;
-  const [reserved] = await a.delegates.check([{ text: `Work ${ref}: write the thing` }], "lambda-call");
+  const [reserved] = await a.delegates.check([`Work ${ref}: write the thing`], "lambda-call");
   expect(reserved).toEqual({ ref, ticket: true, title: "Outside ticket" });
   await a.delegates.apply(a.started("lambda", `Work ${ref}`, { call: "lambda-call" }));
   expect((await show(ref)).issue.metadata["omp.subagent_id"]).toBe("lambda");
@@ -779,7 +780,7 @@ test("a spawn naming a ticket outside the plan is reserved as that ticket and as
 test("a delegate refused an issue another delegate holds leaves it with its holder when it exits", async () => {
   const a = lead(); const parent = await a.plan(["Build the mu widget", "Lead step"]);
   const task = await taskOf(parent, "Build the mu widget"), ref = `delegates-test#${task.short_id}`;
-  await a.delegates.check([{ text: "Build the mu widget" }], "late-call");
+  await a.delegates.check(["Build the mu widget"], "late-call");
   // Between the check and the start, another session's delegate takes the task.
   for (const [key, value] of [["teammate", "mate-mu-holder"], ["omp.subagent_id", "mu-holder"], ["omp.status", "running"]]) await kata(["meta", "set", ref, key, value, "--json"]);
   await a.delegates.apply(a.started("mu-late", "Build the mu widget", { call: "late-call" }));
@@ -837,7 +838,7 @@ test("check binds nothing for a spawn naming a blocked item, a plan task or a ti
   for (const task of ["Build the rho gizmo", `${ref}: wire the rho gizmo`]) {
     expect((await a.core.todo.apply(a.ctx, "block", { task, reason: "Waiting on the vendor's reply about the rho gizmo." })).isError).toBeUndefined();
   }
-  expect(await a.delegates.check([{ text: 'Do "Build the rho gizmo"' }, { text: `Work ${ref}` }])).toEqual([{}, {}]);
+  expect(await a.delegates.check(['Do "Build the rho gizmo"', `Work ${ref}`])).toEqual([{}, {}]);
 });
 
 test("a delegate that starts unchecked on a ticket other open items name is untracked, as check refuses it", async () => {
@@ -845,9 +846,45 @@ test("a delegate that starts unchecked on a ticket other open items name is untr
   const epic = `delegates-test#${(await kata(["create", "Sigma epic", "--force-new", "--json"])).issue.short_id}`;
   expect((await a.core.todo.apply(a.ctx, "init", { ref: epic, items: [`${epic}: write the sigma parser`, `${epic}: test the sigma parser`] })).isError).toBeUndefined();
   const text = `Do "${epic}: test the sigma parser"`;
-  await expect(a.delegates.check([{ text }])).rejects.toThrow(/other open plan items name it/);
+  await expect(a.delegates.check([text])).rejects.toThrow(/other open plan items name it/);
   // No check saw this spawn (todo init and the task call shared a batch): the delegate would close the epic and strand the other item.
   await a.delegates.apply(a.started("sigma-test", text));
   expect(await a.delegate("sigma-test").assignment()).toContain("no Kata issue");
   expect((await show(epic)).issue.metadata["omp.subagent_id"]).toBeUndefined();
+});
+
+test("a delegate that starts unchecked on a ticket another teammate owns is untracked, as check refuses it", async () => {
+  const a = lead(); await a.plan(["Build the tau widget"]);
+  const foreign = (await kata(["create", "Tau's ticket", "--force-new", "--json"])).issue.short_id;
+  await kata(["claim", foreign, "--as", "someone-else", "--json"]);
+  await a.delegates.apply(a.started("tau", `Work delegates-test#${foreign}`));
+  expect(await a.delegate("tau").assignment()).toContain("no Kata issue");
+});
+
+test("start fills the lead's teammate and the delegate's own, salted by the lead's session", async () => {
+  const a = lead(); const parent = await a.plan(["Build the upsilon widget"]);
+  await a.delegates.start({ id: "upsilon", sessionId: "upsilon", leadSessionId: a.id, text: "Build the upsilon widget" });
+  const task = await taskOf(parent, "Build the upsilon widget");
+  expect((await show(`delegates-test#${task.short_id}`)).issue.metadata).toMatchObject({ teammate: teammateFor("upsilon", a.id), "omp.subagent_id": "upsilon" });
+});
+
+test("a refusal for a delegated task gives the host's refresh words", async () => {
+  const a = lead(undefined, { ...TODO_WORDING, refresh: "Send the list again to refresh." }); await a.plan(["Build the chi widget", "Lead step"]);
+  await a.delegates.apply(a.started("chi", "Build the chi widget"));
+  const result = await a.core.todo.apply(a.ctx, "done", { task: "Build the chi widget", message: "Finished the chi widget and checked it with the fixture.", evidence: ["test:delegates fixture"] });
+  expect(result.isError).toBe(true);
+  expect(result.content[0].text).toContain("is delegated. Its subagent must manage and close it. Send the list again to refresh.");
+});
+
+test("a long init message titles the automatic parent cut to 120 characters", async () => {
+  const a = lead();
+  const result = await a.core.todo.apply(a.ctx, "init", { items: ["Build the omega widget"], message: `Omega plan ${"x".repeat(200)}` });
+  expect(result.isError).toBeUndefined();
+  expect((await show(result.details.kata.parent)).issue.title).toHaveLength(120);
+});
+
+test("session end works detached from the session object", async () => {
+  const a = lead(); await a.plan(["Build the psi widget"]);
+  const { end } = a.core.session;
+  expect(typeof await end(a.ctx)).toBe("boolean");
 });

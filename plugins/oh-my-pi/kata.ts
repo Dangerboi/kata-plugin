@@ -21,7 +21,7 @@ import { BroadcastChannel, isMainThread, threadId } from "node:worker_threads";
 import { closeSync, openSync, readSync } from "node:fs";
 import { createInterface } from "node:readline";
 import { createKataCore, DESCRIPTION, sessionKey, TODO_OPS, TODO_PARAMS } from "./kata-core";
-import { execKata, exportTranscriptSession, transcriptEnv } from "./kata-cli";
+import { closeEnv, execKata, exportTranscriptSession } from "./kata-cli";
 import { delegateCommand, kataCommands as parseKataCommands } from "./shell";
 import { FINAL, isUntracked, teammateFor } from "./delegates";
 import { textOf } from "./model";
@@ -30,7 +30,7 @@ import type { InboxStream } from "./inbox";
 import { describeTodoCall, describeTodoResult, todoWidget } from "./tsp";
 
 // What the lead's Delegates takes from an adapter other than the lead itself: a delegate's next use runs in the lead's queue.
-type DelegateEvents = Pick<Delegates, "apply">;
+type DelegateEvents = Pick<Delegates, "apply" | "start">;
 
 const EXECUTABLE = process.env.KATA_OMP_EXECUTABLE || "kata";
 const EXECUTABLE_VARS = ["KATA_OMP_EXECUTABLE"];
@@ -156,9 +156,9 @@ export default function ompKata(pi: any) {
 		// a close that must carry the transcript identity is spawned here, without a shell or an env program.
 		// A delegate runs in the lead's process: its closes carry its own session, never the lead's.
 		exec: (file, args, { ctx, ...options }) => {
-			const transcript = !ctx || main(ctx) ? undefined : childSession(store.of(ctx)?.sessionId) ?? null;
-			const pair = transcript === undefined ? { agent: process.env.KATA_TRANSCRIPT_AGENT, id: process.env.KATA_TRANSCRIPT_SESSION_ID } : transcript ?? undefined;
-			return pair?.agent && pair.id && args[0] === "close" ? execKata(file, args, { ...options, env: transcriptEnv(pair.agent, pair.id) }) : pi.exec(file, args, options);
+			const pair = transcriptPairOf(ctx);
+			const env = pair.agent && pair.id ? closeEnv(args, pair.agent, pair.id) : undefined;
+			return env ? execKata(file, args, { ...options, env }) : pi.exec(file, args, options);
 		},
 		appendEntry: (...args) => pi.appendEntry(...args),
 		getSessionName: () => pi.getSessionName?.(),
@@ -292,9 +292,8 @@ export default function ompKata(pi: any) {
 			forLead(lead.id);
 			for (const [key, record] of recordsBySession) if (record.leadSessionId !== lead.id && record.exited && FINAL.has(record.state)) recordsBySession.delete(key);
 			const index = event.index ?? 0;
-			void lead.delegates.apply({
-				type: "started", id: event.id, sessionId: event.sessionFile ? sessionKey(event.sessionFile, ctx.cwd) : `${lead.id}:${event.id}`,
-				leadSessionId: lead.id, leadTeammate: process.env.KATA_TEAMMATE || "", teammate: teammateFor(event.id, lead.id),
+			void lead.delegates.start({
+				id: event.id, sessionId: event.sessionFile ? sessionKey(event.sessionFile, ctx.cwd) : `${lead.id}:${event.id}`, leadSessionId: lead.id,
 				text: [taskCalls.get(event.parentToolCallId)?.texts[index], event.description].filter(Boolean).join("\n"),
 				agent: typeof event.agent === "string" && event.agent ? event.agent : undefined, parentAgentId: ctx.agent?.id, call: event.parentToolCallId, index,
 			});
@@ -332,16 +331,23 @@ export default function ompKata(pi: any) {
 			const texts = items.map(item => [item?.task, item?.description, item?.name].filter(value => typeof value === "string").join("\n"));
 			forLead(leadSession());
 			taskCalls.set(event.toolCallId, { texts });
-			return core.delegates.check(texts.map(text => ({ text })), event.toolCallId)
+			return core.delegates.check(texts, event.toolCallId)
 				.then(() => undefined, error => { over(event.toolCallId); return { block: true, reason: String(error) }; });
 		}
 		if (ctx.agent?.kind !== "sub" || event.toolName !== "bash" || typeof event.input?.command !== "string") return;
 		const commands = kataCommands(event.input.command);
 		if (!commands.length) return;
-		const teammate = record?.teammate || teammateFor(ctx.agent.id);
-		try { return { input: { ...event.input, command: delegateCommand(event.input.command, EXECUTABLE, EXECUTABLE_VARS, teammate, record?.binding, childSession(record?.sessionId)) } }; }
+		const teammate = record?.teammate || teammateFor(ctx.agent.id, leadSession());
+		try { return { input: { ...event.input, command: delegateCommand(event.input.command, EXECUTABLE, EXECUTABLE_VARS, teammate, record?.binding, transcriptPairOf(ctx)) } }; }
 		catch (error) { return { block: true, reason: String(error) }; }
 	});
+
+	// The session a close made in `ctx` records. A delegate runs in the lead's process, so its closes carry its own session,
+	// never the lead's: its id is unknown until its session file has a header, and until then `id` is undefined.
+	function transcriptPairOf(ctx: any): { agent: string; id: string | undefined } {
+		if (!ctx || main(ctx)) return { agent: process.env.KATA_TRANSCRIPT_AGENT ?? "", id: process.env.KATA_TRANSCRIPT_SESSION_ID };
+		return childSession(store.of(ctx)?.sessionId) ?? { agent: "omp", id: undefined };
+	}
 
 	// A delegate's session file starts with a header carrying its own session id, the one AgentsView lists it under.
 	const childSessions = new Map<string, string>();

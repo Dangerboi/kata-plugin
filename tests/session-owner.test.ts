@@ -409,3 +409,25 @@ test("a lead's start marks the task with its session when a sub identity's sessi
   expect(started).toBeDefined();
   expect((await meta(ref))["todo.session"]).toBe("session-midcall");
 });
+
+test("the init refusal for a held task names the takeover in the host's words", async () => {
+  const parent = await issue();
+  const ref = await issue(["todo.phase=Tasks", "todo.status=pending"], parent);
+  const a = lead("session-a", parent), b = lead("session-b", parent);
+  await a.begin();
+  await a.call({ op: "start", task: ref });
+  await b.begin();
+  const result = await b.call({ op: "init", ref: parent, replace: true, items: ["A different plan"] });
+  expect(result.content[0].text).toContain("take them over first (todo start with takeover: true), or keep them in the list.");
+});
+
+test("init does not take tasks over: takeover on init is an error that changes nothing", async () => {
+  const parent = await issue();
+  await issue(["todo.phase=Tasks", "todo.status=pending"], parent);
+  const a = lead("session-a", parent);
+  await a.begin();
+  const result = await a.call({ op: "init", ref: parent, takeover: true, items: ["A takeover plan"] });
+  expect(result.isError).toBe(true);
+  expect(result.content[0].text).toContain("init does not take tasks over");
+  expect((await show(parent)).children.map((c: { title: string }) => c.title)).not.toContain("A takeover plan");
+});

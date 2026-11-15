@@ -483,3 +483,16 @@ test("init with a bare short id that resolves in the session project refuses to 
   expect(kataWrites(app.calls.slice(mark))).toEqual([]);
   expect((await show(beta)).children.map((c: any) => c.status)).toEqual(["open"]);
 });
+
+test("view retries a held ticket close in a plan of ticket items alone", async () => {
+  const app = host(); await app.event("session_start");
+  const parent = await issue("View parent ticket");
+  const child = (await kata(["create", "View child ticket", "--parent", parent, "--force-new", "--json"])).issue.short_id;
+  await app.call({ op: "init", items: [`v2test#${parent}: finish the parent`, `v2test#${child}: finish the child`] });
+  await app.call({ op: "done", task: `v2test#${parent}: finish the parent`, message, evidence: ["test:held until view"] });
+  expect((await show(parent)).issue.status).toBe("open");
+  await kata(["close", child, "--done", "--message", message, "--test", "closed outside", "--json"]);
+  const viewed = await app.call({ op: "view" });
+  expect(viewed.isError).toBeUndefined();
+  expect((await show(parent)).issue.status).toBe("closed");
+});

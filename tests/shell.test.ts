@@ -34,6 +34,10 @@ test("a delegate's own session prefixes only its close", () => {
     .toBe("env KATA_TRANSCRIPT_AGENT='omp' KATA_TRANSCRIPT_SESSION_ID='child-uuid' KATA_CLOSE_TRANSCRIPT_ENABLED='true' kata --teammate 'tm-1' close ab12 --done && kata --teammate 'tm-1' show ab12");
   expect(delegateCommand("kata close ab12 --done", "kata", [], "tm-1")).toBe("kata --teammate 'tm-1' close ab12 --done");
 });
+test("a delegate whose own session is unknown switches recording off for its close only", () => {
+  expect(delegateCommand("kata close ab12 --done && kata show ab12", "kata", [], "tm-1", undefined, { agent: "omp", id: undefined }))
+    .toBe("env KATA_CLOSE_TRANSCRIPT_ENABLED='false' kata --teammate 'tm-1' close ab12 --done && kata --teammate 'tm-1' show ab12");
+});
 test("a delegate's close still runs after a skipped prefix word", () => {
   const own = { agent: "omp", id: "child-uuid" };
   const dir = mkdtempSync(join(tmpdir(), "kata-stub-"));

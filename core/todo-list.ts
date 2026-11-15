@@ -1,5 +1,5 @@
 // Pure diff between the whole todo list a model sends and the Kata plan: no Kata, no host, no I/O.
-import { missingProof, OPEN, type Status } from "./model";
+import { proofProblem, OPEN, type Status } from "./model";
 
 export type ListStatus = "pending" | "in_progress" | "completed" | "cancelled";
 export type ListItem = { content: string; status: ListStatus; message?: string; evidence?: string[]; reason?: string; blocker?: string };
@@ -41,10 +41,8 @@ export function listOf(plan: readonly PlanItem[]): ListView[] {
 export const planTail = (plan: readonly PlanItem[]) => `The current Kata plan is below. Send it again with your changes applied on top:\n${JSON.stringify({ todos: listOf(plan) })}`;
 
 const proofMissing = (item: ListItem): string | undefined => {
-	const missing = missingProof(item);
-	if (missing.message && missing.evidence) return `"${item.content}" cannot be completed without a message (40+ characters saying what changed and how it was verified) and evidence`;
-	if (missing.message) return `"${item.content}" cannot be completed without a message of 40+ characters saying what changed and how it was verified`;
-	if (missing.evidence) return `"${item.content}" cannot be completed without evidence`;
+	const problem = proofProblem(item);
+	if (problem) return `"${item.content}" cannot be completed without ${problem}`;
 };
 
 export function diffTodoList(plan: readonly PlanItem[], accepted: ReadonlySet<string>, incoming: readonly ListItem[]): { ops: ListOp[] } | { refusal: string; problems: string[] } {
