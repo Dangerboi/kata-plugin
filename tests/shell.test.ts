@@ -31,7 +31,7 @@ test("each adapter recognizes only its own executable variables", () => {
 test("a delegate's own session prefixes only its close", () => {
   const own = { agent: "omp", id: "child-uuid" };
   expect(delegateCommand("kata close ab12 --done && kata show ab12", "kata", [], "tm-1", undefined, own))
-    .toBe("env KATA_TRANSCRIPT_AGENT='omp' KATA_TRANSCRIPT_SESSION_ID='child-uuid' kata --teammate 'tm-1' close ab12 --done && kata --teammate 'tm-1' show ab12");
+    .toBe("env KATA_TRANSCRIPT_AGENT='omp' KATA_TRANSCRIPT_SESSION_ID='child-uuid' KATA_CLOSE_TRANSCRIPT_ENABLED='true' kata --teammate 'tm-1' close ab12 --done && kata --teammate 'tm-1' show ab12");
   expect(delegateCommand("kata close ab12 --done", "kata", [], "tm-1")).toBe("kata --teammate 'tm-1' close ab12 --done");
 });
 test("a delegate's close still runs after a skipped prefix word", () => {
@@ -46,7 +46,7 @@ test("a delegate's close still runs after a skipped prefix word", () => {
       expect([out.exitCode, out.stdout.toString().trim()]).toEqual([0, "omp/child-uuid --teammate tm-1 close ab12"]);
     }
     const viaVariable = delegateCommand('"$KATA_BIN" close ab12', "kata", ["KATA_BIN"], "tm-1", undefined, own);
-    expect(viaVariable).toBe(`env KATA_TRANSCRIPT_AGENT='omp' KATA_TRANSCRIPT_SESSION_ID='child-uuid' "$KATA_BIN" --teammate 'tm-1' close ab12`);
+    expect(viaVariable).toBe(`env KATA_TRANSCRIPT_AGENT='omp' KATA_TRANSCRIPT_SESSION_ID='child-uuid' KATA_CLOSE_TRANSCRIPT_ENABLED='true' "$KATA_BIN" --teammate 'tm-1' close ab12`);
     const out = spawnSync(["bash", "-c", viaVariable], { env: { ...process.env, KATA_BIN: join(dir, "kata") } });
     expect([out.exitCode, out.stdout.toString().trim()]).toEqual([0, "omp/child-uuid --teammate tm-1 close ab12"]);
   } finally { rmSync(dir, { recursive: true, force: true }); }

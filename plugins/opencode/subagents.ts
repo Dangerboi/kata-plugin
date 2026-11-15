@@ -1,8 +1,8 @@
-import type { DelegateEvent, DelegateOutcome, Reservation } from "./delegates";
+import type { DelegateEvent, Reservation } from "./delegates";
 import { teammateFor } from "./delegates";
 import { speak } from "./todowrite";
 import type { Lead } from "./lead";
-import type { Seam } from "./seam";
+import { EXECUTION_ENDED, SESSION_ENDED, type Seam } from "./seam";
 
 // A `subagent` call a lead made: matched against the plan before it runs, then against the child session it creates.
 interface Call {
@@ -19,12 +19,6 @@ interface Call {
 	// Set once the child's first context hook bound it.
 	childID?: string;
 }
-
-const ENDED: Record<string, DelegateOutcome> = {
-	"session.execution.succeeded": "completed",
-	"session.execution.failed": "failed",
-	"session.execution.interrupted": "aborted",
-};
 
 // The text of a message as OpenCode keeps it: a user message has `text`, an assistant message a list of content parts.
 function textOf(message: any): string {
@@ -148,7 +142,7 @@ export function install(seam: Seam): void {
 	});
 
 	// A child's end, for the background calls: its last assistant text is its report.
-	seam.events(Object.keys(ENDED), async event => {
+	seam.events(Object.keys(EXECUTION_ENDED), async event => {
 		const childID: string | undefined = event.data?.sessionID;
 		if (!childID) return;
 		const session = await seam.sessionOf(childID);
@@ -159,9 +153,9 @@ export function install(seam: Seam): void {
 		const messages: any[] = await seam.ctx.session.context({ sessionID: childID });
 		const last = [...messages].reverse().find(message => message?.type === "assistant" && textOf(message).trim());
 		if (last) await send(lead, { type: "reported", id: record.id, text: textOf(last) });
-		await send(lead, { type: "exited", id: record.id, outcome: ENDED[event.type] });
+		await send(lead, { type: "exited", id: record.id, outcome: EXECUTION_ENDED[event.type] });
 	});
 
 	// A deleted or archived lead's pending calls are gone with it.
-	seam.events(["session.deleted", "session.archived"], event => { if (event.data?.sessionID) calls.delete(event.data.sessionID); });
+	seam.events(SESSION_ENDED, event => { if (event.data?.sessionID) calls.delete(event.data.sessionID); });
 }

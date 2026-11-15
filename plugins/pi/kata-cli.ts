@@ -1,4 +1,5 @@
 import { AsyncLocalStorage } from "node:async_hooks";
+import { execFile } from "node:child_process";
 import path from "node:path";
 import { projectOf, type KataIssue, type KataShow } from "./model";
 
@@ -39,17 +40,32 @@ function meetsMinimum(version: string): boolean | undefined {
 // What a `kata close` reads to record the session that made it: the session pair and the switch that turns recording on.
 export const TRANSCRIPT_ENV = ["KATA_TRANSCRIPT_AGENT", "KATA_TRANSCRIPT_SESSION_ID", "KATA_CLOSE_TRANSCRIPT_ENABLED"] as const;
 const [AGENT, SESSION, ENABLED] = TRANSCRIPT_ENV;
-// Every later close from this process and what it spawns (the bash tool, delegates, harnesses launched from bash) then
-// records this session. The switch stays as the launching environment set it, so `KATA_CLOSE_TRANSCRIPT_ENABLED=false` opts out.
+// The environment that makes a close record `sessionId`. The switch stays as the launching environment set it, so
+// `KATA_CLOSE_TRANSCRIPT_ENABLED=false` opts out.
+export function transcriptEnv(agent: string, sessionId: string): Record<(typeof TRANSCRIPT_ENV)[number], string> {
+	return { [AGENT]: agent, [SESSION]: sessionId, [ENABLED]: process.env[ENABLED] ?? "true" };
+}
+// Every later close from this process and what it spawns (the bash tool, delegates, harnesses launched from bash) then records this session.
 export function exportTranscriptSession(agent: string, sessionId: string | undefined): void {
-	if (!sessionId) return;
-	process.env[AGENT] = agent;
-	process.env[SESSION] = sessionId;
-	process.env[ENABLED] ??= "true";
+	if (sessionId) Object.assign(process.env, transcriptEnv(agent, sessionId));
 }
 
 export type ExecResult = { code: number; stdout: string; stderr?: string; killed?: boolean };
 export type Exec = (file: string, args: string[], options: { cwd: string; timeout: number; ctx?: any }) => Promise<ExecResult>;
+
+// Runs Kata without a shell, for an adapter whose host cannot put an environment on the call. Like pi.exec, a non-zero exit
+// or any spawn failure other than a missing executable is a result, a timeout or abort reports `killed`, and ENOENT rejects.
+export function execKata(file: string, args: string[], options: { cwd: string; timeout: number; signal?: AbortSignal; env?: Record<string, string> }): Promise<Required<ExecResult>> {
+	return new Promise((resolve, reject) => {
+		execFile(file, args, { cwd: options.cwd, timeout: options.timeout, signal: options.signal, killSignal: "SIGKILL", maxBuffer: 64 * 1024 * 1024, env: { ...process.env, ...options.env } },
+			(error, stdout, stderr) => {
+				if (!error) return resolve({ code: 0, stdout, stderr, killed: false });
+				const failure = error as NodeJS.ErrnoException & { killed?: boolean };
+				if (failure.code === "ENOENT") return reject(error);
+				resolve({ code: typeof failure.code === "number" ? failure.code : 1, stdout, stderr, killed: failure.name === "AbortError" || !!failure.killed });
+			});
+	});
+}
 export type Project = { id: number; name: string };
 
 const READS = new Set(["show", "list", "status", "version", "agent-contract-hook", "inbox", "events", "audit", "search", "whoami"]);

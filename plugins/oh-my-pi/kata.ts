@@ -16,12 +16,12 @@
 // (labeled with the repo) or in its inferred project, registered on first use.
 // The plan is session-local only while Kata is unreachable, then it replays.
 
-import { execFile, spawn } from "node:child_process";
+import { spawn } from "node:child_process";
 import { BroadcastChannel, isMainThread, threadId } from "node:worker_threads";
 import { closeSync, openSync, readSync } from "node:fs";
 import { createInterface } from "node:readline";
 import { createKataCore, DESCRIPTION, sessionKey, TODO_OPS, TODO_PARAMS } from "./kata-core";
-import { exportTranscriptSession } from "./kata-cli";
+import { execKata, exportTranscriptSession, transcriptEnv } from "./kata-cli";
 import { delegateCommand, kataCommands as parseKataCommands } from "./shell";
 import { FINAL, isUntracked, teammateFor } from "./delegates";
 import { textOf } from "./model";
@@ -115,22 +115,6 @@ delegateChannel.onmessage = (event: { data: unknown }) => {
 	else if (message.kind === "record") { awaitingAnswer.get(message.req)?.(message.record); awaitingAnswer.delete(message.req); }
 };
 
-// Runs Kata directly with the transcript identity in its environment. Like pi.exec, a non-zero exit or
-// any spawn failure other than a missing executable is a result, a timeout or abort reports killed,
-// and ENOENT rejects.
-function execWithTranscript(file: string, args: string[], options: { cwd: string; timeout: number; signal?: AbortSignal }, agent: string, session: string) {
-	return new Promise<{ code: number; stdout: string; stderr: string; killed: boolean }>((resolve, reject) => {
-		execFile(file, args, { cwd: options.cwd, timeout: options.timeout, signal: options.signal, killSignal: "SIGKILL", maxBuffer: 64 * 1024 * 1024,
-			env: { ...process.env, KATA_TRANSCRIPT_AGENT: agent, KATA_TRANSCRIPT_SESSION_ID: session } },
-			(error, stdout, stderr) => {
-				if (!error) return resolve({ code: 0, stdout, stderr, killed: false });
-				const failure = error as NodeJS.ErrnoException & { killed?: boolean };
-				if (failure.code === "ENOENT") return reject(error);
-				resolve({ code: typeof failure.code === "number" ? failure.code : 1, stdout, stderr, killed: failure.name === "AbortError" || !!failure.killed });
-			});
-	});
-}
-
 // ------------------------------------------------------------- live inbox stream feed
 
 /** `kata events --tail` as a child of this process: no shell, the process environment, no stdin. */
@@ -176,7 +160,7 @@ export default function ompKata(pi: any) {
 		exec: (file, args, { ctx, ...options }) => {
 			const transcript = !ctx || main(ctx) ? undefined : childSession(store.of(ctx)?.sessionId) ?? null;
 			const pair = transcript === undefined ? { agent: process.env.KATA_TRANSCRIPT_AGENT, id: process.env.KATA_TRANSCRIPT_SESSION_ID } : transcript ?? undefined;
-			return pair?.agent && pair.id && args[0] === "close" ? execWithTranscript(file, args, options, pair.agent, pair.id) : pi.exec(file, args, options);
+			return pair?.agent && pair.id && args[0] === "close" ? execKata(file, args, { ...options, env: transcriptEnv(pair.agent, pair.id) }) : pi.exec(file, args, options);
 		},
 		appendEntry: (...args) => pi.appendEntry(...args),
 		getSessionName: () => pi.getSessionName?.(),

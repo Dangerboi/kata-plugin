@@ -2,9 +2,18 @@ import { appendFileSync } from "node:fs";
 import { waitAtMost } from "./wait-at-most";
 import { createLead, type Lead } from "./lead";
 import { holdsWork, sessionStorage, type SavedSession, type SessionStorage } from "./saved";
-import type { DelegateAssignment, DelegateRecord, SavedDelegate } from "./delegates";
+import type { DelegateAssignment, DelegateOutcome, DelegateRecord, SavedDelegate } from "./delegates";
 import { createKataExec, type KataExec } from "./spawn";
 import type { Settings } from "./settings";
+
+// A session's run ended (its turn, for a lead), and how, as a delegate's outcome.
+export const EXECUTION_ENDED: Readonly<Record<string, DelegateOutcome>> = {
+	"session.execution.succeeded": "completed",
+	"session.execution.failed": "failed",
+	"session.execution.interrupted": "aborted",
+};
+// The session itself ended: nothing more runs in it unless it is unarchived.
+export const SESSION_ENDED = ["session.deleted", "session.archived"] as const;
 
 // The adapter's internal seam: what kata.ts hands to every module that adds behaviour to one plugin instance (an instance
 // is one location). A module is a file exporting `install(seam: Seam): void`; kata.ts calls it once, after its own handlers

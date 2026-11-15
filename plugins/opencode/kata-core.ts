@@ -8,7 +8,7 @@ import { createSettlement, MAX_FAILURES, openChildren, type PendingClose } from 
 import { createKata, isKataCode, isUnusable, KataError, type Exec } from "./kata-cli";
 import { createTicketCompletion } from "./autocomplete";
 import { kataCommands, quote, shellOptions } from "./shell";
-import { closedTaskStatus, digest, heldBySession, heldMessage, itemTicket, OPEN, openTaskStatus, projectOf, QUALIFIED_REF_ONLY, qualifiedRef, SESSION_KEY, slug, WORKING, type Binding, type Change, type KataIssue, type KataShow, type Plan, type Status, type Task } from "./model";
+import { closedTaskStatus, digest, heldBySession, heldMessage, itemTicket, missingProof, OPEN, openTaskStatus, projectOf, QUALIFIED_REF_ONLY, qualifiedRef, SESSION_KEY, slug, WORKING, type Binding, type Change, type KataIssue, type KataShow, type Plan, type Status, type Task } from "./model";
 
 // Canonical shared source. scripts/vendor-core.ts copies this file into each
 // self-contained plugin; host adapters own their event/schema/identity APIs.
@@ -152,8 +152,8 @@ function untrackedDelegateContext(name: string): string {
 
 // Items that name no ticket become children of a parent issue; a plan of only named items needs none.
 const needsParent = (contents: string[]) => contents.some(content => !itemTicket(content));
-// Kata closes a task as done only with evidence and a 40+ character message.
-const hasProof = (change: { message?: string; evidence?: string[] }) => !!change.evidence?.length && (change.message || "").replace(/\s+/g, " ").trim().length >= 40;
+// Kata closes a task as done only with proof.
+const hasProof = (change: { message?: string; evidence?: string[] }) => { const missing = missingProof(change); return !missing.message && !missing.evidence; };
 
 function phasesOf(tasks: Task[]): { name: string; tasks: Task[] }[] {
 	const phases: { name: string; tasks: Task[] }[] = [];

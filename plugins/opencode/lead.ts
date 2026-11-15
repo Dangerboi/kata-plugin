@@ -2,7 +2,7 @@ import { waitAtMost } from "./wait-at-most";
 import { createKataCore, type KataCore, type PlanView } from "./kata-core";
 import { FINAL, type DelegateRecord, type DelegateStore, type SavedDelegate } from "./delegates";
 import { coreState, type SavedEntry, type SavedSession, type SessionStorage } from "./saved";
-import type { Settings } from "./settings";
+import { EXECUTABLE_VARS, type Settings } from "./settings";
 import type { KataExec } from "./spawn";
 
 // How long a hook waits for a session's first binding to its plan before it carries on without the plan.
@@ -116,7 +116,7 @@ export function createLead(deps: LeadDeps): Lead {
 	}, {
 		namespace: "opencode",
 		executable: deps.settings.executable,
-		executableVars: ["KATA_OPENCODE_EXECUTABLE"],
+		executableVars: EXECUTABLE_VARS,
 		debugFile: deps.settings.debugFile,
 		env: deps.settings.env,
 		// The todowrite list says what is in progress; Kata tasks start when it says so.

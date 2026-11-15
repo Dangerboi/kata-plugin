@@ -124,16 +124,18 @@ export function install(seam: Seam): Promise<unknown> {
 		options: { codemode: false },
 		async execute(input: unknown, context: { sessionID: string }) {
 			const session = await seam.sessionOf(context.sessionID);
-			if (session?.parentID === undefined) {
-				const lead = session && await seam.leadOf(context.sessionID);
-				if (!lead) throw new Error("todowrite is for the lead session: a delegate reports its work in its reply, and the lead tracks it.");
-				return write(seam, lead, input);
+			if (session && session.parentID === undefined) {
+				const lead = await seam.leadOf(context.sessionID);
+				if (lead) return write(seam, lead, input);
+			} else if (session) {
+				// A delegate bound to an issue plans under it, through its own core; one that is not bound has no plan, and the lead tracks its work.
+				const delegate = await seam.delegateOf(context.sessionID);
+				if (delegate) {
+					await delegate.lead.core.delegates.apply({ type: "nextUse", id: delegate.record.id });
+					return write(seam, delegate.lead.delegateCore(context.sessionID), input);
+				}
 			}
-			// A delegate bound to an issue plans under it, through its own core; one that is not bound has no plan, and the lead tracks its work.
-			const delegate = await seam.delegateOf(context.sessionID);
-			if (!delegate) throw new Error("todowrite is for the lead session: a delegate reports its work in its reply, and the lead tracks it.");
-			await delegate.lead.core.delegates.apply({ type: "nextUse", id: delegate.record.id });
-			return write(seam, delegate.lead.delegateCore(context.sessionID), input);
+			throw new Error("todowrite is for the lead session: a delegate reports its work in its reply, and the lead tracks it.");
 		},
 	}));
 }

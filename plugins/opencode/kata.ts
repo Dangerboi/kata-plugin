@@ -1,4 +1,4 @@
-import { createSeam, type Seam } from "./seam";
+import { createSeam, EXECUTION_ENDED, SESSION_ENDED, type Seam } from "./seam";
 import { resolveSettings } from "./settings";
 import { install as installShellRoute } from "./shell-route";
 import { install as installSubagents } from "./subagents";
@@ -15,9 +15,6 @@ const MODULES: ((seam: Seam) => void | Promise<unknown>)[] = [
 	installSubagents,
 	installShellRoute,
 ];
-
-const LEAD_ENDED = ["session.execution.succeeded", "session.execution.failed", "session.execution.interrupted"] as const;
-const SESSION_ENDED = ["session.deleted", "session.archived"] as const;
 
 export default {
 	id: "kata",
@@ -39,7 +36,7 @@ export default {
 			if (text) event.system.push({ type: "text", text });
 		});
 		// Events of sessions that are not leads of this instance find no lead and do nothing.
-		seam.events(LEAD_ENDED, async event => { if (event.data?.sessionID) await (await seam.savedLead(event.data.sessionID))?.settle(); });
+		seam.events(Object.keys(EXECUTION_ENDED), async event => { if (event.data?.sessionID) await (await seam.savedLead(event.data.sessionID))?.settle(); });
 		seam.events(SESSION_ENDED, async event => { if (event.data?.sessionID) await seam.endLead(event.data.sessionID); });
 		seam.events(["session.unarchived"], async event => { if (event.data?.sessionID) await (await seam.savedLead(event.data.sessionID))?.clearEnded(); });
 		for (const install of MODULES) await install(seam);

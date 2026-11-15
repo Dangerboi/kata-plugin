@@ -14,6 +14,10 @@ export type Task = { ref: string; content: string; phase: string; status: Status
 export type Binding = { parent: string; workspace: string; sessionId?: string; auto?: boolean; label?: string };
 export type Plan = Partial<Binding> & { workspace: string; tasks: Task[]; local?: boolean; error?: string };
 export type Change = { message?: string; evidence?: string[]; reason?: string; remove?: boolean };
+// What Kata's close as done needs that `change` lacks: evidence, and a message of 40+ characters (whitespace runs count as one).
+export function missingProof(change: { message?: string; evidence?: string[] }): { message: boolean; evidence: boolean } {
+	return { message: (change.message || "").replace(/\s+/g, " ").trim().length < 40, evidence: !change.evidence?.some(e => e.trim()) };
+}
 
 // An issue as `kata show --json` prints it, and each of its children; only the fields the plugin reads.
 // `qualified_id` is printed on children, not on the shown issue itself. Labels are strings (Kata 0.21); the object form is older output.

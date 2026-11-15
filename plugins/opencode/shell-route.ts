@@ -1,14 +1,13 @@
-import { delegateCommand, kataCommands, quote, shellOptions } from "./shell";
-import { closeTranscriptSwitch, transcriptEnv } from "./settings";
+import { delegateCommand, envPrefix, kataCommands, shellOptions } from "./shell";
+import { transcriptEnv } from "./kata-cli";
+import { EXECUTABLE_VARS } from "./settings";
 import type { Seam } from "./seam";
 
 // Kata in the `shell` tool. A delegate's commands run under its teammate and its own transcript pair, and `--as` is refused
 // (delegateCommand throws, which ends the call as an error). Every Kata command carries the configured author (and a lead its
-// teammate), because the server's environment may not hold them; a `close` also carries the lead's transcript pair (the server's
-// environment cannot hold one per session). The command is otherwise left as written, so bare `kata` stays `kata`; the configured
-// executable only lets the plugin recognise Kata invocations here and runs its own Kata calls.
-const EXECUTABLE_VARS = ["KATA_OPENCODE_EXECUTABLE"] as const;
-
+// teammate), because the server's environment may not hold them; a lead's `close` also carries the lead's transcript pair (the
+// server's environment cannot hold one per session). The command is otherwise left as written, so bare `kata` stays `kata`; the
+// configured executable only lets the plugin recognise Kata invocations here and runs its own Kata calls.
 export function install(seam: Seam): void {
 	const executable = seam.settings.executable;
 
@@ -16,13 +15,9 @@ export function install(seam: Seam): void {
 	function route(command: string, actor: Record<string, string>, leadID?: string): string {
 		for (const invocation of kataCommands(command, executable, EXECUTABLE_VARS).reverse()) {
 			const word = invocation.executable;
-			const close = shellOptions(invocation.words).args[0] === "close";
-			// A delegate's close already carries its own pair (delegateCommand), so only the switch is added.
-			const transcript: Record<string, string> = !close ? {} : leadID !== undefined ? transcriptEnv(leadID) : closeTranscriptSwitch();
-			const assignments = Object.entries({ ...transcript, ...actor }).map(([name, value]) => `${name}=${quote(value)}`);
-			const prefix = assignments.length ? `env ${assignments.join(" ")} ` : "";
-			if (!prefix) continue;
-			command = command.slice(0, word.start) + prefix + command.slice(word.start);
+			const close = leadID !== undefined && shellOptions(invocation.words).args[0] === "close";
+			const prefix = envPrefix({ ...(close ? transcriptEnv("opencode", leadID) : {}), ...actor });
+			if (prefix) command = command.slice(0, word.start) + prefix + command.slice(word.start);
 		}
 		return command;
 	}
