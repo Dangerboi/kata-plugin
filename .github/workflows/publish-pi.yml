@@ -23,8 +23,11 @@ concurrency:
 
 jobs:
   verify:
-    # Nothing publishes before the committed copies of core match core and every package packs.
+    # Nothing publishes before the committed copies of core match core and every package packs. It needs only the tag's own
+    # files and Node (which runs TypeScript), so a re-run of a tag from before this job works too, and it gets no publish rights.
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -36,12 +39,7 @@ jobs:
           node-version: "24"
           package-manager-cache: false
 
-      - uses: ./.github/actions/setup-kata
-        with:
-          bin: ${{ runner.temp }}/kata-bin
-
-      - run: bun install --ignore-scripts --frozen-lockfile
-      - run: bun run check:plugins
+      - run: node scripts/vendor-core.ts --check
       - run: for dir in pi oh-my-pi opencode; do npm pack --dry-run --prefix plugins/$dir ./plugins/$dir; done
 
   publish:
