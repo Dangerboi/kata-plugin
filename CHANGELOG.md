@@ -4,6 +4,10 @@ All notable changes to kata-plugin are listed here. The format follows [Keep a C
 
 ## [Unreleased]
 
+## [1.11.0] - 2026-11-15
+
+kata-omp 2.11.0 and @dangerboi/kata-pi 1.11.0.
+
 ### Added
 
 #### Plans
@@ -19,7 +23,6 @@ All notable changes to kata-plugin are listed here. The format follows [Keep a C
   - With no plan parent, the plugin creates the automatic parent for it; it never creates one beside an explicit parent.
 - pi: a child whose task names two or more tickets or plan items gets its report posted on each of them, and none is closed.
   - A child refused because its task is already delegated or held still records nothing.
-- OpenCode: a follow-up to an untracked delegate posts its new report on that delegate's mission, also after a restart.
 
 ### Changed
 
@@ -50,6 +53,16 @@ All notable changes to kata-plugin are listed here. The format follows [Keep a C
 - A delegation call with several spawns that name no plan item is no longer refused with "Ticket … is already delegated" when the plan has an open ticket item.
   - A ticket item whose ticket another spawn or delegate has already reserved is not matched again.
 - A delegate leaves its issue open when its task text says not to close issues or to leave the issue open; it is handed back (`needs-review`) and the lead closes it after its own checks.
+
+## [OpenCode 1.1.0] - 2026-11-15
+
+@dangerboi/kata-opencode 1.1.0. It also ships the shared changes listed under 1.11.0: missions, delegates bound to a plan item only by name, the ticket-item binding fixes, a delegate that leaves its issue open when its task text says so, and fewer Kata calls.
+
+### Added
+
+#### Delegates
+
+- OpenCode: a follow-up to an untracked delegate posts its new report on that delegate's mission, also after a restart.
 
 ## [1.10.0] - 2026-11-13
 
@@ -618,7 +631,9 @@ kata-omp 2.2.0 and kata-pi 1.2.0. Every change in this release is by @salmonumbr
 
 - omp: the plugin skips its Kata contract when the system prompt already carries it.
 
-[Unreleased]: https://github.com/Dangerboi/kata-plugin/compare/v1.10.0...HEAD
+[Unreleased]: https://github.com/Dangerboi/kata-plugin/compare/v1.11.0...HEAD
+[1.11.0]: https://github.com/Dangerboi/kata-plugin/compare/v1.10.0...v1.11.0
+[OpenCode 1.1.0]: https://github.com/Dangerboi/kata-plugin/compare/opencode-v1.0.0...opencode-v1.1.0
 [1.10.0]: https://github.com/Dangerboi/kata-plugin/compare/v1.9.2...v1.10.0
 [OpenCode 1.0.0]: https://github.com/Dangerboi/kata-plugin/releases/tag/opencode-v1.0.0
 [1.9.2]: https://github.com/Dangerboi/kata-plugin/compare/v1.9.1...v1.9.2
