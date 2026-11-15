@@ -86,13 +86,13 @@ export function createLead(deps: LeadDeps): Lead {
 	}
 
 	const records = new Map<string, DelegateRecord>();
-	// The unfinished delegates are saved by the core with the lead's state; the ended ones that have an issue are kept
-	// apart, so a follow-up after a restart still finds its record.
+	// The unfinished delegates are saved by the core with the lead's state; the ended ones that have an issue (their assignment's,
+	// or the mission that records an untracked run) are kept apart, so a follow-up after a restart still finds its record.
 	const unfinished = new Set<string>(coreState(entries)?.delegates?.map(d => d.id));
 	for (const record of deps.settled ?? []) if (!unfinished.has(record.id)) records.set(record.id, { ...record, text: "" });
 	let lastSettled = JSON.stringify(settledOf());
 	function settledOf(): SavedDelegate[] {
-		return [...records.values()].filter(record => FINAL.has(record.state) && record.ref && record.binding).map(({ text: _text, ...record }) => record);
+		return [...records.values()].filter(record => FINAL.has(record.state) && ((record.ref && record.binding) || record.mission)).map(({ text: _text, ...record }) => record);
 	}
 	const delegates: DelegateStore = {
 		records: () => [...records.values()],

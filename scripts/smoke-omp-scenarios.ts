@@ -412,16 +412,22 @@ export const SCENARIOS: Scenario[] = [{
 	async check(store) {
 		const issues = await store.issues();
 		const children = issues.filter(i => i.metadata["todo.phase"]);
+		const missions = issues.filter(i => i.metadata["omp.mission"] === "true");
 		const parent = issues.find(i => i.metadata["omp.session_id"] && !i.metadata["todo.phase"]);
 		// kata notify stores a request as notify.<recipient> metadata.
 		const requests = issues.filter(i => Object.keys(i.metadata).some(key => key.startsWith("notify."))).map(i => i.ref);
 		const labelled = issues.filter(i => i.events.some(e => /label/.test(e.type) && JSON.stringify(e.payload).includes("needs-review")));
+		const mission = missions[0];
+		const missionClose = mission?.events.find(e => e.type === "issue.closed");
+		const reports = mission?.events.filter(e => e.type === "issue.commented" && String(e.payload?.body).startsWith("Report from subagent")) ?? [];
+		const parentClose = parent?.events.find(e => e.type === "issue.closed");
 		return [
-			{ name: "only the parent and the two plan items exist", ok: issues.length === 3 && children.length === 2 && !!parent, detail: issues.map(i => i.title).join(", ") },
-			{ name: "the scout created no Subagent issue", ok: !issues.some(i => i.title.startsWith("Subagent")), detail: issues.map(i => i.title).join(", ") },
+			{ name: "only the parent, the two plan items and the scout's mission exist", ok: issues.length === 4 && children.length === 2 && missions.length === 1 && !!parent, detail: issues.map(i => i.title).join(", ") },
+			{ name: "the scout's run is a mission closed as audit-no-change, naming its agent", ok: mission?.status === "closed" && missionClose?.payload?.reason === "audit-no-change" && mission.metadata["omp.mission_agent"] === "scout", detail: `${mission?.status} ${missionClose?.payload?.reason} ${JSON.stringify(mission?.metadata)}` },
+			{ name: "the mission holds the scout's report under its teammate", ok: reports.length === 1 && String(reports[0].payload.body).includes("no interesting layout") && !!reports[0].payload.teammate, detail: JSON.stringify(reports.map(e => e.payload)) },
 			{ name: "no issue carries needs-review", ok: labelled.length === 0, detail: labelled.map(i => i.ref).join(", ") },
 			{ name: "the lead got no inbox request", ok: requests.length === 0, detail: requests.join(", ") },
-			{ name: "session shutdown closed the automatic parent", ok: parent?.status === "closed", detail: parent?.status },
+			{ name: "session shutdown closed the automatic parent as done, from the plan items' evidence", ok: parent?.status === "closed" && parentClose?.payload?.reason === "done", detail: `${parent?.status} ${JSON.stringify(parentClose?.payload?.evidence)}` },
 		];
 	},
 }, {

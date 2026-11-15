@@ -388,7 +388,25 @@ test("a bound delegate plans under its own issue through its own core; an untrac
 		return "Sunny.";
 	});
 	expect(untracked.result.status, untracked.result.text).toBe("completed");
-	expect((await itemsOf(id)).map(c => c.title)).toEqual(["Implement parser module"]);
+	expect((await itemsOf(id)).filter(c => c.metadata?.["opencode.mission"] !== "true").map(c => c.title)).toEqual(["Implement parser module"]);
+});
+
+test("an untracked subagent's run is recorded as a closed mission with its agent and report, and a follow-up after a restart reports on it", async () => {
+	const { host, id } = await lead();
+	await write(host, id, todos(["Implement parser module", "pending"]));
+	const first = await spawn(host, id, { prompt: "Summarize the weather forecast for tomorrow.", description: "Weather" }, async () => "Sunny, with a light breeze.");
+	expect(first.result.status, first.result.text).toBe("completed");
+	const missions = async () => (await itemsOf(id)).filter(child => child.metadata?.["opencode.mission"] === "true");
+	const [mission] = await missions();
+	expect(mission).toMatchObject({ status: "closed", closed_reason: "audit-no-change", metadata: { "opencode.mission_agent": "general" } });
+	expect(await commentsOf(qref(mission))).toEqual(["Report from subagent Weather:\n\nSunny, with a light breeze."]);
+
+	const restarted = await host.restart();
+	open.push(restarted);
+	const later = await spawn(restarted, id, { prompt: "And the day after?", sessionID: first.child.id }, async () => "Rain all day.");
+	expect(later.result.status, later.result.text).toBe("completed");
+	expect((await missions()).map(child => child.short_id)).toEqual([mission.short_id]);
+	expect(await commentsOf(qref(mission))).toEqual(["Report from subagent Weather:\n\nSunny, with a light breeze.", "Report from subagent Weather (after a follow-up):\n\nRain all day."]);
 });
 
 // A background delegate up to its first tool use, bound to its item and not yet ended.

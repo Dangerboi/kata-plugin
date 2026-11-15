@@ -23,7 +23,7 @@ import { createInterface } from "node:readline";
 import { createKataCore, DESCRIPTION, sessionKey, TODO_OPS, TODO_PARAMS } from "./kata-core";
 import { exportTranscriptSession } from "./kata-cli";
 import { delegateCommand, kataCommands as parseKataCommands } from "./shell";
-import { FINAL, teammateFor } from "./delegates";
+import { FINAL, isUntracked, teammateFor } from "./delegates";
 import { textOf } from "./model";
 import type { DelegateRecord, Delegates, DelegateStore, Reservation } from "./delegates";
 import type { InboxStream } from "./inbox";
@@ -236,7 +236,7 @@ export default function ompKata(pi: any) {
 			await enter(ctx);
 			if (!main(ctx)) await nextUseOf(ctx);
 			const record = !main(ctx) ? store.of(ctx) : undefined;
-			if ((untrackedTan(ctx) || record?.state === "untracked") && typeof ctx.invokeTool === "function") return ctx.invokeTool(params, { signal, onUpdate });
+			if ((untrackedTan(ctx) || isUntracked(record)) && typeof ctx.invokeTool === "function") return ctx.invokeTool(params, { signal, onUpdate });
 			return core.todo.apply(ctx, params.op, params);
 		},
 		// Tern and other TSP terminals draw the call and its result as omp's own todo card.
@@ -311,7 +311,7 @@ export default function ompKata(pi: any) {
 				type: "started", id: event.id, sessionId: event.sessionFile ? sessionKey(event.sessionFile, ctx.cwd) : `${lead.id}:${event.id}`,
 				leadSessionId: lead.id, leadTeammate: process.env.KATA_TEAMMATE || "", teammate: teammateFor(event.id, lead.id),
 				text: [assignment?.texts[index], event.description].filter(Boolean).join("\n"), label: assignment?.labels[index],
-				parentAgentId: ctx.agent?.id, reserved,
+				agent: typeof event.agent === "string" && event.agent ? event.agent : undefined, parentAgentId: ctx.agent?.id, reserved,
 			});
 		} else if (["completed", "failed", "aborted"].includes(event.status)) {
 			void lead.delegates.apply({ type: "exited", id: event.id, outcome: event.status });

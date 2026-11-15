@@ -1,9 +1,9 @@
-import { closedTaskStatus, digest, heldBySession, heldMessage, itemTicket, OPEN, openTaskStatus, qualifiedRef, qualifiedRefs, type Binding, type KataIssue, type KataShow, type Plan, type Task } from "./model";
+import { closedTaskStatus, digest, heldBySession, heldMessage, itemTicket, missionCloseArgs, missionKey, OPEN, openTaskStatus, projectOf, qualifiedRef, qualifiedRefs, type Binding, type KataIssue, type KataShow, type Plan, type Task } from "./model";
 import { isKataCode, type Kata } from "./kata-cli";
 
 // The delegate lifecycle, shared by the omp lead and the pi child (see GLOSSARY.md: Delegate,
-// Assignment, Untracked delegate, Hand back, Report). Adapters translate host events into DelegateEvents;
-// everything Kata-side that follows (the assignment's writes, settling, rollback, hand back) lives here.
+// Assignment, Untracked delegate, Mission, Hand back, Report). Adapters translate host events into DelegateEvents;
+// everything Kata-side that follows (the assignment's writes, settling, rollback, hand back, missions) lives here.
 
 // ------------------------------------------------------------------ matching
 
@@ -64,10 +64,17 @@ export function teammateFor(id: string, salt?: string): string {
 
 export type DelegateOutcome = "completed" | "failed" | "aborted" | "ended";
 // started: no decision yet (waiting for a plan that can bind it). assigned: holds its issue. failed: an assignment write
-// errored; retried on the delegate's next use. untracked: matched nothing, the lead tracks its work. handed-back: exited with
-// its issue open, which went back to the lead for review. settled: exited, its issue closed or restored.
-export type DelegateState = "started" | "assigned" | "failed" | "untracked" | "handed-back" | "settled";
-export const FINAL: ReadonlySet<DelegateState> = new Set(["handed-back", "settled", "untracked"]);
+// errored; retried on the delegate's next use. untracked: no assignment (it named nothing, or check() refused it), the lead
+// tracks its work. handed-back: exited with its issue open, which went back to the lead for review. settled: exited, its issue
+// closed or restored. recorded: an untracked delegate that exited and was settled: its report went on its mission or its
+// targets, or it had none to record (see settleUntracked).
+export type DelegateState = "started" | "assigned" | "failed" | "untracked" | "handed-back" | "settled" | "recorded";
+export const FINAL: ReadonlySet<DelegateState> = new Set(["handed-back", "settled", "recorded"]);
+// A delegate with no assignment, running or exited.
+export const isUntracked = (r: DelegateRecord | undefined): r is DelegateRecord & { state: "untracked" | "recorded" } => r?.state === "untracked" || r?.state === "recorded";
+
+// The tickets and plan items a refused spawn named, when it named several (see Refusal).
+export type Refused = Pick<Refusal, "targets">;
 
 // The issue's state before the assignment wrote anything; rollback puts it back.
 export type Restore = { claimed: boolean; meta: Record<string, unknown> };
@@ -83,6 +90,8 @@ export interface DelegateRecord {
 	teammate: string;
 	text: string;
 	label?: string;
+	// The kind of agent the host started it as (omp's agent name, OpenCode's subagent `agent`), when the host says.
+	agent?: string;
 	parentAgentId?: string;
 	// Where the lead's plan lives when the delegate cannot read it from the lead's session (a pi child).
 	parent?: string;
@@ -101,6 +110,11 @@ export interface DelegateRecord {
 	report?: string;
 	// A follow-up woke it after its first run: its report is posted even when it commented before, and a closed issue is no error.
 	followUp?: boolean;
+	// The mission that records its run, once made (an untracked delegate only); a follow-up's report goes on it.
+	mission?: { ref: string; workspace: string };
+	// A pi child whose spawn check() refused: untracked, and its run makes no mission. Its report goes on the targets it named, or
+	// nowhere for a conflict.
+	refused?: Refused;
 }
 
 // A record as the lead's snapshot keeps it.
@@ -114,8 +128,8 @@ export type Reservation = { ref?: string; ticket?: boolean; title?: string };
 export const nameOf = (r: Pick<DelegateRecord, "id" | "name">) => r.name || r.id;
 
 export type DelegateEvent =
-	| { type: "started"; id: string; sessionId: string; leadSessionId: string; leadTeammate: string; teammate: string; text: string; label?: string;
-		name?: string; parentAgentId?: string; parent?: string; workspace?: string; parentLabel?: string; reserved?: Reservation; untracked?: boolean }
+	| { type: "started"; id: string; sessionId: string; leadSessionId: string; leadTeammate: string; teammate: string; text: string; label?: string; agent?: string;
+		name?: string; parentAgentId?: string; parent?: string; workspace?: string; parentLabel?: string; reserved?: Reservation; untracked?: boolean; refused?: Refused }
 	// The delegate ran a tool: blocks rollback at exit.
 	| { type: "ranTool"; id: string }
 	// Its next prompt or todo call: retries a failed assignment.
@@ -156,6 +170,14 @@ export interface DelegatesEnv {
 	load(cwd: string): Promise<unknown>;
 	drain(): Promise<void>;
 	cwd(): string;
+	// The plan parent an untracked delegate's mission goes under, for a lead's delegate: the plan's own, else the automatic parent
+	// made for it (never one beside an explicit parent). Undefined while there is none to have: Kata is unreachable, or a local
+	// plan waits for its replay.
+	missionParent(): Promise<Pick<Binding, "parent" | "workspace" | "label"> | undefined>;
+	// A keyed `kata create`: a replay returns the issue the first create made, as it is now. Undefined: a person deleted that issue.
+	create(key: string, args: string[], cwd: string): Promise<{ ref: string; issue: KataIssue } | undefined>;
+	// Arms the settlement timer: a settle Kata throttled (a mission's close) runs again on the next drain, turn end or not.
+	retryLater(): void;
 	debug(error: unknown): void;
 }
 
@@ -166,7 +188,7 @@ export type Scope = { parent?: string; workspace?: string; label?: string; leadT
 export interface Delegates {
 	// The one write entry. Runs in the core's serial queue and never throws to the host.
 	apply(event: DelegateEvent): Promise<void>;
-	// Refuses a spawn that names two tickets or plan items, an already delegated task or an unclaimable ticket (throws);
+	// Refuses a spawn that names two tickets or plan items, an already delegated task or an unclaimable ticket (throws a Refusal);
 	// otherwise says what each spawn is matched to. `held` are refs other pending spawns already reserved.
 	check(spawns: Spawn[], held?: Iterable<string>, scope?: Scope): Promise<Reservation[]>;
 	// The issue the delegate running in `ctx` works, once assigned.
@@ -194,8 +216,14 @@ export interface Delegates {
 	settle(): Promise<void>;
 }
 
-// The report is for reading on the issue, not a transcript: a long one is cut.
+// Why check() refused a spawn. `targets`: the tickets and plan items it named, when it named more than one.
+export class Refusal extends Error {
+	constructor(message: string, readonly targets?: string[]) { super(message); }
+}
+
+// The report is for reading on the issue, not a transcript: a long one is cut, and so is a mission's task text.
 const REPORT_LIMIT = 4000;
+const cut = (text: string) => text.length > REPORT_LIMIT ? `${text.slice(0, REPORT_LIMIT)}\n\n(cut at ${REPORT_LIMIT} characters)` : text;
 const REPORT_HEADING = "Report from subagent";
 // A delegate's own comment is the better record; its report only stands in for a delegate that left none. A report the
 // plugin posted for it earlier carries its teammate too, but is not its own.
@@ -245,27 +273,27 @@ export function createDelegates(env: DelegatesEnv): Delegates {
 				const label = spawn.label ?? "";
 				const { tasks: named, tickets: others } = namedTargets(tasks, `${label}\n${spawn.text}`, projects, src.parent);
 				const targets = [...new Set([...named.map(t => t.ticket ?? t.ref), ...others])];
-				if (targets.length > 1) throw new Error(`Task ${index + 1} names more than one ticket or plan item (${targets.join(", ")}). Name one ticket per task and split the work across tasks.`);
+				if (targets.length > 1) throw new Refusal(`Task ${index + 1} names more than one ticket or plan item (${targets.join(", ")}). Name one ticket per task and split the work across tasks.`, targets);
 				const ticket = others[0] ?? named[0]?.ticket;
 				if (!ticket) {
-					if (named[0] && (taken.has(named[0].ref) || named[0].delegated)) throw new Error(`Plan task ${named[0].ref} is already delegated.`);
-					if (named[0]?.holder) throw new Error(`${heldMessage(named[0].ref, named[0].holder)}; take it over first (todo start with takeover: true).`);
+					if (named[0] && (taken.has(named[0].ref) || named[0].delegated)) throw new Refusal(`Plan task ${named[0].ref} is already delegated.`);
+					if (named[0]?.holder) throw new Refusal(`${heldMessage(named[0].ref, named[0].holder)}; take it over first (todo start with takeover: true).`);
 					// At most one plain task is named here (two would be two targets); a blocked one binds nothing.
 					const selected = named[0]?.status === "blocked" ? undefined : named[0];
 					if (selected) taken.add(selected.ref);
 					reservations.push({ ref: selected?.ref, title: selected?.content });
 					continue;
 				}
-				if (taken.has(ticket)) throw new Error(`Ticket ${ticket} is already delegated.`);
+				if (taken.has(ticket)) throw new Refusal(`Ticket ${ticket} is already delegated.`);
 				// Items naming one ticket share its ref, so the delegated one is the item whose text the prompt quotes,
 				// or the one item named (by title or by the ticket's ref).
 				const item = named.find(t => `${label}\n${spawn.text}`.toLowerCase().includes(t.content.toLowerCase())) ?? (named.length === 1 ? named[0] : undefined);
 				// The delegate closes the whole ticket, which would strand the lead's other open items on it.
 				const siblings = tasks.filter(t => t !== item && t.ticket === ticket && OPEN.has(t.status));
-				if (siblings.length) throw new Error(`Task ${index + 1} would delegate ${ticket}, but other open plan items name it (${siblings.map(t => `"${t.content}"`).join(", ")}). A delegate closes its whole ticket. Delegate the ticket only when no other open item names it, or plan the work as child issues (todo init with ref ${ticket}) and delegate one of those.`);
+				if (siblings.length) throw new Refusal(`Task ${index + 1} would delegate ${ticket}, but other open plan items name it (${siblings.map(t => `"${t.content}"`).join(", ")}). A delegate closes its whole ticket. Delegate the ticket only when no other open item names it, or plan the work as child issues (todo init with ref ${ticket}) and delegate one of those.`);
 				let ticketIssue: KataIssue;
 				try { ticketIssue = await env.owned(ticket, src.workspace, "check", false, undefined, { ...as, ticket: true }); }
-				catch (error) { throw new Error(`Task ${index + 1} names ${ticket}, which cannot be delegated: ${failure(error)}`); }
+				catch (error) { throw new Refusal(`Task ${index + 1} names ${ticket}, which cannot be delegated: ${failure(error)}`); }
 				taken.add(ticket);
 				reservations.push({ ref: ticket, ticket: true, title: item ? itemTicket(item.content)?.action ?? item.content : ticketIssue.title });
 			}
@@ -382,16 +410,59 @@ export function createDelegates(env: DelegatesEnv): Delegates {
 		for (const key of delegateKeys(ns)) if (meta[key]) await write(["meta", "unset", ref, key]);
 	}
 
+	// Posts the delegate's report on `ref` under its teammate; `note` says why it stands in for the delegate's own comment. Kata
+	// fingerprints the whole comment, so the key covers the note too: a follow-up may repeat its first report word for word.
+	async function commentReport(r: DelegateRecord, ref: string, cwd: string, note?: string) {
+		await env.kata.run(["comment", ref, "--teammate", r.teammate, "--idempotency-key", `${ns}-report:${r.leadSessionId}:${r.id}:${digest(ref, note ?? "", r.report!)}`,
+			"--body", `${REPORT_HEADING} ${nameOf(r)}${note ? ` (${note})` : ""}:\n\n${r.report}`], cwd);
+	}
+
 	async function postReport(r: DelegateRecord, ref: string, cwd: string, shown: KataShow) {
 		if (!r.report) return;
 		if (!r.followUp && (shown.comments ?? []).some(c => ownComment(c, r.teammate))) return;
-		await env.kata.run(["comment", ref, "--teammate", r.teammate, "--idempotency-key", `${ns}-report:${r.leadSessionId}:${r.id}:${digest(r.report)}`,
-			"--body", `${REPORT_HEADING} ${nameOf(r)} (${r.followUp ? "after a follow-up" : "it left no comment of its own"}):\n\n${r.report}`], cwd);
+		await commentReport(r, ref, cwd, r.followUp ? "after a follow-up" : "it left no comment of its own");
+	}
+
+	// The same on an issue the delegate never held (its mission, a target it named): one a person deleted since takes nothing.
+	async function reportOn(r: DelegateRecord, ref: string, cwd: string, note?: string) {
+		try { await commentReport(r, ref, cwd, note); }
+		catch (error) { if (!isKataCode(error, "issue_not_found")) throw error; }
+	}
+
+	// A mission records an untracked delegate's run: a child of the plan parent holding its task, with its report under its
+	// teammate, closed as audit-no-change since a report proves no change. It is keyed by the delegate, so a retry after a failed
+	// step reaches the same issue, and the close comes last. A follow-up's report goes on the mission its first run made.
+	async function recordMission(r: DelegateRecord) {
+		if (r.mission) return reportOn(r, r.mission.ref, r.mission.workspace, "after a follow-up");
+		const where = r.parent && r.workspace ? { parent: r.parent, workspace: r.workspace, label: r.parentLabel } : await env.missionParent();
+		if (!where) throw new Error(`Subagent ${nameOf(r)} has no plan parent for its mission yet.`);
+		const task = r.text.split("\n").map(line => line.replace(/^[\s#>*-]+/, "").trim()).find(Boolean) ?? r.label?.trim();
+		const created = await env.create(`${ns}-mission:${r.leadSessionId}:${r.id}`, [
+			"--parent", where.parent, "--project", projectOf(where.parent), ...(where.label ? ["--label", where.label] : []),
+			"--meta", `${missionKey(ns)}=true`, "--meta", `${ns}.mission_subagent_id=${r.id}`, ...(r.agent ? ["--meta", `${ns}.mission_agent=${r.agent}`] : []),
+			"--body", `Subagent ${nameOf(r)}${r.agent ? ` (agent ${r.agent})` : ""} ran this task for ${ns} session ${r.leadSessionId} with no plan item or ticket of its own; its report is in the comments.\n\n${cut(r.text)}`,
+			"--", `Subagent ${nameOf(r)}${task ? `: ${task}` : ""}`.slice(0, 120)], where.workspace);
+		// A person deleted it: there is nothing left to record on.
+		if (!created) return;
+		const { ref, issue } = created;
+		await commentReport(r, ref, where.workspace);
+		if (issue.status === "open") await env.kata.run(missionCloseArgs(ref), where.workspace);
+		r.mission = { ref, workspace: where.workspace };
+	}
+
+	// An untracked delegate that exited with a report leaves its run on record: a mission, or for a refused pi child its report on
+	// each target it named. One with no report, or refused for a conflict, leaves nothing.
+	async function settleUntracked(r: DelegateRecord) {
+		const targets = r.refused?.targets ?? [];
+		if (r.report && !r.refused) await recordMission(r);
+		else if (r.report) for (const ref of targets) await reportOn(r, ref, r.workspace ?? env.cwd(), `its task named ${targets.join(" and ")}, so it worked none of them as its own`);
+		r.state = "recorded"; env.store.put(r);
 	}
 
 	// One exited delegate: a closed issue settles it, returned to the lead when the delegate held it; a delegate that never
 	// acted is rolled back; otherwise the open issue is commented, flagged and handed back. Every step can run again after a failure.
 	async function settleOne(r: DelegateRecord) {
+		if (r.state === "untracked") return settleUntracked(r);
 		const ref = refOf(r);
 		const settled = () => { r.state = "settled"; env.store.put(r); };
 		if (!ref || !r.binding) return settled();
@@ -443,7 +514,8 @@ export function createDelegates(env: DelegatesEnv): Delegates {
 	async function settle() {
 		for (const r of unfinished()) {
 			if (!r.exited) continue;
-			try { await settleOne(r); } catch (error) { env.debug(error); }
+			try { await settleOne(r); }
+			catch (error) { env.debug(error); if (isKataCode(error, "sibling_throttle")) env.retryLater(); }
 		}
 	}
 
@@ -455,7 +527,7 @@ export function createDelegates(env: DelegatesEnv): Delegates {
 				let record = r && !FINAL.has(r.state) ? r : undefined;
 				if (!record) {
 					const { type: _type, reserved, untracked, ...fields } = event;
-					record = { ...fields, state: untracked ? "untracked" : "started", planRef: reserved?.ref, ticket: !!reserved?.ticket };
+					record = { ...fields, state: untracked || fields.refused ? "untracked" : "started", planRef: reserved?.ref, ticket: !!reserved?.ticket };
 				} else record.sessionId = event.sessionId;
 				record.exited = undefined;
 				env.store.put(record);
@@ -468,8 +540,7 @@ export function createDelegates(env: DelegatesEnv): Delegates {
 				if (r && !r.exited) { r.exited = event.outcome; env.store.put(r); }
 				return r;
 			case "reported": {
-				const text = event.text.trim();
-				const report = text.length > REPORT_LIMIT ? `${text.slice(0, REPORT_LIMIT)}\n\n(cut at ${REPORT_LIMIT} characters)` : text;
+				const report = cut(event.text.trim());
 				// Not saved here: omp reports every assistant turn, and each save writes the lead's whole snapshot. The exit
 				// saves the final report; a lead that crashes before it resumes with the one its last snapshot holds.
 				if (r && report) r.report = report;
@@ -484,15 +555,16 @@ export function createDelegates(env: DelegatesEnv): Delegates {
 	}
 
 	// A follow-up wakes a delegate after the settle of its earlier exit: a settle running or queued is not undone half way, and the
-	// record it settled starts again on its issue.
+	// record it settled starts again on its issue, or as untracked again for one whose untracked run is on record.
 	function wake(event: Extract<DelegateEvent, { type: "woken" }>): Promise<void> {
 		const work = env.serial(async () => {
 			const r = env.store.get(event.id);
 			if (!r) return;
 			r.sessionId = event.sessionId;
 			if (!FINAL.has(r.state)) r.exited = undefined;
-			// Nothing was ever written for an untracked or unbound delegate: there is no issue to resume.
-			else if (r.state !== "untracked" && r.ref && r.binding) {
+			else if (r.state === "recorded") Object.assign(r, { state: "untracked", exited: undefined, report: undefined, followUp: true });
+			// Nothing was ever written for an unbound delegate: there is no issue to resume.
+			else if (r.ref && r.binding) {
 				Object.assign(r, { state: "started", exited: undefined, ranTool: false, restore: undefined, report: undefined, error: undefined, followUp: true });
 			}
 			env.store.put(r);
@@ -536,7 +608,7 @@ export function createDelegates(env: DelegatesEnv): Delegates {
 		unassigned(ctx) {
 			const r = env.store.of(ctx);
 			if (!r) return "Kata assignment unavailable; the lead must assign this delegate an issue before it uses todo.";
-			if (r.state === "untracked") return `Subagent ${nameOf(r)} matched no plan item or ticket, so it has no Kata issue and no todo list.`;
+			if (isUntracked(r)) return `Subagent ${nameOf(r)} matched no plan item or ticket, so it has no Kata issue and no todo list.`;
 			return `Kata assignment failed: ${r.error || (r.state === "handed-back" || r.state === "settled" ? "its issue was handed back" : "no issue was assigned")}`;
 		},
 		holds: ref => unfinished().some(r => refOf(r) === ref),
@@ -544,7 +616,7 @@ export function createDelegates(env: DelegatesEnv): Delegates {
 		running: () => env.store.records().some(r => !r.exited),
 		cleanupPending: () => unfinished().some(r => !!r.exited),
 		pendingIds: () => unfinished().filter(r => !!r.exited).map(r => r.id),
-		saved: leadSessionId => unfinished().filter(r => r.leadSessionId === leadSessionId && r.binding).map(({ text: _text, ...r }) => r),
+		saved: leadSessionId => unfinished().filter(r => r.leadSessionId === leadSessionId && (r.binding || r.mission)).map(({ text: _text, ...r }) => r),
 		restore: records => {
 			const fresh = records.filter(r => !env.store.get(r.id));
 			for (const r of fresh) env.store.put({ ...r, text: "", exited: r.exited ?? "aborted" });

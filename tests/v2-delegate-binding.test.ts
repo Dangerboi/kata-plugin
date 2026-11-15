@@ -190,6 +190,22 @@ test("an unrelated delegation never takes the lead's active task and creates not
   expect((await show(ref)).issue.status).toBe("closed");
 });
 
+test("an untracked scout's run is recorded as a closed mission with its agent and its last report", async () => {
+  const app = host(); await app.event("session_start");
+  const ref = await app.init(["Implement gadget"]);
+  await app.event("tool_call", { toolName: "task", toolCallId: "survey", input: { tasks: [{ name: "Survey", agent: "scout", task: "Survey the repository layout and report the top-level directories." }] } });
+  const sessionFile = `${scratch}/survey.jsonl`;
+  app.emit("task:subagent:lifecycle", { id: "Survey", agent: "scout", status: "started", sessionFile, parentToolCallId: "survey", index: 0 });
+  await app.call({ op: "view" });
+  app.emit("task:subagent:event", { id: "Survey", event: { type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "Top level: core, docs, plugins." }] } } });
+  app.emit("task:subagent:lifecycle", { id: "Survey", agent: "scout", status: "completed", sessionFile });
+  await app.call({ op: "view" });
+  const mission = (await show(ref)).children.find((c: any) => c.metadata["omp.mission"] === "true");
+  expect(mission).toMatchObject({ status: "closed", closed_reason: "audit-no-change", metadata: { "omp.mission_subagent_id": "Survey", "omp.mission_agent": "scout" } });
+  expect(mission.title).toBe("Subagent Survey: Survey the repository layout and report the top-level directories.");
+  expect(await commentsOf(`v2test#${mission.short_id}`)).toEqual(["Report from subagent Survey:\n\nTop level: core, docs, plugins."]);
+});
+
 // A delegate of an unrelated spawn: the lead's plan has no item for it.
 async function untrackedDelegate(id: string, options: any = {}) {
   const lead = host(); await lead.event("session_start");
