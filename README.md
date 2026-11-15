@@ -17,7 +17,7 @@ omp plugin marketplace add Dangerboi/kata-plugin
 omp plugin install kata@kata-plugin
 ```
 
-Or from npm, as [listed on omp packages](https://omppackages.com/packages/@dangerboi/kata-omp): `omp plugin install @dangerboi/kata-omp`. Use one install or the other; see the [install guide](docs/how-to/install.md#oh-my-pi).
+Or from npm, as listed on [omp packages](https://omppackages.com): `omp plugin install @dangerboi/kata-omp`. Use one install or the other; see the [install guide](docs/how-to/install.md#oh-my-pi).
 
 That is the whole setup. The plugin replaces omp's built-in `todo` with Kata in every folder, with no configuration. A repo with no Kata project plans in the project named by `KATA_DEFAULT_PROJECT` (labeled with the repo), or else in its inferred project, which the plugin registers in the daemon without writing files into the repo.
 

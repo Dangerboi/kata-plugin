@@ -5,9 +5,9 @@ import { assertIsolated } from "./isolation";
 assertIsolated();
 const root = path.resolve(import.meta.dir, "..");
 const json = (name: string) => JSON.parse(readFileSync(path.join(root, name), "utf8"));
-// Each job of the publishing workflow, by name. npm's trusted publisher names this one file for every package.
-const publishJobs = Object.fromEntries(readFileSync(path.join(root, ".github/workflows/publish-pi.yml"), "utf8")
-  .split(/^jobs:\n/m)[1].split(/^(?=  [\w-]+:\n)/m).map(job => [job.match(/^  ([\w-]+):/)![1], job]));
+// npm's trusted publisher names this one workflow file for every package. Its jobs, by name:
+const flow = readFileSync(path.join(root, ".github/workflows/publish-pi.yml"), "utf8");
+const publishJobs = Object.fromEntries(flow.split(/^jobs:\n/m)[1].split(/^(?=  [\w-]+:\n)/m).map(job => [job.match(/^  ([\w-]+):/)![1], job]));
 
 test("host manifests expose only the intended host and declare pi's supplied peers", () => {
   const omp = json("plugins/oh-my-pi/package.json");
@@ -36,7 +36,6 @@ test("the OpenCode manifest resolves a local folder and an npm install to the pl
   expect(manifest.dependencies).toBeUndefined();
   // Trusted publishing names publish-pi.yml, so the OpenCode package publishes from a job in that file.
   expect(existsSync(path.join(root, ".github/workflows/publish-opencode.yml"))).toBe(false);
-  const flow = readFileSync(path.join(root, ".github/workflows/publish-pi.yml"), "utf8");
   expect(flow).toContain("publish-opencode:");
   expect(flow).toContain("working-directory: plugins/opencode");
   expect(flow).toContain("id-token: write");
