@@ -3,6 +3,14 @@ import { Database } from "bun:sqlite";
 import { copyFileSync, existsSync, mkdtempSync, realpathSync, rmSync, statSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { TRANSCRIPT_ENV } from "../core/kata-cli";
+
+// Every variable Kata routes by or the plugins read. The runner drops them from what it inherits, and each fixture from
+// its Kata environment and, before each test, from the test process: a developer's own settings and an earlier test's
+// leftovers must not change what a test sees.
+export const SCRUBBED_ENV = ["KATA_SERVER", "KATA_DAEMON", "KATA_AUTH_TOKEN", "KATA_REF", "KATA_TEAMMATE", "KATA_INBOX_USER", "KATA_SESSION_ID", "KATA_DEFAULT_PROJECT",
+  "KATA_AUTHOR", "KATA_PI_PARENT", "KATA_OMP_LIVE_INBOX", "KATA_ATTENTION_HOST", "KATA_OMP_EXECUTABLE", "KATA_PI_EXECUTABLE", "KATA_OPENCODE_EXECUTABLE", "KATA_OMP_DEBUG",
+  "KATA_PI_DEBUG", "KATA_OPENCODE_DEBUG", ...TRANSCRIPT_ENV];
 
 export function assertIsolated(env: NodeJS.ProcessEnv = process.env) {
   const root = env.KATA_TEST_ROOT;
@@ -14,12 +22,11 @@ export function assertIsolated(env: NodeJS.ProcessEnv = process.env) {
   if (!resolvedRoot.startsWith(tmp + path.sep) || !resolvedHome.startsWith(resolvedRoot + path.sep) || !existsSync(path.join(resolvedRoot, ".omp-kata-test")) || resolvedHome === path.join(os.homedir(), ".kata")) throw new Error("KATA_HOME is not inside the marked throwaway test root.");
 }
 
-// Include every fixture actor/project, including live proof runs. Keep this list
-// next to the guard so additions to fixtures have one explicit canary boundary.
-// Only actors and project names count: real sessions write to the default store
+// Every fixture actor and project. Keep this list next to the guard so additions to fixtures have one explicit canary
+// boundary. Only actors and project names count: real sessions write to the default store
 // during a run, and their free text (task titles, comments) can name any fixture.
-const actors = new Set(["actor-a", "actor-b", "lead-actor", "mallory", "someone-else", "token-actor", "v2-builder", "revision-a", "revision-b", "omp-v2-proof", "pi-builder", "opencode-builder", "configured-author", "pi-port-proof", "integration-actor", "assemble-proof"]);
-const testProject = /^(?:realtest|fixture|authenticated-fixture|assemble-[a-z0-9_-]+|omptest|v2test|v2other|v2alpha|v2evidence|pitest|piother|pimoved|pi-port-[a-z0-9_-]+|revision-conformance|omp-v2-[a-z0-9_-]+|delegates-test|settlement-test|reliability-test|local-reliability|takeover-home|takeinit|contractrepo)$/i;
+const actors = new Set(["actor-a", "actor-b", "lead-actor", "mallory", "someone-else", "token-actor", "v2-builder", "revision-a", "revision-b", "pi-builder", "opencode-builder", "configured-author"]);
+const testProject = /^(?:authenticated-fixture|omptest|v2test|v2other|v2alpha|v2evidence|pitest|pimoved|pi-port-[a-z0-9_-]+|revision-conformance|omp-v2-[a-z0-9_-]+|delegates-test|settlement-test|reliability-test|local-reliability|takeover-home|takeinit|contractrepo)$/i;
 type Snapshot = { present: boolean; schema?: string; projects: string[]; forbidden: string[] };
 
 function stamp(file: string): string {

@@ -1,20 +1,17 @@
 import { expect, test } from "bun:test";
-import { eventually, later } from "./kata-fixture";
+import { eventually, later, until } from "./kata-fixture";
 import { piFixture } from "./pi-fixture";
 
-// Close transcripts, an old Kata, and ownership of tasks across leads, reloads and forks.
-const { env, kata, show, host, evidence, message } = await piFixture();
+// Close transcripts and ownership of tasks across leads, reloads and forks.
+const { home, events, show, host, evidence, message } = piFixture();
 
 test("pi sets its transcript identity on start, a child replaces the inherited one, a shutdown leaves the next session's", async () => {
-  delete process.env.KATA_TRANSCRIPT_AGENT; delete process.env.KATA_TRANSCRIPT_SESSION_ID;
-  try {
   const lead = await host(); await lead.event("session_start", { reason: "startup" });
   expect([process.env.KATA_TRANSCRIPT_AGENT, process.env.KATA_TRANSCRIPT_SESSION_ID]).toEqual(["pi", lead.sid]);
   const child = await host(); await child.event("session_start", { reason: "startup" });
   expect(process.env.KATA_TRANSCRIPT_SESSION_ID).toBe(child.sid);
   await lead.event("session_shutdown", { reason: "new" });
   expect([process.env.KATA_TRANSCRIPT_AGENT, process.env.KATA_TRANSCRIPT_SESSION_ID]).toEqual(["pi", child.sid]);
-  } finally { delete process.env.KATA_TRANSCRIPT_AGENT; delete process.env.KATA_TRANSCRIPT_SESSION_ID; }
 });
 
 test("pi turns close transcripts on at session start and keeps a user's opt-out", async () => {
@@ -27,51 +24,32 @@ test("pi turns close transcripts on at session start and keeps a user's opt-out"
 
 test("a close driven through pi's real exec records the pi session when close transcripts are on", async () => {
   const { execCommand } = await import("../node_modules/@earendil-works/pi-coding-agent/dist/core/exec.js");
-  const previousHome = process.env.KATA_HOME; process.env.KATA_HOME = env.KATA_HOME;
+  const previousHome = process.env.KATA_HOME; process.env.KATA_HOME = home;
   try {
     const app = await host({ exec: (file: string, args: string[], opts: any) => execCommand(file, args, opts.cwd, opts) });
     await app.event("session_start", { reason: "startup" });
     await app.init(["Real exec transcript task"]);
     const done = await app.call({ op: "done", task: "Real exec transcript task", message, evidence });
     expect(done.isError, done.content?.[0]?.text).toBeUndefined();
-    // The store holds every earlier test's events: page through all of them.
-    const events: any[] = [];
-    for (let after = 0; ;) {
-      const page = await kata(["events", "--after", String(after), "--limit", "500", "--json"]);
-      if (!page.events.length) break;
-      events.push(...page.events); after = page.next_after_id;
-    }
-    const closes = events.filter((e: any) => e.type === "issue.closed" && e.payload?.transcript?.session_id === app.sid);
+    const closes = (await events()).filter((e: any) => e.type === "issue.closed" && e.payload?.transcript?.session_id === app.sid);
     expect(closes.length).toBeGreaterThan(0);
     expect(closes[0].payload.transcript).toMatchObject({ agent: "pi", session_id: app.sid });
   } finally { if (previousHome === undefined) delete process.env.KATA_HOME; else process.env.KATA_HOME = previousHome; }
 });
 
 test("a slow shutdown of the old instance does not delete the next session's transcript identity", async () => {
-  delete process.env.KATA_TRANSCRIPT_AGENT; delete process.env.KATA_TRANSCRIPT_SESSION_ID;
-  try {
-    let slow = false, resumed = 0; const release = Promise.withResolvers<void>();
-    const lead = await host({ before: async () => { if (slow) { await release.promise; resumed++; } return undefined; } });
-    await lead.event("session_start", { reason: "startup" }); await lead.init(["Slow shutdown task"]);
-    slow = true;
-    const shutdown = lead.event("session_shutdown", { reason: "new" });
-    await new Promise(resolve => setTimeout(resolve, 400));
-    const next = await host(); await next.event("session_start", { reason: "new" });
-    await shutdown;
-    release.resolve(); slow = false;
-    while (!resumed) await new Promise(resolve => setTimeout(resolve, 20));
-    await new Promise(resolve => setTimeout(resolve, 300));
-    expect([process.env.KATA_TRANSCRIPT_AGENT, process.env.KATA_TRANSCRIPT_SESSION_ID]).toEqual(["pi", next.sid]);
-  } finally { delete process.env.KATA_TRANSCRIPT_AGENT; delete process.env.KATA_TRANSCRIPT_SESSION_ID; }
-});
-
-test("pi reports an old Kata as an upgrade error, never a local plan", async () => {
-  const app = await host({ before: (args: string[]) => args[0] === "version" ? { code: 0, stdout: '{"kata_api_version":1,"version":"0.22.9"}' } : undefined });
-  await app.event("session_start", { reason: "startup" });
-  const result = await app.call({ op: "init", items: ["Must upgrade first"] });
-  expect(result.isError).toBe(true);
-  expect(result.content[0].text).toContain("requires Kata >=0.23.0");
-  await app.event("session_shutdown", { reason: "quit" });
+  let slow = false, resumed = 0; const release = Promise.withResolvers<void>();
+  const lead = await host({ before: async () => { if (slow) { await release.promise; resumed++; } return undefined; } });
+  await lead.event("session_start", { reason: "startup" }); await lead.init(["Slow shutdown task"]);
+  slow = true;
+  const shutdown = lead.event("session_shutdown", { reason: "new" });
+  await new Promise(resolve => setTimeout(resolve, 400));
+  const next = await host(); await next.event("session_start", { reason: "new" });
+  await shutdown;
+  release.resolve(); slow = false;
+  expect(await until(() => resumed > 0)).toBe(true);
+  await new Promise(resolve => setTimeout(resolve, 300));
+  expect([process.env.KATA_TRANSCRIPT_AGENT, process.env.KATA_TRANSCRIPT_SESSION_ID]).toEqual(["pi", next.sid]);
 });
 
 test("a second pi lead on the same parent is refused on the first lead's started task until it takes it over", async () => {

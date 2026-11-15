@@ -69,7 +69,8 @@ export function execKata(file: string, args: string[], options: { cwd: string; t
 type Project = { id: number; name: string };
 
 const READS = new Set(["show", "list", "status", "version", "agent-contract-hook", "inbox", "events", "audit"]);
-const isRead = (args: string[]) => READS.has(args[0]) || (args[0] === "projects" && args[1] === "list");
+// Whether a Kata call only reads: a read never ends an operation's reuse of earlier reads.
+export const isRead = (args: string[]) => READS.has(args[0]) || (args[0] === "projects" && args[1] === "list");
 // Writes any runner on this thread made (the lead's core, a delegate's, another plugin copy's): each one ends every
 // operation's reuse of earlier reads. A Kata command an agent runs in its shell is another process, and an omp subagent on
 // a worker thread has its own count, so neither is seen here: an operation is kept short, and a check that must be

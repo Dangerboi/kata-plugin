@@ -1,25 +1,13 @@
-import { afterAll, beforeAll, beforeEach, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync } from "node:fs";
-import path from "node:path";
+import { beforeEach, expect, test } from "bun:test";
 import { createKataCore } from "../core/kata-core";
 import type { DelegateEvent } from "../core/delegates";
-import { assertIsolated } from "./isolation";
-import { eventually, isolatedKata, memoryDelegateStore } from "./kata-fixture";
+import { eventually, memoryDelegateStore, realKata } from "./kata-fixture";
 import { siblingThrottle } from "./kata-errors";
-assertIsolated();
 
 // The delegate lifecycle through the core's delegate events, against real Kata in a throwaway store.
-const binary = process.env.KATA_TEST_EXECUTABLE!;
-const root = mkdtempSync(path.join(process.env.KATA_TEST_ROOT!, "delegates-"));
-const cwd = path.join(root, "workspace");
-mkdirSync(cwd);
-const env = { ...process.env, KATA_HOME: path.join(root, "home"), KATA_AUTHOR: "lead-actor" };
-for (const key of ["KATA_REF", "KATA_TEAMMATE", "KATA_INBOX_USER"]) delete env[key];
-const run = isolatedKata(binary, env, cwd, 60000);
-async function kata(args: string[]) { const r = await run(args); if (r.code) throw new Error(r.stderr); return JSON.parse(r.stdout || "null"); }
-const show = (ref: string) => kata(["show", ref, "--json"]);
-const labels = (view: any) => (view.labels ?? []).map((l: any) => l.label);
 const LEAD = "lead-mate";
+const { binary, cwd, run, kata, show } = realKata({ prefix: "delegates", author: "lead-actor", project: "delegates-test", process: { KATA_TEAMMATE: LEAD } });
+const labels = (view: any) => (view.labels ?? []).map((l: any) => l.label);
 let seq = 0, failing: ((args: string[]) => boolean) | undefined, throttled: ((args: string[]) => boolean) | undefined, holding: ((args: string[]) => Promise<void> | undefined) | undefined;
 
 // A lead session and its delegates: each is an agent with its own core, as in omp, sharing the one delegate store.
@@ -71,11 +59,16 @@ function lead(from?: { entries: any[]; id: string; fork?: boolean }) {
   return { core, ctx, id, entries, store, plan, view, delegate, started, delegated, scout, timers, delegates: core.delegates };
 }
 
-beforeAll(async () => { expect((await run(["init", "--project", "delegates-test"])).code).toBe(0); });
-beforeEach(() => { process.env.KATA_AUTHOR = "lead-actor"; process.env.KATA_TEAMMATE = LEAD; delete process.env.KATA_REF; failing = undefined; throttled = undefined; holding = undefined; });
-afterAll(async () => { await run(["daemon", "stop"]); });
+beforeEach(() => { failing = undefined; throttled = undefined; holding = undefined; });
 
 const taskOf = async (parent: string, title: string) => (await show(parent)).children.find((c: any) => c.title === title);
+// A rolled-back assignment leaves the issue as it was before it: no hand back, same owner, the delegate's keys gone.
+const expectRolledBack = (view: any, before: any) => {
+  expect(labels(view)).not.toContain("needs-review");
+  expect(view.issue.owner).toBe(before.issue.owner);
+  for (const key of ["omp.subagent_id", "omp.session_id", "omp.status", "omp.parent_agent_id"]) expect(view.issue.metadata[key]).toBeUndefined();
+  for (const key of ["teammate", "work.attention", "todo.status"]) expect(view.issue.metadata[key]).toEqual(before.issue.metadata[key]);
+};
 
 test("a started delegate matching a plan task is assigned it: claim, teammate, delegate keys, in progress, attention ok", async () => {
   const a = lead(); const parent = await a.plan(["Build the alpha widget", "Lead keeps leading"]);
@@ -248,11 +241,7 @@ test("a delegate that exits having run no tool has its assignment rolled back, w
   await a.delegates.apply(a.started("delta", "Build the delta widget"));
   expect((await show(ref)).issue.metadata["omp.subagent_id"]).toBe("delta");
   await a.delegates.apply({ type: "exited", id: "delta", outcome: "ended" });
-  const view = await show(ref);
-  expect(labels(view)).not.toContain("needs-review");
-  expect(view.issue.owner).toBe(before.issue.owner);
-  for (const key of ["omp.subagent_id", "omp.session_id", "omp.status", "omp.parent_agent_id"]) expect(view.issue.metadata[key]).toBeUndefined();
-  for (const key of ["teammate", "work.attention", "todo.status"]) expect(view.issue.metadata[key]).toEqual(before.issue.metadata[key]);
+  expectRolledBack(await show(ref), before);
   expect(await a.delegated("Build the delta widget")).toBe(false);
 });
 
@@ -361,13 +350,6 @@ const withSnapshot = (entries: any[], change: (record: any) => void) => {
   const data = structuredClone(latestSnapshot(entries));
   change(data.delegates[0]);
   return [...structuredClone(entries), { type: "custom", customType: "io.kata.omp.state", data }];
-};
-// A rolled-back assignment leaves the issue as it was before it: no hand back, same owner, the delegate's keys gone.
-const expectRolledBack = (view: any, before: any) => {
-  expect(labels(view)).not.toContain("needs-review");
-  expect(view.issue.owner).toBe(before.issue.owner);
-  for (const key of ["omp.subagent_id", "omp.session_id", "omp.status", "omp.parent_agent_id"]) expect(view.issue.metadata[key]).toBeUndefined();
-  for (const key of ["teammate", "work.attention", "todo.status"]) expect(view.issue.metadata[key]).toEqual(before.issue.metadata[key]);
 };
 
 test("a lead resumed with a delegate's hand back unfinished finishes it: needs-review, needs-human, a request to the lead", async () => {

@@ -1,8 +1,7 @@
 import { mkdtempSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { assertIsolated, assertUnchanged, snapshot } from "./isolation";
-import { TRANSCRIPT_ENV } from "../core/kata-cli";
+import { assertIsolated, assertUnchanged, SCRUBBED_ENV, snapshot } from "./isolation";
 
 // The adapter suites load the vendored copies in plugins/*, not core/: refuse to test a stale copy.
 if (Bun.spawnSync([process.execPath, "scripts/vendor-core.ts", "--check"], { stdout: "ignore", stderr: "inherit" }).exitCode !== 0) process.exit(1);
@@ -23,10 +22,7 @@ mkdirSync(env.KATA_HOME);
 // other down: on 12 CPUs the suite took 67 s with 8 workers and 70 s with 12.
 const DEFAULT_JOBS = Math.min(8, os.availableParallelism());
 const JOBS = Math.max(1, Math.floor(Number(process.env.KATA_TEST_JOBS ?? DEFAULT_JOBS)) || DEFAULT_JOBS);
-// Every inherited variable the plugins read: a developer's own settings must not change what the tests see.
-for (const key of ["KATA_SERVER", "KATA_DAEMON", "KATA_AUTH_TOKEN", "KATA_REF", "KATA_TEAMMATE", "KATA_INBOX_USER", "KATA_SESSION_ID", "KATA_DEFAULT_PROJECT", "KATA_AUTHOR",
-  "KATA_PI_PARENT", "KATA_OMP_LIVE_INBOX", "KATA_ATTENTION_HOST", "KATA_OMP_EXECUTABLE", "KATA_PI_EXECUTABLE", "KATA_OPENCODE_EXECUTABLE", "KATA_OMP_DEBUG", "KATA_PI_DEBUG",
-  "KATA_OPENCODE_DEBUG", ...TRANSCRIPT_ENV]) delete env[key];
+for (const key of SCRUBBED_ENV) delete env[key];
 assertIsolated(env);
 console.log(`Isolated test root: ${root}`);
 
@@ -98,7 +94,7 @@ const slowFirst = (files: string[]) => [...SLOW_FIRST.filter(file => files.inclu
 
 // KATA_TEST_SHARD=<i>/<n> keeps slice i of n of every test file. Files are dealt in pool order, reversing direction each
 // round (1, 2, 2, 1, ... for two slices), so the slowest file and the third-slowest don't land in the same slice.
-// CI runs one slice per job; revision conformance runs with the last slice, which gets the lighter deal.
+// CI runs one slice per job; revision conformance runs with the last slice, which of two slices is the lighter one.
 const shardSpec = process.env.KATA_TEST_SHARD || undefined;
 const shardMatch = shardSpec?.match(/^(\d+)\/(\d+)$/);
 const [SHARD, SHARDS] = shardMatch ? [Number(shardMatch[1]), Number(shardMatch[2])] : [1, 1];
@@ -138,10 +134,13 @@ try {
   // Sorted: readdir order follows the filesystem, so two CI machines could list the files differently and their shards
   // would then miss or repeat files.
   const allTests = readdirSync("tests").filter(file => file.endsWith(".test.ts")).sort().map(file => "./tests/" + file);
+  // A slow file that was renamed would otherwise drop out of the order silently and change which CI job runs which file.
+  const gone = SLOW_FIRST.filter(file => !allTests.includes(file));
+  if (gone.length) throw new Error(`SLOW_FIRST in tests/run.ts names test files that do not exist: ${gone.join(", ")}.`);
   // A shard applies to runs of every file; named files, `changed` and `revisions` ignore it.
   const slice = (k: number) => Math.floor(k / SHARDS) % 2 === 0 ? k % SHARDS : SHARDS - 1 - (k % SHARDS);
-  const todoTests = slowFirst(allTests).filter((_, k) => slice(k) === SHARD - 1);
-  if (SHARDS > 1) console.log(`Shard ${SHARD}/${SHARDS}: ${todoTests.length} of ${allTests.length} test files.`);
+  const shardTests = slowFirst(allTests).filter((_, k) => slice(k) === SHARD - 1);
+  if (SHARDS > 1) console.log(`Shard ${SHARD}/${SHARDS}: ${shardTests.length} of ${allTests.length} test files.`);
   const bunTest = [process.execPath, "test", "--timeout", "15000"];
   // `changed [ref]` keeps only the test files whose imports reach a file git sees as changed
   // (staged, unstaged, untracked, or since ref). It misses files read from disk and a changed Kata binary.
@@ -150,8 +149,8 @@ try {
   // Every test file, as the pool or (KATA_TEST_JOBS=1) as one streaming process; anything narrower is one process.
   const everything = args[0] === "all" || (!args.length && !changed.length);
   const suites: (() => Promise<number>)[] = args[0] === "revisions" ? [() => runOne(revisions)]
-    : everything && JOBS > 1 ? [() => runPool(todoTests, bunTest)]
-    : [() => runOne([...bunTest, ...changed, ...(changed.length ? allTests : !args.length || args[0] === "all" ? todoTests : args)])];
+    : everything && JOBS > 1 ? [() => runPool(shardTests, bunTest)]
+    : [() => runOne([...bunTest, ...changed, ...(changed.length ? allTests : !args.length || args[0] === "all" ? shardTests : args)])];
   if (args[0] === "all" && SHARD === SHARDS) suites.push(() => runOne(revisions));
   for (const suite of suites) {
     const code = await suite();

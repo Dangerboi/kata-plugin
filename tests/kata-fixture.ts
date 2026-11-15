@@ -1,9 +1,9 @@
-import { expect, setSystemTime } from "bun:test";
-import { existsSync, mkdirSync, symlinkSync } from "node:fs";
+import { afterAll, beforeAll, beforeEach, expect, setSystemTime } from "bun:test";
+import { existsSync, mkdirSync, mkdtempSync, symlinkSync } from "node:fs";
 import path from "node:path";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { assertIsolated } from "./isolation";
+import { assertIsolated, SCRUBBED_ENV } from "./isolation";
 import type { DelegateRecord, DelegateStore } from "../core/delegates";
 
 export function memoryDelegateStore(): DelegateStore & { drop(id: string): void } {
@@ -15,11 +15,164 @@ export function memoryDelegateStore(): DelegateStore & { drop(id: string): void 
 }
 
 const exec = promisify(execFile);
-export function isolatedKata(binary: string, env: NodeJS.ProcessEnv, cwd: string, defaultTimeout = 5000) {
-  return async (args: string[], workspace = cwd, timeout = defaultTimeout, extraEnv: NodeJS.ProcessEnv = {}) => {
+// One Kata call may take this long, well inside a test's 15 s.
+const EXEC_TIMEOUT = 5000;
+export function isolatedKata(binary: string, env: NodeJS.ProcessEnv, cwd: string) {
+  return async (args: string[], workspace = cwd, timeout = EXEC_TIMEOUT, extraEnv: NodeJS.ProcessEnv = {}) => {
     assertIsolated(env);
     try { return { ...await exec(binary, args, { env: { ...env, ...extraEnv }, cwd: workspace, timeout }), code: 0, killed: false }; }
     catch (error: any) { return { stdout: error.stdout || "", stderr: error.stderr || error.message, code: error.code || 1, killed: !!error.killed }; }
+  };
+}
+
+/**
+ * A real Kata with a store of its own: a scratch directory under the test root holding a workspace and the Kata home,
+ * and Kata's environment for `author` with every scrubbed variable removed, then `extra` set. `kata` returns a call's
+ * JSON, `text` its output, `show` an issue's whole view; all three throw when Kata fails. Registers no hooks: test
+ * files call `realKata`.
+ */
+export function kataStore(prefix: string, author: string, extra: Record<string, string> = {}) {
+  assertIsolated();
+  const binary = process.env.KATA_TEST_EXECUTABLE;
+  if (!binary || !path.isAbsolute(binary)) throw new Error("Set KATA_TEST_EXECUTABLE to the absolute Kata binary.");
+  const scratch = mkdtempSync(path.join(process.env.KATA_TEST_ROOT!, `${prefix}-`));
+  const cwd = path.join(scratch, "workspace"), home = path.join(scratch, "home");
+  mkdirSync(cwd);
+  const env: NodeJS.ProcessEnv = { ...process.env };
+  for (const key of SCRUBBED_ENV) delete env[key];
+  Object.assign(env, { KATA_HOME: home, KATA_AUTHOR: author }, extra);
+  const run = isolatedKata(binary, env, cwd);
+  async function text(args: string[], workspace = cwd, extraEnv: NodeJS.ProcessEnv = {}): Promise<string> {
+    const out = await run(args, workspace, undefined, extraEnv);
+    if (out.code) throw new Error(`kata ${args.join(" ")}: ${out.stderr}`);
+    return out.stdout;
+  }
+  const kata = async (args: string[], workspace?: string, extraEnv?: NodeJS.ProcessEnv): Promise<any> => JSON.parse(await text(args, workspace, extraEnv));
+  const show = (ref: string) => kata(["show", ref, "--json"]);
+  // Every event of the workspace's project, oldest first. The store holds every earlier test's events, so one page is not all of them.
+  async function events(): Promise<any[]> {
+    const all: any[] = [];
+    for (let after = 0;;) {
+      const page = await kata(["events", "--after", String(after), "--limit", "500", "--json"]);
+      all.push(...page.events);
+      if (page.events.length < 500) return all;
+      after = page.next_after_id;
+    }
+  }
+  return { binary, scratch, cwd, home, env, run, text, kata, show, events };
+}
+
+export interface RealKataOptions {
+  /** Names the scratch directory. */
+  prefix: string;
+  author: string;
+  /** Initialised in the workspace before the first test; omitted: the file registers its own projects. */
+  project?: string;
+  /** Set in Kata's environment besides `KATA_AUTHOR`. */
+  env?: Record<string, string>;
+  /** Also point this process's own `kata` at the store, for the closes the omp adapter spawns itself (`adoptIsolatedKata`). */
+  adopt?: boolean;
+  /** What each test starts with in `process.env` besides `KATA_AUTHOR`. */
+  process?: Record<string, string>;
+}
+
+/**
+ * `kataStore` for a test file; call it once at the top. Every test starts with the same `process.env`: the scrubbed
+ * variables gone, then `KATA_AUTHOR` and `options.process` set, so a variable one test sets never reaches the next.
+ * After the last test the daemon is stopped and `process.env` is what it was before the file.
+ */
+export function realKata(options: RealKataOptions) {
+  const store = kataStore(options.prefix, options.author, options.env);
+  // The previous test's environment is undone when the next one starts, not in an afterEach: a file's own afterEach
+  // (a session shutdown, say) runs after this fixture's and still needs the adopted store.
+  let restore = () => {};
+  beforeAll(async () => { if (options.project) await store.text(["init", "--project", options.project]); });
+  beforeEach(() => {
+    restore();
+    const saved = SCRUBBED_ENV.map(key => [key, process.env[key]] as const);
+    const unadopt = options.adopt ? adoptIsolatedKata(store.binary, store.home) : undefined;
+    for (const key of SCRUBBED_ENV) delete process.env[key];
+    Object.assign(process.env, { KATA_AUTHOR: options.author, ...options.process });
+    restore = () => {
+      unadopt?.();
+      for (const [key, value] of saved) value === undefined ? delete process.env[key] : process.env[key] = value;
+      restore = () => {};
+    };
+  });
+  afterAll(async () => { await store.run(["daemon", "stop"]); restore(); });
+  return store;
+}
+
+// One counter for every fixture in the process. The adapters keep lead and delegate records per session id in module
+// state, so when several files run in one `bun test` process (KATA_TEST_JOBS=1) their session ids must not repeat.
+let sequence = 0;
+export const unique = () => ++sequence;
+
+type Callback = (...args: any[]) => any;
+/** Callbacks by name, as a host keeps them: `fire` runs every one registered for the name, in order, and returns the last result that is not undefined. */
+export function registry() {
+  const callbacks = new Map<string, Callback[]>();
+  return {
+    callbacks,
+    on: (name: string, callback: Callback) => { callbacks.set(name, [...(callbacks.get(name) || []), callback]); },
+    async fire(name: string, ...args: any[]) {
+      let result;
+      for (const callback of callbacks.get(name) || []) { const next = await callback(...args); if (next !== undefined) result = next; }
+      return result;
+    },
+  };
+}
+
+export interface FakeHostOptions {
+  /** Runs Kata for every exec the adapter issues and `before` does not answer. */
+  run: (args: string[], opts: any) => Promise<any>;
+  cwd: string;
+  sid?: string;
+  header?: any;
+  /** The session branch; `appendEntry` adds to it. */
+  entries?: any[];
+  /** Answers an exec instead of Kata; undefined falls through to `run`. */
+  before?: (args: string[], opts: any) => Promise<any> | any;
+  /** Replaces the exec: neither `before` nor `run` is consulted. */
+  exec?: (file: string, args: string[], opts: any) => Promise<any>;
+}
+
+/**
+ * What the fake omp and pi hosts share. `api` is the part of the extension API both adapters use (tool, session entries,
+ * event handlers, a recording exec) and `ctx` the part of the context (session manager, UI); each host adds its own
+ * members to both before it loads its adapter. `answered(verb)` settles once Kata answered an exec of that verb.
+ */
+export function fakeHost(options: FakeHostOptions) {
+  let tool: any;
+  const handlers = registry();
+  const entries: any[] = options.entries || [], calls: string[][] = [], notices: any[] = [], widgets: any[] = [];
+  const answers = new Map<string, PromiseWithResolvers<void>>();
+  const answer = (verb: string) => answers.get(verb) ?? answers.set(verb, Promise.withResolvers<void>()).get(verb)!;
+  const ctx: any = {
+    cwd: options.cwd,
+    sessionManager: { getSessionId: () => options.sid, getBranch: () => entries, getHeader: () => options.header },
+    ui: { notify: (...args: any[]) => notices.push(args), setWidget: (...args: any[]) => widgets.push(args) },
+  };
+  const api: any = {
+    registerTool: (value: any) => tool = value,
+    appendEntry: (customType: string, data: any) => entries.push({ type: "custom", customType, data }),
+    on: handlers.on,
+    async exec(file: string, args: string[], opts: any) {
+      calls.push(args);
+      if (options.exec) return options.exec(file, args, opts);
+      const result = await options.before?.(args, opts) ?? await options.run(args, opts);
+      answer(args[0]).resolve();
+      return result;
+    },
+  };
+  const call = (params: any, context: any = ctx, callId = "fixture") => tool.execute(callId, params, undefined, undefined, context);
+  return { api, ctx, sid: options.sid, entries, calls, notices, widgets, handlers: handlers.callbacks,
+    get tool() { return tool; },
+    answered: (verb: string) => answer(verb).promise,
+    event: (name: string, data: any = {}, context: any = ctx) => handlers.fire(name, data, context),
+    call,
+    /** Plans `items`; returns the plan parent. */
+    async init(items: string[]) { const result = await call({ op: "init", items }); expect(result.isError).toBeUndefined(); return result.details.kata.parent; },
   };
 }
 
@@ -47,26 +200,37 @@ export async function later<T>(fn: () => Promise<T>): Promise<T> {
 	try { return await fn(); } finally { setSystemTime(); }
 }
 
-/** Polls `condition` until it holds or `ms` pass; returns its final value. The deadline ticks under `setSystemTime` (see `eventually`). */
-export async function until(condition: () => boolean, ms = 8000): Promise<boolean> {
-  const end = performance.now() + ms;
-  while (!condition() && performance.now() < end) await new Promise(resolve => setTimeout(resolve, 25));
-  return condition();
-}
-/**
- * Reads `read()` until it equals `expected` or `ms` pass, then asserts on the last value, so a wrong
- * value still fails and shows what was seen. For state a plugin settles in the background after the
- * event handler returned (the core bounds how long a handler waits for it). The deadline uses
- * `performance.now()` because tests that pin the clock with `setSystemTime` freeze `Date.now()`.
- */
-export async function eventually<T>(read: () => Promise<T>, expected: T, ms = 8000): Promise<void> {
+// Reads until `done` accepts the value or `ms` pass; returns the last value read. The deadline uses `performance.now()`
+// because tests that pin the clock with `setSystemTime` freeze `Date.now()`.
+async function poll<T>(read: () => T | Promise<T>, done: (value: T) => boolean, ms: number): Promise<T> {
   const end = performance.now() + ms;
   let value = await read();
-  while (Bun.deepEquals(value, expected) === false && performance.now() < end) {
+  while (!done(value) && performance.now() < end) {
     await new Promise(resolve => setTimeout(resolve, 25));
     value = await read();
   }
-  expect(value).toEqual(expected);
+  return value;
+}
+/** Polls `condition` until it holds or `ms` pass; returns its final value. */
+export const until = (condition: () => boolean, ms = 8000): Promise<boolean> => poll(condition, Boolean, ms);
+/**
+ * Reads `read()` until it equals `expected` or `ms` pass, then asserts on the last value, so a wrong
+ * value still fails and shows what was seen. For state a plugin settles in the background after the
+ * event handler returned (the core bounds how long a handler waits for it).
+ */
+export async function eventually<T>(read: () => Promise<T>, expected: T, ms = 8000): Promise<void> {
+  expect(await poll(read, value => Bun.deepEquals(value, expected), ms)).toEqual(expected);
+}
+/**
+ * Whether `work` finishes within `ms`, for a test that holds what `work` may or may not wait for (Kata's answer, say).
+ * Expecting true shows `work` does not wait for it: the default `ms` only turns a hang into a failure and is far longer
+ * than a pass takes, so a loaded machine never fails on it. Expecting false, with a short `ms`, shows `work` does
+ * wait: a correct `work` cannot finish while the thing is held, so load never fails that either.
+ */
+export async function finishes(work: Promise<unknown>, ms = 5000): Promise<boolean> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try { return await Promise.race([work.then(() => true), new Promise<boolean>(resolve => { timer = setTimeout(() => resolve(false), ms); })]); }
+  finally { clearTimeout(timer); }
 }
 // Against a real event stream, "nothing was delivered" can only be observed by waiting out the stream's latency.
 export const settle = (ms = 700) => new Promise(resolve => setTimeout(resolve, ms));

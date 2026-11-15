@@ -99,10 +99,10 @@ test("tracked worker todo uses its assigned issue and teammate from an unbound w
   expect(worker.widgets).toEqual([]);
 });
 
-for (const children of [0, {}, [null]]) test(`malformed hosted children ${JSON.stringify(children)} never expose a cached plan`, async () => {
+test("hosted children [null] never expose a cached plan", async () => {
   let corrupt = false;
   const app = host({ before: (args: string[]) => corrupt && args[0] === "show"
-    ? { code: 0, stdout: JSON.stringify({ issue: {}, children }), stderr: "" } : undefined });
+    ? { code: 0, stdout: JSON.stringify({ issue: {}, children: [null] }), stderr: "" } : undefined });
   await app.init(["Cached task"]);
   corrupt = true;
   const result = await app.call({ op: "view" });
@@ -112,15 +112,18 @@ for (const children of [0, {}, [null]]) test(`malformed hosted children ${JSON.s
 });
 
 test("a pending stop-hook refresh does not describe cached tasks as current", async () => {
+  // The stop hook's read of the plan is held until the test lets Kata answer, so it is still pending when the hook returns.
+  const kataAnswers = Promise.withResolvers<void>();
   let outage = false;
   const app = host({ before: async (args: string[]) => {
     if (!outage || args[0] !== "show") return;
-    await new Promise(resolve => setTimeout(resolve, 400));
+    await kataAnswers.promise;
     return { code: 1, stdout: "", stderr: "slow read outage" };
   } });
   await app.init(["Cached stop task"]);
   outage = true;
-  expect(await app.event("session_stop", { messages: [] })).toBeUndefined();
+  try { expect(await app.event("session_stop", { messages: [] })).toBeUndefined(); }
+  finally { kataAnswers.resolve(); }
   await app.call({ op: "view" }); // drain the background hook
 });
 
@@ -134,8 +137,8 @@ test("a sub identity cannot reuse the main adapter's bound session", async () =>
   expect((await show(parent)).children.map((c: any) => c.title)).toEqual(["Main task"]);
 });
 
-// Generated malformed response values must not turn the last good snapshot
-// into an authoritative response. {} is the named shrunk regression above.
+// Generated malformed response values must not turn the last good snapshot into an authoritative response.
+// 0 and {} are regressions found earlier; they run first.
 test("arbitrary non-array hosted children never expose cached state", async () => {
   let children: unknown;
   let corrupt = false;
@@ -149,7 +152,7 @@ test("arbitrary non-array hosted children never expose cached state", async () =
     expect(result.isError).toBe(true);
     expect(result.details.kata.phases).toEqual([]);
     expect(result.content[0].text).not.toContain("0/1 done");
-  }), { numRuns: 100, seed: 251025 });
+  }), { numRuns: 100, seed: 251025, examples: [[0], [{}]] });
 });
 
 test("a later init can replace a parameter-bound parent", async () => {

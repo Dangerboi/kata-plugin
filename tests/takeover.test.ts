@@ -1,23 +1,11 @@
-import { afterAll, afterEach, beforeAll, beforeEach, expect, test } from "bun:test";
+import { beforeAll, expect, test } from "bun:test";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync } from "node:fs";
+import { existsSync, mkdirSync } from "node:fs";
 import path from "node:path";
-import { assertIsolated } from "./isolation";
-import { adoptIsolatedKata, isolatedKata } from "./kata-fixture";
+import { realKata } from "./kata-fixture";
 import { daemonUnavailable, missingExecutable } from "./kata-errors";
 import { ompHost } from "./omp-host";
-assertIsolated();
-const binary = process.env.KATA_TEST_EXECUTABLE!;
-if (!binary || !path.isAbsolute(binary)) throw new Error("Set KATA_TEST_EXECUTABLE to the absolute Kata binary.");
-const scratch = mkdtempSync(path.join(process.env.KATA_TEST_ROOT!, "takeover-"));
-const env = { ...process.env, KATA_HOME: path.join(scratch, "home"), KATA_AUTHOR: "v2-builder" };
-for (const key of ["KATA_SERVER", "KATA_DAEMON", "KATA_AUTH_TOKEN", "KATA_REF", "KATA_TEAMMATE", "KATA_INBOX_USER", "KATA_DEFAULT_PROJECT"]) delete env[key];
-const run = isolatedKata(binary, env, scratch, 5000);
-async function kata(args: string[], workspace = scratch): Promise<any> {
-  const out = await run(args, workspace);
-  if (out.code) throw new Error(out.stderr);
-  return JSON.parse(out.stdout);
-}
+const { scratch, run, text, kata, show } = realKata({ prefix: "takeover", author: "v2-builder", adopt: true });
 const projects = async () => (await kata(["projects", "list", "--json"])).projects.map((p: any) => p.name).sort();
 const issues = async (project: string) => (await kata(["list", "--project", project, "--status", "all", "--limit", "100", "--json"])).issues;
 let sequence = 0;
@@ -35,11 +23,7 @@ function host(options: any = {}) {
   const sid = `takeover-${++sequence}`;
   return ompHost({ run: (args, opts) => run(args, opts.cwd, opts.timeout), cwd: options.cwd, sid, sessionFile: `${scratch}/${sid}.jsonl`, before: options.before, callId: "takeover" });
 }
-beforeAll(async () => { const out = await run(["projects", "create", "takeover-home"]); if (out.code) throw new Error(out.stderr); });
-let restore: (() => void) | undefined;
-beforeEach(() => { restore = adoptIsolatedKata(binary, env.KATA_HOME); process.env.KATA_AUTHOR = "v2-builder"; for (const key of ["KATA_REF", "KATA_TEAMMATE", "KATA_INBOX_USER", "KATA_DEFAULT_PROJECT"]) delete process.env[key]; });
-afterEach(() => restore?.());
-afterAll(async () => { await run(["daemon", "stop"]); });
+beforeAll(async () => { await text(["projects", "create", "takeover-home"]); });
 
 test("an unregistered git repo registers its inferred project and plans there without touching the repo", async () => {
   const dir = repo("takeoverrepo"), before = status(dir);
@@ -50,13 +34,13 @@ test("an unregistered git repo registers its inferred project and plans there wi
   expect(await projects()).toContain("takeoverrepo");
   const parent = result.details.kata.parent as string;
   expect(parent).toMatch(/^takeoverrepo#/);
-  const shown = await kata(["show", parent, "--json"]);
+  const shown = await show(parent);
   expect(shown.children.map((c: any) => c.title)).toEqual(["Plan the change", "Verify the change"]);
   expect(shown.issue.metadata["omp.auto_parent"]).toBe(true);
   expect(status(dir)).toBe(before);
   expect(existsSync(path.join(dir, ".kata.toml"))).toBe(false);
   for (const task of ["Plan the change", "Verify the change"]) expect((await app.call({ op: "done", task, message, evidence })).isError).toBeUndefined();
-  expect((await kata(["show", parent, "--json"])).issue.status).toBe("closed");
+  expect((await show(parent)).issue.status).toBe("closed");
 });
 
 test("the inferred project keeps the repo's case", async () => {
@@ -138,7 +122,7 @@ test("an unreachable Kata keeps a visible local plan and replays it when Kata re
   expect(back.content[0].text).not.toContain("Session-local");
   const parent = back.details.kata.parent as string;
   expect(parent).toMatch(/^outagerepo#/);
-  const shown = await kata(["show", parent, "--json"]);
+  const shown = await show(parent);
   expect(shown.children.map((c: any) => c.title).sort()).toEqual(["Also offline", "Written offline"]);
   const done = shown.children.find((c: any) => c.title === "Written offline");
   expect(done.status).toBe("closed");
@@ -159,7 +143,7 @@ test("a replay that fails partway keeps the local plan and finishes on the next 
   const ok = await app.call({ op: "view" });
   expect(ok.content[0].text).not.toContain("could not be replayed");
   expect(ok.isError).toBeUndefined();
-  const shown = await kata(["show", ok.details.kata.parent, "--json"]);
+  const shown = await show(ok.details.kata.parent);
   expect(shown.children.map((c: any) => c.title).sort()).toEqual(["Kept one", "Kept two"]);
   expect((await app.call({ op: "view" })).content[0].text).not.toContain("Session-local");
 });
@@ -179,7 +163,7 @@ test("a resumed session replays a local plan even after a partly failed replay",
   Object.assign(resumed.ctx.sessionManager, { getSessionId: () => first.sid });
   await resumed.event("session_start");
   const view = await resumed.call({ op: "view" });
-  const shown = await kata(["show", view.details.kata.parent, "--json"]);
+  const shown = await show(view.details.kata.parent);
   expect(shown.children.map((c: any) => c.title).sort()).toEqual(["Survives one", "Survives two"]);
 });
 

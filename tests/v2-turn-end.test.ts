@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 import { mkdirSync } from "node:fs";
 import path from "node:path";
+import { finishes } from "./kata-fixture";
 import { v2Fixture } from "./v2-fixture";
 
 // The omp adapter against a real Kata: turn-end waits for delegate hand-backs, parent evidence and failed claims.
@@ -63,34 +64,46 @@ test("a missed delegate exit found at a prompt does not wait for the settlement"
   } finally { gate.resolve(); }
 });
 
-// Real delays, like the neighbouring tests: the hook races real Kata processes, which fake timers cannot order.
+// Kata is held until the test lets it answer, so a turn that ends meanwhile did not wait for it. The hooks race real
+// Kata processes, which fake timers cannot order.
 test("a lead turn with no exited delegate ends within the short bound even when Kata is slow", async () => {
-  let slow = false;
-  const app = host({ before: async (args: string[]) => { if (slow) await Bun.sleep(1500); return undefined; } });
+  const kataAnswers = Promise.withResolvers<void>();
+  let slow = false, held = 0;
+  const app = host({ before: async () => { if (slow) { held++; await kataAnswers.promise; } return undefined; } });
   await app.event("session_start"); await app.init(["Slow Kata, nothing exited"]);
   app.emit("task:subagent:lifecycle", { id: "still-running", agent: "task", status: "started", sessionFile: `${scratch}/still-running.jsonl`, description: "Slow Kata, nothing exited" });
   await app.call({ op: "view" });
   slow = true;
-  const start = performance.now();
-  await app.event("session_stop", { messages: [] });
-  expect(performance.now() - start).toBeLessThan(1000);
-  slow = false; await app.call({ op: "view" }); // drain the background hook
+  try {
+    expect(await finishes(app.event("session_stop", { messages: [] }))).toBe(true);
+    expect(held).toBeGreaterThan(0);
+  } finally { slow = false; kataAnswers.resolve(); }
+  await app.call({ op: "view" }); // drain the background hook
 });
 
 test("a lead turn with an exited delegate waits for its slow hand back before the turn ends", async () => {
-  let recent: any[] = [], slow = false;
-  const app = host({ snapshot: () => ({ running: [], recent }), before: async (args: string[]) => {
-    if (slow && ["show", "label", "close", "comment", "meta", "notify"].includes(args[0])) await Bun.sleep(150);
-    return undefined;
+  let recent: any[] = [], slow = false, labelled = false;
+  const reached = Promise.withResolvers<void>(), kataAnswers = Promise.withResolvers<void>();
+  const app = host({ snapshot: () => ({ running: [], recent }), before: async (args: string[], opts: any) => {
+    if (!slow || args[0] !== "label") return undefined;
+    reached.resolve(); await kataAnswers.promise;
+    const out = await run(args, opts.cwd, opts.timeout);
+    labelled = out.code === 0;
+    return out;
   } });
   await app.event("session_start"); const parent = await app.init(["Slow hand back at turn end"]);
   app.emit("task:subagent:lifecycle", { id: "slow-hand-back", agent: "task", status: "started", sessionFile: `${scratch}/slow-hand-back.jsonl`, description: "Slow hand back at turn end" });
   await app.call({ op: "view" });
   await ran(app, "slow-hand-back", `${scratch}/slow-hand-back.jsonl`);
   recent = [{ id: "slow-hand-back", type: "task", status: "cancelled" }]; slow = true;
-  const start = performance.now();
-  await app.event("session_stop", { messages: [] });
-  expect(performance.now() - start).toBeGreaterThan(250);
+  const stop = app.event("session_stop", { messages: [] });
+  try {
+    await reached.promise;
+    // The hand back's first write is held. A turn that waited only the short bound would end well inside this wait.
+    expect(await finishes(stop, 750)).toBe(false);
+  } finally { kataAnswers.resolve(); }
+  await stop;
+  expect(labelled).toBe(true);
   const task = (await show(parent)).children.find((c: any) => c.title === "Slow hand back at turn end");
   expect((await show(`v2test#${task.short_id}`)).labels.some((l: any) => l.label === "needs-review")).toBe(true);
 });
@@ -139,8 +152,9 @@ test("a lead turn also waits for a delegate that exits while the first one's han
 
 test("an aborted turn-end wait returns at once and leaves the reminder state alone", async () => {
   let recent: any[] = [], slow = false;
+  const reached = Promise.withResolvers<void>(), kataAnswers = Promise.withResolvers<void>();
   const app = host({ snapshot: () => ({ running: [], recent }), before: async (args: string[]) => {
-    if (slow && ["show", "label", "close", "comment", "meta", "notify"].includes(args[0])) await Bun.sleep(150);
+    if (slow && args[0] === "label") { reached.resolve(); await kataAnswers.promise; }
     return undefined;
   } });
   await app.event("session_start"); const parent = await app.init(["Aborted hand back", "Lead keeps working"]);
@@ -148,13 +162,16 @@ test("an aborted turn-end wait returns at once and leaves the reminder state alo
   await app.call({ op: "view" });
   await ran(app, "aborted-wait", `${scratch}/aborted-wait.jsonl`);
   recent = [{ id: "aborted-wait", type: "task", status: "cancelled" }]; slow = true;
-  const controller = new AbortController(), start = performance.now();
-  setTimeout(() => controller.abort(), 400);
-  const aborted = await app.event("session_stop", { messages: [], signal: controller.signal });
-  expect(performance.now() - start).toBeLessThan(900);
-  expect(aborted).toBeUndefined();
+  const controller = new AbortController();
+  const stop = app.event("session_stop", { messages: [], signal: controller.signal });
+  try {
+    // The turn end is waiting on the hand back, whose first write is held: only the abort can end the wait.
+    await reached.promise;
+    controller.abort();
+    expect(await finishes(stop)).toBe(true);
+  } finally { kataAnswers.resolve(); }
+  expect(await stop).toBeUndefined();
   // The hand back keeps running in the background; the next stop still gets the first reminder.
-  slow = false;
   const next = await app.event("session_stop", { messages: [] });
   expect(next.additionalContext).toContain("reminder 1/");
   const task = (await show(parent)).children.find((c: any) => c.title === "Aborted hand back");

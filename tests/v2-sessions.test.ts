@@ -3,13 +3,13 @@ import { execFile } from "node:child_process";
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { promisify } from "node:util";
-import { later } from "./kata-fixture";
+import { finishes, later } from "./kata-fixture";
 import { missingExecutable, siblingThrottle } from "./kata-errors";
 import { v2Fixture } from "./v2-fixture";
 
 // The omp adapter against a real Kata: session start and end, transcripts, automatic parents and their closes.
 const exec = promisify(execFile);
-const { binary, scratch, cwd, outside, env, run, kata, show, issue, unique, host, down, evidence, message, throttledClose, ran, closeSessions } = v2Fixture();
+const { binary, scratch, cwd, outside, env, run, kata, show, events, issue, unique, host, down, evidence, message, hostTimers, throttledClose, ran, closeSessions } = v2Fixture();
 
 test("subagent start and shutdown never touch main attention or widget", async () => {
   const ref = await issue(); await kata(["claim", ref, "--json"]); await kata(["meta", "set", ref, "work.attention", "ok", "--json"]);
@@ -22,9 +22,6 @@ test("subagent start and shutdown never touch main attention or widget", async (
 });
 
 test("the main session exports its transcript identity on start and switch, and leaves it for the next start on shutdown", async () => {
-  const saved = [process.env.KATA_TRANSCRIPT_AGENT, process.env.KATA_TRANSCRIPT_SESSION_ID];
-  delete process.env.KATA_TRANSCRIPT_AGENT; delete process.env.KATA_TRANSCRIPT_SESSION_ID;
-  try {
   const app = host({ sid: "transcript-main", transcript: true });
   await app.event("session_start");
   expect([process.env.KATA_TRANSCRIPT_AGENT, process.env.KATA_TRANSCRIPT_SESSION_ID]).toEqual(["omp", "transcript-main"]);
@@ -38,9 +35,6 @@ test("the main session exports its transcript identity on start and switch, and 
   expect([process.env.KATA_TRANSCRIPT_AGENT, process.env.KATA_TRANSCRIPT_SESSION_ID]).toEqual(["omp", "transcript-next"]);
   await host({ sid: "transcript-after", transcript: true }).event("session_start");
   expect(process.env.KATA_TRANSCRIPT_SESSION_ID).toBe("transcript-after");
-  } finally {
-    for (const [key, value] of [["KATA_TRANSCRIPT_AGENT", saved[0]], ["KATA_TRANSCRIPT_SESSION_ID", saved[1]]] as const) value === undefined ? delete process.env[key] : process.env[key] = value;
-  }
 });
 
 // A host whose spawn fails reports a bare failure with no output; the paired close, spawned by the adapter, must read the same.
@@ -77,7 +71,7 @@ test("a plugin close records the omp session as its transcript with no transcrip
   const done = await app.call({ op: "done", message, evidence });
   expect(done.isError, done.content?.[0]?.text).toBeUndefined();
   expect(app.calls.some(c => c[0] === "close")).toBe(false);
-  const closes = (await kata(["events", "--after", "0", "--limit", "500", "--json"])).events.filter((e: any) => e.type === "issue.closed" && e.payload?.transcript?.session_id === "transcript-recorded");
+  const closes = (await events()).filter((e: any) => e.type === "issue.closed" && e.payload?.transcript?.session_id === "transcript-recorded");
   expect(closes.length).toBeGreaterThan(0);
   expect(closes[0].payload.transcript).toMatchObject({ agent: "omp", session_id: "transcript-recorded" });
 });
@@ -170,10 +164,15 @@ test("contract is cached verbatim, inbox read every turn, slow hooks bounded and
   expect(second.systemPrompt.join("\n")).toContain(contract);
   expect(app.calls.filter(a => a[0] === "agent-contract-hook")).toHaveLength(1);
   expect(app.calls.filter(a => a[0] === "inbox")).toHaveLength(3);
-  const slow = host({ before: async () => { await Bun.sleep(600); return { code: 1, stderr: "offline", stdout: "" }; } });
-  const start = performance.now(); await slow.event("session_start"); await slow.event("before_agent_start", { systemPrompt: ["base"] });
-  expect(performance.now() - start).toBeLessThan(600);
-  expect(slow.notices).toEqual([]);
+  // Kata does not answer until the test lets it: the hooks must return on their own bound, not on Kata's answer.
+  const kataAnswers = Promise.withResolvers<void>();
+  let asked = 0;
+  const slow = host({ before: async () => { asked++; await kataAnswers.promise; return { code: 1, stderr: "offline", stdout: "" }; } });
+  try {
+    expect(await finishes((async () => { await slow.event("session_start"); await slow.event("before_agent_start", { systemPrompt: ["base"] }); })())).toBe(true);
+    expect(asked).toBeGreaterThan(0);
+    expect(slow.notices).toEqual([]);
+  } finally { kataAnswers.resolve(); }
 });
 
 test("external closes reconcile an auto parent, including non-todo children", async () => {
@@ -191,8 +190,8 @@ test("a delegate bound to an existing plan item gets a teammate, the verbatim co
   parent.emit("task:subagent:lifecycle", { id: "Build.Widget", agent: "task", status: "started", sessionFile, description: "Await delegated work" });
   const child = host({ agent: { kind: "sub", id: "Build.Widget", parentId: parent.ctx.agent.id }, sessionFile });
   await child.event("session_start");
-  // Startup hooks deliberately return after 250ms; await the actual contract
-  // request before asserting the next prompt contains its completed cache.
+  // Startup hooks return on their short bound, which can be before the contract has answered: await the actual
+  // contract request before asserting the next prompt contains its completed cache.
   await child.contractReady;
   const prompt = await child.event("before_agent_start", { systemPrompt: ["child base"] });
   await parent.call({ op: "view" });
@@ -329,10 +328,8 @@ test("a flagged automatic parent is not re-audited until its revision changes", 
 
 test("a throttled automatic-parent close does not label the parent for review", async () => {
   let parent = "";
-  const timers = new Set<{ run: () => void }>();
   const app = host({ before: (a: string[]) => a[0] === "close" && a.includes(parent) ? siblingThrottle() : undefined });
-  app.ctx.setTimeout = (callback: () => void) => { const timer = { run: callback }; timers.add(timer); return timer; };
-  app.ctx.clearTimer = (timer: any) => { timers.delete(timer); };
+  const timers = hostTimers(app);
   parent = await app.init(["Throttled parent"]);
   await app.call({ op: "done", message, evidence });
   const view = await show(parent);

@@ -464,9 +464,10 @@ test("a background task call keeps its assignment for a late start until its job
   await app.event("tool_result", { toolName: "task", toolCallId: "late-1", isError: false, input, details });
   expect(await lateStart(app, ref, "late-1")).toBe("late-1");
 
-  await app.event("tool_call", { toolName: "task", toolCallId: "late-2", input: { task: 'Complete "Write sprocket docs"' } });
+  const second = { task: 'Complete "Write sprocket docs"' };
+  await app.event("tool_call", { toolName: "task", toolCallId: "late-2", input: second });
   running = [{ id: "job-2", agentId: "late-2", type: "task", status: "running" }];
-  await app.event("tool_result", { toolName: "task", toolCallId: "late-2", isError: false, input, details: { async: { jobId: "job-2" }, progress: [{ id: "late-2" }] } });
+  await app.event("tool_result", { toolName: "task", toolCallId: "late-2", isError: false, input: second, details: { async: { jobId: "job-2" }, progress: [{ id: "late-2" }] } });
   running = [];
   await app.event("tool_call", { toolName: "read", input: { path: "README.md" } }); // any event reads the snapshot
   app.emit("task:subagent:lifecycle", { id: "late-2", status: "started", sessionFile: `${scratch}/late-2.jsonl`, parentToolCallId: "late-2", index: 0 });

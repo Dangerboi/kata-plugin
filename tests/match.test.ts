@@ -1,4 +1,5 @@
 import { expect, test } from "bun:test";
+import fc from "fast-check";
 import { itemTicket, qualifiedRefs, type Status, type Task } from "../core/model";
 import { namedTargets, namedTasks, Refusal, resolve } from "../core/delegates";
 
@@ -108,25 +109,20 @@ test("tickets outside the plan are named targets, and the plan parent is not", (
   expect(namedTargets(plan, "Reply with exactly: OK", all).tickets).toEqual([]);
 });
 
-// Property: whatever the text, the match is one available, open, unblocked,
-// undelegated task. Seeded so a failure reproduces.
-test("matches are always available open tasks", () => {
-  let seed = 20261019;
-  const random = () => (seed = (seed * 1103515245 + 12345) % 2 ** 31) / 2 ** 31;
-  const words = ["write", "tests", "implement", "widget", "run", "suite", "word_count", "commit", "docs", "current", "task", "build", "alpha"];
-  const statuses: Status[] = ["pending", "in_progress", "blocked", "completed", "abandoned"];
-  const phrase = (n: number) => Array.from({ length: n }, () => words[Math.floor(random() * words.length)]).join(" ");
-  for (let run = 0; run < 2000; run++) {
-    const tasks = Array.from({ length: 1 + Math.floor(random() * 5) }, (_, i) =>
-      task(`r#t${i}`, phrase(1 + Math.floor(random() * 4)), statuses[Math.floor(random() * statuses.length)], { delegated: random() < 0.2 }));
-    const unavailable = tasks.filter(() => random() < 0.2).map(t => t.ref);
-    const ref = pick(tasks, phrase(Math.floor(random() * 6)), unavailable);
-    if (!ref) continue;
-    const chosen = tasks.find(t => t.ref === ref)!;
-    expect(["pending", "in_progress"]).toContain(chosen.status);
-    expect(chosen.delegated).toBe(false);
-    expect(unavailable).not.toContain(ref);
-  }
+// Property: a text that names one plan task binds it exactly while the task is open and unblocked and nobody else has
+// it (a delegate, another session); otherwise the text binds nothing. Seeded so a failure reproduces.
+test("naming a plan task binds it only while it is open and nobody else has it", () => {
+  const titles = ["alpha", "beta", "gamma", "delta", "epsilon"].map(word => `Build the ${word} widget`);
+  const rarely = fc.constantFrom(false, false, false, true);
+  const spec = fc.record({ status: fc.constantFrom<Status>("pending", "in_progress", "blocked", "completed", "abandoned"), delegated: rarely, held: rarely, taken: rarely });
+  const filler = fc.array(fc.constantFrom("write", "tests", "implement", "run", "suite", "commit", "docs", "current", "task"), { maxLength: 4 }).map(words => words.join(" "));
+  fc.assert(fc.property(fc.array(spec, { minLength: 1, maxLength: 5 }), fc.nat(), fc.boolean(), filler, filler, (specs, at, byRef, before, after) => {
+    const tasks = specs.map((s, i) => task(`r#t${i}aa`, titles[i], s.status, { delegated: s.delegated, ...(s.held ? { holder: "session-a" } : {}) }));
+    const named = at % tasks.length, { status, delegated, held, taken } = specs[named];
+    const text = `${before} ${byRef ? tasks[named].ref : `"${titles[named]}"`} ${after}`;
+    const free = (status === "pending" || status === "in_progress") && !delegated && !held && !taken;
+    expect(pick(tasks, text, tasks.filter((_, i) => specs[i].taken).map(t => t.ref))).toBe(free ? tasks[named].ref : undefined);
+  }), { numRuns: 500, seed: 20261019 });
 });
 
 test("an item names a ticket only with a qualified ref prefix and a colon", () => {

@@ -1,12 +1,6 @@
-import { afterAll, afterEach, beforeAll, expect, test } from "bun:test";
-import { spawn } from "node:child_process";
-import { mkdirSync, mkdtempSync } from "node:fs";
-import path from "node:path";
-import { createInterface } from "node:readline";
-import { assertIsolated } from "./isolation";
-import { isolatedKata, settle, until } from "./kata-fixture";
+import { expect, test } from "bun:test";
+import { realKata } from "./kata-fixture";
 import { createInboxFollower, deliveryText, parseStreamLine, projectHead, knownProjectHead, slotKey, type InboxFollowerDeps } from "../core/inbox";
-assertIsolated();
 
 // ------------------------------------------------------------------ follower with fakes
 const ADDRESS = "lead/worker", KEY = slotKey(ADDRESS);
@@ -379,82 +373,15 @@ test("a stream that keeps dropping right after a line backs off further each tim
 	t.follow.stop();
 });
 
-// ------------------------------------------------------------------ follower, real Kata
-// The module reads Kata through its dependencies; these tests hand it the real `kata inbox` read, the real
-// `kata events --tail` stream and the real project head, in a throwaway store.
-const binary = process.env.KATA_TEST_EXECUTABLE!;
-if (!binary || !path.isAbsolute(binary)) throw new Error("Set KATA_TEST_EXECUTABLE to the absolute Kata binary.");
-const scratch = mkdtempSync(path.join(process.env.KATA_TEST_ROOT!, "live-"));
-const cwd = path.join(scratch, "workspace");
-mkdirSync(cwd);
-const env = { ...process.env, KATA_HOME: path.join(scratch, "home"), KATA_AUTHOR: "v2-builder" };
-for (const key of ["KATA_SERVER", "KATA_DAEMON", "KATA_AUTH_TOKEN", "KATA_REF", "KATA_TEAMMATE", "KATA_INBOX_USER"]) delete env[key];
-const run = isolatedKata(binary, env, cwd, 5000);
-async function kataText(args: string[], extraEnv: NodeJS.ProcessEnv = {}): Promise<string> {
-	const out = await run(args, cwd, 5000, extraEnv);
-	if (out.code) throw new Error(out.stderr);
-	return out.stdout;
-}
-const kata = async (args: string[], extraEnv: NodeJS.ProcessEnv = {}) => JSON.parse(await kataText(args, extraEnv));
+// ------------------------------------------------------------------ project head, real Kata
+const { text, kata } = realKata({ prefix: "live", author: "v2-builder", project: "omp-v2-live" });
 let sequence = 0;
 const issue = async () => (await kata(["create", `Live inbox ${++sequence}`, "--force-new", "--json"])).issue.short_id;
-
-function realStream(cursor: number | undefined) {
-	const args = ["events", "--tail", "--json", "--workspace", cwd, ...(cursor ? ["--last-event-id", String(cursor)] : [])];
-	const proc = spawn(binary, args, { cwd, env, stdio: ["ignore", "pipe", "ignore"] });
-	const exited = new Promise<void>(resolve => { proc.on("error", () => resolve()); proc.on("close", () => resolve()); });
-	return { lines: createInterface({ input: proc.stdout! }), exited, kill: () => { proc.kill("SIGKILL"); } };
-}
-
-const live: ReturnType<typeof liveFollower>[] = [];
-function liveFollower(address: string) {
-	const delivered: string[] = [], published: string[] = [];
-	let reads = 0;
-	const follow = createInboxFollower({
-		address,
-		actor: async () => "v2-builder",
-		read: async () => { reads++; return JSON.parse(await kataText(["inbox", "--for", address, "--json"])); },
-		spawn: realStream,
-		deliver: text => delivered.push(text),
-		publish: text => published.push(text),
-		head: () => projectHead(kataText),
-		now: () => performance.now(),
-		setTimer: (fn, ms) => { const handle = setTimeout(fn, ms); handle.unref(); return handle; },
-		clearTimer: handle => clearTimeout(handle as ReturnType<typeof setTimeout>),
-		debug: () => {},
-	});
-	const t = { follow, delivered, published, reads: () => reads, shown: () => published.at(-1) ?? "" };
-	live.push(t);
-	follow.start();
-	return t;
-}
-
-beforeAll(async () => { const out = await run(["init", "--project", "omp-v2-live"]); if (out.code) throw new Error(out.stderr); });
-afterEach(() => { for (const t of live.splice(0)) t.follow.stop(); });
-afterAll(async () => { await run(["daemon", "stop"]); });
-
-test("a notify is delivered once with how to clear it, the section is current without another read, and a clear delivers nothing", async () => {
-	const address = "v2-builder/live-main";
-	const t = liveFollower(address);
-	const ref = await issue();
-	expect(await until(() => t.reads() > 0)).toBe(true);
-	const reads = t.reads();
-	await kata(["notify", ref, "--to", address, "--message", "live-ping-8841", "--json"]);
-	expect(await until(() => t.delivered.length === 1)).toBe(true);
-	expect(t.delivered[0]).toContain("live-ping-8841");
-	expect(t.delivered[0]).toContain(`kata notify omp-v2-live#${ref} --to ${address} --clear`);
-	expect(t.shown()).toContain("live-ping-8841");
-	expect(t.reads()).toBe(reads);
-	await kata(["notify", ref, "--to", address, "--clear", "--json"]);
-	expect(await until(() => t.shown() === "")).toBe(true);
-	await settle();
-	expect(t.delivered).toHaveLength(1);
-});
 
 test("the project head found after a purge is the newest event, so the stream does not replay what follows the marker", async () => {
 	const doomed = await issue();
 	await kata(["purge", `omp-v2-live#${doomed}`, "--force", "--confirm", `PURGE omp-v2-live#${doomed}`, "--json"]);
 	const kept = await issue();
 	const newest = (await kata(["comment", `omp-v2-live#${kept}`, "-m", "newest", "--json"])).event.id;
-	expect(await projectHead(kataText)).toBe(newest);
+	expect(await projectHead(text)).toBe(newest);
 });

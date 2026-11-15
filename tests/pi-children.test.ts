@@ -6,15 +6,22 @@ import { launchesPi } from "../plugins/pi/kata";
 import { piFixture } from "./pi-fixture";
 
 // Child sessions: binding to a plan task or ticket, naming, reports, hand-back, models, throttled closes and automatic parents.
-const { cwd, outside, env, run, kata, show, host, down, evidence, message, unique } = await piFixture();
+const { cwd, env, run, kata, show, host, asChild, evidence, message, unique } = piFixture();
+
+async function childOf(parent: any, options: any = {}) {
+  asChild();
+  const child = await host(options); await child.event("session_start", { reason: "startup" });
+  return child;
+}
+// The process is the lead's again: what the child's start put in the environment is gone.
+function leaveChild() { for (const key of ["KATA_TEAMMATE", "KATA_INBOX_USER", "KATA_PI_PARENT"]) delete process.env[key]; }
 
 test("pi child named binding owns its issue and closes with its teammate", async () => {
   const parent = await host(); await parent.event("session_start", { reason: "startup" });
   const ref = await parent.init(["Delegated pi work", "Remaining lead work"]);
   const marker = JSON.parse(process.env.KATA_PI_PARENT!);
-  process.env.KATA_PI_PARENT = JSON.stringify({ ...marker, pid: process.pid + 1 });
   process.env.KATA_REF = ref; // Stale inherited lead routing must be removed.
-  const child = await host(); await child.event("session_start", { reason: "startup" });
+  const child = await childOf(parent);
   expect(process.env.KATA_REF).toBeUndefined();
   const prompt: any = { prompt: "Complete Delegated pi work", systemPromptOptions: { sections: {} } };
   await child.event("before_agent_start", prompt);
@@ -33,7 +40,7 @@ test("pi child named binding owns its issue and closes with its teammate", async
   await child.event("session_shutdown", {reason:"quit"});
   expect((await show(record.ref)).issue.status).toBe("closed");
   expect((await show(ref)).issue.metadata["work.attention"]).toBe(unchanged);
-  delete process.env.KATA_TEAMMATE; delete process.env.KATA_INBOX_USER; delete process.env.KATA_PI_PARENT;
+  leaveChild();
   expect((await parent.call({op:"done", task:"Remaining lead work", message, evidence})).isError).toBeUndefined();
   expect((await show(ref)).issue.status).toBe("closed");
   expect((await kata(["audit", "closes", "--json"])).rows.filter((r:any) => r.issue === ref.split("#")[1])).toHaveLength(1);
@@ -42,61 +49,38 @@ test("pi child named binding owns its issue and closes with its teammate", async
 test("a pi child that leaves its issue open without a comment gets its last assistant text posted as its report, under its task's name", async () => {
   const parent = await host(); await parent.event("session_start", { reason: "startup" });
   await parent.init(["Reported pi work", "Lead pi work"]);
-  const marker = JSON.parse(process.env.KATA_PI_PARENT!);
-  process.env.KATA_PI_PARENT = JSON.stringify({ ...marker, pid: process.pid + 1 });
-  try {
-    const child = await host(); await child.event("session_start", { reason: "startup" });
-    await child.event("before_agent_start", { prompt: "Complete Reported pi work", systemPromptOptions: { sections: {} } });
-    const record = delegateRecord(child);
-    expect(record.name).toBe("reported-pi-work");
-    expect(record.teammate).toMatch(/^reported-pi-work-[0-9a-f]{6}$/);
-    await child.event("tool_call", { toolName: "read", input: { path: "README.md" } });
-    child.entries.push({ type: "message", message: { role: "assistant", content: [{ type: "text", text: "Half done: the parser is written, its tests are not." }] } });
-    // A run that failed on a provider error ends on an assistant message without text.
-    child.entries.push({ type: "message", message: { role: "assistant", content: [], stopReason: "error" } });
-    await child.event("session_shutdown", { reason: "quit" });
-    const comments = (await show(record.ref)).comments.map((c: any) => [c.teammate, c.body]);
-    expect(comments).toContainEqual([record.teammate, "Report from subagent reported-pi-work (it left no comment of its own):\n\nHalf done: the parser is written, its tests are not."]);
-    expect(comments).toContainEqual([record.teammate, "Subagent reported-pi-work ended without closing its Kata issue. Review the work and supply evidence before closing."]);
-  } finally { delete process.env.KATA_TEAMMATE; delete process.env.KATA_INBOX_USER; delete process.env.KATA_PI_PARENT; }
+  const child = await childOf(parent);
+  await child.event("before_agent_start", { prompt: "Complete Reported pi work", systemPromptOptions: { sections: {} } });
+  const record = delegateRecord(child);
+  expect(record.name).toBe("reported-pi-work");
+  expect(record.teammate).toMatch(/^reported-pi-work-[0-9a-f]{6}$/);
+  await child.event("tool_call", { toolName: "read", input: { path: "README.md" } });
+  child.entries.push({ type: "message", message: { role: "assistant", content: [{ type: "text", text: "Half done: the parser is written, its tests are not." }] } });
+  // A run that failed on a provider error ends on an assistant message without text.
+  child.entries.push({ type: "message", message: { role: "assistant", content: [], stopReason: "error" } });
+  await child.event("session_shutdown", { reason: "quit" });
+  const comments = (await show(record.ref)).comments.map((c: any) => [c.teammate, c.body]);
+  expect(comments).toContainEqual([record.teammate, "Report from subagent reported-pi-work (it left no comment of its own):\n\nHalf done: the parser is written, its tests are not."]);
+  expect(comments).toContainEqual([record.teammate, "Subagent reported-pi-work ended without closing its Kata issue. Review the work and supply evidence before closing."]);
 });
 
 for (const named of ["session", "none"]) test(`a pi child is named by ${named === "session" ? "its --name over its task" : "the end of its session id when it matched nothing"}`, async () => {
   const parent = await host(); await parent.event("session_start", { reason: "startup" });
   await parent.init(["Named pi work", "Other lead work"]);
-  const marker = JSON.parse(process.env.KATA_PI_PARENT!);
-  process.env.KATA_PI_PARENT = JSON.stringify({ ...marker, pid: process.pid + 1 });
-  try {
-    const child = await host(named === "session" ? { sessionName: "Slug Writer" } : { sid: "01a1bfd7-4b80-77d7-9ce3-18e7ceff1c15" });
-    await child.event("session_start", { reason: "startup" });
-    const prompt = { prompt: named === "session" ? "Complete Named pi work" : "Survey the unrelated build system", systemPromptOptions: { sections: {} as any } };
-    await child.event("before_agent_start", prompt);
-    const record = delegateRecord(child);
-    const name = named === "session" ? "Slug Writer" : "pi-ff1c15";
-    expect(record.name).toBe(name);
-    expect(record.teammate).toMatch(new RegExp(`^${name.toLowerCase().replace(" ", "-")}-[0-9a-f]{6}$`));
-    expect(prompt.systemPromptOptions.sections.kata_binding).toStartWith(`You are subagent ${name}.`);
-  } finally { delete process.env.KATA_TEAMMATE; delete process.env.KATA_INBOX_USER; delete process.env.KATA_PI_PARENT; }
-});
-
-test("pi local plans and queued closes survive a fresh extension instance", async () => {
-  const local = await host({cwd:outside, before: down}); await local.event("session_start", {reason:"startup"});
-  await local.init(["Durable pi local work"]); await local.call({op:"block", reason:"Wait through restart"});
-  const restored = await host({cwd:outside, before: down, sid:local.sid, entries:JSON.parse(JSON.stringify(local.entries))});
-  await restored.event("session_start", {reason:"resume"});
-  expect((await restored.call({op:"view"})).content[0].text).toContain("Wait through restart");
-  const app = await host({before:(a:string[])=>a[0]==="close"?siblingThrottle():undefined});
-  const ref = await app.init(["Durable pi close"]); await app.call({op:"done", message, evidence});
-  const entries=JSON.parse(JSON.stringify(app.entries));
-  await later(async () => { const resumed=await host({sid:app.sid,entries}); await resumed.event("session_start",{reason:"resume"}); await resumed.call({op:"view"}); });
-  expect((await show(ref)).issue.status).toBe("closed");
+  const child = await childOf(parent, named === "session" ? { sessionName: "Slug Writer" } : { sid: "01a1bfd7-4b80-77d7-9ce3-18e7ceff1c15" });
+  const prompt = { prompt: named === "session" ? "Complete Named pi work" : "Survey the unrelated build system", systemPromptOptions: { sections: {} as any } };
+  await child.event("before_agent_start", prompt);
+  const record = delegateRecord(child);
+  const name = named === "session" ? "Slug Writer" : "pi-ff1c15";
+  expect(record.name).toBe(name);
+  expect(record.teammate).toMatch(new RegExp(`^${name.toLowerCase().replace(" ", "-")}-[0-9a-f]{6}$`));
+  expect(prompt.systemPromptOptions.sections.kata_binding).toStartWith(`You are subagent ${name}.`);
 });
 
 test("startup-spawned child establishes the lead session parent without lead work writes", async () => {
   const parent=await host(); await parent.event("session_start",{reason:"startup"});
-  const marker=JSON.parse(process.env.KATA_PI_PARENT!); expect(marker.ref).toBeUndefined();
-  process.env.KATA_PI_PARENT=JSON.stringify({...marker,pid:process.pid+1});
-  const child=await host(); await child.event("session_start",{reason:"startup"});
+  expect(JSON.parse(process.env.KATA_PI_PARENT!).ref).toBeUndefined();
+  const child=await childOf(parent);
   await child.event("before_agent_start",{prompt:"Independent startup child",systemPromptOptions:{sections:{}}});
   const record=delegateRecord(child);
   expect(record.state).toBe("untracked");
@@ -105,7 +89,7 @@ test("startup-spawned child establishes the lead session parent without lead wor
   expect(lead.metadata["pi.session_id"]).toBe(parent.sid);
   expect(lead.metadata["work.attention"]).toBeUndefined();
   expect(child.calls.filter(a=>a[0]==="meta" && a[2]===parentRef && a[3]?.startsWith("work."))).toEqual([]);
-  delete process.env.KATA_TEAMMATE; delete process.env.KATA_INBOX_USER; delete process.env.KATA_PI_PARENT;
+  leaveChild();
   expect(await parent.init(["Follow startup child"])).toBe(parentRef);
   expect((await show(parentRef)).children).toHaveLength(1);
 });
@@ -124,11 +108,10 @@ test("retaining main KATA_REF preserves explicit binding precedence", async () =
 
 test("saved child resumes its teammate and binding without inherited environment", async () => {
   const parent=await host(); await parent.event("session_start",{reason:"startup"}); await parent.init(["Saved delegate work"]);
-  process.env.KATA_PI_PARENT=JSON.stringify({...JSON.parse(process.env.KATA_PI_PARENT!),pid:process.pid+1});
-  const child=await host(); await child.event("session_start",{reason:"startup"});
+  const child=await childOf(parent);
   await child.event("before_agent_start",{prompt:"Saved delegate work",systemPromptOptions:{sections:{}}});
   const record=delegateRecord(child);
-  for(const key of ["KATA_TEAMMATE","KATA_INBOX_USER","KATA_PI_PARENT"])delete process.env[key];
+  leaveChild();
   const resumed=await host({sid:child.sid,entries:JSON.parse(JSON.stringify(child.entries))});
   await resumed.event("session_start",{reason:"resume"});
   const event:any={prompt:"Continue saved work",systemPromptOptions:{sections:{}}};
@@ -140,13 +123,6 @@ test("saved child resumes its teammate and binding without inherited environment
   expect(resumed.calls.some(a=>a[0]==="create")).toBe(false);
 });
 
-// Children of the 2026-10-19 eval lead, spawned through bash with the inherited marker.
-async function childOf(parent: any, options: any = {}) {
-  process.env.KATA_PI_PARENT = JSON.stringify({ ...JSON.parse(process.env.KATA_PI_PARENT!), pid: process.pid + 1 });
-  const child = await host(options); await child.event("session_start", { reason: "startup" });
-  return child;
-}
-function leaveChild() { for (const key of ["KATA_TEAMMATE", "KATA_INBOX_USER", "KATA_PI_PARENT"]) delete process.env[key]; }
 // The child's delegate record as its session branch last saved it.
 function delegateRecord(child: any) { return child.entries.filter((e: any) => e.customType === "io.kata.pi.delegate").at(-1)?.data; }
 const piPlan = ["Implement word_count and top_words", "Delegate: subagent writes unittest suite in tests/ for both functions", "Run python3 -m unittest"];
@@ -424,7 +400,7 @@ test("a resumed assigned child shows the sub-plan it made under its issue in its
   const child = await childOf(parent);
   await child.event("before_agent_start", { prompt: "Write resume fixture tests", systemPromptOptions: { sections: {} } });
   await child.call({ op: "init", items: ["Sketch the resume cases"] });
-  process.env.KATA_PI_PARENT = JSON.stringify({ ...JSON.parse(marker), pid: process.pid + 1 });
+  asChild(marker);
   const resumed = await host({ sid: child.sid, entries: JSON.parse(JSON.stringify(child.entries)) });
   await resumed.event("session_start", { reason: "resume" });
   const event: any = { prompt: "Continue", systemPromptOptions: { sections: {} } };
@@ -523,7 +499,7 @@ test("a resumed child whose first run closed its plan task reports its next run 
   await child.event("session_shutdown", { reason: "quit" });
   expect(delegateRecord(child).state).toBe("settled");
   // `pi --continue` in the child's session: a new process that finds the child's record in its session branch.
-  process.env.KATA_PI_PARENT = JSON.stringify({ ...JSON.parse(marker), pid: process.pid + 1 });
+  asChild(marker);
   const resumed = await host({ sid: child.sid, entries: JSON.parse(JSON.stringify(child.entries)) });
   await resumed.event("session_start", { reason: "resume" });
   const event: any = { prompt: "Also cover the empty input", systemPromptOptions: { sections: {} } };

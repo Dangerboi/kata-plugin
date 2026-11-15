@@ -2,6 +2,7 @@ import { expect, test } from "bun:test";
 import { mkdirSync } from "node:fs";
 import path from "node:path";
 import { v2Fixture } from "./v2-fixture";
+import { isRead } from "../core/kata-cli";
 
 // The omp adapter against a real Kata: plan items that name tickets, and init with or without replace.
 const { scratch, outside, run, kata, show, issue, unique, host, down, evidence, message, total, commentsOf } = v2Fixture();
@@ -394,7 +395,7 @@ test("an item follows a wontfix close of its ticket as abandoned", async () => {
   expect((await app.call({ op: "view" })).content[0].text).toContain(`[~] v2test#${a}: only step`);
 });
 
-const kataWrites = (calls: string[][]) => calls.filter(a => !["show", "list", "search", "whoami"].includes(a[0]));
+const kataWrites = (calls: string[][]) => calls.filter(args => !isRead(args));
 
 test("init without replace refuses a plan with open tasks and writes nothing to Kata", async () => {
   const app = host(); const parent = await app.init(["Started task", "Waiting task", "Pending task"]);

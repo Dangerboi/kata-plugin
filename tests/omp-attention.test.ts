@@ -1,40 +1,22 @@
-import { afterAll, afterEach, beforeAll, beforeEach, expect, jest, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { afterEach, beforeAll, expect, jest, test } from "bun:test";
+import { mkdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
-import { assertIsolated } from "./isolation";
-import { adoptIsolatedKata, isolatedKata } from "./kata-fixture";
+import { realKata } from "./kata-fixture";
 import { ompHost } from "./omp-host";
-assertIsolated();
-const binary = process.env.KATA_TEST_EXECUTABLE!;
-if (!binary || !path.isAbsolute(binary)) throw new Error("Set KATA_TEST_EXECUTABLE to an absolute Kata binary.");
-const scratch = mkdtempSync(path.join(process.env.KATA_TEST_ROOT!, "omp-attention-"));
-const cwd = path.join(scratch, "workspace"); mkdirSync(cwd); mkdirSync(path.join(cwd, "sub"));
-const env = { ...process.env, KATA_HOME: path.join(scratch, "home"), KATA_AUTHOR: "v2-builder" };
-for (const key of ["KATA_SERVER", "KATA_DAEMON", "KATA_AUTH_TOKEN", "KATA_REF", "KATA_TEAMMATE", "KATA_INBOX_USER", "KATA_PI_PARENT", "KATA_ATTENTION_HOST"]) delete env[key];
-const run = isolatedKata(binary, env, cwd);
-async function checked(args: string[]) { const out = await run(args); if (out.code) throw new Error(out.stderr); return out.stdout; }
-async function kata(args: string[]) { return JSON.parse(await checked(args)); }
+const { binary, scratch, cwd, env, run, text, kata } = realKata({ prefix: "omp-attention", author: "v2-builder", project: "omptest", adopt: true });
+mkdirSync(path.join(cwd, "sub"));
 const issue = async () => {
   const ref = `omptest#${(await kata(["create", "OMP attention lead", "--force-new", "--json"])).issue.short_id}`;
-  await checked(["claim", ref]); return ref;
+  await text(["claim", ref]); return ref;
 };
-let restore: () => void, sequence = 0;
+let sequence = 0;
 const apps: ReturnType<typeof ompHost>[] = [];
 function host(before?: Parameters<typeof ompHost>[0]["before"], dir = cwd) {
   const app = ompHost({ cwd: dir, sid: `attention-${++sequence}`, before, run: (args, opts) => run(args, opts.cwd, opts.timeout) });
   apps.push(app); return app;
 }
-beforeAll(async () => {
-  await checked(["init", "--project", "omptest"]);
-  await checked(["agent-hook", "install", "pi", "--scope", "project", "--executable", binary]);
-});
-beforeEach(() => {
-  restore = adoptIsolatedKata(binary, env.KATA_HOME);
-  process.env.KATA_AUTHOR = "v2-builder";
-  for (const key of ["KATA_REF", "KATA_TEAMMATE", "KATA_INBOX_USER", "KATA_PI_PARENT", "KATA_ATTENTION_HOST"]) delete process.env[key];
-});
-afterEach(async () => { for (const app of apps.splice(0)) await app.event("session_shutdown"); delete process.env.KATA_ATTENTION_HOST; delete process.env.KATA_REF; restore(); });
-afterAll(async () => { await run(["daemon", "stop"]); rmSync(scratch, { recursive: true, force: true }); });
+beforeAll(async () => { await text(["agent-hook", "install", "pi", "--scope", "project", "--executable", binary]); });
+afterEach(async () => { for (const app of apps.splice(0)) await app.event("session_shutdown"); });
 
 // Removing the producer, or restoring the foreground startup race, fails this assertion at handler return.
 test("OMP publishes the native marker before session_start returns", async () => {
