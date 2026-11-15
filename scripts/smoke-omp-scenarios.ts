@@ -6,7 +6,7 @@
 
 import { setTimeout as sleep } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
-import { ownComment } from "../plugins/oh-my-pi/delegates";
+import { ownComment } from "../core/delegates";
 import { closeCount, closeEvent, closeEvidence, closeTranscript, eventsOf, labelled, type Check, type Issue } from "./smoke-lib";
 import type { SmokeContext, SmokeTurn } from "./smoke-provider";
 
@@ -61,8 +61,6 @@ export type Scenario = {
 	drive?(session: Session): Promise<Check[]>;
 	/** Keeps the session file on disk (omp's `--no-session` is dropped); RPC `fork` needs one. */
 	persist?: boolean;
-	/** Contents of the throwaway KATA_HOME/config.toml, written before the store is initialised. */
-	config?: string;
 	/** omp settings for this run, in config.yml form, passed as a `--config` overlay. */
 	ompConfig?: string;
 	/** Environment for the omp child. */
@@ -374,7 +372,7 @@ export const SCENARIOS: Scenario[] = [{
 		const issues = await store.issues();
 		const ticket = issues.find(i => i.ref === t);
 		const closed = eventsOf(ticket, "issue.closed");
-		const blocking = ticket?.events.filter(e => /comment/.test(e.type) && /open child/.test(JSON.stringify(e.payload))) ?? [];
+		const blocking = eventsOf(ticket, "issue.commented").filter(e => /open child/.test(JSON.stringify(e.payload)));
 		return [
 			{ name: "the claimed ticket is the plan parent: the plain item is its child", ok: issues.some(i => i.title === "Add the ignore file" && i.status === "closed"), detail: issues.map(i => `${i.title}:${i.status}`).join(", ") },
 			{ name: "the ticket closes once its plan children close, with the ticket item's evidence", ok: ticket?.status === "closed" && closed.length === 1 && JSON.stringify(closed[0].payload.evidence) === JSON.stringify([{ type: "test", command: "bun smoke scenario ticket item" }]), detail: `${ticket?.status} ${JSON.stringify(closed)}` },
@@ -482,7 +480,7 @@ export const SCENARIOS: Scenario[] = [{
 			return task?.status === "open" && !task.metadata["omp.subagent_id"] && !labelled(task) && !notified(task);
 		};
 		// A delegate that ran init twice has two steps of that title; the one it finished is the one closed as done.
-		const doneClose = (i: Issue) => i.events.some(e => e.type === "issue.closed" && e.payload?.reason === "done");
+		const doneClose = (i: Issue) => eventsOf(i, "issue.closed").some(e => e.payload?.reason === "done");
 		const stepOf = (n: number) => {
 			const steps = issues.filter(i => i.title === `Verify ${PORTS[n - 1]}`);
 			return steps.find(doneClose) ?? steps[0];
@@ -504,7 +502,7 @@ export const SCENARIOS: Scenario[] = [{
 		const used = (n: number, op: string) => tools.some(t => t.agent === `Port${n}` && t.tool === "todo" && t.op === op && !t.isError);
 		const workedThroughTodo = (n: number) => used(n, "init") && used(n, "done") && stepOf(n)?.status === "closed" && taskOf(n)?.status === "closed";
 		const sessionOf = (i?: Issue) => closeTranscript(i)?.session_id;
-		// The todo close and the bash close of one delegate both carry that delegate's own session; without its record, the lead's.
+		// The todo close and the bash close of one delegate both carry that delegate's own session; a delegate whose session is unknown records none.
 		const ownSession = (n: number) => !!sessionOf(stepOf(n)) && sessionOf(stepOf(n)) === sessionOf(taskOf(n)) && sessionOf(taskOf(n)) !== parent?.metadata["omp.session_id"];
 		return [...checks,
 			{ name: "a delegate on a worker thread planned, finished and closed through its own todo and kata close", ok: onWorkerOf(closers).length > 0 && onWorkerOf(closers).every(workedThroughTodo), detail: `worker delegates ${onWorker.join(", ")}; ${describe(onWorkerOf(closers), workedThroughTodo)}` },

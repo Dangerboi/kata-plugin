@@ -117,7 +117,7 @@ async function run(scenario: Scenario) {
 	const project = kataProject(env, work, PROJECT);
 	const store: Store = { requests: () => linesIn<Request>(records), prompts: () => linesIn<Prompt>(prompts), tools: () => linesIn<ToolUse>(tools), live, issues: project.issues };
 	try {
-		project.init(scenario.config);
+		project.init();
 		const vars = scenario.setup?.(project.create) ?? {};
 		env.KATA_SMOKE_VARS = JSON.stringify(vars);
 		// Scripted runs need no login, so omp gets a throwaway agent directory; live runs use yours (inherited PI_CODING_AGENT_DIR, else omp's default).

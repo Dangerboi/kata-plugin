@@ -47,7 +47,6 @@ jobs:
           bun install --ignore-scripts --frozen-lockfile
           npm install --ignore-scripts --prefix "$RUNNER_TEMP/harnesses" "@oh-my-pi/pi-coding-agent@$OMP_VERSION"
           echo "OMP_BIN=$RUNNER_TEMP/harnesses/node_modules/.bin/omp" >> "$GITHUB_ENV"
-          echo "PI_BIN=$GITHUB_WORKSPACE/node_modules/.bin/pi" >> "$GITHUB_ENV"
       - name: Use synthetic configuration
         run: |
           mkdir -p "$RUNNER_TEMP/attention-home"

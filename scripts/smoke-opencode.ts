@@ -28,8 +28,6 @@ type Store = {
 	issues(): Promise<Issue[]>;
 	/** Short ids of the children of an issue. */
 	children(ref: string): string[];
-	/** Runs kata against the throwaway store, from outside OpenCode. */
-	kata(args: string[], extra?: NodeJS.ProcessEnv): string;
 };
 type Scenario = {
 	name: string;
@@ -37,18 +35,8 @@ type Scenario = {
 	prompt: string;
 	/** Scripted turns keyed by a marker that appears in the agent's first user message (the lead's prompt; a subagent's prompt). */
 	scripts: Record<string, Turn[]>;
-	/** Options for the plugin entry in opencode.json. */
-	pluginOptions?: Record<string, unknown>;
-	/** Extra opencode.json settings, merged over the harness's. */
-	config?: Record<string, unknown>;
-	/** Contents of the throwaway KATA_HOME/config.toml, written before the store is initialised. */
-	kataConfig?: string;
-	/** Environment for the opencode child. */
-	env?: Record<string, string>;
-	/** Creates tickets before OpenCode starts; the returned short ids reach the scripts (`ctx.vars`) and `check`. */
-	setup?(create: (title: string) => string): Record<string, string>;
 	/** Assertions run after OpenCode has exited. */
-	check?(store: Store, vars: Record<string, string>): Promise<Check[]>;
+	check?(store: Store): Promise<Check[]>;
 };
 
 const SCENARIOS: Scenario[] = [];
@@ -273,7 +261,7 @@ SCENARIOS.push({
 
 const SHARED = "shared-server";
 const root = path.resolve(import.meta.dirname, "..");
-const pluginFile = path.join(root, "plugins/opencode/kata.ts");
+const pluginDir = path.join(root, "plugins/opencode");
 const scenarios = pickScenarios(SCENARIOS, [SHARED]);
 
 const PROJECT = "opencode-smoke";
@@ -290,13 +278,12 @@ function sandbox(name: string, extra: NodeJS.ProcessEnv = {}) {
 	return { dir, work, env };
 }
 
-/** Writes the folder's opencode.json: the scripted provider and, unless the plugin is left out, the repo's plugin folder with `options`. */
-function writeConfig(work: string, providerUrl: string, options: Record<string, unknown> = {}, extra: Record<string, unknown> = {}) {
+/** Writes the folder's opencode.json: the scripted provider and the repo's plugin folder with `options`. */
+function writeConfig(work: string, providerUrl: string, options: Record<string, unknown> = {}) {
 	const config = {
 		// The folder itself is the plugin (package.json `exports`); a file path is refused with "configured plugin path must be a directory".
-		plugins: [{ package: path.dirname(pluginFile), options }],
+		plugins: [{ package: pluginDir, options }],
 		providers: { [PROVIDER]: { package: "@opencode/ai/providers/openai-compatible", name: "Kata smoke", settings: { baseURL: providerUrl, apiKey: "unused" }, models: { [MODEL]: { name: "Scripted" } } } },
-		...extra,
 	};
 	writeFileSync(path.join(work, "opencode.json"), JSON.stringify(config, null, 2));
 }
@@ -310,20 +297,18 @@ async function opencodeRun(env: NodeJS.ProcessEnv, cwd: string, mode: string[], 
 
 async function run(scenario: Scenario) {
 	console.log(`\n# scenario ${scenario.name}`);
-	const { work, env } = sandbox(scenario.name, scenario.env);
-	let vars: Record<string, string> = {};
-	const provider = await startProvider(scenario.scripts, () => vars);
+	const { work, env } = sandbox(scenario.name);
+	const provider = await startProvider(scenario.scripts);
 	const stopProvider = defer(provider.stop);
 	const project = kataProject(env, work, PROJECT);
 	try {
-		project.init(scenario.kataConfig);
-		vars = scenario.setup?.(project.create) ?? {};
-		writeConfig(work, provider.url, scenario.pluginOptions, scenario.config);
+		project.init();
+		writeConfig(work, provider.url);
 		const { code, output, events } = await opencodeRun(env, work, ["--standalone"], scenario.prompt);
 		report("opencode exited cleanly", code === 0, `exit ${code}\n${lastLines(output)}`);
 		report("the provider saw a request", provider.requests.length > 0, "no model request reached the scripted provider");
-		const store: Store = { requests: () => provider.requests, events: () => events, code, kata: project.kata, children: project.children, issues: project.issues };
-		await reportChecks(() => scenario.check?.(store, vars) ?? []);
+		const store: Store = { requests: () => provider.requests, events: () => events, code, children: project.children, issues: project.issues };
+		await reportChecks(() => scenario.check?.(store) ?? []);
 	} catch (error) {
 		report("scenario setup", false, String(error));
 	} finally {

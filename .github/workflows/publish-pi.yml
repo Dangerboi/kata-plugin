@@ -40,7 +40,7 @@ jobs:
           package-manager-cache: false
 
       - run: node scripts/vendor-core.ts --check
-      - run: for dir in pi oh-my-pi opencode; do npm pack --dry-run --prefix plugins/$dir ./plugins/$dir; done
+      - run: for dir in pi oh-my-pi opencode; do (cd plugins/$dir && npm pack --dry-run); done
 
   publish:
     needs: verify

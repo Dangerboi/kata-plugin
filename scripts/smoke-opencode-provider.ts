@@ -7,13 +7,7 @@ import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import { answerOf, pickTurn, type SmokeContext, type SmokeTurn } from "./smoke-provider";
 
-export type TurnContext = SmokeContext & {
-	/** Run variables the scenario's setup returned (ticket ids). */
-	vars: Record<string, string>;
-	/** Every request recorded so far, this one included. */
-	requests(): Request[];
-};
-export type Turn = SmokeTurn<TurnContext>;
+export type Turn = SmokeTurn<SmokeContext>;
 /** One model request as the provider saw it. */
 export type Request = {
 	/** The scenario marker that identified the agent; "" for an unscripted agent. */
@@ -44,8 +38,8 @@ const textOf = (message: ChatMessage): string => {
 
 export type Provider = { url: string; requests: Request[]; stop(): void };
 
-/** Starts the server on a free local port. `scripts` maps an agent marker to its turns; `vars()` is read at each request. */
-export async function startProvider(scripts: Record<string, Turn[]>, vars: () => Record<string, string> = () => ({})): Promise<Provider> {
+/** Starts the server on a free local port. `scripts` maps an agent marker to its turns. */
+export async function startProvider(scripts: Record<string, Turn[]>): Promise<Provider> {
 	const requests: Request[] = [];
 	let counter = 0;
 	/** The stream chunks that answer a request; undefined for a turn that hangs. */
@@ -60,7 +54,7 @@ export async function startProvider(scripts: Record<string, Turn[]>, vars: () =>
 		const system = textsOf("system").join("\n");
 		const { agent, blocks } = pickTurn(scripts, messages);
 		requests.push({ agent, system, users: textsOf("user"), roles: messages.map(m => m.role), toolResults: textsOf("tool"), tools: body.tools.map(t => t.function?.name ?? "") });
-		const turn = answerOf(blocks({ texts: messages.map(m => m.text), system, vars: vars(), requests: () => requests }));
+		const turn = answerOf(blocks({ texts: messages.map(m => m.text), system }));
 		if (!turn) return undefined;
 		const chunks: unknown[] = [delta({ role: "assistant", content: "" })];
 		let tools = 0;

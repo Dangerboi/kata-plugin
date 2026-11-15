@@ -17,7 +17,7 @@ export const SESSION_ENDED = ["session.deleted", "session.archived"] as const;
 
 // What a session is to this instance. OpenCode serves many sessions from one process and one plugin instance per location;
 // only leads have a core (see Lead in lead.ts).
-export type Role =
+type Role =
 	// A session with no parent.
 	| { kind: "lead"; lead: Lead }
 	// A child session, and what the lead at the root of its parents knows of it (see Child): it is a delegate once it has a record.

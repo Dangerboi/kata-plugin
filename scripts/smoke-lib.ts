@@ -2,7 +2,7 @@
 // child processes that never outlive the run, and the check report. The scenario files import it too, and omp loads
 // those inside its own process (through the provider extension), so importing this module does nothing by itself.
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { SCRUBBED_ENV } from "./scrubbed-env";
@@ -94,9 +94,8 @@ export function kataProject(env: NodeJS.ProcessEnv, cwd: string, name: string) {
 	return {
 		/** Runs kata from outside the host and returns its stdout; a failed call throws. */
 		kata,
-		/** Makes the folder a Git folder holding the project. `config` becomes KATA_HOME/config.toml first. */
-		init(config?: string) {
-			if (config) writeFileSync(path.join(env.KATA_HOME!, "config.toml"), config);
+		/** Makes the folder a Git folder holding the project. */
+		init() {
 			spawnSync("git", ["init", "-q", "."], { cwd });
 			kata(["init", "--project", name]);
 		},
