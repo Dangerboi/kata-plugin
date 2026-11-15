@@ -241,6 +241,20 @@ test("a request sent mid-session reaches the inbox section by the next turn and 
   expect(await turn()).not.toContain("midsession-ping-7731");
 });
 
+test("the inbox trusts Kata's effective actor once the plan has a parent, not the author setting read before it", async () => {
+  process.env.KATA_INBOX_USER = "v2-builder/effective";
+  const parent = await issue();
+  // Kata reports another effective actor than KATA_AUTHOR, as a daemon that authenticates its clients does.
+  const app = host({ entries: [{ type: "custom", customType: "io.kata.omp.parent", data: { parent } }],
+    before: (a: string[]) => a[0] === "status" ? { code: 0, stdout: JSON.stringify({ actor: "daemon-actor" }), stderr: "" } : undefined });
+  await app.event("session_start"); await app.contractReady;
+  expect((await app.call({ op: "view" })).details.kata.parent).toBe(`v2test#${parent}`);
+  expect((await run(["notify", parent, "--to", "v2-builder/effective", "--message", "effective-actor-5521", "--json"], cwd, 5000, { KATA_AUTHOR: "daemon-actor" })).code).toBe(0);
+  await app.event("before_agent_start", { systemPrompt: ["base"] });
+  const prompt = (await app.event("before_agent_start", { systemPrompt: ["base"] })).systemPrompt.join("\n");
+  expect(prompt).toContain(`from="daemon-actor" message="effective-actor-5521"`);
+});
+
 test("only requests from the session's own actor reach the inbox section", async () => {
   process.env.KATA_INBOX_USER = "v2-builder/trust";
   const app = host(); await app.event("session_start"); await app.contractReady;

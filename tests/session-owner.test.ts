@@ -1,10 +1,12 @@
 import { assertIsolated } from "./isolation";
-import { adoptIsolatedKata, eventually, isolatedKata } from "./kata-fixture";
+import { adoptIsolatedKata, eventually, isolatedKata, later } from "./kata-fixture";
+import { siblingThrottle } from "./kata-errors";
 import { ompHost } from "./omp-host";
 assertIsolated();
 import { afterAll, afterEach, beforeAll, beforeEach, expect, test } from "bun:test";
 import { mkdtempSync, mkdirSync } from "node:fs";
 import path from "node:path";
+import { TRANSCRIPT_ENV } from "../core/kata-cli";
 
 // Two lead sessions of one user, no KATA_TEAMMATE: same actor, same empty teammate. Only the session marker tells them apart.
 const binary = process.env.KATA_TEST_EXECUTABLE;
@@ -330,4 +332,91 @@ test("a switch to a fork whose history predates the plan releases the source's t
   await a.call({ op: "start", task: ref });
   await a.switchTo("session-a-early-fork", { parentSession: "session-a" }, []);
   expect((await meta(ref))["todo.session"]).toBeUndefined();
+}, 30000);
+
+test("starting a task its session released holds it for the session that continues it", async () => {
+  const parent = await issue();
+  const ref = await issue(["todo.phase=Tasks", "todo.status=pending"], parent);
+  const a = lead("session-a", parent);
+  await a.begin();
+  await a.call({ op: "start", task: ref });
+  await a.shutdown();
+  const b = lead("session-b", parent);
+  await b.begin();
+  expect((await b.call({ op: "start", task: ref })).isError).toBeUndefined();
+  expect((await meta(ref))["todo.session"]).toBe("session-b");
+  const c = lead("session-c", parent);
+  await c.begin();
+  const refused = await c.call({ op: "done", task: ref, ...proof });
+  expect(refused.isError).toBe(true);
+  expect(refused.content[0].text).toContain("started by another session (session-b)");
+  expect((await shown(ref)).issue.status).toBe("open");
+}, 30000);
+
+test("a switch to a session whose plan parent no longer resolves still releases the previous session's tasks", async () => {
+  const parent = await issue();
+  const ref = await issue(["todo.phase=Tasks", "todo.status=pending"], parent);
+  const a = lead("session-a", parent);
+  await a.begin();
+  await a.call({ op: "start", task: ref });
+  await a.switchTo("session-gone", undefined, [{ type: "custom", customType: "io.kata.omp.parent", data: { parent: "omptest#zzzz" } }]);
+  await eventually(async () => (await meta(ref))["todo.session"], undefined);
+}, 30000);
+
+test("a lead's end keeps the hold of a task whose close Kata deferred, and the resumed session makes that close", async () => {
+  const parent = await issue();
+  const ref = await issue(["todo.phase=Tasks", "todo.status=pending"], parent);
+  const entries: any[] = [{ type: "custom", customType: "io.kata.omp.parent", data: { parent } }];
+  let throttled = true;
+  // The adapter spawns closes itself while a transcript session is exported; without one they go through the host, which can refuse them.
+  const session = () => ompHost({ run: args => run(args), cwd, sid: "session-t", agent: { kind: "main", id: "main-session-t" }, entries,
+    before: (args: string[]) => args[0] === "close" && throttled ? siblingThrottle() : undefined,
+    afterEvent: () => { for (const key of TRANSCRIPT_ENV) delete process.env[key]; } });
+  const a = session();
+  await a.event("session_start");
+  await a.call({ op: "start", task: ref });
+  const deferred = await a.call({ op: "done", task: ref, ...proof });
+  expect(deferred.content[0].text).toContain("deferred");
+  const revision = (await shown(ref)).issue.revision;
+  await a.event("session_shutdown");
+  const kept = (await shown(ref)).issue;
+  expect(kept.metadata["todo.session"]).toBe("session-t");
+  expect(kept.revision).toBe(revision);
+  throttled = false;
+  // The retry is due when the session resumes: its bind restores the pending close and makes it.
+  const resumed = session();
+  await later(async () => {
+    await resumed.event("session_start");
+    await eventually(async () => (await shown(ref)).issue.status, "closed");
+  });
+}, 30000);
+
+test("tasks of one title in two phases are dropped with close messages of their own", async () => {
+  const parent = await issue();
+  const a = lead("session-a", parent);
+  await a.begin();
+  expect((await a.call({ op: "init", ref: parent, list: [{ phase: "Build", items: ["Same title"] }, { phase: "Verify", items: ["Same title"] }] })).isError).toBeUndefined();
+  const ids: string[] = (await shown(parent)).children.map((c: { short_id: string }) => c.short_id);
+  for (const id of ids) expect((await a.call({ op: "drop", task: `omptest#${id}`, message: "covered elsewhere" })).isError).toBeUndefined();
+  const messages = (await kata(["audit", "closes", "--json"])).rows.filter((r: { issue: string }) => ids.includes(r.issue)).map((r: { message: string }) => r.message);
+  expect(messages).toHaveLength(2);
+  // With Kata's close throttle on, a close that repeats a sibling's message is refused (duplicate_message).
+  expect(new Set(messages).size).toBe(2);
+}, 30000);
+
+test("/todo takeover of a blocked task takes it over as it is and reports no error", async () => {
+  const parent = await issue();
+  const ref = await issue(["todo.phase=Tasks", "todo.status=pending"], parent);
+  const a = lead("session-a", parent), b = lead("session-b", parent);
+  await a.begin();
+  await a.call({ op: "start", task: ref });
+  await a.call({ op: "block", task: ref, reason: "waiting on review" });
+  await b.begin();
+  const said = await b.command(`/todo takeover ${ref}`);
+  expect(said).not.toContain("unblock it first");
+  expect(said).toContain("blocked: waiting on review");
+  const taken = await shown(ref);
+  expect(taken.issue.metadata["todo.session"]).toBe("session-b");
+  expect(taken.issue.metadata["todo.status"]).toBe("blocked");
+  expect((taken.comments ?? []).some((c: { body: string }) => c.body.startsWith("Taken over by session session-b"))).toBe(true);
 }, 30000);

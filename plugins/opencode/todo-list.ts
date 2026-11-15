@@ -1,5 +1,5 @@
 // Pure diff between the whole todo list a model sends and the Kata plan: no Kata, no host, no I/O.
-import { missingProof, type Status } from "./model";
+import { missingProof, OPEN, type Status } from "./model";
 
 export type ListStatus = "pending" | "in_progress" | "completed" | "cancelled";
 export type ListItem = { content: string; status: ListStatus; message?: string; evidence?: string[]; reason?: string; blocker?: string };
@@ -12,7 +12,7 @@ export type ListOp =
 	| { op: "drop"; task: string; message: string }
 	| { op: "block"; task: string; reason: string }
 	| { op: "unblock"; task: string };
-export type ListView = { content: string; status: ListStatus; blocker?: string };
+type ListView = { content: string; status: ListStatus; blocker?: string };
 
 const LISTED: Record<Status, ListStatus> = { pending: "pending", in_progress: "in_progress", blocked: "in_progress", completed: "completed", abandoned: "cancelled" };
 
@@ -20,7 +20,7 @@ const LISTED: Record<Status, ListStatus> = { pending: "pending", in_progress: "i
 // list item. Open copies stand in front of closed ones; among open ones an in_progress copy, then a paused one, then a
 // pending one, so the item never reads as pending while a copy is in progress.
 function representative(copies: readonly PlanItem[]): PlanItem {
-	const open = copies.filter(t => t.status !== "completed" && t.status !== "abandoned");
+	const open = copies.filter(t => OPEN.has(t.status));
 	if (open.length) return open.find(t => t.status === "in_progress") ?? open.find(t => t.status === "blocked") ?? open[0];
 	return copies.find(t => t.status === "completed") ?? copies[0];
 }
@@ -92,7 +92,7 @@ export function diffTodoList(plan: readonly PlanItem[], accepted: ReadonlySet<st
 		// The item is compared with the copy that stands for it (see representative); its ops reach every open copy, except
 		// copies that share a ref, which todowrite cannot name (see names).
 		const current = representative(all);
-		if (current.status === "completed" || current.status === "abandoned") {
+		if (!OPEN.has(current.status)) {
 			// Copies closed both ways read back as completed, but dropping an item with a completed copy leaves exactly that mix,
 			// so either closed status is the same item.
 			const mixed = all.some(t => t.status === "completed") && all.some(t => t.status === "abandoned");
@@ -100,7 +100,7 @@ export function diffTodoList(plan: readonly PlanItem[], accepted: ReadonlySet<st
 			if (item.status !== LISTED[current.status]) problems.push(`"${item.content}" is already ${LISTED[current.status]} in Kata and cannot be sent as ${item.status}`);
 			continue;
 		}
-		const copies = all.filter(t => t.status !== "completed" && t.status !== "abandoned");
+		const copies = all.filter(t => OPEN.has(t.status));
 		if (item.status === "completed") { finish(item, copies, all); continue; }
 		if (item.status === "cancelled") { cancel(item, copies, all); continue; }
 
@@ -123,7 +123,7 @@ export function diffTodoList(plan: readonly PlanItem[], accepted: ReadonlySet<st
 
 	const reported = new Set<string>();
 	for (const t of plan) {
-		if (seen.has(t.content) || reported.has(t.content) || t.status === "completed" || t.status === "abandoned") continue;
+		if (seen.has(t.content) || reported.has(t.content) || !OPEN.has(t.status)) continue;
 		reported.add(t.content);
 		problems.push(accepted.has(t.content)
 			? `"${t.content}" is missing from the list: keep it, or mark it cancelled with a reason`
@@ -139,6 +139,5 @@ export function diffTodoList(plan: readonly PlanItem[], accepted: ReadonlySet<st
 		].join("\n");
 		return { refusal, problems };
 	}
-	// Closes run before starts: append, done/drop, unblock, block, start.
 	return { ops: [...(appended.length ? [{ op: "append", items: appended } as ListOp] : []), ...closes, ...unblocks, ...blocks, ...starts] };
 }

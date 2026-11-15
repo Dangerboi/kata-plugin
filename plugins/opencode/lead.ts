@@ -1,7 +1,7 @@
 import { waitAtMost } from "./wait-at-most";
-import { createKataCore, type KataCore, type PlanView } from "./kata-core";
+import { createKataCore, type HostContext, type KataCore, type PlanView } from "./kata-core";
 import type { DelegateRecord, DelegateStore } from "./delegates";
-import type { SavedEntry, SavedSession, SessionStorage } from "./saved";
+import { NAMESPACE, type SavedEntry, type SavedSession, type SessionStorage } from "./saved";
 import { EXECUTABLE_VARS, type Settings } from "./settings";
 import type { KataExec } from "./spawn";
 
@@ -11,18 +11,13 @@ const READY_MS = 10_000;
 // The core's `details.kata`: the plan view, or only a notice when the call never reached the plan.
 export type TodoResult = { text: string; kata: Partial<PlanView> & { notice?: string }; isError: boolean };
 
-// What a core's callers pass on every call: the core reads `cwd` and the session id from it (`agent` marks a delegate's).
-export interface CoreCtx {
-	cwd: string;
-	agent?: { kind: "sub"; id: string };
-	sessionManager: { getSessionId(): string; getBranch(): SavedEntry[]; getHeader(): undefined };
-}
-
-// A core and the serial queue and todo entry every caller of it shares.
+// A core and the todo entry every caller of it shares.
 export interface CoreCaller {
 	readonly core: KataCore;
-	readonly coreCtx: CoreCtx;
-	// Runs `fn` after every earlier exclusive call of this core: read, diff and write of one tool call must not interleave with another's.
+	// What the core reads of this caller's session on every call: its directory, its id and its saved entries (`agent` marks a delegate's).
+	readonly coreCtx: HostContext;
+	// Runs `fn` as one job of the core (its `todo.batch`): the read, diff and writes of one tool call share their Kata reads, and
+	// no other call, delegate event or timer of this core runs between them.
 	exclusive<T>(fn: () => Promise<T>): Promise<T>;
 	// One todo op through the core (`view` binds and reloads the plan first). Never throws: the result says `isError`.
 	todo(op: string, params?: Record<string, unknown>): Promise<TodoResult>;
@@ -49,7 +44,7 @@ export interface Lead extends CoreCaller {
 	planSection(): Promise<string | undefined>;
 	// The lead's turn ended: drain pending closes and hand back exited delegates. Never closes the automatic parent.
 	settle(): Promise<void>;
-	// The session ended (deleted or archived): drain, release what it holds, close the automatic parent when its work is done.
+	// The session ended (deleted or archived): drain, release the tasks it holds (one whose close still waits keeps its hold), close the automatic parent when its work is done.
 	// Forgets the saved state and returns true when nothing is left to finish; when work is still owed it stays saved as an ended session for the next setup and returns false.
 	end(): Promise<boolean>;
 	// The session is seen alive again (unarchived, or its own hook ran): it is no longer an ended session, so a later setup does not finish it.
@@ -98,7 +93,7 @@ export function createLead(deps: LeadDeps): Lead {
 		isMain: () => main,
 		delegateStore,
 	}, {
-		namespace: "opencode",
+		namespace: NAMESPACE,
 		executable: deps.settings.executable,
 		executableVars: EXECUTABLE_VARS,
 		debugFile: deps.settings.debugFile,
@@ -107,21 +102,18 @@ export function createLead(deps: LeadDeps): Lead {
 		autoStart: false,
 		closeParent: "shutdown",
 	});
-	const caller = (core: KataCore, coreCtx: CoreCtx): CoreCaller => {
-		let tail: Promise<unknown> = Promise.resolve();
-		return {
-			core, coreCtx,
-			// One tool call is one Kata operation: its view and the todo ops after it share their reads until a write.
-			exclusive: fn => { const run = tail.then(() => core.todo.operation(fn)); tail = run.catch(() => undefined); return run; },
-			async todo(op, params = {}) {
-				const result = await core.todo.apply(coreCtx, op, params);
-				return { text: result.content.map(part => part.text).join("\n"), kata: result.details.kata, isError: result.isError === true };
-			},
-		};
-	};
-	const coreCtx: CoreCtx = { cwd: directory, sessionManager: { getSessionId: () => id, getBranch: () => entries, getHeader: () => undefined } };
-	const lead = caller(newCore(true, appendEntry, delegates), coreCtx);
-	const { core } = lead;
+	const caller = (core: KataCore, coreCtx: HostContext): CoreCaller => ({
+		core, coreCtx,
+		exclusive: fn => core.todo.batch(coreCtx, fn),
+		async todo(op, params = {}) {
+			const result = await core.todo.apply(coreCtx, op, params);
+			return { text: result.content.map(part => part.text).join("\n"), kata: result.details.kata, isError: result.isError === true };
+		},
+	});
+	const contextOf = (sessionID: string, saved: SavedEntry[], delegate: boolean): HostContext =>
+		({ cwd: directory, ...(delegate ? { agent: { kind: "sub", id: sessionID } } : {}), sessionManager: { getSessionId: () => sessionID, getBranch: () => saved, getHeader: () => undefined } });
+	const lead = caller(newCore(true, appendEntry, delegates), contextOf(id, entries, false));
+	const { core, coreCtx } = lead;
 
 	const ready = lead.todo("view").then(() => undefined, debug);
 
@@ -137,8 +129,7 @@ export function createLead(deps: LeadDeps): Lead {
 				put: record => delegates.put(record),
 				of: () => records.get(sessionID),
 			};
-			const ctx: CoreCtx = { cwd: directory, agent: { kind: "sub", id: sessionID }, sessionManager: { getSessionId: () => sessionID, getBranch: () => [], getHeader: () => undefined } };
-			known = { id: sessionID, ...caller(newCore(false, () => {}, own), ctx) };
+			known = { id: sessionID, ...caller(newCore(false, () => {}, own), contextOf(sessionID, [], true)) };
 			delegateCores.set(sessionID, known);
 		}
 		return known;
@@ -158,20 +149,15 @@ export function createLead(deps: LeadDeps): Lead {
 		},
 		async settle() {
 			await ready;
-			await core.session.stop(coreCtx, []);
+			await core.session.settle(coreCtx);
 			await writes;
 		},
 		async end() {
 			await ready;
-			// A first pass keeps the tasks: releasing one changes its revision, which would void a close still waiting to retry.
-			await core.session.shutdown(coreCtx, { continues: true });
+			const owed = await core.session.end(coreCtx);
 			await writes;
-			if (!core.session.owes({ parents: false })) {
-				await core.session.shutdown(coreCtx);
-				await writes;
-			}
 			// A close Kata refused, the automatic parent's close or a delegate still running is finished by the next setup: the state stays saved.
-			if (core.session.owes()) {
+			if (owed) {
 				await storage.set(id, "ended", true);
 				savedEnded = true;
 				return false;

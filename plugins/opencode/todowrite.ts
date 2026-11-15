@@ -88,7 +88,7 @@ function coreOp(op: ListOp, init: { ref?: string } | undefined, takeover: boolea
 	}
 }
 
-// One todowrite call: reload the Kata plan, diff the list against it, apply the ops in order. A refusal changes nothing.
+// One todowrite call, as one job of the session's core: reload the Kata plan, diff the list against it, apply the ops in order. A refusal changes nothing.
 async function write(seam: Seam, lead: Pick<Lead, "id" | "exclusive" | "todo">, input: unknown) {
 	const { todos, ref, takeover } = parseInput(input);
 	return lead.exclusive(async () => {

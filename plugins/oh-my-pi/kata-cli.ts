@@ -66,12 +66,14 @@ export function execKata(file: string, args: string[], options: { cwd: string; t
 			});
 	});
 }
-export type Project = { id: number; name: string };
+type Project = { id: number; name: string };
 
-const READS = new Set(["show", "list", "status", "version", "agent-contract-hook", "inbox", "events", "audit", "search", "whoami"]);
+const READS = new Set(["show", "list", "status", "version", "agent-contract-hook", "inbox", "events", "audit"]);
 const isRead = (args: string[]) => READS.has(args[0]) || (args[0] === "projects" && args[1] === "list");
-// Writes through any runner in this process (the lead's, a delegate's, another plugin copy's): each one ends every
-// operation's reuse of earlier reads.
+// Writes any runner on this thread made (the lead's core, a delegate's, another plugin copy's): each one ends every
+// operation's reuse of earlier reads. A Kata command an agent runs in its shell is another process, and an omp subagent on
+// a worker thread has its own count, so neither is seen here: an operation is kept short, and a check that must be
+// current reads with `fresh`.
 const writes = ((globalThis as Record<symbol, unknown>)[Symbol.for("kata.plugin.writes")] ??= { count: 0 }) as { count: number };
 
 export interface Kata {
@@ -87,8 +89,9 @@ export interface Kata {
 	pin(ref: string, cwd: string): Promise<string>;
 	// Registers a project in the daemon (idempotent; no files in the repo).
 	createProject(name: string, cwd: string): Promise<void>;
-	// Runs `fn` as one operation: an identical `kata show` inside it is read once until any write in this process.
-	// An operation is one tool call; Kata changes made outside this process meanwhile show in the next one.
+	// Runs `fn` as one operation: an identical `kata show` inside it is read once until a runner on this thread writes.
+	// An operation is one tool call; Kata changes made elsewhere meanwhile (an agent's own shell command, another process or
+	// thread) show in the next one.
 	operation<T>(fn: () => Promise<T>): Promise<T>;
 	// Runs `fn` with every read going to Kata, inside an operation too: for a check that a read is still current.
 	fresh<T>(fn: () => Promise<T>): Promise<T>;

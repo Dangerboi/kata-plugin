@@ -319,6 +319,32 @@ test("session.deleted while a close is refused keeps the saved state, and the ne
 	expect((await show(ref)).issue.status).toBe("closed");
 });
 
+test("session.deleted while a close is refused ends in one pass: that item keeps its hold for the retry, the session's other started item is released", async () => {
+	const { host, id } = await lead();
+	await write(host, id, todos(["Throttled item", "in_progress"], ["Running item", "in_progress"]));
+	const ref = qref(await parentOf(id));
+	writeFileSync(throttle, "");
+	const deferred = await write(host, id, todos({ content: "Throttled item", status: "completed", message, evidence }, ["Running item", "in_progress"]));
+	expect(deferred.text).toContain("deferred");
+	const revision = (await childrenOf(ref))[0].revision;
+	host.sessions.delete(id);
+	await host.emit("session.deleted", { sessionID: id });
+	const [refused, running] = await childrenOf(ref);
+	// A release would change the refused item's revision, which voids its pending close.
+	expect([refused.metadata["todo.session"], refused.revision, statusOf(refused)]).toEqual([id, revision, "in_progress"]);
+	expect([running.metadata["todo.session"], statusOf(running)]).toEqual([undefined, "in_progress"]);
+	expect(endedSession(host.shared, id)).toBe(true);
+	rmSync(throttle);
+	let restarted!: OpenCodeInstance;
+	await later(async () => {
+		restarted = await host.restart();
+		open.push(restarted);
+		expect(await until(() => keysOf(restarted.shared, id).length === 0)).toBe(true);
+	});
+	expect((await childrenOf(ref)).map(statusOf)).toEqual(["closed:done", "in_progress"]);
+	expect((await show(ref)).issue.status).toBe("open");
+});
+
 test("a lead that dropped every item leaves its automatic parent open on purpose, and its end forgets the session", async () => {
 	const { host, id } = await lead();
 	await write(host, id, todos(["Only item", "in_progress"]));
@@ -400,7 +426,8 @@ for (const [how, resumed] of [
 		expect((await show(ref)).issue.status).toBe("open");
 		const [first, second] = await childrenOf(ref);
 		expect([first, second].map(statusOf)).toEqual(["closed:done", "in_progress"]);
-		expect(second.metadata["todo.session"]).toBe(id);
+		// The archive ended the session: it released the item it had started and kept only the hold of the refused close.
+		expect(second.metadata["todo.session"]).toBeUndefined();
 		expect(keysOf(restarted.shared, id).some(key => key.endsWith("/entries"))).toBe(true);
 		expect((await restarted.context(id)).system[0]).toContain("Running item");
 	});

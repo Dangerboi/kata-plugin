@@ -1,31 +1,22 @@
-import { FINAL, type SavedDelegate } from "./delegates";
-import type { SettlementSnapshot } from "./settlement";
+import { snapshotEntry, type Snapshot } from "./kata-core";
 
 // `ctx.storage` is one key-value store per plugin id, shared by every location and kept across server restarts, so every
 // key here is `session/<sessionID>/<part>`. Parts in use: `entries` (the core's saved state, written by lead.ts) and
 // `accepted` (the contents of the last todowrite list Kata accepted) and `ended` (an ended session: deleted or archived
 // with work left, which the next setup finishes before it forgets the session; cleared when the session is seen alive again).
 // Another module adds its own part name.
-// The core's state entry: `io.kata.<namespace>.state`, written by the core with the pending closes and the delegate records
-// it keeps: the unfinished ones, and the ended ones a follow-up can still resume.
-const STATE_ENTRY = "io.kata.opencode.state";
+// The namespace of this adapter's cores: it names their saved entries and their Kata metadata keys.
+export const NAMESPACE = "opencode";
 export type SavedEntry = { type: "custom"; customType: string; data: unknown };
 export type SavedSession = { directory: string; entries: SavedEntry[] };
 
-// What the core saved in its state entry. This is the one reader of it.
-export type CoreState = Partial<SettlementSnapshot> & { delegates?: SavedDelegate[] };
-export const coreState = (entries: SavedEntry[]): CoreState | undefined => entries.find(entry => entry.customType === STATE_ENTRY)?.data as CoreState | undefined;
-// Whether a resumed lead has closes or delegates to finish: what a new instance binds a saved lead for.
-export function holdsWork(entries: SavedEntry[]): boolean {
-	const state = coreState(entries);
-	return !!(state?.retries?.length || state?.pendingCloses?.length || state?.delegates?.some(delegate => !FINAL.has(delegate.state)));
-}
+// What the core saved for the session: its latest snapshot, with the pending closes and the unfinished delegates.
+export const coreState = (entries: SavedEntry[]): Partial<Snapshot> | undefined => entries.find(entry => entry.customType === snapshotEntry(NAMESPACE))?.data as Partial<Snapshot> | undefined;
 
 export interface SessionStorage {
 	get<T>(sessionID: string, part: string): Promise<T | undefined>;
 	set(sessionID: string, part: string, value: unknown): Promise<void>;
 	remove(sessionID: string, part: string): Promise<void>;
-	// Every part of the session.
 	clear(sessionID: string): Promise<void>;
 	// The leads this storage holds saved state for (any location: compare `directory`).
 	sessions(): Promise<{ id: string; saved: SavedSession }[]>;

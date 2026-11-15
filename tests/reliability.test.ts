@@ -641,3 +641,24 @@ test("a deleted automatic parent's pending task closes never run, also when the 
   await later(async () => { fires.at(-1)!(); await a.call({ op: "view" }); });
   expect((await show(first)).status).toBe("open");
 });
+
+test("a batch is one job: its todo calls run inside it in order, and a call made meanwhile waits for the whole batch", async () => {
+  const a = app(); await init(a);
+  const order: string[] = [];
+  const gate = Promise.withResolvers<void>();
+  const batch = a.core.todo.batch(a.ctx, async () => {
+    await gate.promise;
+    order.push("batch: start");
+    expect((await a.call({ op: "start", task: "Second" })).isError).toBeUndefined();
+    order.push("batch: started Second");
+    expect((await a.call({ op: "start", task: "First" })).isError).toBeUndefined();
+    order.push("batch: started First");
+    return "done";
+  });
+  // Made from outside the batch while it holds the queue: on its own it would run between the batch's two calls.
+  const outside = a.call({ op: "view" }).then(result => { order.push(`outside: ${tasksOf(result).map(t => t.status).join()}`); });
+  gate.resolve();
+  expect(await batch).toBe("done");
+  await outside;
+  expect(order).toEqual(["batch: start", "batch: started Second", "batch: started First", "outside: in_progress,pending"]);
+});

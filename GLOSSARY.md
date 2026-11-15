@@ -36,7 +36,7 @@ The lead session that started or blocked an open plan task (`todo.session`); oth
 _Avoid_: owner (Kata's owner is an actor)
 
 **Release**:
-A lead session giving up the plan tasks it holds when it ends: it shuts down, or switches to another session. A reload does not end it, and a fork that replaces it in the same process inherits its tasks instead.
+A lead session giving up the plan tasks it holds when it ends: it shuts down, or switches to another session. A reload does not end it, and a fork that replaces it in the same process inherits its tasks instead. A task whose close is still pending is not released.
 
 **Take over**:
 A lead session making itself the holder of a plan task another session holds, on explicit request, with a comment naming both sessions.
