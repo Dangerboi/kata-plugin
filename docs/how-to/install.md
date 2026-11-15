@@ -39,7 +39,7 @@ omp plugin upgrade @dangerboi/kata-omp
 
 Use one install or the other. Both register the package name `@dangerboi/kata-omp`, so omp loads the plugin once: the marketplace install refuses while the npm package is installed, and an npm install over a marketplace install shares its slot. To switch, `omp plugin uninstall` the one you have first.
 
-A marketplace install from before the npm package is registered as `kata-omp`, which omp does not match to the npm name: with both installed, omp loads the plugin twice, and the marketplace upgrade then fails on the name conflict. Upgrade that install (the two update commands above) or uninstall it before installing from npm.
+A marketplace install from before the npm package is registered as `kata-omp`, which omp does not match to the npm name: with both installed, omp loads the plugin twice, and the marketplace upgrade then fails on the name conflict. Upgrade that install (the two update commands above) or uninstall it before installing from npm. If both are already installed, uninstall one of them.
 
 Optional: send the plans of repos that have no Kata project to one Kata project, labeled with the repo name, by exporting it where omp runs:
 
