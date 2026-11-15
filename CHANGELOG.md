@@ -4,6 +4,13 @@ All notable changes to kata-plugin are listed here. The format follows [Keep a C
 
 ## [Unreleased]
 
+### Added
+
+#### Install and update
+
+- omp: the plugin is on npm as `@dangerboi/kata-omp`, listed on [omp packages](https://omppackages.com), and installs with `omp plugin install @dangerboi/kata-omp`.
+  - A marketplace install now registers under the same package name instead of `kata-omp`, so omp loads the plugin once whichever way it was installed. Upgrading the marketplace install moves it to the new name.
+
 ## [1.11.0] - 2026-11-15
 
 kata-omp 2.11.0 and @dangerboi/kata-pi 1.11.0.

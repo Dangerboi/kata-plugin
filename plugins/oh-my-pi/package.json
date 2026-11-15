@@ -1,11 +1,31 @@
 {
-  "name": "kata-omp",
+  "name": "@dangerboi/kata-omp",
   "version": "2.11.0",
   "type": "module",
   "description": "Kata plans and subagent tracking for oh-my-pi",
+  "license": "MIT",
+  "author": "Dangerboi",
+  "homepage": "https://github.com/Dangerboi/kata-plugin/blob/main/docs/reference/oh-my-pi.md",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Dangerboi/kata-plugin.git",
+    "directory": "plugins/oh-my-pi"
+  },
+  "bugs": "https://github.com/Dangerboi/kata-plugin/issues",
+  "keywords": [
+    "omp-plugin",
+    "kata"
+  ],
+  "scripts": {
+    "prepack": "cp ../../LICENSE ../../CHANGELOG.md .",
+    "postpack": "rm -f LICENSE CHANGELOG.md"
+  },
   "omp": {
     "extensions": [
       "./kata.ts"
     ]
+  },
+  "publishConfig": {
+    "access": "public"
   }
 }

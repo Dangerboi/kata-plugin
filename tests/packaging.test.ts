@@ -5,6 +5,9 @@ import { assertIsolated } from "./isolation";
 assertIsolated();
 const root = path.resolve(import.meta.dir, "..");
 const json = (name: string) => JSON.parse(readFileSync(path.join(root, name), "utf8"));
+// Each job of the publishing workflow, by name. npm's trusted publisher names this one file for every package.
+const publishJobs = Object.fromEntries(readFileSync(path.join(root, ".github/workflows/publish-pi.yml"), "utf8")
+  .split(/^jobs:\n/m)[1].split(/^(?=  [\w-]+:\n)/m).map(job => [job.match(/^  ([\w-]+):/)![1], job]));
 
 test("host manifests expose only the intended host and declare pi's supplied peers", () => {
   const omp = json("plugins/oh-my-pi/package.json");
@@ -39,12 +42,23 @@ test("the OpenCode manifest resolves a local folder and an npm install to the pl
   expect(flow).toContain("id-token: write");
   // Each package releases on its own tag. GitHub's "v*" filter does not match "opencode-v*", so both are listed.
   expect(flow).toContain('tags: ["v*", "opencode-v*"]');
-  const jobs = flow.split(/^jobs:\n/m)[1];
-  const [piJob, openCodeJob] = jobs.split(/^  publish-opencode:\n/m);
-  expect(piJob).toContain("if: startsWith(inputs.tag || github.ref_name, 'v')");
-  expect(openCodeJob).toContain("if: startsWith(inputs.tag || github.ref_name, 'opencode-v')");
-  expect(openCodeJob).toContain('[ "$TAG" != "opencode-v$version" ]');
-  expect(openCodeJob).toContain("exit 1");
+  expect(publishJobs.publish).toContain("if: startsWith(inputs.tag || github.ref_name, 'v')");
+  expect(publishJobs["publish-opencode"]).toContain("if: startsWith(inputs.tag || github.ref_name, 'opencode-v')");
+  expect(publishJobs["publish-opencode"]).toContain('[ "$TAG" != "opencode-v$version" ]');
+  expect(publishJobs["publish-opencode"]).toContain("exit 1");
+});
+
+test("the omp package is listed as an omp plugin and publishes with each root release", () => {
+  const manifest = json("plugins/oh-my-pi/package.json");
+  // omp keys installed plugins by package name; the marketplace and npm installs share it, so they cannot load twice.
+  expect(manifest.name).toBe("@dangerboi/kata-omp");
+  // omppackages.com lists npm packages carrying one of its omp keywords.
+  expect(manifest.keywords).toContain("omp-plugin");
+  expect(manifest.publishConfig.access).toBe("public");
+  expect(manifest.dependencies).toBeUndefined();
+  expect(publishJobs["publish-omp"]).toContain("if: startsWith(inputs.tag || github.ref_name, 'v')");
+  expect(publishJobs["publish-omp"]).toContain("working-directory: plugins/oh-my-pi");
+  expect(publishJobs["publish-omp"]).toContain("run: npm publish");
 });
 
 test("pi reads the newest changelog entry as the published version", () => {
@@ -55,7 +69,7 @@ test("pi reads the newest changelog entry as the published version", () => {
   expect(json("package.json").version).toBe(json("plugins/pi/package.json").version);
 });
 
-for (const [plugin, modules] of [["pi", ["kata-core.ts"]], ["opencode", ["kata-core.ts", "seam.ts", "settings.ts", "todowrite.ts", "subagents.ts"]]] as const) {
+for (const [plugin, modules] of [["pi", ["kata-core.ts"]], ["oh-my-pi", ["kata-core.ts"]], ["opencode", ["kata-core.ts", "seam.ts", "settings.ts", "todowrite.ts", "subagents.ts"]]] as const) {
   test(`the ${plugin} npm tarball carries the license, changelog and every module, and leaves the folder clean`, () => {
     const dir = path.join(root, "plugins", plugin);
     const run = Bun.spawnSync(["npm", "pack", "--dry-run", "--json"], { cwd: dir, stderr: "pipe" });
