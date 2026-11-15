@@ -3,7 +3,6 @@
 // (`opencode --standalone`): put a setting in opencode.json to make it hold for every server.
 export interface Settings {
 	executable: string;
-	teammate?: string;
 	debugFile?: string;
 	// The core's lookup for the variables it would read from process.env (KATA_REF, KATA_AUTHOR, ...).
 	env(name: string): string | undefined;
@@ -33,7 +32,6 @@ export function resolveSettings(options: Record<string, unknown> | undefined, en
 	const forCore = named(["ref", "defaultProject", "author", "teammate"]);
 	return {
 		executable: read("executable") ?? "kata",
-		teammate: read("teammate"),
 		debugFile: read("debugFile"),
 		env: name => forCore[name],
 		kataEnv: named(["author", "teammate"]),

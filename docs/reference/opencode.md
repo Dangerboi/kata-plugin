@@ -100,7 +100,7 @@ The TUI keeps showing the command the model wrote; the rewritten one is what run
 
 ## Sessions, settling and restart
 
-OpenCode runs many sessions in one server, with one plugin instance per location. The plugin creates one core per lead session (a session with no parent), lazily at that session's first context hook or first tool call; it does not wait for `session.created`. A lead's plan, pending closes and unfinished delegate cleanups belong to its core. Events are handled one after another per session: a session whose handler waits for Kata does not hold up the events of another.
+OpenCode runs many sessions in one server, with one plugin instance per location. The plugin creates one core per lead session (a session with no parent), lazily at that session's first context hook or first tool call, or for a session with saved state at the next setup or its first event; it does not wait for `session.created`. A lead's plan, pending closes and unfinished delegate cleanups belong to its core. Events are handled one after another per session: a session whose handler waits for Kata does not hold up the events of another.
 
 | Moment | What the plugin does |
 | --- | --- |

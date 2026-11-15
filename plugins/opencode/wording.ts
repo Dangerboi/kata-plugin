@@ -1,5 +1,5 @@
 import { RULES } from "./kata-core";
-import type { ToolWording } from "./model";
+import { PROOF_MIN, type ToolWording } from "./model";
 
 // The words of the `todowrite` tool, which takes the whole list and no ops: how the core's messages name and advise it, and
 // the tool's own description.
@@ -19,7 +19,7 @@ export const WORDING: ToolWording = {
 
 export const DESCRIPTION = `${RULES.summary} Send the WHOLE list on every call: todos [{content, status}] with status pending, in_progress, completed or cancelled. Items are identified by exact content: keep the wording of an item stable between calls. Create the list before work for 3+ steps or several user requests, one item per request; mark an item in_progress when you start it and completed right after it is verified. Nothing starts on its own, and several items may be in progress.
 Every call is compared with the Kata plan. A call that disagrees with it is refused and changes nothing; the error carries the current list: send it again with your changes on top.
-- completed needs \`message\` (40+ characters: what changed and how it was verified) and \`evidence\` (an array: ${RULES.evidence}). Unverified work: do not complete it; pause it instead.
+- completed needs \`message\` (${PROOF_MIN}+ characters: what changed and how it was verified) and \`evidence\` (an array: ${RULES.evidence}). Unverified work: do not complete it; pause it instead.
 - cancelled needs \`reason\`. A new item cannot be cancelled: leave it out.
 - To pause an item (waiting on the user, an agent or a service), keep it in_progress and set \`blocker\` to the reason; remove the blocker to resume. A started item cannot go back to pending.
 - An open item missing from your list is refused: keep it, or cancel it with a reason. Items added to the plan outside this session (by the user or a teammate) are requested work: send them back unchanged.

@@ -318,3 +318,14 @@ test("a bare actor in KATA_INBOX_USER is a person's inbox: the session reads non
   expect(slashed.calls.filter(a => a[0] === "inbox")).toEqual([]);
   expect(slashed.notices).toHaveLength(1);
 });
+
+test("blank evidence entries are dropped before the close, and evidence that is only blank is refused", async () => {
+  const app = host(); const parent = await app.init(["Blank evidence task", "Only blank evidence task"]);
+  const done = await app.call({ op: "done", task: "Blank evidence task", message, evidence: ["", "  ", ...evidence] });
+  expect(done.isError).toBeUndefined();
+  expect(app.calls.filter(a => a[0] === "close").flat()).not.toContain("");
+  expect((await show(parent)).children.find((c: any) => c.title === "Blank evidence task").status).toBe("closed");
+  const blank = await app.call({ op: "done", task: "Only blank evidence task", message, evidence: [" "] });
+  expect(blank.isError).toBe(true);
+  expect(blank.content[0].text).toContain("evidence");
+});

@@ -23,6 +23,8 @@ export function proofProblem(change: { message?: string; evidence?: string[] }):
 	if (message) return `a message of ${PROOF_MIN}+ characters saying what changed and how it was verified`;
 	if (evidence) return "evidence";
 }
+// The longest issue title the plugin writes (automatic parents, missions).
+export const TITLE_MAX = 120;
 
 // An issue as `kata show --json` prints it, and each of its children; only the fields the plugin reads.
 // `qualified_id` is printed on children, not on the shown issue itself. Labels are strings (Kata 0.21); the object form is older output.

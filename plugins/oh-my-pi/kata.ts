@@ -160,7 +160,7 @@ export default function ompKata(pi: any) {
 		// A delegate runs in the lead's process: its closes carry its own session, never the lead's.
 		exec: (file, args, { ctx, ...options }) => {
 			const pair = transcriptPairOf(ctx);
-			const env = pair.agent && pair.id ? closeEnv(args, pair.agent, pair.id) : undefined;
+			const env = pair && closeEnv(args, pair.agent, pair.id);
 			return env ? execKata(file, args, { ...options, env }) : pi.exec(file, args, options);
 		},
 		appendEntry: (...args) => pi.appendEntry(...args),
@@ -347,9 +347,13 @@ export default function ompKata(pi: any) {
 	});
 
 	// The session a close made in `ctx` records. A delegate runs in the lead's process, so its closes carry its own session,
-	// never the lead's: its id is unknown until its session file has a header, and until then `id` is undefined.
-	function transcriptPairOf(ctx: any): { agent: string; id: string | undefined } {
-		if (!ctx || main(ctx)) return { agent: process.env.KATA_TRANSCRIPT_AGENT ?? "", id: process.env.KATA_TRANSCRIPT_SESSION_ID };
+	// never the lead's: its id is unknown until its session file has a header, and until then `id` is undefined (its closes
+	// record nothing). Undefined for the lead before session start exported its pair: its closes go as omp spawns them.
+	function transcriptPairOf(ctx: any): { agent: string; id: string | undefined } | undefined {
+		if (!ctx || main(ctx)) {
+			const { KATA_TRANSCRIPT_AGENT: agent, KATA_TRANSCRIPT_SESSION_ID: id } = process.env;
+			return agent && id ? { agent, id } : undefined;
+		}
 		return childSession(store.of(ctx)?.sessionId) ?? { agent: "omp", id: undefined };
 	}
 

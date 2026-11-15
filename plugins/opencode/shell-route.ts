@@ -1,5 +1,5 @@
 import { delegateCommand, envPrefix, kataCommands, shellOptions } from "./shell";
-import { transcriptEnv } from "./kata-cli";
+import { closeEnv } from "./kata-cli";
 import { EXECUTABLE_VARS } from "./settings";
 import { CallRefused, type Seam } from "./seam";
 
@@ -15,8 +15,7 @@ export function install(seam: Seam): void {
 	// A lead's Kata commands: edits go from the end of the command so earlier offsets stay valid.
 	function route(command: string, leadID: string): string {
 		for (const invocation of kataCommands(command, executable, EXECUTABLE_VARS).reverse()) {
-			const close = shellOptions(invocation.words).args[0] === "close";
-			const prefix = envPrefix({ ...(close ? transcriptEnv("opencode", leadID) : {}), ...seam.settings.kataEnv });
+			const prefix = envPrefix({ ...closeEnv(shellOptions(invocation.words).args, "opencode", leadID), ...seam.settings.kataEnv });
 			if (prefix) command = command.slice(0, invocation.executable.start) + prefix + command.slice(invocation.executable.start);
 		}
 		return command;

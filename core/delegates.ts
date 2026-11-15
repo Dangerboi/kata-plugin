@@ -1,4 +1,4 @@
-import { closedTaskStatus, digest, heldBySession, heldMessage, itemTicket, missionCloseArgs, missionKey, OPEN, projectOf, qualifiedRef, qualifiedRefs, tasksOf, TODO_WORDING, type Binding, type KataIssue, type KataShow, type Plan, type Task, type ToolWording } from "./model";
+import { closedTaskStatus, digest, heldBySession, heldMessage, itemTicket, missionCloseArgs, missionKey, OPEN, projectOf, qualifiedRefs, tasksOf, TITLE_MAX, TODO_WORDING, type Binding, type KataIssue, type KataShow, type Plan, type Task, type ToolWording } from "./model";
 import { isKataCode, type Kata } from "./kata-cli";
 
 // The delegate lifecycle, shared by every host: an omp or OpenCode lead and the pi child (see GLOSSARY.md: Delegate,
@@ -172,7 +172,7 @@ export type DelegateEvent =
 	| { type: "reported"; id: string; text: string }
 	| { type: "exited"; id: string; outcome: DelegateOutcome };
 // What a host says of a delegate that began: `Delegates.start` adds the lead's teammate and the delegate's own.
-export type DelegateStart = Omit<Extract<DelegateEvent, { type: "started" }>, "type" | "leadTeammate" | "teammate">;
+type DelegateStart = Omit<Extract<DelegateEvent, { type: "started" }>, "type" | "leadTeammate" | "teammate">;
 
 export type DelegateAssignment = { ref: string; workspace: string; teammate: string; binding: Binding };
 
@@ -497,7 +497,7 @@ export function createDelegates(env: DelegatesEnv): Delegates {
 			"--parent", where.parent, "--project", projectOf(where.parent), ...(where.label ? ["--label", where.label] : []),
 			"--meta", `${missionKey(ns)}=true`, "--meta", `${ns}.mission_subagent_id=${r.id}`, ...(r.agent ? ["--meta", `${ns}.mission_agent=${r.agent}`] : []),
 			"--body", `Subagent ${nameOf(r)}${r.agent ? ` (agent ${r.agent})` : ""} ran this task for ${ns} session ${r.leadSessionId} with no plan item or ticket of its own; its report is in the comments.\n\n${cut(r.text)}`,
-			"--", `Subagent ${nameOf(r)}${task ? `: ${task}` : ""}`.slice(0, 120)], where.workspace);
+			"--", `Subagent ${nameOf(r)}${task ? `: ${task}` : ""}`.slice(0, TITLE_MAX)], where.workspace);
 		// A person deleted it: there is nothing left to record on.
 		if (!created) return;
 		const { ref, issue } = created;

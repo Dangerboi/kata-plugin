@@ -233,6 +233,29 @@ test("a delegate's close carries the transcript identity from its session file h
   await child.event("session_shutdown");
 });
 
+test("a delegate's own todo close made before its session file has a header records no session, not the lead's", async () => {
+  // The lead's pair is exported and recording is on: a close spawned with the process environment would record the lead.
+  process.env.KATA_CLOSE_TRANSCRIPT_ENABLED = "true";
+  const parent = host({ sid: "headerless-lead", transcript: true }); await parent.event("session_start");
+  const ref = await parent.init(["Headerless delegated work", "Keep leading"]);
+  const sessionFile = `${scratch}/delegate-headerless.jsonl`;
+  writeFileSync(sessionFile, "");
+  parent.emit("task:subagent:lifecycle", { id: "Headerless.Delegate", agent: "task", status: "started", sessionFile, description: "Headerless delegated work" });
+  const child = host({ agent: { kind: "sub", id: "Headerless.Delegate", parentId: parent.ctx.agent.id }, sessionFile, transcript: true });
+  await child.event("session_start"); await child.contractReady;
+  await child.event("before_agent_start", { systemPrompt: ["child base"] });
+  await parent.call({ op: "view" });
+  const tracked = (await show(ref)).children.find((c: any) => c.metadata?.["omp.subagent_id"] === "Headerless.Delegate");
+  expect(await child.call({ op: "init", items: ["Headerless step"] })).not.toHaveProperty("isError", true);
+  const done = await child.call({ op: "done", task: "Headerless step", message, evidence });
+  expect(done.isError, done.content?.[0]?.text).toBeUndefined();
+  // omp's own exec spawns with the environment it captured at startup: the plugin spawns this close itself.
+  expect(child.calls.some(a => a[0] === "close")).toBe(false);
+  const step = (await show(`v2test#${tracked.short_id}`)).children.find((c: any) => c.title === "Headerless step");
+  expect(await closeSessions(step.short_id)).toEqual([undefined]);
+  await child.event("session_shutdown");
+});
+
 test("finished unclosed delegates remain open needs-review, with no parent proof fallback", async () => {
   const app = host(); await app.event("session_start"); const parent = await app.init(["Await unverified delegate", "Lead keeps working"]);
   const sessionFile = `${scratch}/delegate-unclosed.jsonl`;

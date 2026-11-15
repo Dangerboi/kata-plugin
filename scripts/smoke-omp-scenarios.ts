@@ -7,7 +7,7 @@
 import { setTimeout as sleep } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import { ownComment } from "../plugins/oh-my-pi/delegates";
-import { closeCount, closeEvent, closeEvidence, closeTranscript, eventsOf, type Check, type Issue } from "./smoke-lib";
+import { closeCount, closeEvent, closeEvidence, closeTranscript, eventsOf, labelled, type Check, type Issue } from "./smoke-lib";
 import type { SmokeContext, SmokeTurn } from "./smoke-provider";
 
 export type TurnContext = SmokeContext & {
@@ -98,7 +98,6 @@ const workerRole = (n: number, prompts: Prompt[]) => {
 };
 const vars = (): Record<string, string> => JSON.parse(process.env.KATA_SMOKE_VARS ?? "{}");
 const lastRef = (ctx: TurnContext, pattern: RegExp) => ctx.texts.join("\n").match(pattern)?.[0];
-const labelled = (i?: Issue) => !!i?.events.some(e => /label/.test(e.type) && JSON.stringify(e.payload).includes("needs-review"));
 // kata notify stores a request as notify.<recipient> metadata.
 const notified = (i?: Issue) => Object.keys(i?.metadata ?? {}).some(key => key.startsWith("notify."));
 // A delegate that closed its issue and exited: bound by the lead's session, outcome completed, no subagent key.
@@ -151,7 +150,7 @@ export const SCENARIOS: Scenario[] = [{
 		const parser = children.find(i => i.title === "Implement parser module");
 		const tests = children.find(i => i.title === "Write parser tests");
 		const hasRecorded = (e: { type?: string; command?: string }) => e.type === recorded.type && e.command === recorded.command;
-		const commentPayloads = (i?: Issue) => (i?.events.filter(e => /comment/.test(e.type)) ?? []).map(e => e.payload);
+		const commentPayloads = (i?: Issue) => eventsOf(i, "issue.commented").map(e => e.payload);
 		const comments = (i?: Issue) => commentPayloads(i).map(p => JSON.stringify(p));
 		// Only a real model follows the assignment's instruction; the scripted delegate just closes. Once the delegate exits,
 		// its closed issue goes back to the lead's teammate, so its own comments are those under the teammate the issue
@@ -335,7 +334,7 @@ export const SCENARIOS: Scenario[] = [{
 		const issues = await store.issues();
 		const byId = (id: string) => issues.find(i => i.ref === id);
 		const [alpha, beta, gamma] = [byId(a), byId(b), byId(c)];
-		const comments = (i?: Issue) => i?.events.filter(e => /comment/.test(e.type)) ?? [];
+		const comments = (i?: Issue) => eventsOf(i, "issue.commented");
 		const closed = eventsOf(alpha, "issue.closed");
 		const parents = issues.filter(i => i.metadata["omp.auto_parent"] === true);
 		const changelog = issues.find(i => i.title === "update CHANGELOG");

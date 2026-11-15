@@ -22,6 +22,8 @@ export const eventsOf = (i: Issue | undefined, type: string) => i?.events.filter
 export const closeCount = (i?: Issue) => eventsOf(i, "issue.closed").length;
 /** The bodies of the comments on an issue. */
 export const commentsOn = (i?: Issue) => eventsOf(i, "issue.commented").map(e => String(e.payload?.body ?? ""));
+/** Whether a label event added `needs-review` to an issue. */
+export const labelled = (i?: Issue) => !!i?.events.some(e => /label/.test(e.type) && JSON.stringify(e.payload).includes("needs-review"));
 /** The first `issue.closed` event of an issue. */
 export const closeEvent = (i?: Issue) => eventsOf(i, "issue.closed")[0]?.payload;
 /** Evidence recorded by the first close. */

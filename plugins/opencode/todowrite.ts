@@ -1,5 +1,6 @@
 import { diffTodoList, LIST_STATUSES, listOf, planTail, type ListItem, type ListOp, type PlanItem } from "./todo-list";
 import { RULES } from "./kata-core";
+import { PROOF_MIN } from "./model";
 import type { Planner, TodoResult } from "./lead";
 import type { Seam } from "./seam";
 import { DESCRIPTION } from "./wording";
@@ -15,7 +16,7 @@ const SCHEMA = {
 				properties: {
 					content: { type: "string", description: "Exact task text; also the item's identity." },
 					status: { type: "string", enum: [...LIST_STATUSES] },
-					message: { type: "string", description: "completed: what changed and how it was verified (40+ characters)." },
+					message: { type: "string", description: `completed: what changed and how it was verified (${PROOF_MIN}+ characters).` },
 					evidence: { type: "array", items: { type: "string" }, description: `completed: ${RULES.evidence}.` },
 					reason: { type: "string", description: "cancelled: why." },
 					blocker: { type: "string", description: "in_progress: what the item is waiting on." },

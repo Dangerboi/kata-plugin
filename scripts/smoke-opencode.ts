@@ -13,7 +13,7 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { createServer, type AddressInfo } from "node:net";
 import path from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
-import { cleanEnv, closeCount, closeEvent, closeEvidence, closeTranscript, commentsOn, defer, eventsOf, kataProject, lastLines, option, pickScenarios, report, reportChecks, runToEnd, scratchRoot, teardown, verdict, type Check, type Issue } from "./smoke-lib";
+import { cleanEnv, closeCount, closeEvent, closeEvidence, closeTranscript, commentsOn, defer, eventsOf, kataProject, labelled, lastLines, option, pickScenarios, report, reportChecks, runToEnd, scratchRoot, teardown, verdict, type Check, type Issue } from "./smoke-lib";
 import { MODEL, PROVIDER, startProvider, type Request, type Turn } from "./smoke-opencode-provider";
 import { SUBAGENT_PREFIX } from "../plugins/opencode/subagents";
 
@@ -134,7 +134,7 @@ function delegateChecks(store: Store, issues: Issue[], marker: string, report: s
 		{ name: "the delegate ran a tool and ended with text", ok: child.length === 2 && child[0].tools.includes("read"), detail: `${child.length} child requests` },
 		{ name: "item 1 was assigned to the delegate's teammate while it ran", ok: !!assignment && JSON.stringify(one?.events ?? []).includes(assignment[2]), detail: JSON.stringify(one?.events) },
 		{ name: "item 1 is open again and not owned by the delegate", ok: one?.status === "open" && !!assignment && one.metadata.teammate !== assignment[2], detail: JSON.stringify([one?.status, one?.metadata]) },
-		{ name: "item 1 carries needs-review", ok: JSON.stringify(one?.events ?? []).includes("needs-review"), detail: JSON.stringify(events(one)) },
+		{ name: "item 1 carries needs-review", ok: labelled(one), detail: JSON.stringify(events(one)) },
 		{ name: "the delegate's report is a comment on item 1", ok: commentsOn(one).some(c => c.includes(report)), detail: JSON.stringify(commentsOn(one)) },
 		{ name: "item 2 was left alone", ok: two?.status === "open" && !commentsOn(two).length, detail: JSON.stringify([two?.status, events(two)]) },
 	];
@@ -215,7 +215,7 @@ SCENARIOS.push({
 			{ name: "the plan's two items and their parent are the only issues", ok: issues.length === 3 && parents.length === 1, detail: JSON.stringify(issues.map(i => [i.ref, i.title, i.status])) },
 			{ name: "the first report landed on item 1", ok: comments.some(c => c.includes("FU-FIRST")), detail: JSON.stringify(comments) },
 			{ name: "the follow-up's report landed on the same issue", ok: comments.some(c => c.includes("FU-SECOND")), detail: JSON.stringify(comments) },
-			{ name: "item 1 is open with needs-review and back with the lead", ok: one?.status === "open" && JSON.stringify(one.events).includes("needs-review"), detail: JSON.stringify([one?.status, one?.metadata]) },
+			{ name: "item 1 is open with needs-review and back with the lead", ok: one?.status === "open" && labelled(one), detail: JSON.stringify([one?.status, one?.metadata]) },
 		];
 	},
 });
@@ -266,7 +266,7 @@ SCENARIOS.push({
 			{ name: "the close and the comment are the delegate's teammate's", ok: !!assignment && JSON.stringify([...eventsOf(one, "issue.closed"), ...eventsOf(one, "issue.commented")]).includes(assignment[2]) && !!one?.events.some(e => e.type === "issue.commented" && String(e.payload?.body).includes("DC-REPORT")), detail: JSON.stringify([assignment, one?.events]) },
 			{ name: "the lead's resend with item 1 completed and no fields was accepted", ok: resend !== "" && !resend.includes("Refused"), detail: resend },
 			{ name: "item 2 is in progress", ok: two?.status === "open" && two.metadata["todo.status"] === "in_progress", detail: JSON.stringify([two?.status, two?.owner, two?.metadata]) },
-			{ name: "item 1 has no needs-review", ok: !JSON.stringify(one?.events ?? []).includes("needs-review"), detail: JSON.stringify(one?.events.map(e => e.type)) },
+			{ name: "item 1 has no needs-review", ok: !labelled(one), detail: JSON.stringify(one?.events.map(e => e.type)) },
 		];
 	},
 });

@@ -9,7 +9,7 @@ import { createSettlement, MAX_FAILURES, openChildren, type PendingClose, type S
 import { createKata, debugTo, isKataCode, isUnusable, KataError, waitAtMost, type Exec } from "./kata-cli";
 import { createTicketCompletion } from "./autocomplete";
 import { kataCommands, quote, shellOptions } from "./shell";
-import { closedTaskStatus, digest, FULL_ID_REF, heldBySession, heldMessage, itemTicket, OPEN, openTaskStatus, PROOF_MIN, projectOf, proofProblem, QUALIFIED_REF_ONLY, qualifiedRef, SESSION_KEY, sessionParentKeys, slug, tasksOf, textOf, TODO_WORDING, WORKING, type Binding, type Change, type KataIssue, type KataShow, type Plan, type Status, type Task, type ToolWording } from "./model";
+import { closedTaskStatus, digest, FULL_ID_REF, heldBySession, heldMessage, itemTicket, OPEN, PROOF_MIN, projectOf, proofProblem, QUALIFIED_REF_ONLY, qualifiedRef, SESSION_KEY, sessionParentKeys, slug, tasksOf, textOf, TITLE_MAX, TODO_WORDING, WORKING, type Binding, type Change, type KataIssue, type KataShow, type Plan, type Status, type Task, type ToolWording } from "./model";
 
 // Canonical shared source. scripts/vendor-core.ts copies this file into each
 // self-contained plugin; host adapters own their event/schema/identity APIs.
@@ -901,9 +901,8 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 	}
 
 	function requireProof(task: Task, ref: string, change: Change): void {
-		if (proofProblem(change)) {
-			throw new Error(`Kata needs evidence and a ${PROOF_MIN}+ character message to close ${ref} ("${task.content}") as done: pass evidence (${RULES.evidence}) and a message saying what changed and how it was verified. If it is not verified, block it instead.`);
-		}
+		const problem = proofProblem(change);
+		if (problem) throw new Error(`Kata needs ${problem} to close ${ref} ("${task.content}") as done; evidence is ${RULES.evidence}. If it is not verified, block it instead.`);
 	}
 
 	// ------------------------------------------------- items naming a ticket
@@ -1136,7 +1135,7 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 		}
 		const sessionId = sid(ctx);
 		if (typeof sessionId !== "string" || !sessionId.trim()) throw new Error("Kata needs a real session id before creating an automatic parent.");
-		const title = ((params.message as string | undefined)?.trim() || host.getSessionName?.() || `Todo plan: ${(params.list ?? []).map((p: any) => p.phase).join(", ") || "tasks"}`).slice(0, 120);
+		const title = ((params.message as string | undefined)?.trim() || host.getSessionName?.() || `Todo plan: ${(params.list ?? []).map((p: any) => p.phase).join(", ") || "tasks"}`).slice(0, TITLE_MAX);
 		const cwd = path.resolve(ctx.cwd);
 		let where: Awaited<ReturnType<typeof destination>>, created: Created;
 		try {
@@ -1270,7 +1269,7 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 			catch (error) { if (params.op !== "view") throw new Error(`Kata is reachable again, but the local plan could not be replayed into it: ${(error as Error).message}`); }
 		}
 		let cwd = plan.workspace;
-		const change: Change = { message: params.message?.trim() || undefined, evidence: params.evidence, reason: params.reason?.trim() || undefined };
+		const change: Change = { message: params.message?.trim() || undefined, evidence: params.evidence?.filter((e: string) => e.trim()), reason: params.reason?.trim() || undefined };
 		const op = params.op as string;
 		if (op === "view") {
 			await load(cwd);
@@ -1740,7 +1739,6 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 		// Left for the fork before the bounded work: pi starts the fork's instance once this shutdown returns or times out.
 		const forking = main(ctx) && closing.forking ? leaving() : undefined;
 		if (forking) forkSources.set(forking.session, forking);
-		// After the drain: the automatic parent's close still records this session.
 		await bounded((async () => {
 			await serial(async () => {
 				const session = attentionSession;

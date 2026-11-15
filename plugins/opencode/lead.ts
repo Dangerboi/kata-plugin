@@ -76,7 +76,7 @@ export interface Lead extends Planner {
 	suspend(): Promise<void>;
 }
 
-export interface LeadDeps {
+interface LeadDeps {
 	id: string;
 	// The folder of the location, where every session of this instance runs.
 	directory: string;

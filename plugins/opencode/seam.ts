@@ -60,7 +60,7 @@ export interface Seam {
 }
 
 // `created`: when OpenCode made the event, in milliseconds.
-export interface SessionEvent {
+interface SessionEvent {
 	type: string;
 	created?: number;
 	data: { sessionID: string; [key: string]: unknown };
@@ -72,7 +72,7 @@ interface SessionInfo {
 }
 
 // What kata.ts needs on top of the Seam: the dispatchers it registers with OpenCode, and the lifecycle.
-export interface SeamRegistry {
+interface SeamRegistry {
 	seam: Seam;
 	hooks: {
 		before(event: any): Promise<void>;

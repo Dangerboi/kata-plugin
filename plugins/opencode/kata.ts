@@ -23,7 +23,8 @@ export default {
 		const registry = createSeam(ctx, settings);
 		const { seam } = registry;
 
-		// A lead's core is created at the lead's first context hook or first tool call, never at its `session.created` (not delivered).
+		// A lead's core is created at the lead's first context hook or tool call, or for a session with saved state at the setup's
+		// resume or its first event; never at its `session.created` (not delivered).
 		// A lead that runs a hook or tool is alive: it is no longer an ended session. A delegate's tool call says nothing of its lead.
 		seam.before(async event => {
 			const role = await seam.roleOf(event.sessionID);
