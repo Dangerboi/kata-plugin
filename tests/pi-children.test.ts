@@ -251,6 +251,65 @@ test("a child that matches no plan task or ticket is untracked: no issue, the un
   leaveChild();
 });
 
+// A child that ends on a report: what it said last, then its shutdown.
+async function endWithReport(child: any, text: string) {
+  child.entries.push({ type: "message", message: { role: "assistant", content: [{ type: "text", text }] } });
+  await child.event("session_shutdown", { reason: "quit" });
+  leaveChild();
+}
+const missionsUnder = async (ref: string) => (await show(ref)).children.filter((c: any) => c.metadata?.["pi.mission"] === "true");
+const reportsOn = async (ref: string) => ((await show(ref)).comments ?? []).filter((c: any) => c.body.startsWith("Report from subagent")).map((c: any) => [c.teammate, c.body]);
+
+test("an untracked child that ends with a report leaves a closed mission under the lead's parent", async () => {
+  const parent = await host(); await parent.event("session_start", { reason: "startup" });
+  const ref = await parent.init(["Implement mission fixture"]);
+  const child = await childOf(parent);
+  await child.event("before_agent_start", { prompt: "Survey the unrelated build system", systemPromptOptions: { sections: {} } });
+  const record = delegateRecord(child);
+  await endWithReport(child, "The build system is plain make.");
+  const [mission] = await missionsUnder(ref);
+  expect(mission).toMatchObject({ status: "closed", closed_reason: "audit-no-change", metadata: { "pi.mission_subagent_id": child.sid } });
+  expect(await reportsOn(`pitest#${mission.short_id}`)).toEqual([[record.teammate, `Report from subagent ${record.name}:\n\nThe build system is plain make.`]]);
+});
+
+test("a child naming two plan items gets its report on each, closes neither, and leaves no mission", async () => {
+  const parent = await host(); await parent.event("session_start", { reason: "startup" });
+  const ref = await parent.init(["Build the left widget", "Build the right widget"]);
+  const child = await childOf(parent);
+  const prompt: any = { prompt: 'Do "Build the left widget" and "Build the right widget"', systemPromptOptions: { sections: {} } };
+  await child.event("before_agent_start", prompt);
+  expect(prompt.systemPromptOptions.sections.kata_binding).toContain("you have no Kata issue");
+  const record = delegateRecord(child);
+  await endWithReport(child, "Both widgets are sketched; neither is tested.");
+  const tasks = (await show(ref)).children;
+  expect(tasks.map((c: any) => c.status)).toEqual(["open", "open"]);
+  for (const task of tasks) expect((await reportsOn(`pitest#${task.short_id}`)).map(([teammate, body]: string[]) => [teammate, body.endsWith("Both widgets are sketched; neither is tested.")])).toEqual([[record.teammate, true]]);
+  expect(await missionsUnder(ref)).toEqual([]);
+});
+
+test("a child refused a plan task another delegate holds records nothing", async () => {
+  const parent = await host(); await parent.event("session_start", { reason: "startup" });
+  const ref = await parent.init(["Held conflict task"]);
+  const held = (await show(ref)).children[0];
+  await kata(["meta", "set", held.short_id, "omp.subagent_id", "omp-worker", "--json"]);
+  const child = await childOf(parent);
+  await child.event("before_agent_start", { prompt: "Complete Held conflict task", systemPromptOptions: { sections: {} } });
+  await endWithReport(child, "I could not take the held task.");
+  expect(await missionsUnder(ref)).toEqual([]);
+  expect(await reportsOn(`pitest#${held.short_id}`)).toEqual([]);
+});
+
+test("a lead with no plan closes, when it ends, the parent its untracked child made for its mission", async () => {
+  const parent = await host(); await parent.event("session_start", { reason: "startup" });
+  const child = await childOf(parent);
+  await child.event("before_agent_start", { prompt: "Survey the unrelated build system", systemPromptOptions: { sections: {} } });
+  await endWithReport(child, "The build system is plain make.");
+  const [made] = (await kata(["list", "--status", "all", "--meta", `pi.session_id=${parent.sid}`, "--label", "pi-session", "--json"])).issues;
+  expect((await missionsUnder(made.qualified_id)).map((c: any) => c.status)).toEqual(["closed"]);
+  await parent.event("session_shutdown", { reason: "quit" });
+  expect((await show(made.qualified_id)).issue).toMatchObject({ status: "closed", closed_reason: "audit-no-change" });
+});
+
 test("a child that worked but left its plan task open hands it back for review", async () => {
   const parent = await host(); await parent.event("session_start", { reason: "startup" });
   const ref = await parent.init(["Implement handback fixture", "Write handback fixture tests"]);

@@ -22,9 +22,9 @@ beforeAll(async () => { expect((await run(["init", "--project", "settlement-test
 afterAll(async () => { await run(["daemon", "stop"]); });
 
 let seq = 0;
-// A qualified ref for a new issue; an automatic parent carries the session markers.
-async function create(title: string, options: { parent?: string; auto?: boolean } = {}) {
-  const out = await kata(["create", `${title} ${++seq}`, "--force-new", ...(options.parent ? ["--parent", options.parent] : [])]);
+// A qualified ref for a new issue; an automatic parent carries the session markers, a mission the subagent-run marker.
+async function create(title: string, options: { parent?: string; auto?: boolean; mission?: boolean } = {}) {
+  const out = await kata(["create", `${title} ${++seq}`, "--force-new", ...(options.parent ? ["--parent", options.parent] : []), ...(options.mission ? ["--meta", "omp.mission=true"] : [])]);
   const ref = `${(out.event ?? out.original_event).project_name}#${out.issue.short_id}`;
   if (options.auto) {
     await kata(["meta", "set", ref, "omp.auto_parent", "true", "--json-value"]);
@@ -33,6 +33,7 @@ async function create(title: string, options: { parent?: string; auto?: boolean 
   return ref;
 }
 const closeDone = (ref: string) => kata(["close", ref, "--done", "--message", message, "--evidence", "test:settlement fixture"]);
+const closeMission = (ref: string) => kata(["close", ref, "--audit-no-change", "--message", `${message} It records a subagent run.`, "--evidence", "no-change-audit:records a subagent run"]);
 const closeWontfix = (ref: string) => kata(["close", ref, "--wontfix", "--message", `${message} The task was intentionally retired without asserting completion.`]);
 const labels = async (ref: string) => (await view(ref)).labels.map((l: any) => l.label);
 const throttled = () => Object.assign(new Error("sibling-close throttle"), { code: "sibling_throttle" });
@@ -210,6 +211,49 @@ test("an automatic parent closes once every child is closed with evidence", asyn
   await closeDone(child);
   await s.settlement.drain();
   expect((await view(parent)).issue.status).toBe("closed");
+});
+
+test("an automatic parent whose children are only recorded subagent runs and retired tasks closes as audit-no-change", async () => {
+  const parent = await create("Plan", { auto: true });
+  await closeMission(await create("Subagent scout run", { parent, mission: true }));
+  await closeMission(await create("Subagent reviewer run", { parent, mission: true }));
+  await closeWontfix(await create("Retired task", { parent }));
+  const s = build();
+  s.settlement.addAutoParent({ parent, workspace: cwd, sessionId: SESSION, auto: true });
+  await s.settlement.drain();
+  const closed = await view(parent);
+  expect(closed.issue.status).toBe("closed");
+  expect(closed.issue.closed_reason).toBe("audit-no-change");
+  expect(await labels(parent)).not.toContain("needs-review");
+  expect(s.settlement.owes()).toBe(false);
+});
+
+test("missions beside plan tasks leave the parent's done close to the plan tasks' evidence", async () => {
+  const parent = await create("Plan", { auto: true });
+  await closeMission(await create("Subagent scout run", { parent, mission: true }));
+  await closeDone(await create("Only task", { parent }));
+  const s = build();
+  s.settlement.addAutoParent({ parent, workspace: cwd, sessionId: SESSION, auto: true });
+  await s.settlement.drain();
+  expect((await view(parent)).issue.closed_reason).toBe("done");
+  const row = (await kata(["audit", "closes"])).rows.find((r: any) => r.issue === parent.split("#")[1]);
+  expect(row.evidence_types).toEqual(["test"]);
+  expect(await labels(parent)).not.toContain("needs-review");
+});
+
+test("a mission its settle never closed is closed by the audit once nothing else is open, and the parent closes after it", async () => {
+  const parent = await create("Plan", { auto: true });
+  const mission = await create("Subagent scout run", { parent, mission: true });
+  const task = await create("Only task", { parent });
+  const s = build();
+  s.settlement.addAutoParent({ parent, workspace: cwd, sessionId: SESSION, auto: true });
+  await s.settlement.drain();
+  expect((await view(mission)).issue.status).toBe("open");
+  await closeDone(task);
+  await s.settlement.drain();
+  expect((await view(mission)).issue).toMatchObject({ status: "closed", closed_reason: "audit-no-change" });
+  expect((await view(parent)).issue).toMatchObject({ status: "closed", closed_reason: "done" });
+  expect(await labels(parent)).not.toContain("needs-review");
 });
 
 test("a running delegate pauses only the automatic-parent audit", async () => {

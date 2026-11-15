@@ -17,7 +17,11 @@ The issue a delegate works and the teammate it works it as.
 _Avoid_: binding, worker binding
 
 **Untracked delegate**:
-A delegate with no assignment, because its task named no plan task it could take and no ticket; the lead tracks its work.
+A delegate with no assignment, because its task named no plan task it could take and no ticket, or (a pi child) the plugin refused its assignment; the lead tracks its work. When it exits with a report, the plugin records its run as a mission; a refused pi child gets no mission, and its report goes on the tickets or plan items it named only when it named several.
+
+**Mission**:
+The issue the plugin makes under the plan parent to record an untracked delegate's run: its task as the body, its report as a comment, closed as audit-no-change because a report proves no change.
+_Avoid_: subagent issue, run record
 
 **Hand back**:
 Returning an exited delegate's still-open issue to the lead, marked for review.
@@ -39,7 +43,7 @@ A lead session making itself the holder of a plan task another session holds, on
 _Avoid_: steal, reclaim
 
 **Report**:
-A delegate's final word on its work: the text of its last assistant message that has any, or what it yielded. The plugin posts it on the delegate's issue when the delegate left no comment of its own.
+A delegate's final word on its work: the text of its last assistant message that has any, or what it yielded. The plugin posts it on the delegate's issue when the delegate left no comment of its own, on its mission when it was untracked, or on the targets a refused pi child named.
 _Avoid_: summary, result
 
 ## Plans
@@ -53,7 +57,7 @@ The issue a plan's plan tasks are children of.
 _Avoid_: session parent, binding
 
 **Automatic parent**:
-A plan parent the plugin created for one session; it closes itself once its children are closed with evidence.
+A plan parent the plugin created for one session; it closes itself once its children are closed with evidence, or as audit-no-change when every child that is not wontfix is a mission (at least one).
 _Avoid_: auto parent, session issue
 
 **Explicit parent**:
@@ -79,7 +83,7 @@ A close Kata refused for now (throttled, or waiting on open children) that the p
 _Avoid_: deferred close, retry
 
 **Settlement**:
-The closes the plugin still owes for a session: its pending closes and its automatic parent's close.
+The closes the plugin still owes for a session: its pending closes and its automatic parent's close, with any mission a delegate's settle could not close.
 _Avoid_: reconcile, close queue
 
 **Ended session**:

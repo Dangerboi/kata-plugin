@@ -4,7 +4,8 @@ import path from "node:path";
 import { createKataCore } from "../core/kata-core";
 import type { DelegateEvent } from "../core/delegates";
 import { assertIsolated } from "./isolation";
-import { isolatedKata, memoryDelegateStore } from "./kata-fixture";
+import { eventually, isolatedKata, memoryDelegateStore } from "./kata-fixture";
+import { siblingThrottle } from "./kata-errors";
 assertIsolated();
 
 // The delegate lifecycle through the core's delegate events, against real Kata in a throwaway store.
@@ -19,7 +20,7 @@ async function kata(args: string[]) { const r = await run(args); if (r.code) thr
 const show = (ref: string) => kata(["show", ref, "--json"]);
 const labels = (view: any) => (view.labels ?? []).map((l: any) => l.label);
 const LEAD = "lead-mate";
-let seq = 0, failing: ((args: string[]) => boolean) | undefined, holding: ((args: string[]) => Promise<void> | undefined) | undefined;
+let seq = 0, failing: ((args: string[]) => boolean) | undefined, throttled: ((args: string[]) => boolean) | undefined, holding: ((args: string[]) => Promise<void> | undefined) | undefined;
 
 // A lead session and its delegates: each is an agent with its own core, as in omp, sharing the one delegate store.
 // `from` resumes a past session (same id and entries, no records in memory) or, with `fork`, forks it (new id, parentSession in the header).
@@ -29,12 +30,15 @@ function lead(from?: { entries: any[]; id: string; fork?: boolean }) {
   const store = memoryDelegateStore();
   const agent = () => createKataCore({
     appendEntry: (customType, data) => entries.push({ type: "custom", customType, data }),
-    exec: async (_file, args, opts) => { await holding?.(args); return failing?.(args) ? { code: 1, stdout: "", stderr: "delegation service permission denied" } : run(args, opts.cwd); },
+    exec: async (_file, args, opts) => { await holding?.(args); if (throttled?.(args)) return siblingThrottle(); return failing?.(args) ? { code: 1, stdout: "", stderr: "delegation service permission denied" } : run(args, opts.cwd); },
     isMain: ctx => ctx.agent?.kind === "main",
     delegateStore: store,
   }, { namespace: "omp", executable: binary, executableVars: ["KATA_OMP_EXECUTABLE"] });
   const core = agent();
-  const ctx = { cwd, agent: { kind: "main", id: "lead" }, sessionManager: { getSessionId: () => id, getBranch: () => entries, getHeader: () => header } };
+  // omp's ctx timer: the settlement's retries are armed here and fired by the test.
+  const timers: (() => void)[] = [];
+  const ctx = { cwd, agent: { kind: "main", id: "lead" }, sessionManager: { getSessionId: () => id, getBranch: () => entries, getHeader: () => header },
+    setTimeout: (fire: () => void) => timers.push(fire), clearTimer: () => {} };
   const plan = async (items: string[]) => {
     const result = await core.todo.apply(ctx, "init", { items });
     if (result.isError) throw new Error(result.content[0].text);
@@ -58,11 +62,17 @@ function lead(from?: { entries: any[]; id: string; fork?: boolean }) {
     const result = await core.todo.apply(ctx, "start", { task: title });
     return !!result.isError && /delegate/.test(result.content[0].text);
   };
-  return { core, ctx, id, entries, store, plan, view, delegate, started, delegated, delegates: core.delegates };
+  // An untracked scout that reports and exits.
+  const scout = async (name: string, report: string) => {
+    await core.delegates.apply(started(name, "List the top-level directories of the repository", { agent: "scout" }));
+    await core.delegates.apply({ type: "reported", id: name, text: report });
+    await core.delegates.apply({ type: "exited", id: name, outcome: "completed" });
+  };
+  return { core, ctx, id, entries, store, plan, view, delegate, started, delegated, scout, timers, delegates: core.delegates };
 }
 
 beforeAll(async () => { expect((await run(["init", "--project", "delegates-test"])).code).toBe(0); });
-beforeEach(() => { process.env.KATA_AUTHOR = "lead-actor"; process.env.KATA_TEAMMATE = LEAD; delete process.env.KATA_REF; failing = undefined; holding = undefined; });
+beforeEach(() => { process.env.KATA_AUTHOR = "lead-actor"; process.env.KATA_TEAMMATE = LEAD; delete process.env.KATA_REF; failing = undefined; throttled = undefined; holding = undefined; });
 afterAll(async () => { await run(["daemon", "stop"]); });
 
 const taskOf = async (parent: string, title: string) => (await show(parent)).children.find((c: any) => c.title === title);
@@ -90,6 +100,130 @@ test("a delegate that matches nothing is untracked: holding no issue, with an ex
   expect(await delegate.unassigned()).toContain("no Kata issue");
   await a.delegates.apply({ type: "exited", id: "beta-scout", outcome: "completed" });
   expect((await show(parent)).children).toEqual(before.children);
+});
+
+const missionsOf = async (parent: string) => (await show(parent)).children.filter((c: any) => c.metadata?.["omp.mission"] === "true");
+
+test("an untracked delegate that exits with a report gets a closed mission under the plan parent: its task, and its report under its teammate", async () => {
+  const a = lead(); const parent = await a.plan(["Build the rho widget"]);
+  await a.delegates.apply(a.started("rho-scout", "Survey the unrelated build system", { agent: "scout" }));
+  await a.delegates.apply({ type: "reported", id: "rho-scout", text: "The build system is plain make, with no generated files." });
+  await a.delegates.apply({ type: "exited", id: "rho-scout", outcome: "completed" });
+  const [record] = await missionsOf(parent);
+  const mission = await show(`delegates-test#${record.short_id}`);
+  expect(mission.issue).toMatchObject({ status: "closed", closed_reason: "audit-no-change" });
+  expect(mission.issue.metadata).toMatchObject({ "omp.mission_subagent_id": "rho-scout", "omp.mission_agent": "scout" });
+  expect(mission.issue.body).toContain("Survey the unrelated build system");
+  expect(mission.comments.map((c: any) => [c.teammate, c.body.includes("plain make, with no generated files")])).toEqual([["mate-rho-scout", true]]);
+  expect(labels(mission)).not.toContain("needs-review");
+  // The plan is still the lead's own work.
+  expect((await a.view()).content[0].text).not.toContain(mission.issue.title);
+});
+
+const sessionParents = async (id: string) => (await kata(["list", "--status", "all", "--meta", `omp.session_id=${id}`, "--label", "omp-session", "--json"])).issues;
+
+test("a lead with no plan parent gets an automatic parent for an untracked delegate's mission, which closes it as audit-no-change", async () => {
+  const a = lead(); await a.view();
+  await a.scout("sigma-scout", "core, docs, plugins, scripts and tests.");
+  const [parent] = await sessionParents(a.id);
+  expect(parent.metadata["omp.auto_parent"]).toBe(true);
+  const view = await show(parent.qualified_id);
+  expect(view.children.map((c: any) => [c.metadata["omp.mission_subagent_id"], c.status])).toEqual([["sigma-scout", "closed"]]);
+  expect(view.issue).toMatchObject({ status: "closed", closed_reason: "audit-no-change" });
+  expect(labels(view)).not.toContain("needs-review");
+});
+
+test("an explicit parent takes the mission, and no automatic parent is made beside it", async () => {
+  const explicit = `delegates-test#${(await kata(["create", "Explicit epic", "--force-new", "--json"])).issue.short_id}`;
+  process.env.KATA_REF = explicit;
+  const a = lead(); await a.view();
+  await a.scout("tau-scout", "Nothing unusual in the layout.");
+  expect((await missionsOf(explicit)).map((c: any) => [c.metadata["omp.mission_subagent_id"], c.status])).toEqual([["tau-scout", "closed"]]);
+  expect(await sessionParents(a.id)).toEqual([]);
+  expect((await show(explicit)).issue.status).toBe("open");
+});
+
+test("a mission whose close failed is finished by the next settle, as one issue with one report", async () => {
+  const a = lead(); const parent = await a.plan(["Build the upsilon widget"]);
+  failing = args => args[0] === "close" && args.includes("--audit-no-change");
+  await a.scout("upsilon-scout", "The layout is flat.");
+  expect((await missionsOf(parent)).map((c: any) => c.status)).toEqual(["open"]);
+  failing = undefined;
+  await a.core.session.stop(a.ctx, []);
+  const missions = await missionsOf(parent);
+  expect(missions.map((c: any) => c.status)).toEqual(["closed"]);
+  expect((await show(`delegates-test#${missions[0].short_id}`)).comments).toHaveLength(1);
+});
+
+test("a mission close Kata throttles is retried by the settlement timer, with no turn end needed", async () => {
+  const a = lead(); const parent = await a.plan(["Build the omega widget"]);
+  throttled = args => args[0] === "close" && args.includes("--audit-no-change");
+  await a.scout("omega-scout", "The layout is flat.");
+  expect((await missionsOf(parent)).map((c: any) => c.status)).toEqual(["open"]);
+  throttled = undefined;
+  expect(a.timers.length).toBe(1);
+  // Only the drain the timer starts closes it: nothing else touches the core meanwhile.
+  a.timers.shift()!();
+  await eventually(async () => (await missionsOf(parent)).map((c: any) => c.status), ["closed"]);
+});
+
+test("sibling missions close with messages of their own, which Kata's close throttle would refuse as repeats otherwise", async () => {
+  const a = lead(); const parent = await a.plan(["Build the kappa gadget"]);
+  await a.scout("kappa-one", "First survey.");
+  await a.scout("kappa-two", "Second survey.");
+  const ids = (await missionsOf(parent)).map((c: any) => c.short_id);
+  const messages = (await kata(["audit", "closes", "--json"])).rows.filter((r: any) => ids.includes(r.issue)).map((r: any) => r.message);
+  expect(messages).toHaveLength(2);
+  expect(new Set(messages).size).toBe(2);
+});
+
+test("a follow-up of an untracked delegate posts its new report on the mission its first run made, even one that repeats the first", async () => {
+  const a = lead(); const parent = await a.plan(["Build the phi widget"]);
+  await a.scout("phi-scout", "The layout is flat.");
+  await a.delegates.apply({ type: "woken", id: "phi-scout", sessionId: "phi-scout" });
+  await a.delegates.apply({ type: "reported", id: "phi-scout", text: "The layout is flat." });
+  await a.delegates.apply({ type: "exited", id: "phi-scout", outcome: "completed" });
+  const missions = await missionsOf(parent);
+  expect(missions.map((c: any) => c.status)).toEqual(["closed"]);
+  expect((await reportsOf(`delegates-test#${missions[0].short_id}`)).map(c => c.body)).toEqual([
+    "Report from subagent phi-scout:\n\nThe layout is flat.",
+    "Report from subagent phi-scout (after a follow-up):\n\nThe layout is flat.",
+  ]);
+  expect(a.core.session.owes()).toBe(false);
+});
+
+test("a lead resumed before a follow-up's report reached its mission posts it from the saved record", async () => {
+  const a = lead(); const parent = await a.plan(["Build the psi widget"]);
+  await a.scout("psi-scout", "First pass.");
+  await a.delegates.apply({ type: "woken", id: "psi-scout", sessionId: "psi-scout" });
+  await a.delegates.apply({ type: "reported", id: "psi-scout", text: "Second pass: two more folders." });
+  failing = args => args[0] === "comment";
+  await a.delegates.apply({ type: "exited", id: "psi-scout", outcome: "completed" });
+  failing = undefined;
+  const b = lead({ entries: a.entries, id: a.id });
+  await b.core.session.start(b.ctx);
+  await b.view();
+  const [mission] = await missionsOf(parent);
+  expect((await reportsOf(`delegates-test#${mission.short_id}`)).map(c => c.body)).toEqual([
+    "Report from subagent psi-scout:\n\nFirst pass.",
+    "Report from subagent psi-scout (after a follow-up):\n\nSecond pass: two more folders.",
+  ]);
+});
+
+test("an untracked delegate whose run left no report keeps its untracked note, and a follow-up's report makes its mission", async () => {
+  const a = lead(); const parent = await a.plan(["Build the chi widget"]);
+  const delegate = a.delegate("chi-scout");
+  await a.delegates.apply(a.started("chi-scout", "Survey the unrelated build system"));
+  await a.delegates.apply({ type: "exited", id: "chi-scout", outcome: "completed" });
+  expect(await missionsOf(parent)).toEqual([]);
+  expect(await delegate.assignment()).toContain("no Kata issue");
+  expect(await delegate.unassigned()).toContain("matched no plan item or ticket");
+  await a.delegates.apply({ type: "woken", id: "chi-scout", sessionId: "chi-scout" });
+  await a.delegates.apply({ type: "reported", id: "chi-scout", text: "Second pass: it is plain make." });
+  await a.delegates.apply({ type: "exited", id: "chi-scout", outcome: "completed" });
+  const missions = await missionsOf(parent);
+  expect(missions.map((c: any) => c.status)).toEqual(["closed"]);
+  expect((await reportsOf(`delegates-test#${missions[0].short_id}`)).map(c => c.body)).toEqual(["Report from subagent chi-scout:\n\nSecond pass: it is plain make."]);
 });
 
 test("a delegate that ran a tool and exits with its issue open hands it back: comment, needs-human, needs-review, task back to the lead", async () => {

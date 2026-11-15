@@ -37,6 +37,16 @@ export function heldBySession(issue: Pick<KataIssue, "status" | "metadata">, own
 // The start of every refusal for a plan task another session holds.
 export const heldMessage = (ref: string, holder: string) => `Plan task ${ref} was started by another session (${holder}), which has not released it`;
 
+// A mission: the issue the plugin makes, under the plan parent, to record the run of a delegate that had no issue of its own
+// (see delegates.ts). It is closed without proof of a change, so it adds no evidence to its parent's close.
+export const missionKey = (namespace: string) => `${namespace}.mission`;
+export const isMission = (namespace: string, issue: Pick<KataIssue, "metadata">) => issue.metadata?.[missionKey(namespace)] === "true";
+// The close of a mission, by its delegate's settle or, when that settle could not close it (cut off, killed, a pi child's close
+// throttled), by the automatic parent's audit. The message names the mission: with Kata's close throttle on, a close that
+// repeats a sibling's message is refused (`duplicate_message`).
+export const missionCloseArgs = (ref: string) => ["close", ref, "--audit-no-change", "--message", `${ref} records the run of a subagent that had no Kata issue of its own; its report is in the comments. The lead verifies any change the run made.`,
+	"--evidence", "no-change-audit:Records a subagent run, not a verified change; any change the run made is the lead's to verify."];
+
 // The text of a message's content: a plain string, or its text blocks joined.
 export function textOf(content: unknown): string {
 	if (typeof content === "string") return content;

@@ -4,6 +4,23 @@ All notable changes to kata-plugin are listed here. The format follows [Keep a C
 
 ## [Unreleased]
 
+### Added
+
+#### Plans
+
+- An automatic parent whose only children besides retired tasks are missions closes as `audit-no-change` instead of staying open for review.
+  - A mission adds no evidence to a parent that closes as done, so it never leaves that parent `needs-review`.
+  - A mission left open because the plugin could not close it (a pi child's close was throttled or cut off by its shutdown budget, a kill) is closed by the parent's audit once nothing else under the parent is open.
+
+#### Delegates
+
+- An untracked delegate (an omp `task` subagent, a pi child or an OpenCode subagent whose task names no plan item or ticket) that exits with a report leaves a mission: a closed child issue of the plan parent with its task, its agent and its report.
+  - The plugin makes and closes the mission itself, as `audit-no-change`, so a delegate without `bash` such as omp's `scout` gets one too. Any change the run made is the lead's to verify.
+  - With no plan parent, the plugin creates the automatic parent for it; it never creates one beside an explicit parent.
+- pi: a child whose task names two or more tickets or plan items gets its report posted on each of them, and none is closed.
+  - A child refused because its task is already delegated or held still records nothing.
+- OpenCode: a follow-up to an untracked delegate posts its new report on that delegate's mission, also after a restart.
+
 ### Changed
 
 #### Plans

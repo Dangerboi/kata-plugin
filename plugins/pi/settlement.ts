@@ -1,9 +1,10 @@
 import { isUnusable, type Kata } from "./kata-cli";
-import { projectOf, qualifiedRef, type Binding, type Change, type KataIssue, type KataShow, type Status, type Task } from "./model";
+import { isMission, missionCloseArgs, projectOf, qualifiedRef, type Binding, type Change, type KataIssue, type KataShow, type Status, type Task } from "./model";
 
 // Settlement: the closes the plugin still owes a session. Throttled task closes,
-// ticket closes waiting on open children, and the automatic parent's close are
-// retried by one drain, woken by one timer, and saved in one snapshot.
+// ticket closes waiting on open children, and the automatic parent's close (with
+// any mission its delegate's settle left open) are retried by one drain, woken by
+// one timer, and saved in one snapshot.
 
 export const RETRY_MS = 60_000;
 const TIMER_MS = RETRY_MS + 100;
@@ -159,18 +160,29 @@ export function createSettlement(deps: SettlementDeps): Settlement {
 			try {
 				if (deps.delegatesRunning()) return;
 				initial = await kata.show(parent, workspace);
-				const children = initial.children ?? [];
 				if (initial.issue.status === "closed" || initial.issue.metadata?.[`${namespace}.auto_parent`] !== true || initial.issue.metadata?.[`${namespace}.session_id`] !== binding.sessionId) { parentDone.add(parent); continue; }
+				// A mission whose delegate's settle never closed it (cut off at shutdown, killed, its close throttled) would hold the
+				// parent open for good: the audit closes it once nothing else is open. No revision guard: the close decides nothing, and
+				// one that lands after the delegate's own close (a pi child settling in its own process) changes nothing.
+				const open = (initial.children ?? []).filter(c => c.status !== "closed");
+				if (open.length && open.every(c => isMission(namespace, c))) {
+					for (const c of open) await kata.run(missionCloseArgs(qualifiedRef(c, parent)), workspace);
+					initial = await kata.fresh(() => kata.show(parent, workspace));
+				}
+				const children = initial.children ?? [];
 				if (!children.length || children.some(c => c.status !== "closed")) { parentDone.add(parent); continue; }
 				if (flagged.get(parent) === verdictKey(initial)) { parentDone.add(parent); continue; }
 				decision = await owned(parent, workspace, false, false, initial.issue.revision);
-				const closedTimes = children.filter(c => c.closed_reason !== "wontfix").map(c => Date.parse(c.closed_at ?? ""));
+				// Retired tasks and missions add no evidence: a mission records a delegate's run and proves no change.
+				const proven: KataIssue[] = [];
+				let missionCount = 0;
+				for (const c of children) if (isMission(namespace, c)) missionCount++; else if (c.closed_reason !== "wontfix") proven.push(c);
+				const closedTimes = proven.map(c => Date.parse(c.closed_at ?? ""));
 				if (closedTimes.some((time: number) => !Number.isFinite(time))) throw new Error("Kata child close time unavailable");
 				const since = closedTimes.length ? new Date(Math.min(...closedTimes)).toISOString() : undefined;
 				const evidence: any[] = [];
 				const audits = new Map<string, any[]>();
-				for (const child of children) {
-					if (child.closed_reason === "wontfix") continue;
+				for (const child of proven) {
 					let project = child.qualified_id ? projectOf(child.qualified_id) : undefined;
 					if (!project && child.project_id === initial.issue.project_id) project = projectOf(parent);
 					project ??= (await kata.projects(workspace)).find(p => p.id === child.project_id)?.name;
@@ -184,15 +196,25 @@ export function createSettlement(deps: SettlementDeps): Settlement {
 					if (page.reset_required || event?.event_id !== row.event_id || event.type !== "issue.closed" || event.issue_uid !== child.uid || Date.parse(event.payload?.closed_at) !== Date.parse(child.closed_at ?? "") || !Array.isArray(event.payload?.evidence) || !event.payload.evidence.length) throw new Error("Kata current child evidence unavailable");
 					evidence.push(...event.payload.evidence);
 				}
-				const proof = proofArgs(evidence);
-				if (!proof.length) throw new Error("Kata child close evidence union is empty");
+				// A plan of only missions (and retired tasks) had no work of its own to prove.
+				const runsPhrase = `${missionCount} recorded subagent run${missionCount === 1 ? "" : "s"}`;
+				let verdict: string[], basis: string;
+				if (!proven.length && missionCount) {
+					verdict = ["--audit-no-change", "--evidence", `no-change-audit:The plan had no work beyond ${runsPhrase}; any change a run made is the lead's to verify.`];
+					basis = `The plan had no work of its own beyond ${runsPhrase}.`;
+				} else {
+					const proof = proofArgs(evidence);
+					if (!proof.length) throw new Error("Kata child close evidence union is empty");
+					verdict = ["--done", ...proof];
+					basis = "Evidence is the union of their current Kata-recorded close events.";
+				}
 				// Read again past the operation's earlier reads: the children may have changed while the evidence was gathered.
 				const final: KataShow = await kata.fresh(() => kata.show(parent, workspace));
 				const finalChildren = final.children ?? [];
 				if (final.issue.status === "closed") { parentDone.add(parent); continue; }
 				if (deps.delegatesRunning()) continue;
 				if (final.issue.revision !== initial.issue.revision || finalChildren.length !== children.length || finalChildren.some(c => c.status !== "closed" || !children.some(old => old.uid === c.uid && old.revision === c.revision))) continue;
-				await kata.run(["close", parent, "--done", "--if-match", String(final.issue.revision), "--idempotency-key", `${namespace}-parent-close:${parent}:${final.issue.revision}`, "--message", `${namespace.toUpperCase()} session ${binding.sessionId}: all ${finalChildren.length} child issues are closed in Kata and delegated work has settled. Evidence is the union of their current Kata-recorded close events.`, ...proof], workspace);
+				await kata.run(["close", parent, "--if-match", String(final.issue.revision), "--idempotency-key", `${namespace}-parent-close:${parent}:${final.issue.revision}`, "--message", `${namespace.toUpperCase()} session ${binding.sessionId}: all ${finalChildren.length} child issues are closed in Kata and delegated work has settled. ${basis}`, ...verdict], workspace);
 				parentDone.add(parent);
 			} catch (error) {
 				debug(error);

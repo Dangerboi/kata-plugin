@@ -9,6 +9,8 @@ interface Call {
 	id: string;
 	prompt: string;
 	description: string;
+	// The agent the call starts (`general`, `explore`, ...), when it names one.
+	agent?: string;
 	background: boolean;
 	// What the plan check matched the prompt to; held against other calls of this lead until the child is bound.
 	reserved?: Reservation;
@@ -69,6 +71,7 @@ export function install(seam: Seam): void {
 			id: event.id,
 			prompt: typeof input.prompt === "string" ? input.prompt : "",
 			description: typeof input.description === "string" ? input.description : "",
+			agent: typeof input.agent === "string" && input.agent ? input.agent : undefined,
 			background: input.background === true,
 		};
 		// One call at a time: the refs another pending call reserved are read and this one's are added in the same step.
@@ -108,7 +111,7 @@ export function install(seam: Seam): void {
 			if (follow) await send(lead, { type: "woken", id: event.sessionID, sessionId: event.sessionID });
 			else await send(lead, {
 				type: "started", id: event.sessionID, sessionId: event.sessionID, leadSessionId: lead.id, leadTeammate: seam.settings.teammate ?? "",
-				teammate: teammateFor(event.sessionID, lead.id), text: call.prompt, label: call.description, name: call.description || undefined, reserved: call.reserved,
+				teammate: teammateFor(event.sessionID, lead.id), text: call.prompt, label: call.description, name: call.description || undefined, agent: call.agent, reserved: call.reserved,
 			});
 			record = lead.delegates.get(event.sessionID);
 		}
