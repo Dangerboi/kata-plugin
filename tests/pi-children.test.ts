@@ -531,7 +531,25 @@ test("a one-shot child whose start Kata could not check, and that names nothing,
   const child = await childOf({ before: (a: string[]) => down && a[0] === "show" && a.includes(ref) && ++reads > 1 ? daemonUnavailable() : undefined });
   down = true;
   await child.event("before_agent_start", { prompt: "Survey the unrelated build system", systemPromptOptions: { sections: {} } });
+  // The outage left it undecided, not untracked: its exit is what records it.
+  expect(delegateRecord(child)).toMatchObject({ state: "failed", planRef: undefined });
   down = false;
   await endWithReport(child, "The build system is plain make.");
   expect((await missionsUnder(ref)).map((c: any) => c.status)).toEqual(["closed"]);
+});
+
+test("a child whose start Kata could not check, refused on its retry, posts its report on the items it named and leaves no mission", async () => {
+  const parent = await host(); await parent.event("session_start", { reason: "startup" });
+  const ref = await parent.init(["Build the north widget", "Build the south widget"]);
+  let down = false, reads = 0;
+  const child = await childOf({ before: (a: string[]) => down && a[0] === "show" && a.includes(ref) && ++reads > 1 ? daemonUnavailable() : undefined });
+  down = true;
+  await child.event("before_agent_start", { prompt: 'Do "Build the north widget" and "Build the south widget"', systemPromptOptions: { sections: {} } });
+  expect(delegateRecord(child)).toMatchObject({ state: "failed" });
+  down = false;
+  await child.event("before_agent_start", { prompt: "Carry on", systemPromptOptions: { sections: {} } });
+  const record = delegateRecord(child);
+  await endWithReport(child, "Both widgets are sketched.");
+  for (const task of (await show(ref)).children) expect((await reportsOn(`pitest#${task.short_id}`)).map(([teammate]: string[]) => teammate)).toEqual([record.teammate]);
+  expect(await missionsUnder(ref)).toEqual([]);
 });

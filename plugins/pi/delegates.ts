@@ -101,8 +101,8 @@ export type DelegateOutcome = "completed" | "failed" | "aborted" | "ended";
 // started: no decision yet (waiting for a plan that can bind it). assigned: holds its issue. failed: an assignment write
 // errored; retried on the delegate's next use. untracked: no assignment (it named nothing, or the rules refused it), the lead
 // tracks its work. handed-back: exited with its issue open, which went back to the lead for review. settled: exited, its issue
-// closed or restored. recorded: an untracked delegate that exited and was settled: its report went on its mission or its
-// targets, or it had none to record (see settleUntracked).
+// closed or restored. recorded: a delegate that exited with no issue (untracked, or never decided) and was settled: its report
+// went on its mission or its targets, or it had none to record (see settleUntracked).
 export type DelegateState = "started" | "assigned" | "failed" | "untracked" | "handed-back" | "settled" | "recorded";
 export const FINAL: ReadonlySet<DelegateState> = new Set(["handed-back", "settled", "recorded"]);
 export const isUntracked = (r: DelegateRecord | undefined): r is DelegateRecord & { state: "untracked" | "recorded" } => r?.state === "untracked" || r?.state === "recorded";
@@ -375,7 +375,9 @@ export function createDelegates(env: DelegatesEnv): Delegates {
 			catch (error) {
 				if (!(error instanceof Refusal)) throw error;
 				env.debug(error);
+				// A pi child refused here (its first check never ran) is refused as join would have refused it.
 				r.state = "untracked";
+				if (r.parent) r.refused = { targets: error.targets };
 				return;
 			}
 			// A local plan cannot bind yet: stay undecided so a later use binds the replayed item.
@@ -514,8 +516,8 @@ export function createDelegates(env: DelegatesEnv): Delegates {
 		if (issue.status === "open") await env.kata.run(missionCloseArgs(ref), where.workspace);
 	}
 
-	// An untracked delegate that exited with a report leaves its run on record: a mission, or for a refused pi child its report on
-	// each target it named. One with no report, or refused for a conflict, leaves nothing.
+	// A delegate that exited with no issue (untracked, or never decided) and a report leaves its run on record: a mission, or for
+	// a refused pi child its report on each target it named. One with no report, or refused for a conflict, leaves nothing.
 	async function settleUntracked(r: DelegateRecord) {
 		const targets = r.refused?.targets ?? [];
 		if (r.report && !r.refused) await recordMission(r);
