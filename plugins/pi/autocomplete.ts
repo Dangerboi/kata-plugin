@@ -1,3 +1,4 @@
+// Generated from core/autocomplete.ts; edit there.
 import { isKataCode, type Kata } from "./kata-cli";
 
 // `#` ticket completion in the host's editor: the provider wrapper and the per-session ticket lists it reads.
@@ -5,7 +6,7 @@ import { isKataCode, type Kata } from "./kata-cli";
 export type Ticket = { short_id: string; title: string; qualified_id: string };
 type Suggestions = { items: { value: string; label: string; description?: string }[]; prefix: string } | null;
 // Structural slice of omp's and pi's autocomplete provider; both hosts share it.
-export interface TicketAutocompleteProvider {
+interface TicketAutocompleteProvider {
 	// omp passes the AbortSignal itself plus onPartial; pi passes `{ signal, force }`.
 	getSuggestions(lines: string[], cursorLine: number, cursorCol: number, signal?: AbortSignal | { signal?: AbortSignal }, onPartial?: (suggestions: NonNullable<Suggestions>) => void): Promise<Suggestions>;
 	applyCompletion(lines: string[], cursorLine: number, cursorCol: number, item: { value: string; label: string }, prefix: string): { lines: string[]; cursorLine: number; cursorCol: number };
@@ -91,7 +92,8 @@ const registry = globalThis as { [NEWEST_REGISTRATION]?: object };
 
 // Adds ticket completion to each editor once: omp rebuilds its stack from every registered factory, and a
 // session start runs again on every session switch.
-export function createTicketCompletion(kata: Kata, scope: () => { session?: string; cwd: string }, debug: (error: unknown) => void) {
+// `scope`: the session and cwd the tickets are listed for, and the project a bare `#` completes in (KATA_DEFAULT_PROJECT).
+export function createTicketCompletion(kata: Kata, scope: () => { session?: string; cwd: string; defaultProject?: string }, debug: (error: unknown) => void) {
 	const ticketLists = new Map<string, { at: number; tickets: Ticket[]; pending?: Promise<void>; failedAt?: number; error?: unknown }>();
 	function tickets(project?: string): Promise<Ticket[]> {
 		const { session, cwd } = scope();
@@ -122,6 +124,6 @@ export function createTicketCompletion(kata: Kata, scope: () => { session?: stri
 		const registration = {};
 		registry[NEWEST_REGISTRATION] = registration;
 		const active = () => registry[NEWEST_REGISTRATION] === registration;
-		ui.addAutocompleteProvider(current => ticketAutocomplete(current, tickets, { defaultProject: process.env.KATA_DEFAULT_PROJECT?.trim() || undefined, active }));
+		ui.addAutocompleteProvider(current => ticketAutocomplete(current, tickets, { defaultProject: scope().defaultProject?.trim() || undefined, active }));
 	};
 }

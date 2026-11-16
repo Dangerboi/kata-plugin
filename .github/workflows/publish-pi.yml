@@ -22,16 +22,37 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  publish:
-    if: startsWith(inputs.tag || github.ref_name, 'v')
+  verify:
+    # Nothing publishes before the committed copies of core match core and every package packs. It needs only the tag's own
+    # files and Node (which runs TypeScript), so a re-run of a tag from before this job works too, and it gets no publish rights.
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           ref: ${{ inputs.tag || github.ref }}
           persist-credentials: false
 
-      - uses: actions/setup-node@v6
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+        with:
+          node-version: "24"
+          package-manager-cache: false
+
+      - run: node scripts/vendor-core.ts --check
+      - run: for dir in pi oh-my-pi opencode; do (cd plugins/$dir && npm pack --dry-run); done
+
+  publish:
+    needs: verify
+    if: startsWith(inputs.tag || github.ref_name, 'v')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+          persist-credentials: false
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version: "24"
           registry-url: "https://registry.npmjs.org"
@@ -46,7 +67,7 @@ jobs:
           name=$(node -p "require('./package.json').name")
           version=$(node -p "require('./package.json').version")
           if [ "$TAG" != "v$version" ]; then
-            echo "::error::Tag $TAG does not match $name $version; the root and pi versions must equal the tag."
+            echo "::error::Tag $TAG does not match $name $version; the pi version must equal the tag."
             exit 1
           fi
           if [ -n "$(npm view "$name@$version" version 2>/dev/null)" ]; then
@@ -64,15 +85,16 @@ jobs:
   # A root release also publishes the omp package. It keeps its own version, which the tag does not name, so the job
   # skips only a version already on npm, and tags from before the npm package, whose manifest names unpublished kata-omp.
   publish-omp:
+    needs: verify
     if: startsWith(inputs.tag || github.ref_name, 'v')
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           ref: ${{ inputs.tag || github.ref }}
           persist-credentials: false
 
-      - uses: actions/setup-node@v6
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version: "24"
           registry-url: "https://registry.npmjs.org"
@@ -101,15 +123,16 @@ jobs:
 
   # The OpenCode package has its own version and its own tag, opencode-v<version>; a pi tag never runs this job.
   publish-opencode:
+    needs: verify
     if: startsWith(inputs.tag || github.ref_name, 'opencode-v')
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           ref: ${{ inputs.tag || github.ref }}
           persist-credentials: false
 
-      - uses: actions/setup-node@v6
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version: "24"
           registry-url: "https://registry.npmjs.org"

@@ -1,44 +1,32 @@
-import { afterAll, beforeAll, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync } from "node:fs";
-import path from "node:path";
+import { expect, test } from "bun:test";
 import { KataError } from "../core/kata-cli";
+import { missionCloseArgs, missionKey } from "../core/model";
 import { createSettlement, MAX_FAILURES, RETRY_MS, type CloseRequest, type TaskClose } from "../core/settlement";
-import { assertIsolated } from "./isolation";
-import { isolatedKata } from "./kata-fixture";
-assertIsolated();
-const binary = process.env.KATA_TEST_EXECUTABLE!;
-const root = mkdtempSync(path.join(process.env.KATA_TEST_ROOT!, "settlement-"));
-const cwd = path.join(root, "workspace");
-mkdirSync(cwd);
-const env = { ...process.env, KATA_HOME: path.join(root, "home"), KATA_AUTHOR: "actor-a" };
-for (const key of ["KATA_REF", "KATA_TEAMMATE", "KATA_INBOX_USER"]) delete env[key];
-const run = isolatedKata(binary, env, cwd, 60000);
+import { EVIDENCE, MESSAGE as message, realKata, unique } from "./kata-fixture";
+const PROJECT = "settlement-test";
+const store = realKata({ prefix: "settlement", author: "actor-a", project: PROJECT });
 const withJson = (args: string[]) => args.includes("--json") ? args : [...args, "--json"];
-const kata = async (args: string[]) => { const r = await run(withJson(args)); if (r.code) throw new Error(r.stderr); return JSON.parse(r.stdout || "null"); };
-const view = (ref: string) => kata(["show", ref]);
-const message = "Verified the isolated settlement fixture with the behavioral regression suite.";
+const kata = (args: string[]) => store.kata(withJson(args));
+const { cwd, run, show, closesOf } = store;
 const SESSION = "settle-session";
-beforeAll(async () => { expect((await run(["init", "--project", "settlement-test"])).code).toBe(0); });
-afterAll(async () => { await run(["daemon", "stop"]); });
 
-let seq = 0;
 // A qualified ref for a new issue; an automatic parent carries the session markers, a mission the subagent-run marker.
 async function create(title: string, options: { parent?: string; auto?: boolean; mission?: boolean } = {}) {
-  const out = await kata(["create", `${title} ${++seq}`, "--force-new", ...(options.parent ? ["--parent", options.parent] : []), ...(options.mission ? ["--meta", "omp.mission=true"] : [])]);
-  const ref = `${(out.event ?? out.original_event).project_name}#${out.issue.short_id}`;
+  const short = await store.issue(`${title} ${unique()}`, { parent: options.parent, meta: options.mission ? [`${missionKey("omp")}=true`] : [] });
+  const ref = `${PROJECT}#${short}`;
   if (options.auto) {
     await kata(["meta", "set", ref, "omp.auto_parent", "true", "--json-value"]);
     await kata(["meta", "set", ref, "omp.session_id", JSON.stringify(SESSION), "--json-value"]);
   }
   return ref;
 }
-const closeDone = (ref: string) => kata(["close", ref, "--done", "--message", message, "--evidence", "test:settlement fixture"]);
-const closeMission = (ref: string) => kata(["close", ref, "--audit-no-change", "--message", `${message} It records a subagent run.`, "--evidence", "no-change-audit:records a subagent run"]);
+const closeDone = (ref: string) => kata(["close", ref, "--done", "--message", message, "--evidence", EVIDENCE[0]]);
+const closeMission = (ref: string) => kata(missionCloseArgs(ref));
 const closeWontfix = (ref: string) => kata(["close", ref, "--wontfix", "--message", `${message} The task was intentionally retired without asserting completion.`]);
-const labels = async (ref: string) => (await view(ref)).labels.map((l: any) => l.label);
+const labels = async (ref: string) => (await show(ref)).labels.map((l: any) => l.label);
 const throttled = () => Object.assign(new Error("sibling-close throttle"), { code: "sibling_throttle" });
 const change = { message, evidence: ["test:x"] };
-const taskOf = async (ref: string) => ({ ref, content: "A task", phase: "Phase", status: "in_progress" as const, revision: (await view(ref)).issue.revision });
+const taskOf = async (ref: string) => ({ ref, content: "A task", phase: "Phase", status: "in_progress" as const, revision: (await show(ref)).issue.revision });
 const request: CloseRequest = { key: "k", message, evidence: ["test:x"] };
 
 // Real Kata, a fake clock and a fake timer. `fail` makes a Kata call throw before it runs.
@@ -60,7 +48,7 @@ function build(options: { fail?: (args: string[]) => Error | undefined; running?
   const settlement = createSettlement({
     namespace: "omp",
     kata: { run: runKata, show: async ref => JSON.parse(await runKata(["show", ref])), projects: async () => [], fresh: fn => fn() },
-    owned: async ref => (await view(ref)).issue,
+    owned: async ref => (await show(ref)).issue,
     clock: () => now,
     timer: fire => { timers.add(fire); return () => { timers.delete(fire); }; },
     due: () => { due++; },
@@ -88,7 +76,7 @@ test("a throttled task close waits out the retry window, then runs once and leav
   s.advance(1);
   await s.settlement.drain();
   expect(s.performed).toEqual([child]);
-  expect((await view(child)).issue.status).toBe("closed");
+  expect((await show(child)).issue.status).toBe("closed");
   expect(s.settlement.snapshot().retries).toEqual([]);
 });
 
@@ -140,7 +128,7 @@ test("a close is never dropped for the drains Kata was unreachable, and complete
   s.advance(RETRY_MS + 1);
   await s.settlement.drain();
   expect(s.performed).toEqual([child]);
-  expect((await view(child)).issue.status).toBe("closed");
+  expect((await show(child)).issue.status).toBe("closed");
 });
 
 test("a pending close that fails for another reason is retried on three drains, then dropped and flagged", async () => {
@@ -176,7 +164,7 @@ test("a ticket close waits for its open children, retried at each drain with no 
   await closeDone(child);
   await s.settlement.drain();
   expect(s.performed).toEqual([ticket]);
-  expect((await view(ticket)).issue.status).toBe("closed");
+  expect((await show(ticket)).issue.status).toBe("closed");
   expect(s.settlement.snapshot().pendingCloses).toBeUndefined();
 });
 
@@ -207,10 +195,10 @@ test("an automatic parent closes once every child is closed with evidence", asyn
   const s = build();
   s.settlement.addAutoParent({ parent, workspace: cwd, sessionId: SESSION, auto: true });
   await s.settlement.drain();
-  expect((await view(parent)).issue.status).toBe("open");
+  expect((await show(parent)).issue.status).toBe("open");
   await closeDone(child);
   await s.settlement.drain();
-  expect((await view(parent)).issue.status).toBe("closed");
+  expect((await show(parent)).issue.status).toBe("closed");
 });
 
 test("an automatic parent whose children are only recorded subagent runs and retired tasks closes as audit-no-change", async () => {
@@ -221,7 +209,7 @@ test("an automatic parent whose children are only recorded subagent runs and ret
   const s = build();
   s.settlement.addAutoParent({ parent, workspace: cwd, sessionId: SESSION, auto: true });
   await s.settlement.drain();
-  const closed = await view(parent);
+  const closed = await show(parent);
   expect(closed.issue.status).toBe("closed");
   expect(closed.issue.closed_reason).toBe("audit-no-change");
   expect(await labels(parent)).not.toContain("needs-review");
@@ -235,9 +223,9 @@ test("missions beside plan tasks leave the parent's done close to the plan tasks
   const s = build();
   s.settlement.addAutoParent({ parent, workspace: cwd, sessionId: SESSION, auto: true });
   await s.settlement.drain();
-  expect((await view(parent)).issue.closed_reason).toBe("done");
-  const row = (await kata(["audit", "closes"])).rows.find((r: any) => r.issue === parent.split("#")[1]);
-  expect(row.evidence_types).toEqual(["test"]);
+  expect((await show(parent)).issue.closed_reason).toBe("done");
+  const [close] = await closesOf(parent);
+  expect(close.payload.evidence.map((e: any) => e.type)).toEqual(["test"]);
   expect(await labels(parent)).not.toContain("needs-review");
 });
 
@@ -248,11 +236,11 @@ test("a mission its settle never closed is closed by the audit once nothing else
   const s = build();
   s.settlement.addAutoParent({ parent, workspace: cwd, sessionId: SESSION, auto: true });
   await s.settlement.drain();
-  expect((await view(mission)).issue.status).toBe("open");
+  expect((await show(mission)).issue.status).toBe("open");
   await closeDone(task);
   await s.settlement.drain();
-  expect((await view(mission)).issue).toMatchObject({ status: "closed", closed_reason: "audit-no-change" });
-  expect((await view(parent)).issue).toMatchObject({ status: "closed", closed_reason: "done" });
+  expect((await show(mission)).issue).toMatchObject({ status: "closed", closed_reason: "audit-no-change" });
+  expect((await show(parent)).issue).toMatchObject({ status: "closed", closed_reason: "done" });
   expect(await labels(parent)).not.toContain("needs-review");
 });
 
@@ -267,10 +255,10 @@ test("a running delegate pauses only the automatic-parent audit", async () => {
   s.advance(RETRY_MS + 1);
   await s.settlement.drain();
   expect(s.performed).toEqual([other]);
-  expect((await view(parent)).issue.status).toBe("open");
+  expect((await show(parent)).issue.status).toBe("open");
   running = false;
   await s.settlement.drain();
-  expect((await view(parent)).issue.status).toBe("closed");
+  expect((await show(parent)).issue.status).toBe("closed");
 });
 
 test("a throttled automatic-parent close is not flagged and arms the timer", async () => {
@@ -281,7 +269,7 @@ test("a throttled automatic-parent close is not flagged and arms the timer", asy
   await s.settlement.drain();
   expect(s.timers.size).toBe(1);
   expect(await labels(parent)).not.toContain("needs-review");
-  expect((await view(parent)).issue.status).toBe("open");
+  expect((await show(parent)).issue.status).toBe("open");
 });
 
 test("a parent flagged for missing evidence is audited again only when its revision or children change", async () => {
@@ -364,7 +352,7 @@ test("an automatic parent follows a rehomed ref and can be dropped", async () =>
   s.settlement.renamePlan("old#aaaa", parent);
   expect(s.settlement.snapshot().autoParents.map(b => b.parent)).toEqual([parent]);
   await s.settlement.drain();
-  expect((await view(parent)).issue.status).toBe("closed");
+  expect((await show(parent)).issue.status).toBe("closed");
   s.settlement.dropAutoParent(parent);
   expect(s.settlement.snapshot().autoParents).toEqual([]);
 });

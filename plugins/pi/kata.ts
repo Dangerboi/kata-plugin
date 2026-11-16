@@ -4,11 +4,11 @@ import { createKataCore, DESCRIPTION, TODO_OPS, TODO_PARAMS, type Lead, type Chi
 import { exportTranscriptSession } from "./kata-cli";
 import { delegateCommand, kataCommands, quote } from "./shell";
 import type { DelegateRecord, DelegateStore } from "./delegates";
-import { textOf } from "./model";
+import { lastText } from "./model";
 
 // Match the native adapter's capability/scope selection, including a project
 // root boundary. Recheck at prompt time: either factory can load first.
-export function nativeContractActive(cwd: string): boolean {
+function nativeContractActive(cwd: string): boolean {
 	const registry = (globalThis as any)[Symbol.for("kata.pi.native.v1")];
 	for (const adapter of registry?.adapters?.values?.() ?? []) {
 		const options = adapter?.options;
@@ -21,11 +21,11 @@ export function nativeContractActive(cwd: string): boolean {
 	return false;
 }
 
-export type PiParent = ChildParent & { pid: number; provider?: string; model?: string; thinking?: string };
+type PiParent = ChildParent & { pid: number; provider?: string; model?: string; thinking?: string };
 
 // A child pi started without its own model flags runs on the parent's model,
 // not on the configured default (which may have no working login).
-export function inheritsModel(argv: string[]): { model: boolean; thinking: boolean } {
+function inheritsModel(argv: string[]): { model: boolean; thinking: boolean } {
 	return { model: !argv.some(a => /^--(?:model|models|provider)(?:=|$)/.test(a)), thinking: !argv.some(a => /^--thinking(?:=|$)/.test(a)) };
 }
 
@@ -35,12 +35,6 @@ export function inheritsModel(argv: string[]): { model: boolean; thinking: boole
 // Arguments such as `grep pi` or `which pi` do not.
 const PI_LAUNCH = /(?:^|[;&|(`\n]|\$\(|\b(?:ba|z|da|k)?sh\s+(?:-[a-z]+\s+)*-[a-z]*c\s+['"])\s*(?:(?:env|nohup|exec|command|time|setsid|caffeinate)\s+|[A-Za-z_][A-Za-z0-9_]*=(?:'[^']*'|"[^"]*"|[^\s;&|]*)\s+)*(?:[^\s;&|()'"`]*\/)?pi(?=$|[\s;&|)])/;
 export const launchesPi = (command: string) => PI_LAUNCH.test(command);
-
-// A child's report: the text of its last assistant message that has any (a failed or cut-off turn can end on one without).
-function lastAssistantText(ctx: ExtensionContext): string | undefined {
-	return (ctx.sessionManager.getBranch() as any[]).filter(e => e.type === "message" && e.message?.role === "assistant")
-		.map(e => textOf(e.message.content).trim()).filter(Boolean).at(-1);
-}
 
 export default async function piKata(pi: ExtensionAPI) {
 	// OMP also discovers legacy pi manifests. Do not register a second todo
@@ -58,17 +52,19 @@ export default async function piKata(pi: ExtensionAPI) {
 	// A child keeps its delegate record in its session branch, so resuming the session keeps its assignment.
 	const DELEGATE_ENTRY = "io.kata.pi.delegate";
 	let current: DelegateRecord | undefined;
-	const savedOf = (ctx: ExtensionContext): (DelegateRecord & { parentMarker?: PiParent }) | undefined =>
-		(ctx.sessionManager.getBranch() as any[]).filter(e => e.type === "custom" && e.customType === DELEGATE_ENTRY && e.data?.id === ctx.sessionManager.getSessionId()).at(-1)?.data;
+	// The child's record as its session branch last saved it, and the parent marker the child had then.
+	function savedOf(ctx: ExtensionContext): { record: DelegateRecord; marker?: PiParent } | undefined {
+		const data = (ctx.sessionManager.getBranch() as any[]).filter(e => e.type === "custom" && e.customType === DELEGATE_ENTRY && e.data?.id === ctx.sessionManager.getSessionId()).at(-1)?.data;
+		if (!data) return undefined;
+		const { parentMarker: marker, ...record } = data;
+		return { record, marker };
+	}
 	const store: DelegateStore = {
 		records: () => current ? [current] : [],
 		get: id => current?.id === id ? current : undefined,
 		put: record => { current = record; pi.appendEntry(DELEGATE_ENTRY, { ...record, parentMarker: inherited }); },
 		of: ctx => {
-			if (current?.sessionId !== ctx.sessionManager.getSessionId()) {
-				const saved = savedOf(ctx);
-				if (saved) { const { parentMarker: _marker, ...record } = saved; current = record; }
-			}
+			if (current?.sessionId !== ctx.sessionManager.getSessionId()) current = savedOf(ctx)?.record ?? current;
 			return current?.sessionId === ctx.sessionManager.getSessionId() ? current : undefined;
 		},
 	};
@@ -196,11 +192,10 @@ export default async function piKata(pi: ExtensionAPI) {
 		// A child replaces the session its lead exported.
 		exportTranscriptSession("pi", ctx.sessionManager.getSessionId());
 		const saved = savedOf(ctx);
-		if (saved?.parentMarker && (!explicit || inherited)) {
-			const { parentMarker, ...record } = saved;
-			inherited = parentMarker;
-			current = record as DelegateRecord;
-			process.env.KATA_TEAMMATE = saved.teammate;
+		if (saved?.marker && (!explicit || inherited)) {
+			inherited = saved.marker;
+			current = saved.record;
+			process.env.KATA_TEAMMATE = current.teammate;
 			delete process.env.KATA_REF;
 		}
 		// A /fork replaces the source session in this process: the fork takes the tasks the source holds.
@@ -228,7 +223,8 @@ export default async function piKata(pi: ExtensionAPI) {
 		// The transcript pair is not cleared here: pi fires this on the old instance for reload/new/resume/fork, then the new instance's session_start in the same process, and a slow cleanup would delete the new pair. session_start overwrites it and process exit ends the rest.
 		const record = inherited ? current : undefined;
 		// A fork into a saved session gets the source's tasks at its start (its header names the source); an in-memory one cannot, so they are released.
-		const lead = { continues: event?.reason === "reload", forking: event?.reason === "fork" && !!event.targetSessionFile };
-		await core.session.shutdown(ctx, record ? { delegate: { id: record.id, ended: event?.reason !== "reload", report: lastAssistantText(ctx) } } : lead);
+		const closing = { continues: event?.reason === "reload", forking: event?.reason === "fork" && !!event.targetSessionFile };
+		const assistant = (ctx.sessionManager.getBranch() as any[]).filter(e => e.type === "message" && e.message?.role === "assistant");
+		await core.session.shutdown(ctx, record ? { delegate: { id: record.id, ended: event?.reason !== "reload", report: lastText(assistant.map(e => e.message.content)) } } : closing);
 	});
 }

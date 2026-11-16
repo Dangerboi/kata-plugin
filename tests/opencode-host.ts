@@ -16,30 +16,21 @@ export interface OpenCodePlugin {
 
 export type ToolExecute = (input: any, context: any) => Promise<any> | any;
 
-export interface BuiltinTool {
-	description?: string;
-	input?: unknown;
-	execute: ToolExecute;
-}
-
 export interface OpenCodeHostOptions {
 	plugin: OpenCodePlugin;
 	/** `ctx.options`. */
 	options?: Record<string, unknown>;
 	/** `ctx.location.directory`. */
 	directory?: string;
-	workspaceID?: string;
-	/** Tools OpenCode ships (e.g. `shell`, `subagent`, `todowrite`): seeded into the tool editor before plugin transforms run, so a plugin can see and override them. */
-	builtins?: Record<string, BuiltinTool>;
-	/** How often each rebuild of the tool registry replays the plugin's transform callbacks (the spike saw several). Default 2. */
-	replays?: number;
+	/** Settles once the plugin set up with `ctx` has handled the events emitted so far, for a plugin whose consumer takes the next event before it has handled the last. `emit` waits for it. */
+	eventsHandled?: (ctx: any) => Promise<void>;
 }
 
 export interface FakeSession {
 	id: string;
 	parentID?: string;
 	title?: string;
-	location: { directory: string; workspaceID?: string };
+	location: { directory: string };
 	messages: any[];
 	created: number;
 	/** When the session was archived (`time.archived` of `session.get`); a test sets and clears it. */
@@ -54,10 +45,7 @@ export interface CreateSessionInput {
 }
 
 export interface ToolCallOptions {
-	callID?: string;
-	messageID?: string;
-	agent?: string;
-	/** Executor for this call only; takes precedence over registered and builtin tools. */
+	/** Executor for this call only; takes precedence over the registered tool. */
 	execute?: ToolExecute;
 }
 
@@ -65,30 +53,12 @@ export interface ToolCallResult {
 	status: "completed" | "error";
 	/** Text content of the result, or the error message. */
 	text: string;
-	output?: unknown;
-	content: { type: string; text?: string }[];
+	/** What the tool returned as `metadata`, after `execute.after` hooks. */
 	metadata?: unknown;
-	error?: { message: string; error?: unknown };
 	/** The input the tool ran with (after `execute.before` hooks), or was refused with. */
 	input: any;
 	/** Whether the tool's execute ran. */
 	executed: boolean;
-	id: string;
-}
-
-export interface RecordedCall {
-	tool: string;
-	sessionID: string;
-	id: string;
-	/** Snapshot of the input as the model sent it. */
-	originalInput: unknown;
-	/** Snapshot of the input the call ended with. */
-	input: unknown;
-	status: "completed" | "error";
-	text: string;
-	executed: boolean;
-	/** `progress` updates the tool reported. */
-	progress: unknown[];
 }
 
 interface Shared {
@@ -102,13 +72,9 @@ export interface OpenCodeInstance {
 	readonly ctx: any;
 	readonly shared: Shared;
 	readonly sessions: Map<string, FakeSession>;
-	/** Every call `callTool` made on this instance. */
-	readonly calls: RecordedCall[];
 	/** Registration errors the tool editor reported (invalid definitions are skipped, like OpenCode). */
 	readonly registrationErrors: { name: string; message: string }[];
-	/** How many times plugin transform callbacks ran. */
-	transformRuns: number;
-	/** Registered tools after every transform, keyed by effective name. */
+	/** Registered tools after the plugin's transforms, keyed by effective name. */
 	tools(): Map<string, any>;
 	tool(name: string): any | undefined;
 	createSession(input?: CreateSessionInput): FakeSession;
@@ -116,26 +82,22 @@ export interface OpenCodeInstance {
 	/** Appends an assistant message whose content is one text part. */
 	addAssistantText(sessionID: string, text: string): void;
 	callTool(sessionID: string, toolName: string, input: unknown, options?: ToolCallOptions): Promise<ToolCallResult>;
-	/** Runs the `context` hooks; returns the final event and the system text parts. */
-	context(sessionID: string, options?: { first?: boolean; messages?: any[]; system?: any[] }): Promise<{ event: any; system: string[] }>;
-	/** Pushes one event to every matching `ctx.event.subscribe` stream and lets consumers run. */
-	emit(type: string, data?: Record<string, unknown>): Promise<void>;
-	/** `emit("session.created", ...)` with the data taken from the session. */
-	emitCreated(sessionID: string): Promise<void>;
-	/** Rebuilds the tool registry, as `ctx.tool.reload()` does. */
-	reload(): Promise<void>;
+	/** Runs the `context` hooks; returns the system text parts they left. */
+	context(sessionID: string): Promise<{ system: string[] }>;
+	/** Pushes one event to every matching `ctx.event.subscribe` stream and lets consumers run. `created`: when OpenCode made the event; default now. */
+	emit(type: string, data?: Record<string, unknown>, created?: number): Promise<void>;
 	/** Runs the plugin's cleanup, ends event streams and drops its hooks and tools. Idempotent. */
 	shutdown(): Promise<void>;
 	/** A server restart: shuts this instance down, then runs `setup` again on the same storage and sessions. */
 	restart(): Promise<OpenCodeInstance>;
 }
 
-export function assistantMessage(text: string, extra: Record<string, unknown> = {}) {
-	return { type: "assistant", agent: "build", model: { providerID: "fake", id: "fake" }, content: [{ type: "text", text }], time: { created: 0 }, ...extra };
+function assistantMessage(text: string) {
+	return { type: "assistant", agent: "build", model: { providerID: "fake", id: "fake" }, content: [{ type: "text", text }], time: { created: 0 } };
 }
 
-export function userMessage(text: string, extra: Record<string, unknown> = {}) {
-	return { type: "user", text, ...extra };
+export function userMessage(text: string) {
+	return { type: "user", text };
 }
 
 /** Loads the plugin against a fresh fake host and runs its `setup`. */
@@ -174,78 +136,35 @@ const unsupported = (name: string) => {
 async function start(options: OpenCodeHostOptions, shared: Shared): Promise<OpenCodeInstance> {
 	const { plugin } = options;
 	const directory = options.directory ?? "/fake/workspace";
-	const calls: RecordedCall[] = [], registrationErrors: { name: string; message: string }[] = [];
-	const transforms: ((editor: any) => void)[] = [];
+	const registrationErrors: { name: string; message: string }[] = [];
 	const hooks = { before: [] as ((event: any) => any)[], after: [] as ((event: any) => any)[], context: [] as ((event: any) => any)[] };
 	const subscribers = new Set<{ types?: readonly string[]; push: (event: any) => void; end: () => void; idle: () => Promise<void> }>();
 	let registry = new Map<string, any>();
 	let stopped = false, cleanup: (() => Promise<void> | void) | undefined;
-	const instance = { transformRuns: 0 } as { transformRuns: number };
 
-	const seedBuiltins = () => {
-		const tools = new Map<string, any>();
-		for (const [name, tool] of Object.entries(options.builtins ?? {}))
-			tools.set(name, { name, id: name, description: tool.description ?? "", input: tool.input ?? { type: "object" }, execute: tool.execute });
-		return tools;
-	};
-
-	// Tool.Service state: every rebuild runs all transforms on a fresh editor. Real OpenCode replays them on reload and
-	// config changes; the number of replays per rebuild is a guess, the spike only said "several".
-	const rebuild = () => {
-		let tools = seedBuiltins();
-		for (let run = 0; run < (options.replays ?? 2); run++) {
-			tools = seedBuiltins();
-			const editor = {
-				list: () => [...tools.values()],
-				get: (id: string) => tools.get(id),
-				namespace: () => {},
-				add: (tool: any) => {
-					const id = effectiveName(tool);
-					if (tool.options?.codemode === false && id === "execute")
-						return void registrationErrors.push({ name: id, message: 'Tool name "execute" is reserved for CodeMode' });
-					if ((typeof tool.input !== "object" && typeof tool.input !== "function") || tool.input === null)
-						return void registrationErrors.push({ name: id, message: `Invalid tool definition ${id}: input must be a schema` });
-					tools.set(id, { ...tool, id, options: tool.options && { ...tool.options } });
-				},
-				update: (id: string, update: (tool: any) => void) => {
-					const current = tools.get(id);
-					if (!current) return;
-					const tool = { ...current, options: current.options && { ...current.options } };
-					update(tool);
-					tool.name = current.name;
-					tool.id = id;
-					tools.set(id, tool);
-				},
-				remove: (id: string) => void tools.delete(id),
-			};
-			for (const transform of [...transforms]) {
-				instance.transformRuns++;
-				transform(editor);
-			}
-		}
-		registry = tools;
-	};
-
-	const registration = <T>(list: T[], item: T, after?: () => void) => {
-		list.push(item);
-		return Promise.resolve({
-			dispose: async () => {
-				const index = list.indexOf(item);
-				if (index >= 0) list.splice(index, 1);
-				after?.();
+	// Tool.Service state. Deviation: a transform runs once, when the plugin registers it; OpenCode replays transforms on
+	// reload and config changes, which no test can observe through a registry keyed by name.
+	const transform = (callback: (editor: any) => void) => {
+		const tools = registry;
+		const editor = {
+			add: (tool: any) => {
+				const id = effectiveName(tool);
+				if (tool.options?.codemode === false && id === "execute")
+					return void registrationErrors.push({ name: id, message: 'Tool name "execute" is reserved for CodeMode' });
+				if ((typeof tool.input !== "object" && typeof tool.input !== "function") || tool.input === null)
+					return void registrationErrors.push({ name: id, message: `Invalid tool definition ${id}: input must be a schema` });
+				tools.set(id, { ...tool, id, options: tool.options && { ...tool.options } });
 			},
-		});
+		};
+		callback(editor);
 	};
 
 	const encodeSession = (session: FakeSession) => ({
 		id: session.id,
 		...(session.parentID === undefined ? {} : { parentID: session.parentID }),
-		projectID: "prj_fake",
-		cost: 0,
-		tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
 		time: { created: session.created, updated: session.created, ...(session.archived === undefined ? {} : { archived: session.archived }) },
 		...(session.title === undefined ? {} : { title: session.title }),
-		location: { directory: session.location.directory, ...(session.location.workspaceID === undefined ? {} : { workspaceID: session.location.workspaceID }) },
+		location: { directory: session.location.directory },
 	});
 
 	const requireSession = (sessionID: string) => {
@@ -275,24 +194,28 @@ async function start(options: OpenCodeHostOptions, shared: Shared): Promise<Open
 		},
 	};
 
+	// Deviation: registering returns no dispose handle; no plugin of ours keeps one.
+	const register = <T>(list: T[], item: T) => {
+		list.push(item);
+		return Promise.resolve();
+	};
+
 	const ctx: any = {
-		location: { directory, ...(options.workspaceID === undefined ? {} : { workspaceID: options.workspaceID }), project: { id: "prj_fake", directory, canonical: directory } },
+		location: { directory, project: { id: "prj_fake", directory, canonical: directory } },
 		options: options.options ?? {},
 		storage,
 		tool: {
-			transform: (callback: (editor: any) => void) => registration(transforms, callback, rebuild).then((handle) => (rebuild(), handle)),
-			reload: async () => rebuild(),
-			list: async () => [...registry.values()],
+			transform: async (callback: (editor: any) => void) => transform(callback),
 			hook: (name: string, callback: (event: any) => any) => {
-				if (name === "execute.before") return registration(hooks.before, callback);
-				if (name === "execute.after") return registration(hooks.after, callback);
+				if (name === "execute.before") return register(hooks.before, callback);
+				if (name === "execute.after") return register(hooks.after, callback);
 				throw new Error(`fake OpenCode host does not provide tool hook ${name}`);
 			},
 		},
 		session: {
 			hook: (name: string, callback: (event: any) => any) => {
 				if (name !== "context") throw new Error(`fake OpenCode host does not provide session hook ${name}`);
-				return registration(hooks.context, callback);
+				return register(hooks.context, callback);
 			},
 			get: async (input: { sessionID: string }) => encodeSession(requireSession(input.sessionID)),
 			// SessionDomain.context: the session's messages (SessionMessage.Info[]), the only message read the Promise ctx offers.
@@ -365,20 +288,11 @@ async function start(options: OpenCodeHostOptions, shared: Shared): Promise<Open
 
 	const run = async (sessionID: string, name: string, rawInput: unknown, opts: ToolCallOptions = {}): Promise<ToolCallResult> => {
 		requireSession(sessionID);
-		const id = opts.callID ?? nextID("call");
-		const base = { sessionID, agent: opts.agent ?? "build", messageID: opts.messageID ?? nextID("msg"), id };
+		const id = nextID("call");
+		const base = { sessionID, agent: "build", messageID: nextID("msg"), id };
 		const before = { tool: name, ...base, input: clone(rawInput) as any };
-		const record: RecordedCall = { tool: name, sessionID, id, originalInput: clone(rawInput), input: undefined, status: "completed", text: "", executed: false, progress: [] };
-		calls.push(record);
-		const finish = (result: Omit<ToolCallResult, "input" | "id" | "executed"> & { executed?: boolean }, input: unknown): ToolCallResult => {
-			record.input = clone(input);
-			record.status = result.status;
-			record.text = result.text;
-			record.executed = result.executed ?? false;
-			return { executed: false, ...result, input, id };
-		};
-		const fail = (error: { message: string; error?: unknown }, input: unknown, executed: boolean) =>
-			finish({ status: "error", text: error.message, content: [{ type: "text", text: error.message }], error, executed }, input);
+		const fail = (error: { message: string }, input: unknown, executed: boolean): ToolCallResult =>
+			({ status: "error", text: error.message, input, executed });
 
 		// A throw in execute.before ends the call as an error: neither the tool nor execute.after runs (tool.ts `run`).
 		try {
@@ -388,14 +302,10 @@ async function start(options: OpenCodeHostOptions, shared: Shared): Promise<Open
 		}
 		const input = before.input;
 		const tool = opts.execute ? { execute: opts.execute } : registry.get(name);
-		if (!tool) throw new Error(`fake OpenCode host has no tool ${name}: register it with a plugin or pass builtins/execute`);
+		if (!tool) throw new Error(`fake OpenCode host has no tool ${name}: register it with a plugin or pass execute`);
 
 		// Deviation: the registered input schema is not validated (OpenCode decodes and may fail with a Tool.Error).
-		const toolContext = {
-			...base,
-			signal: new AbortController().signal,
-			progress: async (update: unknown) => void record.progress.push(clone(update)),
-		};
+		const toolContext = { ...base, signal: new AbortController().signal };
 		let failure: { message: string; error?: unknown } | undefined, result: any;
 		try {
 			const value = (await tool.execute(clone(input), toolContext)) ?? {};
@@ -411,16 +321,14 @@ async function start(options: OpenCodeHostOptions, shared: Shared): Promise<Open
 		const after: any = failure ? { tool: name, ...base, input, status: "error", error: failure } : { tool: name, ...base, input, status: "completed", result };
 		await trigger(hooks.after, after);
 		if (after.status === "error") return fail(after.error, input, true);
-		const content = normalizeContent(after.result.content, after.result.output);
-		const text = content.map((part) => part.text ?? "").join("\n");
-		return finish({ status: "completed", text, content, ...("output" in after.result ? { output: after.result.output } : {}), ...(after.result.metadata === undefined ? {} : { metadata: after.result.metadata }), executed: true }, input);
+		const text = normalizeContent(after.result.content, after.result.output).map((part) => part.text ?? "").join("\n");
+		return { status: "completed", text, ...(after.result.metadata === undefined ? {} : { metadata: after.result.metadata }), input, executed: true };
 	};
 
-	const self: OpenCodeInstance = Object.assign(instance, {
+	const self: OpenCodeInstance = {
 		ctx: guarded,
 		shared,
 		sessions: shared.sessions,
-		calls,
 		registrationErrors,
 		tools: () => new Map(registry),
 		tool: (name: string) => registry.get(name),
@@ -429,7 +337,7 @@ async function start(options: OpenCodeHostOptions, shared: Shared): Promise<Open
 				id: input.id ?? nextID("ses"),
 				...(input.parentID === undefined ? {} : { parentID: input.parentID }),
 				...(input.title === undefined ? {} : { title: input.title }),
-				location: { directory, ...(options.workspaceID === undefined ? {} : { workspaceID: options.workspaceID }) },
+				location: { directory },
 				messages: clone(input.messages ?? []),
 				created: Date.now(),
 			};
@@ -441,50 +349,37 @@ async function start(options: OpenCodeHostOptions, shared: Shared): Promise<Open
 			self.addMessage(sessionID, assistantMessage(text));
 		},
 		callTool: run,
-		async context(sessionID: string, opts: { first?: boolean; messages?: any[]; system?: any[] } = {}) {
+		async context(sessionID: string) {
 			const session = requireSession(sessionID);
-			// SessionContext (session.d.ts) has no `first`; it is added because the plugin contract asked for it.
 			const event: any = {
 				sessionID,
 				agent: "build",
 				model: { providerID: "fake", id: "fake" },
 				tools: {},
 				options: {},
-				system: clone(opts.system ?? []),
-				messages: clone(opts.messages ?? session.messages),
-				first: opts.first ?? session.messages.length <= 1,
+				system: [],
+				messages: clone(session.messages),
 			};
 			await trigger(hooks.context, event);
 			// system parts are { type: "text", text }; bare strings are tolerated.
-			return { event, system: event.system.map((part: any) => (typeof part === "string" ? part : part.text)) };
+			return { system: event.system.map((part: any) => (typeof part === "string" ? part : part.text)) };
 		},
-		async emit(type: string, data: Record<string, unknown> = {}) {
-			const event = { id: nextID("evt"), type, created: Date.now(), data: clone(data) };
+		async emit(type: string, data: Record<string, unknown> = {}, created = Date.now()) {
+			const event = { id: nextID("evt"), type, created, data: clone(data) };
 			const receivers = [...subscribers].filter((subscriber) => !subscriber.types || subscriber.types.includes(type));
 			for (const subscriber of receivers) subscriber.push(clone(event));
-			// Resolves once every receiving consumer has finished the event and asked for the next one (or its stream ended),
-			// so a test can assert on what the plugin's handlers did. A consumer that never asks again is a plugin defect.
+			// Resolves once every receiving consumer has asked for its next event (or its stream ended) and the plugin says it
+			// has handled what it took, so a test can assert on what the plugin's handlers did. A plugin that never gets there
+			// has a defect.
 			const stuck = Symbol("stuck");
 			const timer = Promise.withResolvers<typeof stuck>();
 			const handle = setTimeout(() => timer.resolve(stuck), 30_000);
-			const outcome = await Promise.race([Promise.all(receivers.map((subscriber) => subscriber.idle())), timer.promise]);
+			const handled = Promise.all(receivers.map((subscriber) => subscriber.idle())).then(() => options.eventsHandled?.(guarded));
+			const outcome = await Promise.race([handled, timer.promise]);
 			clearTimeout(handle);
-			if (outcome === stuck) throw new Error(`fake OpenCode host: a ${type} consumer did not ask for its next event within 30 s`);
+			if (outcome === stuck) throw new Error(`fake OpenCode host: the plugin did not finish handling ${type} within 30 s`);
 			await tick();
 		},
-		async emitCreated(sessionID: string) {
-			const session = requireSession(sessionID);
-			await self.emit("session.created", {
-				sessionID,
-				projectID: "prj_fake",
-				location: session.location,
-				...(session.parentID === undefined ? {} : { parentID: session.parentID }),
-				slug: session.id,
-				...(session.title === undefined ? {} : { title: session.title }),
-				version: "2.2.7",
-			});
-		},
-		reload: async () => rebuild(),
 		async shutdown() {
 			if (stopped) return;
 			stopped = true;
@@ -492,7 +387,7 @@ async function start(options: OpenCodeHostOptions, shared: Shared): Promise<Open
 				await cleanup?.();
 			} finally {
 				for (const subscriber of [...subscribers]) subscriber.end();
-				transforms.length = hooks.before.length = hooks.after.length = hooks.context.length = 0;
+				hooks.before.length = hooks.after.length = hooks.context.length = 0;
 				registry = new Map();
 			}
 		},
@@ -500,7 +395,7 @@ async function start(options: OpenCodeHostOptions, shared: Shared): Promise<Open
 			await self.shutdown();
 			return start(options, shared);
 		},
-	});
+	};
 
 	// setup may return a cleanup function (adapter.ts acquireRelease).
 	const result = await plugin.setup(guarded);

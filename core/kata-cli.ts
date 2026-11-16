@@ -1,4 +1,6 @@
 import { AsyncLocalStorage } from "node:async_hooks";
+import { execFile } from "node:child_process";
+import { appendFileSync } from "node:fs";
 import path from "node:path";
 import { projectOf, type KataIssue, type KataShow } from "./model";
 
@@ -22,6 +24,20 @@ export class KataError extends Error {
 export const isUnusable = (error: unknown) => error instanceof KataError && error.unusable;
 export const isKataCode = (error: unknown, code: string) => error instanceof KataError && error.code === code;
 
+// The sink for errors the plugin survives: a line in `file`, nothing without one. Debugging must never interrupt work.
+export const debugTo = (file?: string) => (error: unknown) => {
+	if (!file) return;
+	try { appendFileSync(file, `${new Date().toISOString()} ${String(error)}\n`); } catch { /* Ignored: see above. */ }
+};
+
+// Waits for `promise` at most `ms`: undefined when the time runs out or the promise rejects (the error goes to `onError`).
+// The promise itself is never cancelled.
+export async function waitAtMost<T>(promise: Promise<T>, ms: number, onError: (error: unknown) => void): Promise<T | undefined> {
+	let timer: ReturnType<typeof setTimeout>;
+	try { return await Promise.race([promise.catch(error => { onError(error); return undefined; }), new Promise<undefined>(resolve => { timer = setTimeout(() => resolve(undefined), ms); })]); }
+	finally { clearTimeout(timer!); }
+}
+
 // The oldest Kata whose commands and flags these plugins use.
 const MINIMUM = [0, 23, 0];
 
@@ -39,23 +55,48 @@ function meetsMinimum(version: string): boolean | undefined {
 // What a `kata close` reads to record the session that made it: the session pair and the switch that turns recording on.
 export const TRANSCRIPT_ENV = ["KATA_TRANSCRIPT_AGENT", "KATA_TRANSCRIPT_SESSION_ID", "KATA_CLOSE_TRANSCRIPT_ENABLED"] as const;
 const [AGENT, SESSION, ENABLED] = TRANSCRIPT_ENV;
-// Every later close from this process and what it spawns (the bash tool, delegates, harnesses launched from bash) then
-// records this session. The switch stays as the launching environment set it, so `KATA_CLOSE_TRANSCRIPT_ENABLED=false` opts out.
+// The environment that makes a close record `sessionId`. The switch stays as the launching environment set it, so
+// `KATA_CLOSE_TRANSCRIPT_ENABLED=false` opts out.
+export function transcriptEnv(agent: string, sessionId: string): Record<(typeof TRANSCRIPT_ENV)[number], string> {
+	return { [AGENT]: agent, [SESSION]: sessionId, [ENABLED]: process.env[ENABLED] ?? "true" };
+}
+// The environment a Kata call carries for a close to record the session that made it; undefined for any other call. With
+// no session id (a delegate whose own session is not known yet) recording is switched off: the process carries the lead's
+// pair, which that close must not record.
+export function closeEnv(args: readonly string[], agent: string, sessionId: string | undefined): Record<string, string> | undefined {
+	if (args[0] !== "close") return undefined;
+	return sessionId ? transcriptEnv(agent, sessionId) : { [ENABLED]: "false" };
+}
+// Every later close from this process and what it spawns (the bash tool, delegates, harnesses launched from bash) then records this session.
 export function exportTranscriptSession(agent: string, sessionId: string | undefined): void {
-	if (!sessionId) return;
-	process.env[AGENT] = agent;
-	process.env[SESSION] = sessionId;
-	process.env[ENABLED] ??= "true";
+	if (sessionId) Object.assign(process.env, transcriptEnv(agent, sessionId));
 }
 
 export type ExecResult = { code: number; stdout: string; stderr?: string; killed?: boolean };
 export type Exec = (file: string, args: string[], options: { cwd: string; timeout: number; ctx?: any }) => Promise<ExecResult>;
-export type Project = { id: number; name: string };
 
-const READS = new Set(["show", "list", "status", "version", "agent-contract-hook", "inbox", "events", "audit", "search", "whoami"]);
-const isRead = (args: string[]) => READS.has(args[0]) || (args[0] === "projects" && args[1] === "list");
-// Writes through any runner in this process (the lead's, a delegate's, another plugin copy's): each one ends every
-// operation's reuse of earlier reads.
+// Runs Kata without a shell, for an adapter whose host cannot put an environment on the call. Like pi.exec, a non-zero exit
+// or any spawn failure other than a missing executable is a result, a timeout or abort reports `killed`, and ENOENT rejects.
+export function execKata(file: string, args: string[], options: { cwd: string; timeout: number; signal?: AbortSignal; env?: Record<string, string> }): Promise<Required<ExecResult>> {
+	return new Promise((resolve, reject) => {
+		execFile(file, args, { cwd: options.cwd, timeout: options.timeout, signal: options.signal, killSignal: "SIGKILL", maxBuffer: 64 * 1024 * 1024, env: { ...process.env, ...options.env } },
+			(error, stdout, stderr) => {
+				if (!error) return resolve({ code: 0, stdout, stderr, killed: false });
+				const failure = error as NodeJS.ErrnoException & { killed?: boolean };
+				if (failure.code === "ENOENT") return reject(error);
+				resolve({ code: typeof failure.code === "number" ? failure.code : 1, stdout, stderr, killed: failure.name === "AbortError" || !!failure.killed });
+			});
+	});
+}
+type Project = { id: number; name: string };
+
+const READS = new Set(["show", "list", "status", "version", "agent-contract-hook", "inbox", "events", "audit"]);
+// Whether a Kata call only reads: a read never ends an operation's reuse of earlier reads.
+export const isRead = (args: string[]) => READS.has(args[0]) || (args[0] === "projects" && args[1] === "list");
+// Writes any runner on this thread made (the lead's core, a delegate's, another plugin copy's): each one ends every
+// operation's reuse of earlier reads. A Kata command an agent runs in its shell is another process, and an omp subagent on
+// a worker thread has its own count, so neither is seen here: an operation is kept short, and a check that must be
+// current reads with `fresh`.
 const writes = ((globalThis as Record<symbol, unknown>)[Symbol.for("kata.plugin.writes")] ??= { count: 0 }) as { count: number };
 
 export interface Kata {
@@ -71,8 +112,9 @@ export interface Kata {
 	pin(ref: string, cwd: string): Promise<string>;
 	// Registers a project in the daemon (idempotent; no files in the repo).
 	createProject(name: string, cwd: string): Promise<void>;
-	// Runs `fn` as one operation: an identical `kata show` inside it is read once until any write in this process.
-	// An operation is one tool call; Kata changes made outside this process meanwhile show in the next one.
+	// Runs `fn` as one operation: an identical `kata show` inside it is read once until a runner on this thread writes.
+	// An operation is one tool call; Kata changes made elsewhere meanwhile (an agent's own shell command, another process or
+	// thread) show in the next one.
 	operation<T>(fn: () => Promise<T>): Promise<T>;
 	// Runs `fn` with every read going to Kata, inside an operation too: for a check that a read is still current.
 	fresh<T>(fn: () => Promise<T>): Promise<T>;

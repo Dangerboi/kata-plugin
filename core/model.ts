@@ -5,15 +5,25 @@ import { createHash } from "node:crypto";
 export type Status = "pending" | "in_progress" | "completed" | "abandoned" | "blocked";
 export const OPEN: ReadonlySet<Status> = new Set(["pending", "in_progress", "blocked"]);
 export const WORKING: ReadonlySet<Status> = new Set(["in_progress", "blocked"]);
-// An open plan task's status from its `todo.status` metadata: anything but started or blocked is pending.
-export const openTaskStatus = (value: unknown): Status => value === "in_progress" || value === "blocked" ? value : "pending";
-// A closed issue's final plan status: abandoned when closed as wontfix, completed otherwise.
+const openTaskStatus = (value: unknown): Status => value === "in_progress" || value === "blocked" ? value : "pending";
 export const closedTaskStatus = (closedReason?: string): "completed" | "abandoned" => closedReason === "wontfix" ? "abandoned" : "completed";
 // `holder`: another lead session that started this plan task and has not released it (see heldBySession).
 export type Task = { ref: string; content: string; phase: string; status: Status; ticket?: string; at?: number; blocker?: string; delegated?: boolean; holder?: string; review?: boolean; revision?: number; proof?: { message?: string; evidence?: string[] } };
 export type Binding = { parent: string; workspace: string; sessionId?: string; auto?: boolean; label?: string };
 export type Plan = Partial<Binding> & { workspace: string; tasks: Task[]; local?: boolean; error?: string };
 export type Change = { message?: string; evidence?: string[]; reason?: string; remove?: boolean };
+// What Kata's close as done needs: evidence, and a message of PROOF_MIN characters (whitespace runs count as one).
+export const PROOF_MIN = 40;
+// What `change` lacks of that, as the clause that finishes "cannot be completed without"; undefined when it has proof.
+export function proofProblem(change: { message?: string; evidence?: string[] }): string | undefined {
+	const message = (change.message || "").replace(/\s+/g, " ").trim().length < PROOF_MIN;
+	const evidence = !change.evidence?.some(e => e.trim());
+	if (message && evidence) return `a message (${PROOF_MIN}+ characters saying what changed and how it was verified) and evidence`;
+	if (message) return `a message of ${PROOF_MIN}+ characters saying what changed and how it was verified`;
+	if (evidence) return "evidence";
+}
+// The longest issue title the plugin writes (automatic parents, missions).
+export const TITLE_MAX = 120;
 
 // An issue as `kata show --json` prints it, and each of its children; only the fields the plugin reads.
 // `qualified_id` is printed on children, not on the shown issue itself. Labels are strings (Kata 0.21); the object form is older output.
@@ -22,7 +32,7 @@ export type KataIssue = {
 	status: "open" | "closed"; closed_reason?: string; closed_at?: string; created_at: string;
 	revision: number; owner?: string; labels?: (string | { label: string })[]; metadata?: Record<string, unknown>;
 };
-export type KataComment = { body: string; teammate?: string };
+type KataComment = { body: string; teammate?: string };
 export type KataShow = { issue: KataIssue; children?: KataIssue[]; comments?: KataComment[] };
 
 // The plan task metadata key naming the lead session that created the task, then the one that last started or blocked it.
@@ -37,6 +47,32 @@ export function heldBySession(issue: Pick<KataIssue, "status" | "metadata">, own
 // The start of every refusal for a plan task another session holds.
 export const heldMessage = (ref: string, holder: string) => `Plan task ${ref} was started by another session (${holder}), which has not released it`;
 
+// Kata children as plan tasks, oldest first. Which children are plan tasks is the caller's choice (a lead's plan holds those with
+// a phase; a pi child may also name any other open child). What only the asker knows is its own: whether a delegate of another
+// teammate holds a task, and which session started it.
+export function tasksOf(children: readonly KataIssue[], parent: string, rule: { delegated(issue: KataIssue): boolean; holder(issue: KataIssue): string | undefined }): Task[] {
+	return [...children]
+		.sort((a, b) => Date.parse(a.created_at) - Date.parse(b.created_at))
+		.map(c => {
+			const meta = c.metadata ?? {};
+			let status: Status;
+			if (c.status === "closed") status = meta["todo.status"] === "abandoned" ? "abandoned" : closedTaskStatus(c.closed_reason);
+			else status = openTaskStatus(meta["todo.status"]);
+			return {
+				ref: qualifiedRef(c, parent),
+				content: c.title,
+				phase: typeof meta["todo.phase"] === "string" ? meta["todo.phase"] : "",
+				revision: c.revision,
+				at: Date.parse(c.created_at),
+				delegated: rule.delegated(c),
+				holder: rule.holder(c),
+				review: (c.labels ?? []).some(l => (typeof l === "string" ? l : l?.label) === "needs-review"),
+				status,
+				blocker: status === "blocked" ? meta["work.attention_msg"] as string | undefined : undefined,
+			};
+		});
+}
+
 // A mission: the issue the plugin makes, under the plan parent, to record the run of a delegate that had no issue of its own
 // (see delegates.ts). It is closed without proof of a change, so it adds no evidence to its parent's close.
 export const missionKey = (namespace: string) => `${namespace}.mission`;
@@ -47,11 +83,45 @@ export const isMission = (namespace: string, issue: Pick<KataIssue, "metadata">)
 export const missionCloseArgs = (ref: string) => ["close", ref, "--audit-no-change", "--message", `${ref} records the run of a subagent that had no Kata issue of its own; its report is in the comments. The lead verifies any change the run made.`,
 	"--evidence", "no-change-audit:Records a subagent run, not a verified change; any change the run made is the lead's to verify."];
 
+// What marks a session's automatic parent, the issue the plugin makes for a plan that serves no existing one: its metadata
+// keys (the flag, the session that owns it, the workspace it was made from) and its label.
+export const sessionParentKeys = (namespace: string) => ({ auto: `${namespace}.auto_parent`, session: `${namespace}.session_id`, workspace: `${namespace}.workspace`, label: `${namespace}-session` });
+
 // The text of a message's content: a plain string, or its text blocks joined.
 export function textOf(content: unknown): string {
 	if (typeof content === "string") return content;
 	return Array.isArray(content) ? content.filter(b => b?.type === "text" && typeof b.text === "string").map(b => b.text).join("\n") : "";
 }
+// A delegate's report out of its messages' contents, oldest first: the text of the last one that has any (a failed or cut-off
+// turn can end on one without).
+export const lastText = (contents: readonly unknown[]): string | undefined => contents.map(content => textOf(content).trim()).filter(Boolean).at(-1);
+
+// How a host's todo tool is named and used, in the advice its model reads: every message of the core names the host's own tool.
+export interface ToolWording {
+	tool: string;
+	// Sentences: how to load the plan again, how to make one, and the same as the step a call skipped.
+	refresh: string;
+	plan: string;
+	planFirst: string;
+	// What to do about open tasks a new plan leaves out.
+	leftOut: string;
+	// Clauses: how to repeat a refused call as a takeover, how to take a held task over before delegating it, and how to plan
+	// work as child issues of `ticket`.
+	retryTakeover: string;
+	takeOverFirst: string;
+	planUnder(ticket: string): string;
+}
+// The `todo` tool of omp and pi, which takes ops.
+export const TODO_WORDING: ToolWording = {
+	tool: "todo",
+	refresh: "Use todo op=view to refresh.",
+	plan: "Use todo op=init.",
+	planFirst: "Call todo op=init first.",
+	leftOut: "To replace them, call init again with replace: true.",
+	retryTakeover: "repeat the call with takeover: true",
+	takeOverFirst: "todo start with takeover: true",
+	planUnder: ticket => `todo init with ref ${ticket}`,
+};
 
 export const projectOf = (ref: string) => ref.split("#")[0];
 // An issue's qualified ref: Kata's own `qualified_id`, else `<parent's project>#<short_id>`.
@@ -59,14 +129,18 @@ export function qualifiedRef(issue: { qualified_id?: string; short_id: string },
 	return issue.qualified_id || `${projectOf(parent)}#${issue.short_id}`;
 }
 
-// Kata's qualified ref `<project>#<short_id>`. A short_id is 4 to 26 lowercase
-// Crockford base32 characters (no i, l, o, u); a project name is one token of
-// word characters, dots and dashes (Kata allows more, but a token that can be
-// told apart in prose needs no spaces). The source is anchored by lookarounds
-// only, so the one source parses a strict prefix (`itemTicket`) and scans text
-// for whole-token refs (`qualifiedRefs`).
-const QUALIFIED_REF = "(?<![\\w./#-])[A-Za-z0-9_][\\w.-]*#[0-9a-hjkmnp-tv-z]{4,26}(?![\\w-])";
+// One character of a Kata id: lowercase Crockford base32 (no i, l, o, u).
+const ID_CHAR = "[0-9a-hjkmnp-tv-z]";
+// Kata's qualified ref `<project>#<short_id>`. A short_id is 4 to 26 id
+// characters; a project name is one token of word characters, dots and
+// dashes (Kata allows more, but a token that can be told apart in prose
+// needs no spaces). The source is anchored by lookarounds only, so the one
+// source parses a strict prefix (`itemTicket`) and scans text for
+// whole-token refs (`qualifiedRefs`).
+const QUALIFIED_REF = `(?<![\\w./#-])[A-Za-z0-9_][\\w.-]*#${ID_CHAR}{4,26}(?![\\w-])`;
 export const QUALIFIED_REF_ONLY = new RegExp(`^${QUALIFIED_REF}$`, "i");
+// A ref that ends in an issue's full 26-character id, bare or after a project: a plan task's ref carries the short id, so Kata resolves this one.
+export const FULL_ID_REF = new RegExp(`(?:^|#)${ID_CHAR}{26}$`, "i");
 // Distinct qualified refs in order of appearance. Prose holds look-alikes
 // (`README.md#tasks`), so with `projects` only refs of those projects count.
 export function qualifiedRefs(text: string, projects?: ReadonlySet<string>): string[] {

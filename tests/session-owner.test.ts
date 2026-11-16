@@ -1,39 +1,16 @@
-import { assertIsolated } from "./isolation";
-import { adoptIsolatedKata, eventually, isolatedKata } from "./kata-fixture";
+import { expect, test } from "bun:test";
+import { eventually, EVIDENCE, later, MESSAGE, realKata, unique } from "./kata-fixture";
+import { siblingThrottle } from "./kata-errors";
 import { ompHost } from "./omp-host";
-assertIsolated();
-import { afterAll, afterEach, beforeAll, beforeEach, expect, test } from "bun:test";
-import { mkdtempSync, mkdirSync } from "node:fs";
-import path from "node:path";
+import { TRANSCRIPT_ENV } from "../core/kata-cli";
 
 // Two lead sessions of one user, no KATA_TEAMMATE: same actor, same empty teammate. Only the session marker tells them apart.
-const binary = process.env.KATA_TEST_EXECUTABLE;
-if (!binary || !path.isAbsolute(binary)) throw new Error("Set KATA_TEST_EXECUTABLE to an absolute kata-main binary path.");
-const scratch = mkdtempSync(path.join(process.env.KATA_TEST_ROOT!, "omp-kata-session-owner-"));
-const cwd = path.join(scratch, "workspace");
-mkdirSync(cwd);
-const env: Record<string, string | undefined> = { ...process.env, KATA_HOME: path.join(scratch, "khome"), KATA_AUTHOR: "actor-a" };
-for (const key of ["KATA_SERVER", "KATA_DAEMON", "KATA_AUTH_TOKEN", "KATA_REF", "KATA_SESSION_ID", "KATA_INBOX_USER", "KATA_TEAMMATE"]) delete env[key];
-process.env.KATA_AUTHOR = "actor-a";
-for (const key of ["KATA_TEAMMATE", "KATA_REF", "KATA_INBOX_USER"]) delete process.env[key];
+const store = realKata({ prefix: "session-owner", author: "actor-a", project: "omptest", adopt: true });
+const { cwd, run, kata, show, closesOf } = store;
+const issue = (meta: string[] = [], parent?: string) => store.issue(`Session owner ${unique()}`, { meta, parent });
+const meta = async (ref: string) => (await show(ref)).issue.metadata ?? {};
 
-const run = isolatedKata(binary, env, cwd, 15000);
-async function kata(args: string[]) {
-  const out = await run(args);
-  if (out.code !== 0) throw new Error(`${args.join(" ")}: ${out.stderr}`);
-  return JSON.parse(out.stdout);
-}
-let sequence = 0;
-async function issue(meta: string[] = [], parent?: string) {
-  const args = ["create", `Session owner ${++sequence}`, "--force-new", "--json"];
-  if (parent) args.push("--parent", parent);
-  for (const value of meta) args.push("--meta", value);
-  return (await kata(args)).issue.short_id as string;
-}
-const shown = async (ref: string) => kata(["show", ref, "--json"]);
-const meta = async (ref: string) => (await shown(ref)).issue.metadata ?? {};
-
-// A lead session on `parent`; `header` makes it a fork of another session.
+// `header` makes the lead a fork of another session.
 function lead(sid: string, parent: string, header?: unknown) {
   const app = ompHost({ run: args => run(args), cwd, sid, agent: { kind: "main", id: `main-${sid}` }, header,
     entries: [{ type: "custom", customType: "io.kata.omp.parent", data: { parent } }] });
@@ -49,16 +26,7 @@ function lead(sid: string, parent: string, header?: unknown) {
       sessionManager: { ...app.ctx.sessionManager, getSessionId: () => next, getHeader: () => header, ...(branch ? { getBranch: () => branch } : {}) } }),
   };
 }
-const proof = { message: "Finished the step and checked the result with the session test.", evidence: ["test:session-owner"] };
-
-beforeAll(async () => {
-  const result = await run(["init", "--project", "omptest"]);
-  if (result.code !== 0) throw new Error(result.stderr);
-}, 20000);
-afterAll(async () => { await run(["daemon", "stop"]); });
-let restore: (() => void) | undefined;
-beforeEach(() => { restore = adoptIsolatedKata(binary!, env.KATA_HOME!); });
-afterEach(() => restore?.());
+const proof = { message: MESSAGE, evidence: EVIDENCE };
 
 test("a task one lead started is refused to another lead of the same actor and teammate", async () => {
   const parent = await issue();
@@ -73,14 +41,14 @@ test("a task one lead started is refused to another lead of the same actor and t
     expect(result.isError).toBe(true);
     expect(result.content[0].text).toContain("started by another session (session-a)");
   }
-  const after = await shown(ref);
+  const after = await show(ref);
   expect(after.issue.status).toBe("open");
   expect(after.issue.metadata["todo.status"]).toBe("in_progress");
   expect(after.issue.metadata["todo.session"]).toBe("session-a");
   // The first session keeps working its task.
   expect((await a.call({ op: "done", task: ref, ...proof })).isError).toBeUndefined();
-  expect((await shown(ref)).issue.status).toBe("closed");
-}, 30000);
+  expect((await show(ref)).issue.status).toBe("closed");
+});
 
 test("takeover moves the task to the new session and records both sessions on the issue", async () => {
   const parent = await issue();
@@ -90,7 +58,7 @@ test("takeover moves the task to the new session and records both sessions on th
   await a.call({ op: "start", task: ref });
   await b.begin();
   expect((await b.call({ op: "start", task: ref, takeover: true })).isError).toBeUndefined();
-  const after = await shown(ref);
+  const after = await show(ref);
   expect(after.issue.metadata["todo.session"]).toBe("session-b");
   expect(after.issue.metadata["todo.status"]).toBe("in_progress");
   expect((after.comments ?? []).map((c: { body: string }) => c.body)).toContain("Taken over by session session-b from session session-a, which started it.");
@@ -98,7 +66,7 @@ test("takeover moves the task to the new session and records both sessions on th
   const refused = await a.call({ op: "done", task: ref, ...proof });
   expect(refused.isError).toBe(true);
   expect(refused.content[0].text).toContain("started by another session (session-b)");
-}, 30000);
+});
 
 test("a /todo command is refused on another session's task; /todo takeover takes it over", async () => {
   const parent = await issue();
@@ -108,14 +76,14 @@ test("a /todo command is refused on another session's task; /todo takeover takes
   await a.call({ op: "start", task: ref });
   await b.begin();
   expect(await b.command(`/todo done ${ref}`)).toContain("started by another session (session-a)");
-  expect((await shown(ref)).issue.status).toBe("open");
+  expect((await show(ref)).issue.status).toBe("open");
   await b.command(`/todo takeover ${ref}`);
-  const taken = await shown(ref);
+  const taken = await show(ref);
   expect(taken.issue.metadata["todo.session"]).toBe("session-b");
   expect((taken.comments ?? []).some((c: { body: string }) => c.body.startsWith("Taken over by session session-b"))).toBe(true);
   await b.command(`/todo done ${ref}`);
-  expect((await shown(ref)).issue.status).toBe("closed");
-}, 30000);
+  expect((await show(ref)).issue.status).toBe("closed");
+});
 
 test("init replace cannot drop a task another session started", async () => {
   const parent = await issue();
@@ -127,10 +95,10 @@ test("init replace cannot drop a task another session started", async () => {
   const result = await b.call({ op: "init", ref: parent, replace: true, items: ["A different plan"] });
   expect(result.isError).toBe(true);
   expect(result.content[0].text).toContain("leaves out tasks another session started");
-  const after = await shown(parent);
+  const after = await show(parent);
   expect(after.children.map((c: { title: string }) => c.title)).not.toContain("A different plan");
-  expect((await shown(ref)).issue.status).toBe("open");
-}, 30000);
+  expect((await show(ref)).issue.status).toBe("open");
+});
 
 test("a fork works on what its source started; its source does not get the fork's", async () => {
   const parent = await issue();
@@ -147,7 +115,7 @@ test("a fork works on what its source started; its source does not get the fork'
   const refused = await a.call({ op: "done", task: second, ...proof });
   expect(refused.isError).toBe(true);
   expect(refused.content[0].text).toContain("started by another session (session-f)");
-}, 30000);
+});
 
 test("a resumed session keeps its fork lineage from the snapshot", async () => {
   const parent = await issue();
@@ -163,7 +131,7 @@ test("a resumed session keeps its fork lineage from the snapshot", async () => {
   const resumed = ompHost({ run: args => run(args), cwd, sid: "session-f", agent: { kind: "main", id: "main-session-f" }, entries: [...fork.entries] });
   await resumed.event("session_start");
   expect((await resumed.call({ op: "done", task: ref, ...proof })).isError).toBeUndefined();
-}, 30000);
+});
 
 test("pending items and items without the marker keep the actor and teammate rule", async () => {
   const parent = await issue();
@@ -174,16 +142,16 @@ test("pending items and items without the marker keep the actor and teammate rul
   expect((await b.call({ op: "done", task: unmarked, ...proof })).isError).toBeUndefined();
   expect((await b.call({ op: "start", task: pending })).isError).toBeUndefined();
   expect((await meta(pending))["todo.session"]).toBe("session-b");
-}, 30000);
+});
 
 test("items a lead creates carry its session", async () => {
   const parent = await issue();
   const a = lead("session-a", parent);
   await a.begin();
   expect((await a.call({ op: "append", items: ["A marked item"] })).isError).toBeUndefined();
-  const child = (await shown(parent)).children.find((c: { title: string }) => c.title === "A marked item");
+  const child = (await show(parent)).children.find((c: { title: string }) => c.title === "A marked item");
   expect(child.metadata["todo.session"]).toBe("session-a");
-}, 30000);
+});
 
 test("a bare done never picks this session's task while another session's task is in progress", async () => {
   const parent = await issue();
@@ -196,13 +164,13 @@ test("a bare done never picks this session's task while another session's task i
   const view = await b.call({ op: "view" });
   expect(view.content[0].text).toContain(`(omptest#${first}) — started by session session-a`);
   // Starting another task leaves two in progress, one of them not this session's.
-  const second = (await shown(parent)).children.find((c: { short_id: string }) => c.short_id !== first).short_id;
+  const second = (await show(parent)).children.find((c: { short_id: string }) => c.short_id !== first).short_id;
   expect((await b.call({ op: "start", task: second })).isError).toBeUndefined();
   const refused = await b.call({ op: "done", ...proof });
   expect(refused.isError).toBe(true);
   expect(refused.content[0].text).toContain("Several tasks are in progress");
-  expect((await shown(second)).issue.status).toBe("open");
-}, 30000);
+  expect((await show(second)).issue.status).toBe("open");
+});
 
 test("a lead that shuts down releases its started tasks, so the next session continues them without a takeover", async () => {
   const parent = await issue();
@@ -217,8 +185,8 @@ test("a lead that shuts down releases its started tasks, so the next session con
   const b = lead("session-b", parent);
   await b.begin();
   expect((await b.call({ op: "done", ...proof })).isError).toBeUndefined();
-  expect((await shown(ref)).issue.status).toBe("closed");
-}, 30000);
+  expect((await show(ref)).issue.status).toBe("closed");
+});
 
 test("a switch to another session releases the tasks the previous one started", async () => {
   const parent = await issue();
@@ -228,7 +196,7 @@ test("a switch to another session releases the tasks the previous one started", 
   await a.call({ op: "start", task: ref });
   await a.switchTo("session-a2");
   await eventually(async () => (await meta(ref))["todo.session"], undefined);
-}, 30000);
+});
 
 test("a switch to a fork of the session hands it the tasks the source held, and the fork's end releases them", async () => {
   const parent = await issue();
@@ -240,7 +208,7 @@ test("a switch to a fork of the session hands it the tasks the source held, and 
   await eventually(async () => (await meta(ref))["todo.session"], "session-a-fork");
   await a.shutdown();
   await eventually(async () => (await meta(ref))["todo.session"], undefined);
-}, 30000);
+});
 
 test("a fork's shutdown leaves its source's started tasks held", async () => {
   const parent = await issue();
@@ -252,7 +220,7 @@ test("a fork's shutdown leaves its source's started tasks held", async () => {
   await fork.begin();
   await fork.shutdown();
   expect((await meta(ref))["todo.session"]).toBe("session-a");
-}, 30000);
+});
 
 test("restarting a task closed outside the plan takes it, whoever's marker it still carries", async () => {
   const parent = await issue();
@@ -262,10 +230,10 @@ test("restarting a task closed outside the plan takes it, whoever's marker it st
   const b = lead("session-b", parent);
   await b.begin();
   expect((await b.call({ op: "start", task: ref })).isError).toBeUndefined();
-  const after = await shown(ref);
+  const after = await show(ref);
   expect(after.issue.status).toBe("open");
   expect(after.issue.metadata["todo.session"]).toBe("session-b");
-}, 30000);
+});
 
 test("every takeover leaves its own comment, also back and forth between two sessions", async () => {
   const parent = await issue();
@@ -277,9 +245,9 @@ test("every takeover leaves its own comment, also back and forth between two ses
     expect((await who.call({ op: "start", task: ref, takeover: true })).isError).toBeUndefined();
     expect((await meta(ref))["todo.session"]).toBe(session);
   }
-  const comments = ((await shown(ref)).comments ?? []).filter((c: { body: string }) => c.body.startsWith("Taken over by session"));
+  const comments = ((await show(ref)).comments ?? []).filter((c: { body: string }) => c.body.startsWith("Taken over by session"));
   expect(comments.length).toBe(3);
-}, 30000);
+});
 
 test("a phase without a task takes nothing over for an op that needs one task", async () => {
   const parent = await issue();
@@ -289,10 +257,10 @@ test("a phase without a task takes nothing over for an op that needs one task", 
   await a.call({ op: "start", task: ref });
   await b.begin();
   expect((await b.call({ op: "start", phase: "Tasks", takeover: true })).isError).toBe(true);
-  const after = await shown(ref);
+  const after = await show(ref);
   expect(after.issue.metadata["todo.session"]).toBe("session-a");
   expect((after.comments ?? []).some((c: { body: string }) => c.body.startsWith("Taken over by session"))).toBe(false);
-}, 30000);
+});
 
 test("a ticket item may name another plan's task that session holds; tickets keep the actor and teammate rule", async () => {
   const other = await issue();
@@ -306,7 +274,7 @@ test("a ticket item may name another plan's task that session holds; tickets kee
   const result = await b.call({ op: "append", items: [`omptest#${held}: review the change`] });
   expect(result.isError).toBeUndefined();
   expect(result.content[0].text).toContain(`omptest#${held}: review the change`);
-}, 30000);
+});
 
 test("a takeover that names no task is refused and takes nothing", async () => {
   const parent = await issue();
@@ -320,7 +288,7 @@ test("a takeover that names no task is refused and takes nothing", async () => {
   expect(refused.content[0].text).toContain("takeover needs the task");
   expect(await b.command("/todo takeover")).toContain("takeover needs the task");
   expect((await meta(ref))["todo.session"]).toBe("session-a");
-}, 30000);
+});
 
 test("a switch to a fork whose history predates the plan releases the source's tasks", async () => {
   const parent = await issue();
@@ -330,4 +298,131 @@ test("a switch to a fork whose history predates the plan releases the source's t
   await a.call({ op: "start", task: ref });
   await a.switchTo("session-a-early-fork", { parentSession: "session-a" }, []);
   expect((await meta(ref))["todo.session"]).toBeUndefined();
-}, 30000);
+});
+
+test("starting a task its session released holds it for the session that continues it", async () => {
+  const parent = await issue();
+  const ref = await issue(["todo.phase=Tasks", "todo.status=pending"], parent);
+  const a = lead("session-a", parent);
+  await a.begin();
+  await a.call({ op: "start", task: ref });
+  await a.shutdown();
+  const b = lead("session-b", parent);
+  await b.begin();
+  expect((await b.call({ op: "start", task: ref })).isError).toBeUndefined();
+  expect((await meta(ref))["todo.session"]).toBe("session-b");
+  const c = lead("session-c", parent);
+  await c.begin();
+  const refused = await c.call({ op: "done", task: ref, ...proof });
+  expect(refused.isError).toBe(true);
+  expect(refused.content[0].text).toContain("started by another session (session-b)");
+  expect((await show(ref)).issue.status).toBe("open");
+});
+
+test("a switch to a session whose plan parent no longer resolves still releases the previous session's tasks", async () => {
+  const parent = await issue();
+  const ref = await issue(["todo.phase=Tasks", "todo.status=pending"], parent);
+  const a = lead("session-a", parent);
+  await a.begin();
+  await a.call({ op: "start", task: ref });
+  await a.switchTo("session-gone", undefined, [{ type: "custom", customType: "io.kata.omp.parent", data: { parent: "omptest#zzzz" } }]);
+  await eventually(async () => (await meta(ref))["todo.session"], undefined);
+});
+
+test("a lead's end keeps the hold of a task whose close Kata deferred, and the resumed session makes that close", async () => {
+  const parent = await issue();
+  const ref = await issue(["todo.phase=Tasks", "todo.status=pending"], parent);
+  const entries: any[] = [{ type: "custom", customType: "io.kata.omp.parent", data: { parent } }];
+  let throttled = true;
+  // The adapter spawns closes itself while a transcript session is exported; without one they go through the host, which can refuse them.
+  const session = () => ompHost({ run: args => run(args), cwd, sid: "session-t", agent: { kind: "main", id: "main-session-t" }, entries,
+    before: (args: string[]) => args[0] === "close" && throttled ? siblingThrottle() : undefined,
+    afterEvent: () => { for (const key of TRANSCRIPT_ENV) delete process.env[key]; } });
+  const a = session();
+  await a.event("session_start");
+  await a.call({ op: "start", task: ref });
+  const deferred = await a.call({ op: "done", task: ref, ...proof });
+  expect(deferred.content[0].text).toContain("deferred");
+  const revision = (await show(ref)).issue.revision;
+  await a.event("session_shutdown");
+  const kept = (await show(ref)).issue;
+  expect(kept.metadata["todo.session"]).toBe("session-t");
+  expect(kept.revision).toBe(revision);
+  throttled = false;
+  // The retry is due when the session resumes: its bind restores the pending close and makes it.
+  const resumed = session();
+  await later(async () => {
+    await resumed.event("session_start");
+    await eventually(async () => (await show(ref)).issue.status, "closed");
+  });
+});
+
+test("tasks of one title in two phases are dropped with close messages of their own", async () => {
+  const parent = await issue();
+  const a = lead("session-a", parent);
+  await a.begin();
+  expect((await a.call({ op: "init", ref: parent, list: [{ phase: "Build", items: ["Same title"] }, { phase: "Verify", items: ["Same title"] }] })).isError).toBeUndefined();
+  const ids: string[] = (await show(parent)).children.map((c: { short_id: string }) => c.short_id);
+  for (const id of ids) expect((await a.call({ op: "drop", task: `omptest#${id}`, message: "covered elsewhere" })).isError).toBeUndefined();
+  const messages = (await Promise.all(ids.map(closesOf))).flat().map(event => event.payload.message);
+  expect(messages).toHaveLength(2);
+  // With Kata's close throttle on, a close that repeats a sibling's message is refused (duplicate_message).
+  expect(new Set(messages).size).toBe(2);
+});
+
+test("/todo takeover of a blocked task takes it over as it is and reports no error", async () => {
+  const parent = await issue();
+  const ref = await issue(["todo.phase=Tasks", "todo.status=pending"], parent);
+  const a = lead("session-a", parent), b = lead("session-b", parent);
+  await a.begin();
+  await a.call({ op: "start", task: ref });
+  await a.call({ op: "block", task: ref, reason: "waiting on review" });
+  await b.begin();
+  const said = await b.command(`/todo takeover ${ref}`);
+  expect(said).not.toContain("unblock it first");
+  expect(said).toContain("blocked: waiting on review");
+  const taken = await show(ref);
+  expect(taken.issue.metadata["todo.session"]).toBe("session-b");
+  expect(taken.issue.metadata["todo.status"]).toBe("blocked");
+  expect((taken.comments ?? []).some((c: { body: string }) => c.body.startsWith("Taken over by session session-b"))).toBe(true);
+});
+
+test("a lead's start marks the task with its session when a sub identity's session start reaches its handlers mid-call", async () => {
+  const parent = await issue();
+  const ref = await issue(["todo.phase=Tasks", "todo.status=pending"], parent);
+  let midCall: (() => void) | undefined;
+  const app = ompHost({ run: args => run(args), cwd, sid: "session-midcall", agent: { kind: "main", id: "main-session-midcall" },
+    entries: [{ type: "custom", customType: "io.kata.omp.parent", data: { parent } }],
+    before: () => { midCall?.(); midCall = undefined; } });
+  await app.event("session_start");
+  await app.call({ op: "view" });
+  // A sub identity of the session (omp's advisor) starts while the lead's call waits for Kata.
+  let started: Promise<unknown> | undefined;
+  midCall = () => { started = app.event("session_start", {}, { ...app.ctx, agent: { kind: "sub", id: "Advisor" } }); };
+  expect((await app.call({ op: "start", task: ref })).isError).toBeUndefined();
+  await started;
+  expect(started).toBeDefined();
+  expect((await meta(ref))["todo.session"]).toBe("session-midcall");
+});
+
+test("the init refusal for a held task names the takeover in the host's words", async () => {
+  const parent = await issue();
+  const ref = await issue(["todo.phase=Tasks", "todo.status=pending"], parent);
+  const a = lead("session-a", parent), b = lead("session-b", parent);
+  await a.begin();
+  await a.call({ op: "start", task: ref });
+  await b.begin();
+  const result = await b.call({ op: "init", ref: parent, replace: true, items: ["A different plan"] });
+  expect(result.content[0].text).toContain("take them over first (todo start with takeover: true), or keep them in the list.");
+});
+
+test("init does not take tasks over: takeover on init is an error that changes nothing", async () => {
+  const parent = await issue();
+  await issue(["todo.phase=Tasks", "todo.status=pending"], parent);
+  const a = lead("session-a", parent);
+  await a.begin();
+  const result = await a.call({ op: "init", ref: parent, takeover: true, items: ["A takeover plan"] });
+  expect(result.isError).toBe(true);
+  expect(result.content[0].text).toContain("init does not take tasks over");
+  expect((await show(parent)).children.map((c: { title: string }) => c.title)).not.toContain("A takeover plan");
+});

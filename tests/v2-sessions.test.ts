@@ -3,13 +3,13 @@ import { execFile } from "node:child_process";
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { promisify } from "node:util";
-import { later } from "./kata-fixture";
+import { finishes, holdKata, later } from "./kata-fixture";
 import { missingExecutable, siblingThrottle } from "./kata-errors";
 import { v2Fixture } from "./v2-fixture";
 
 // The omp adapter against a real Kata: session start and end, transcripts, automatic parents and their closes.
 const exec = promisify(execFile);
-const { binary, scratch, cwd, outside, env, run, kata, show, issue, unique, host, down, evidence, message, throttledClose, ran, closeSessions } = v2Fixture();
+const { binary, scratch, cwd, outside, env, run, kata, show, events, issue, unique, host, down, evidence, message, hostTimers, throttledClose, ran, closeSessions, closesOf } = v2Fixture();
 
 test("subagent start and shutdown never touch main attention or widget", async () => {
   const ref = await issue(); await kata(["claim", ref, "--json"]); await kata(["meta", "set", ref, "work.attention", "ok", "--json"]);
@@ -22,9 +22,6 @@ test("subagent start and shutdown never touch main attention or widget", async (
 });
 
 test("the main session exports its transcript identity on start and switch, and leaves it for the next start on shutdown", async () => {
-  const saved = [process.env.KATA_TRANSCRIPT_AGENT, process.env.KATA_TRANSCRIPT_SESSION_ID];
-  delete process.env.KATA_TRANSCRIPT_AGENT; delete process.env.KATA_TRANSCRIPT_SESSION_ID;
-  try {
   const app = host({ sid: "transcript-main", transcript: true });
   await app.event("session_start");
   expect([process.env.KATA_TRANSCRIPT_AGENT, process.env.KATA_TRANSCRIPT_SESSION_ID]).toEqual(["omp", "transcript-main"]);
@@ -38,9 +35,6 @@ test("the main session exports its transcript identity on start and switch, and 
   expect([process.env.KATA_TRANSCRIPT_AGENT, process.env.KATA_TRANSCRIPT_SESSION_ID]).toEqual(["omp", "transcript-next"]);
   await host({ sid: "transcript-after", transcript: true }).event("session_start");
   expect(process.env.KATA_TRANSCRIPT_SESSION_ID).toBe("transcript-after");
-  } finally {
-    for (const [key, value] of [["KATA_TRANSCRIPT_AGENT", saved[0]], ["KATA_TRANSCRIPT_SESSION_ID", saved[1]]] as const) value === undefined ? delete process.env[key] : process.env[key] = value;
-  }
 });
 
 // A host whose spawn fails reports a bare failure with no output; the paired close, spawned by the adapter, must read the same.
@@ -77,7 +71,7 @@ test("a plugin close records the omp session as its transcript with no transcrip
   const done = await app.call({ op: "done", message, evidence });
   expect(done.isError, done.content?.[0]?.text).toBeUndefined();
   expect(app.calls.some(c => c[0] === "close")).toBe(false);
-  const closes = (await kata(["events", "--after", "0", "--limit", "500", "--json"])).events.filter((e: any) => e.type === "issue.closed" && e.payload?.transcript?.session_id === "transcript-recorded");
+  const closes = (await events()).filter((e: any) => e.type === "issue.closed" && e.payload?.transcript?.session_id === "transcript-recorded");
   expect(closes.length).toBeGreaterThan(0);
   expect(closes[0].payload.transcript).toMatchObject({ agent: "omp", session_id: "transcript-recorded" });
 });
@@ -127,10 +121,9 @@ test("auto parents carry typed identity and close exactly once from child eviden
   for (const task of ["Implement fixture", "Verify fixture"]) expect((await app.call({ op: "done", task, message, evidence })).isError).toBeUndefined();
   expect((await show(ref)).issue.status).toBe("closed");
   await app.call({ op: "view" }); await app.event("session_stop");
-  const rows = (await kata(["audit", "closes", "--json"])).rows.filter((r: any) => r.issue === ref.split("#")[1]);
-  expect(rows).toHaveLength(1);
-  const evt = (await kata(["events", "--after", String(rows[0].event_id - 1), "--limit", "1", "--json"])).events[0];
-  expect(evt.payload.evidence).toEqual([{ type: "test", command: "bun test fixture" }]);
+  const closes = await closesOf(ref);
+  expect(closes).toHaveLength(1);
+  expect(closes[0].payload.evidence).toEqual([{ type: "test", command: "bun test fixture" }]);
   // Every project-scoped Kata call pins the plan's workspace, so a worktree or a moved cwd never resolves another project.
   expect(app.calls.filter(a => a[0] !== "version").every(a => a.includes("--workspace"))).toBe(true);
 });
@@ -170,15 +163,19 @@ test("contract is cached verbatim, inbox read every turn, slow hooks bounded and
   expect(second.systemPrompt.join("\n")).toContain(contract);
   expect(app.calls.filter(a => a[0] === "agent-contract-hook")).toHaveLength(1);
   expect(app.calls.filter(a => a[0] === "inbox")).toHaveLength(3);
-  const slow = host({ before: async () => { await Bun.sleep(600); return { code: 1, stderr: "offline", stdout: "" }; } });
-  const start = performance.now(); await slow.event("session_start"); await slow.event("before_agent_start", { systemPrompt: ["base"] });
-  expect(performance.now() - start).toBeLessThan(600);
-  expect(slow.notices).toEqual([]);
+  // Kata does not answer until the test lets it: the hooks must return on their own bound, not on Kata's answer.
+  const held = holdKata(() => true, () => ({ code: 1, stderr: "offline", stdout: "" }));
+  const slow = host({ before: held.before });
+  try {
+    expect(await finishes((async () => { await slow.event("session_start"); await slow.event("before_agent_start", { systemPrompt: ["base"] }); })())).toBe(true);
+    expect(held.held).toBeGreaterThan(0);
+    expect(slow.notices).toEqual([]);
+  } finally { held.release(); }
 });
 
 test("external closes reconcile an auto parent, including non-todo children", async () => {
   const app = host(); const ref = await app.init(["External task"]);
-  const extra = (await kata(["create", "External verification child", "--parent", ref, "--force-new", "--json"])).issue.short_id;
+  const extra = await issue("External verification child", { parent: ref });
   expect((await app.call({ op: "done", message, evidence })).isError).toBeUndefined();
   expect((await show(ref)).issue.status).toBe("open");
   await kata(["close", extra, "--done", "--message", "Externally verified this additional child with an independent test run.", "--test", "external verifier", "--json"]);
@@ -191,8 +188,8 @@ test("a delegate bound to an existing plan item gets a teammate, the verbatim co
   parent.emit("task:subagent:lifecycle", { id: "Build.Widget", agent: "task", status: "started", sessionFile, description: "Await delegated work" });
   const child = host({ agent: { kind: "sub", id: "Build.Widget", parentId: parent.ctx.agent.id }, sessionFile });
   await child.event("session_start");
-  // Startup hooks deliberately return after 250ms; await the actual contract
-  // request before asserting the next prompt contains its completed cache.
+  // Startup hooks return on their short bound, which can be before the contract has answered: await the actual
+  // contract request before asserting the next prompt contains its completed cache.
   await child.contractReady;
   const prompt = await child.event("before_agent_start", { systemPrompt: ["child base"] });
   await parent.call({ op: "view" });
@@ -230,7 +227,30 @@ test("a delegate's close carries the transcript identity from its session file h
   const close = () => child.event("tool_call", { toolName: "bash", input: { command: `kata close v2test#${tracked.short_id} --done --message '${message}' --test 'header fixture'` } });
   expect((await close()).input.command).not.toContain("KATA_TRANSCRIPT");
   writeFileSync(sessionFile, '{"type":"session","version":3,"id":"delegate-header-id"}\n{"type":"message"}\n');
-  expect((await close()).input.command).toStartWith("env KATA_TRANSCRIPT_AGENT='omp' KATA_TRANSCRIPT_SESSION_ID='delegate-header-id' kata ");
+  expect((await close()).input.command).toStartWith("env KATA_TRANSCRIPT_AGENT='omp' KATA_TRANSCRIPT_SESSION_ID='delegate-header-id' KATA_CLOSE_TRANSCRIPT_ENABLED='true' kata ");
+  await child.event("session_shutdown");
+});
+
+test("a delegate's own todo close made before its session file has a header records no session, not the lead's", async () => {
+  // The lead's pair is exported and recording is on: a close spawned with the process environment would record the lead.
+  process.env.KATA_CLOSE_TRANSCRIPT_ENABLED = "true";
+  const parent = host({ sid: "headerless-lead", transcript: true }); await parent.event("session_start");
+  const ref = await parent.init(["Headerless delegated work", "Keep leading"]);
+  const sessionFile = `${scratch}/delegate-headerless.jsonl`;
+  writeFileSync(sessionFile, "");
+  parent.emit("task:subagent:lifecycle", { id: "Headerless.Delegate", agent: "task", status: "started", sessionFile, description: "Headerless delegated work" });
+  const child = host({ agent: { kind: "sub", id: "Headerless.Delegate", parentId: parent.ctx.agent.id }, sessionFile, transcript: true });
+  await child.event("session_start"); await child.contractReady;
+  await child.event("before_agent_start", { systemPrompt: ["child base"] });
+  await parent.call({ op: "view" });
+  const tracked = (await show(ref)).children.find((c: any) => c.metadata?.["omp.subagent_id"] === "Headerless.Delegate");
+  expect(await child.call({ op: "init", items: ["Headerless step"] })).not.toHaveProperty("isError", true);
+  const done = await child.call({ op: "done", task: "Headerless step", message, evidence });
+  expect(done.isError, done.content?.[0]?.text).toBeUndefined();
+  // omp's own exec spawns with the environment it captured at startup: the plugin spawns this close itself.
+  expect(child.calls.some(a => a[0] === "close")).toBe(false);
+  const step = (await show(`v2test#${tracked.short_id}`)).children.find((c: any) => c.title === "Headerless step");
+  expect(await closeSessions(step.short_id)).toEqual([undefined]);
   await child.event("session_shutdown");
 });
 
@@ -329,10 +349,8 @@ test("a flagged automatic parent is not re-audited until its revision changes", 
 
 test("a throttled automatic-parent close does not label the parent for review", async () => {
   let parent = "";
-  const timers = new Set<{ run: () => void }>();
   const app = host({ before: (a: string[]) => a[0] === "close" && a.includes(parent) ? siblingThrottle() : undefined });
-  app.ctx.setTimeout = (callback: () => void) => { const timer = { run: callback }; timers.add(timer); return timer; };
-  app.ctx.clearTimer = (timer: any) => { timers.delete(timer); };
+  const timers = hostTimers(app);
   parent = await app.init(["Throttled parent"]);
   await app.call({ op: "done", message, evidence });
   const view = await show(parent);
@@ -390,7 +408,7 @@ test("membership changes during evidence retrieval prevent auto-parent close", a
 test("cross-project adoption pins new children to the claimed project", async () => {
   const other = path.join(scratch, `other-${unique()}`); mkdirSync(other);
   await kata(["init", "--project", "v2other", "--json"], other);
-  const foreign = (await kata(["create", "Cross-project claimed issue", "--owner", "v2-builder", "--force-new", "--json"], other)).issue.short_id;
+  const foreign = await issue("Cross-project claimed issue", { owner: "v2-builder", workspace: other });
   const app = host(); const original = await app.init(["Original task"]);
   await app.event("tool_result", { toolName: "bash", input: { command: `kata --workspace '${other}' claim ${foreign}` }, isError: false });
   const current = await app.call({ op: "view" });

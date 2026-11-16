@@ -2,12 +2,10 @@ import { expect, test } from "bun:test";
 import { mkdirSync } from "node:fs";
 import path from "node:path";
 import { v2Fixture } from "./v2-fixture";
+import { isRead } from "../core/kata-cli";
 
 // The omp adapter against a real Kata: plan items that name tickets, and init with or without replace.
-const { scratch, outside, run, kata, show, issue, unique, host, down, evidence, message, total, commentsOf } = v2Fixture();
-
-const ofSession = async (sid: string) => (await kata(["list", "--status", "all", "--meta", `omp.session_id=${sid}`, "--json"])).issues;
-const closesOf = async (short: string) => (await kata(["audit", "closes", "--json"])).rows.filter((r: any) => r.issue === short);
+const { scratch, run, kata, show, issue, unique, host, down, evidence, message, total, commentsOf, sessionParents, closesOf } = v2Fixture();
 const namingPlan = (a: string, b: string) => [
   { phase: "Smoke test", items: [`v2test#${a}: write the script`, `v2test#${a}: bump the version`] },
   { phase: "Inbox", items: [`v2test#${b}: fetch the inbox`] },
@@ -20,7 +18,7 @@ test("a plan whose items name tickets creates no issue and no automatic parent",
   const result = await app.call({ op: "init", list: namingPlan(a, b) });
   expect(result.isError).toBeUndefined();
   expect(await total()).toBe(before);
-  expect(await ofSession(app.sid)).toHaveLength(0);
+  expect(await sessionParents(app.sid)).toHaveLength(0);
   expect(result.details.kata.parent).toBeUndefined();
   const text = result.content[0].text;
   expect(text).toContain(`[/] v2test#${a}: write the script (v2test#${a})`);
@@ -41,7 +39,7 @@ test("an item without a ref in a plan of tickets creates exactly that issue and 
   const appended = await app.call({ op: "append", items: ["update CHANGELOG"], phase: "Inbox" });
   expect(appended.isError).toBeUndefined();
   expect(await total()).toBe(before + 2);
-  const [parent, ...rest] = [await ofSession(app.sid)].flatMap(list => list.sort((x: any, y: any) => x.id - y.id));
+  const [parent, ...rest] = [await sessionParents(app.sid)].flatMap(list => list.sort((x: any, y: any) => x.id - y.id));
   expect(rest).toHaveLength(0);
   const ref = appended.details.kata.parent;
   expect((await show(ref)).children.map((c: any) => c.title)).toEqual(["update CHANGELOG"]);
@@ -80,9 +78,9 @@ test("finishing every item of a ticket closes it once with the last item's evide
   comments = await commentsOf(a);
   expect(comments).toHaveLength(2);
   expect(comments[1]).toContain("test:second item check");
-  const rows = await closesOf(a);
-  expect(rows).toHaveLength(1);
-  const event = (await kata(["events", "--after", String(rows[0].event_id - 1), "--limit", "1", "--json"])).events[0];
+  const closes = await closesOf(a);
+  expect(closes).toHaveLength(1);
+  const event = closes[0];
   expect(event.payload.evidence).toEqual([{ type: "test", command: "second item check" }]);
   expect(last.content[0].text).toContain("2/2 done");
 });
@@ -102,7 +100,7 @@ test("appending a ticket item again in a plan of only tickets works without a pa
   expect(reappended.isError).toBe(true);
   expect(reappended.content[0].text).toMatch(/already closed/i);
   expect(await total()).toBe(before);
-  expect(await ofSession(app.sid)).toHaveLength(0);
+  expect(await sessionParents(app.sid)).toHaveLength(0);
 });
 
 test("appending an open ticket item again in a plan with a parent creates no child and no error", async () => {
@@ -125,7 +123,7 @@ test("an unresolvable or closed ref is an error that creates nothing; a bare id 
   expect(ghost.isError).toBe(true);
   expect(ghost.content[0].text).toContain("v2test#zzzz");
   expect(await total()).toBe(before);
-  expect(await ofSession(app.sid)).toHaveLength(0);
+  expect(await sessionParents(app.sid)).toHaveLength(0);
   const closed = await issue("Closed work"); await kata(["close", closed, "--done", "--message", message, "--test", "closed-item-fixture", "--json"]);
   const done = await app.call({ op: "init", items: [`v2test#${closed}: more work`] });
   expect(done.isError).toBe(true);
@@ -135,7 +133,7 @@ test("an unresolvable or closed ref is an error that creates nothing; a bare id 
   const bare = await app.call({ op: "init", items: [`${open}: bare id is only text`] });
   expect(bare.isError).toBeUndefined();
   expect((await show(open)).issue.owner).toBeUndefined();
-  expect((await ofSession(app.sid))).toHaveLength(1);
+  expect(await sessionParents(app.sid)).toHaveLength(1);
 });
 
 test("drop and rm of an item that names a ticket only comment and leave it open", async () => {
@@ -222,7 +220,7 @@ test("a ticket another writer owns or that closed meanwhile is an error, never a
 test("a ticket with open children stays open when its last item is done, with a comment saying why", async () => {
   const app = host(); await app.event("session_start");
   const umbrella = await issue("Umbrella");
-  await kata(["create", "Child work", "--parent", umbrella, "--force-new", "--json"]);
+  await issue("Child work", { parent: umbrella });
   await app.call({ op: "init", items: [`v2test#${umbrella}: finish the umbrella`] });
   const done = await app.call({ op: "done", message, evidence });
   expect(done.isError).toBeUndefined();
@@ -261,7 +259,7 @@ test("a claimed ticket named by an item closes once its plan children close, wit
 test("an umbrella ticket stays open after its outside children close, even across resume", async () => {
   const app = host(); await app.event("session_start");
   const umbrella = await issue("Umbrella with outside child"), other = await issue("Other ticket");
-  const outside = (await kata(["create", "Outside child", "--parent", umbrella, "--force-new", "--json"])).issue.short_id;
+  const outside = await issue("Outside child", { parent: umbrella });
   await app.call({ op: "init", items: [`v2test#${umbrella}: finish the umbrella`, `v2test#${other}: unrelated step`] });
   await app.call({ op: "done", task: `v2test#${umbrella}: finish the umbrella`, message, evidence });
   expect(await blockingComments(umbrella)).toHaveLength(1);
@@ -278,7 +276,7 @@ test("an umbrella ticket stays open after its outside children close, even acros
 test("a ticket whose open child is named by another plan item closes after that child closes", async () => {
   const app = host(); await app.event("session_start");
   const parent = await issue("Parent ticket");
-  const child = (await kata(["create", "Named child", "--parent", parent, "--force-new", "--json"])).issue.short_id;
+  const child = await issue("Named child", { parent });
   await app.call({ op: "init", items: [`v2test#${parent}: finish the parent`, `v2test#${child}: finish the child`] });
   await app.call({ op: "done", task: `v2test#${parent}: finish the parent`, message, evidence: ["test:parent item evidence"] });
   expect(await blockingComments(parent)).toHaveLength(1);
@@ -295,7 +293,7 @@ test("a ticket whose open child is named by another plan item closes after that 
 test("an umbrella ticket whose open child is outside the plan stays open without repeated close attempts or comments", async () => {
   const app = host(); await app.event("session_start");
   const umbrella = await issue("Umbrella"), other = await issue("Other ticket");
-  await kata(["create", "Outside child", "--parent", umbrella, "--force-new", "--json"]);
+  await issue("Outside child", { parent: umbrella });
   await app.call({ op: "init", items: [`v2test#${umbrella}: finish the umbrella`, `v2test#${other}: unrelated step`] });
   await app.call({ op: "done", task: `v2test#${umbrella}: finish the umbrella`, message, evidence });
   await app.call({ op: "done", task: `v2test#${other}: unrelated step`, message, evidence });
@@ -363,7 +361,7 @@ test("a task delegated to an item that names a ticket works that ticket and crea
   await app.call({ op: "view" });
   expect((await show(a)).issue.metadata["omp.subagent_id"]).toBe("named-item");
   expect(await total()).toBe(before);
-  expect(await ofSession(app.sid)).toHaveLength(1); // the delegated ticket itself
+  expect(await sessionParents(app.sid)).toHaveLength(1); // the delegated ticket itself
   const refused = await app.call({ op: "done", task: `v2test#${a}: write the widget parser`, message, evidence });
   expect(refused.isError).toBe(true);
   expect(refused.content[0].text).toMatch(/delegated/i);
@@ -394,7 +392,7 @@ test("an item follows a wontfix close of its ticket as abandoned", async () => {
   expect((await app.call({ op: "view" })).content[0].text).toContain(`[~] v2test#${a}: only step`);
 });
 
-const kataWrites = (calls: string[][]) => calls.filter(a => !["show", "list", "search", "whoami"].includes(a[0]));
+const kataWrites = (calls: string[][]) => calls.filter(args => !isRead(args));
 
 test("init without replace refuses a plan with open tasks and writes nothing to Kata", async () => {
   const app = host(); const parent = await app.init(["Started task", "Waiting task", "Pending task"]);
@@ -470,9 +468,9 @@ test("init needs no replace once every task of the plan is closed", async () => 
 test("init with a bare short id that resolves in the session project refuses to abandon that ticket's open children", async () => {
   const other = path.join(scratch, `other-${unique()}`); mkdirSync(other);
   await kata(["init", "--project", "v2alpha", "--json"], other);
-  const alpha = (await kata(["create", "Alpha parent", "--force-new", "--json"], other)).issue.short_id;
+  const alpha = await issue("Alpha parent", { workspace: other });
   const beta = await issue("Beta parent");
-  await kata(["create", "Beta open child", "--parent", beta, "--meta", "todo.phase=Tasks", "--meta", "todo.status=pending", "--force-new", "--json"]);
+  await issue("Beta open child", { parent: beta, meta: ["todo.phase=Tasks", "todo.status=pending"] });
   // Short ids are random per project, so route the bare id to the session project's ticket.
   const app = host({ before: (args: string[], opts: any) => args.includes(alpha) ? run(args.map(a => a === alpha ? `v2test#${beta}` : a), opts.cwd, opts.timeout) : undefined });
   await app.call({ op: "init", ref: `v2alpha#${alpha}`, items: ["Alpha child"] });
@@ -481,4 +479,17 @@ test("init with a bare short id that resolves in the session project refuses to 
   expect(result.isError).toBe(true);
   expect(kataWrites(app.calls.slice(mark))).toEqual([]);
   expect((await show(beta)).children.map((c: any) => c.status)).toEqual(["open"]);
+});
+
+test("view retries a held ticket close in a plan of ticket items alone", async () => {
+  const app = host(); await app.event("session_start");
+  const parent = await issue("View parent ticket");
+  const child = await issue("View child ticket", { parent });
+  await app.call({ op: "init", items: [`v2test#${parent}: finish the parent`, `v2test#${child}: finish the child`] });
+  await app.call({ op: "done", task: `v2test#${parent}: finish the parent`, message, evidence: ["test:held until view"] });
+  expect((await show(parent)).issue.status).toBe("open");
+  await kata(["close", child, "--done", "--message", message, "--test", "closed outside", "--json"]);
+  const viewed = await app.call({ op: "view" });
+  expect(viewed.isError).toBeUndefined();
+  expect((await show(parent)).issue.status).toBe("closed");
 });

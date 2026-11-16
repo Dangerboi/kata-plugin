@@ -1,7 +1,9 @@
+// Generated from core/todo-list.ts; edit there.
 // Pure diff between the whole todo list a model sends and the Kata plan: no Kata, no host, no I/O.
-import type { Status } from "./model";
+import { proofProblem, OPEN, type Status } from "./model";
 
-export type ListStatus = "pending" | "in_progress" | "completed" | "cancelled";
+export const LIST_STATUSES = ["pending", "in_progress", "completed", "cancelled"] as const;
+export type ListStatus = (typeof LIST_STATUSES)[number];
 export type ListItem = { content: string; status: ListStatus; message?: string; evidence?: string[]; reason?: string; blocker?: string };
 // `ref` tells apart plan tasks that share a content (the same title in two phases): ops then name the task by ref.
 export type PlanItem = { content: string; status: Status; blocker?: string; ref?: string };
@@ -12,7 +14,7 @@ export type ListOp =
 	| { op: "drop"; task: string; message: string }
 	| { op: "block"; task: string; reason: string }
 	| { op: "unblock"; task: string };
-export type ListView = { content: string; status: ListStatus; blocker?: string };
+type ListView = { content: string; status: ListStatus; blocker?: string };
 
 const LISTED: Record<Status, ListStatus> = { pending: "pending", in_progress: "in_progress", blocked: "in_progress", completed: "completed", abandoned: "cancelled" };
 
@@ -20,7 +22,7 @@ const LISTED: Record<Status, ListStatus> = { pending: "pending", in_progress: "i
 // list item. Open copies stand in front of closed ones; among open ones an in_progress copy, then a paused one, then a
 // pending one, so the item never reads as pending while a copy is in progress.
 function representative(copies: readonly PlanItem[]): PlanItem {
-	const open = copies.filter(t => t.status !== "completed" && t.status !== "abandoned");
+	const open = copies.filter(t => OPEN.has(t.status));
 	if (open.length) return open.find(t => t.status === "in_progress") ?? open.find(t => t.status === "blocked") ?? open[0];
 	return copies.find(t => t.status === "completed") ?? copies[0];
 }
@@ -37,13 +39,12 @@ function groupsOf(plan: readonly PlanItem[]): Map<string, PlanItem[]> {
 export function listOf(plan: readonly PlanItem[]): ListView[] {
 	return [...groupsOf(plan).values()].map(representative).map(t => t.status === "blocked" ? { content: t.content, status: "in_progress", blocker: t.blocker || "blocked" } : { content: t.content, status: LISTED[t.status] });
 }
+// What a refused or failed call ends with: the plan as the list to send back.
+export const planTail = (plan: readonly PlanItem[]) => `The current Kata plan is below. Send it again with your changes applied on top:\n${JSON.stringify({ todos: listOf(plan) })}`;
 
 const proofMissing = (item: ListItem): string | undefined => {
-	const long = (item.message || "").replace(/\s+/g, " ").trim().length >= 40;
-	const evidence = !!item.evidence?.some(e => e.trim());
-	if (!long && !evidence) return `"${item.content}" cannot be completed without a message (40+ characters saying what changed and how it was verified) and evidence`;
-	if (!long) return `"${item.content}" cannot be completed without a message of 40+ characters saying what changed and how it was verified`;
-	if (!evidence) return `"${item.content}" cannot be completed without evidence`;
+	const problem = proofProblem(item);
+	if (problem) return `"${item.content}" cannot be completed without ${problem}`;
 };
 
 export function diffTodoList(plan: readonly PlanItem[], accepted: ReadonlySet<string>, incoming: readonly ListItem[]): { ops: ListOp[] } | { refusal: string; problems: string[] } {
@@ -93,7 +94,7 @@ export function diffTodoList(plan: readonly PlanItem[], accepted: ReadonlySet<st
 		// The item is compared with the copy that stands for it (see representative); its ops reach every open copy, except
 		// copies that share a ref, which todowrite cannot name (see names).
 		const current = representative(all);
-		if (current.status === "completed" || current.status === "abandoned") {
+		if (!OPEN.has(current.status)) {
 			// Copies closed both ways read back as completed, but dropping an item with a completed copy leaves exactly that mix,
 			// so either closed status is the same item.
 			const mixed = all.some(t => t.status === "completed") && all.some(t => t.status === "abandoned");
@@ -101,7 +102,7 @@ export function diffTodoList(plan: readonly PlanItem[], accepted: ReadonlySet<st
 			if (item.status !== LISTED[current.status]) problems.push(`"${item.content}" is already ${LISTED[current.status]} in Kata and cannot be sent as ${item.status}`);
 			continue;
 		}
-		const copies = all.filter(t => t.status !== "completed" && t.status !== "abandoned");
+		const copies = all.filter(t => OPEN.has(t.status));
 		if (item.status === "completed") { finish(item, copies, all); continue; }
 		if (item.status === "cancelled") { cancel(item, copies, all); continue; }
 
@@ -124,7 +125,7 @@ export function diffTodoList(plan: readonly PlanItem[], accepted: ReadonlySet<st
 
 	const reported = new Set<string>();
 	for (const t of plan) {
-		if (seen.has(t.content) || reported.has(t.content) || t.status === "completed" || t.status === "abandoned") continue;
+		if (seen.has(t.content) || reported.has(t.content) || !OPEN.has(t.status)) continue;
 		reported.add(t.content);
 		problems.push(accepted.has(t.content)
 			? `"${t.content}" is missing from the list: keep it, or mark it cancelled with a reason`
@@ -132,14 +133,8 @@ export function diffTodoList(plan: readonly PlanItem[], accepted: ReadonlySet<st
 	}
 
 	if (problems.length) {
-		const refusal = [
-			"Refused: this list disagrees with the Kata plan. Nothing was changed.",
-			...problems.map(p => `- ${p}`),
-			"The current Kata plan is below. Send it again with your changes applied on top:",
-			JSON.stringify({ todos: listOf(plan) }),
-		].join("\n");
+		const refusal = ["Refused: this list disagrees with the Kata plan. Nothing was changed.", ...problems.map(p => `- ${p}`), planTail(plan)].join("\n");
 		return { refusal, problems };
 	}
-	// Closes run before starts: append, done/drop, unblock, block, start.
 	return { ops: [...(appended.length ? [{ op: "append", items: appended } as ListOp] : []), ...closes, ...unblocks, ...blocks, ...starts] };
 }

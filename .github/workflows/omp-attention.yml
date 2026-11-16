@@ -6,14 +6,19 @@ on:
     paths:
       - core/**
       - plugins/**
-      - scripts/smoke-omp-attention.ts
-      - scripts/smoke-provider.ts
+      - scripts/**
       - package.json
+      - bun.lock
+      - .github/actions/**
       - .github/workflows/omp-attention.yml
   workflow_dispatch:
 
 permissions:
   contents: read
+
+concurrency:
+  group: omp-attention-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 
 jobs:
   attention:
@@ -31,25 +36,17 @@ jobs:
         with:
           node-version: '24'
           package-manager-cache: false
-      - name: Install Bun, public Kata 0.23.0 and isolated harnesses
+      - name: Install Bun and public Kata
+        uses: ./.github/actions/setup-kata
+        with:
+          bin: ${{ runner.temp }}/kata-bin
+      - name: Install dependencies and isolated harnesses
         env:
           OMP_VERSION: ${{ matrix.omp }}
         run: |
-          npm install --global bun@1.4.4
-          mkdir -p "$RUNNER_TEMP/kata-bin" "$RUNNER_TEMP/harnesses"
-          release=https://github.com/kenn-io/kata/releases/download/v0.23.0
-          curl -fsSL --retry 3 "$release/kata_0.23.0_linux_amd64.tar.gz" -o "$RUNNER_TEMP/kata-bin/kata_0.23.0_linux_amd64.tar.gz"
-          curl -fsSL --retry 3 "$release/SHA256SUMS" -o "$RUNNER_TEMP/kata-bin/SHA256SUMS"
-          (
-            cd "$RUNNER_TEMP/kata-bin"
-            sha256sum --check --ignore-missing SHA256SUMS
-          )
-          tar -xzf "$RUNNER_TEMP/kata-bin/kata_0.23.0_linux_amd64.tar.gz" -C "$RUNNER_TEMP/kata-bin" kata
-          echo "$RUNNER_TEMP/kata-bin" >> "$GITHUB_PATH"
           bun install --ignore-scripts --frozen-lockfile
-          npm install --prefix "$RUNNER_TEMP/harnesses" "@oh-my-pi/pi-coding-agent@$OMP_VERSION"
+          npm install --ignore-scripts --prefix "$RUNNER_TEMP/harnesses" "@oh-my-pi/pi-coding-agent@$OMP_VERSION"
           echo "OMP_BIN=$RUNNER_TEMP/harnesses/node_modules/.bin/omp" >> "$GITHUB_ENV"
-          echo "PI_BIN=$GITHUB_WORKSPACE/node_modules/.bin/pi" >> "$GITHUB_ENV"
       - name: Use synthetic configuration
         run: |
           mkdir -p "$RUNNER_TEMP/attention-home"

@@ -224,25 +224,30 @@ describe("diffTodoList properties", () => {
 		}));
 	});
 
-	test("applying the ops makes the same list a no-op", () => {
-		fc.assert(fc.property(planArb, acceptedArb, incomingArb, (plan, accepted, incoming) => {
-			const result = diffTodoList(plan, accepted, incoming);
-			if (!("ops" in result)) return;
-			expect(diffTodoList(applyOps(plan, result.ops), accepted, incoming)).toEqual({ ops: [] });
-		}));
-	});
+	// A list a model could send for `plan` and have accepted: per content, the plan's own item or a change of it the diff
+	// allows, a closed item also left out, and new items added.
+	const proof = { message: LONG, evidence: ["test:x"] };
+	const changesOf = (plan: PlanItem[], item: ListItem): (ListItem | undefined)[] => {
+		const { content } = item, statuses = plan.filter(t => t.content === content).map(t => t.status);
+		if (item.status === "completed" || item.status === "cancelled") {
+			return statuses.includes("completed") && statuses.includes("abandoned") ? [{ content, status: "completed" }, { content, status: "cancelled" }, undefined] : [item, undefined];
+		}
+		return [item, { content, status: "in_progress" }, { content, status: "in_progress", blocker: "waiting" }, { content, status: "completed", ...proof }, { content, status: "cancelled", reason: "why" },
+			// An item in progress cannot go back to pending; a paused one can.
+			...(item.status === "pending" || item.blocker ? [{ content, status: "pending" } as ListItem] : [])];
+	};
+	const added = (content: string) => fc.constantFrom<ListItem>({ content, status: "pending" }, { content, status: "in_progress" }, { content, status: "in_progress", blocker: "waiting" }, { content, status: "completed", ...proof });
+	// Three contents over up to six tasks make repeated titles in mixed statuses common.
+	const planAndList = fc.array(fc.tuple(fc.constantFrom("a", "b", "c"), fc.constantFrom<PlanItem["status"]>("pending", "in_progress", "blocked", "completed", "abandoned")), { maxLength: 6 })
+		.map(rows => rows.map(([content, status], index) => ({ content, ref: `p#${index}`, status, ...(status === "blocked" ? { blocker: "w" } : {}) }) as PlanItem))
+		.chain(plan => fc.tuple(fc.constant(plan), fc.tuple(...listOf(plan).map(item => fc.constantFrom(...changesOf(plan, item)))), fc.subarray(["x", "y"]).chain(names => fc.tuple(...names.map(added)))));
 
-	// Two contents over up to six tasks make repeated titles with mixed statuses common; the seed pins the run.
-	test("applying the ops makes the same list a no-op, with repeated titles in mixed statuses", () => {
-		const pool = ["a", "b"];
-		const plans = fc.array(fc.tuple(fc.constantFrom(...pool), fc.constantFrom<PlanItem["status"]>("pending", "in_progress", "completed", "abandoned")), { maxLength: 6 })
-			.map(rows => rows.map(([content, status], index) => ({ content, ref: `p#${index}`, status }) as PlanItem));
-		const lists = fc.uniqueArray(fc.constantFrom(...pool), { maxLength: 2 }).chain(names => fc.tuple(...names.map(itemArb)));
-		fc.assert(fc.property(plans, lists, (plan, incoming) => {
-			const result = diffTodoList(plan, none, incoming);
-			if (!("ops" in result)) return;
-			expect(diffTodoList(applyOps(plan, result.ops), none, incoming)).toEqual({ ops: [] });
-		}), { seed: 11, numRuns: 20000 });
+	// Every run reaches the round trip: `ops` throws on a refusal. The seed pins the run.
+	test("an accepted list's ops, once applied, make the same list a no-op", () => {
+		fc.assert(fc.property(planAndList, acceptedArb, ([plan, kept, fresh], accepted) => {
+			const incoming = [...kept.filter(item => item !== undefined), ...fresh];
+			expect(diffTodoList(applyOps(plan, ops(plan, incoming, accepted)), accepted, incoming)).toEqual({ ops: [] });
+		}), { seed: 11, numRuns: 3000 });
 	});
 
 	test("a repeated title with one completed and one open copy: cancelling it leaves a list that stays accepted", () => {

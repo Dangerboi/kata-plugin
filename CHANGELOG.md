@@ -17,6 +17,74 @@ All notable changes to kata-plugin are listed here. The format follows [Keep a C
 - omp: a marketplace install registers as `@dangerboi/kata-omp` instead of `kata-omp`, the npm package's name, so omp loads the plugin once whichever way it was installed.
   - Upgrading the marketplace install moves it to the new name. Do that, or uninstall it, before installing from npm: an install still named `kata-omp` and the npm package load the plugin twice.
 
+#### Plans
+
+- OpenCode: deleting or archiving a session releases the items it started at once, as omp and pi do when a session ends. Only an item whose close Kata deferred keeps its holder, so the retry still closes it.
+- OpenCode: one `todowrite` call runs as one job, so a delegate event or retry timer no longer runs between its steps, and one session waiting on Kata no longer delays another session's turn end, delegate exits or deletion.
+- A failed `/todo` refreshes the plan, as the tool does.
+- `init` with `takeover: true` is refused and changes nothing; `takeover` applies to ops that name a task.
+
+#### Delegates
+
+- **Breaking:** OpenCode: delegate records that ended with an issue are kept with the lead's saved state instead of a separate storage entry, so a follow-up to a delegate that ended before the upgrade starts a new, untracked record. Send such follow-ups before upgrading, or name the item again in a new `subagent` call.
+
+#### Development
+
+- `bun run test:todo` is now `bun run test:files`. `bun run test` stops at once without an absolute `KATA_TEST_EXECUTABLE`, ignores the developer's own Kata and plugin settings, and removes its throwaway folder after a passing run (the next run removes those of runs that died).
+- `bun run typecheck` covers `scripts/`. The omp smoke provider picks an agent's script by the longest marker in its first message, as the OpenCode provider does, and interrupting `smoke:omp` or `smoke:omp-attention` stops the host and the Kata daemon and removes the throwaway folder.
+- The tests and smoke runs clear one list of variables, so `smoke:omp` and `smoke:opencode` no longer run under the developer's Kata identity or executable settings. `smoke:opencode` drops `--no-plugin` and its `noop` scenario.
+- Vendored plugin copies start with a line naming their core file; `build:plugins` removes a copy whose core file is gone, and `check:plugins` rejects one.
+- The publish workflow pins its actions and publishes only after a verify job (`check:plugins` and `npm pack --dry-run` for every package) passes.
+
+### Fixed
+
+#### Plans
+
+- A task whose session ended normally is held again by the session that next starts it; before, any other session could change it without a takeover.
+- A session that ends while Kata has deferred a close keeps that task's hold, so the retry still closes it. Before, the release voided the close.
+- Switching to a session whose plan parent cannot be read still releases the previous session's tasks and ends its attention.
+- Two tasks with the same title dropped for the same reason get distinct close messages, which Kata's close throttle no longer refuses.
+- `/todo takeover` of a blocked task takes it over without reporting an error; the task stays blocked.
+- `todo done` whose evidence is blank is refused with the plugin's guidance instead of Kata's error, and blank entries beside real evidence are left out of the close.
+- omp: a lead's todo call keeps its session mark and holder checks when a subagent's session start reaches the lead mid-call.
+- OpenCode: `todowrite` advice speaks `todowrite`'s words.
+  - A session OpenCode cannot read is told so, instead of being called a delegate.
+  - A first list under a `ref` that leaves out the issue's open items is told to send them, not to pass `replace: true`.
+  - The refusals for a delegated task and for held tasks left out of an `init` no longer name ops `todowrite` does not have.
+- `view` retries a held ticket close in a plan of ticket items alone, as every other op does.
+- An automatic parent's title made from a long message or session name is cut to 120 characters.
+- OpenCode: a session deleted or archived with work left is finished as soon as that work is done, without a restart; one deleted while no instance of its folder ran is ended by the next setup; and a saved session is no longer picked up after the plugin stopped.
+
+#### Delegates
+
+- omp: a later turn of a subagent (a revival, or its answer to a message) reports on the issue or mission of its first run, instead of creating a second mission or repeating its report.
+- omp: a background `task` whose subagent starts after the call returned still gets the plan item or ticket it named, and a second call naming it meanwhile is refused.
+- pi: a child resumed after its run ended posts its next report on its issue or mission instead of dropping it.
+- OpenCode: a subagent is bound to the call whose prompt is its first message, not to an earlier call whose prompt that message merely ends with.
+- OpenCode: a `subagent` call that another plugin's hook refuses, or whose background child never starts, frees its plan item at the end of the lead's turn instead of leaving it "already delegated".
+- OpenCode: a late end event of a delegate's earlier run no longer ends its follow-up run; a delegate whose session is gone at its end event still exits, and one whose own session is deleted or archived exits as aborted.
+- OpenCode: Kata commands in `shell` from a child session the lead does not track run under a teammate derived from the session, and `--as` is refused. Before, they ran as the lead.
+- OpenCode: a failed storage or session read in a hook no longer fails a child session's tool calls.
+- A delegate whose assignment failed on an issue another teammate owns no longer comments on, labels or notifies that issue when it exits.
+- A mission whose close Kata throttled is saved at once, so a lead that ends or is killed before the retry still closes it when resumed.
+- A delegate that starts without a checked `task` call follows the same rules as the check.
+  - A spawn that names a blocked ticket item runs untracked, as one naming a blocked plan task does.
+  - One that names a ticket it cannot take (closed, or another teammate's) is untracked and leaves a mission, instead of failing with its report lost.
+  - A ticket Kata could not be read for is no such refusal: the assignment is retried on the delegate's next use, and a delegate that exits before it was decided leaves its report as a mission.
+- omp: a delegate's close made before its own session is known, from its bash or its own todo plan, records no transcript instead of the lead's session. A delegate with no record runs Kata under the same teammate its record would have.
+- omp: a subagent whose task lifecycle reports `cancelled` is settled as aborted.
+- OpenCode: archiving or deleting a lead frees the plan items its pending `subagent` calls held, so they can be delegated again after an unarchive.
+- A delegate's `kata close` in the shell carries `KATA_CLOSE_TRANSCRIPT_ENABLED` with its transcript pair.
+
+#### Inbox and attention
+
+- Once a plan has a parent, the session inbox trusts Kata's effective actor rather than the author setting read before the plan was bound.
+
+#### Development
+
+- `bun run test` no longer fails its default-store check when a real session writes to `~/.kata` during the run with text that names a test fixture, such as a sub-agent task mentioning "fixture". The check counts only events from test actors or in test projects, and its lists gain the test actors and projects they were missing.
+- A pull request fails when a vendored copy in any plugin folder, `plugins/opencode` included, is stale or missing. CI checks the committed copies before the tests instead of regenerating them.
+
 ## [1.11.0] - 2026-11-15
 
 kata-omp 2.11.0 and @dangerboi/kata-pi 1.11.0.

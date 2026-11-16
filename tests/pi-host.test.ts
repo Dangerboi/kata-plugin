@@ -4,10 +4,11 @@ import { execFileSync } from "node:child_process";
 import { mkdirSync, realpathSync } from "node:fs";
 import path from "node:path";
 import { Value } from "typebox/value";
+import { finishes, holdKata } from "./kata-fixture";
 import { piFixture } from "./pi-fixture";
 
-// Plan creation and closing, prompt sections, native adapter coexistence and attention, stop reminders, Bash hooks, plan items that name tickets, and init with or without replace.
-const { binary, scratch, cwd, outside, run, kata, show, host, nativeKey, globalRegistry, nativeMissing, down, evidence, message } = await piFixture();
+// Plan creation and closing, prompt sections, native adapter coexistence and attention, stop reminders and Bash hooks.
+const { binary, scratch, cwd, outside, run, show, kata, issue, closesOf, host, asChild, nativeKey, globalRegistry, down, evidence, message } = piFixture();
 
 test("pi plans in the inferred project of an unregistered repo, or the default project with a repo label", async () => {
   const repo = (name: string) => { const dir = path.join(scratch, name); mkdirSync(dir); execFileSync("git", ["init", "-q"], { cwd: dir }); execFileSync("git", ["remote", "add", "origin", `https://github.com/someone/${name}.git`], { cwd: dir }); return dir; };
@@ -34,6 +35,7 @@ test("pi exits before registering anything when loaded under OMP", async () => {
 test("pi's tool schema accepts valid todo calls and rejects malformed ones", async () => {
   const app = await host();
   expect(Value.Check(app.tool.parameters, { op: "init", items: ["A task"] })).toBe(true);
+  expect(Value.Check(app.tool.parameters, { op: "init", items: ["A task"], replace: true })).toBe(true);
   expect(Value.Check(app.tool.parameters, { op: "invented" })).toBe(false);
   expect(Value.Check(app.tool.parameters, { op: "done", evidence: "wrong" })).toBe(false);
   expect(Value.Check(app.tool.parameters, { op: "init", list: [{ phase: "Empty", items: [] }] })).toBe(false);
@@ -53,10 +55,9 @@ test("pi plans close from real Kata evidence with a typed pi parent exactly once
   await app.event("session_shutdown", { reason: "quit" });
   await app.call({ op: "view" });
   expect((await show(ref)).issue.status).toBe("closed");
-  const rows = (await kata(["audit", "closes", "--json"])).rows.filter((r: any) => r.issue === ref.split("#")[1]);
-  expect(rows).toHaveLength(1);
-  const event = (await kata(["events", "--after", String(rows[0].event_id - 1), "--limit", "1", "--json"])).events[0];
-  expect(event.payload.evidence).toEqual([{ type: "test", command: "bun test pi fixture" }]);
+  const closes = await closesOf(ref);
+  expect(closes).toHaveLength(1);
+  expect(closes[0].payload.evidence).toEqual([{ type: "test", command: "bun test fixture" }]);
 });
 
 test("pi uses structured prompt sections, preserves other extensions, and caches fallback context", async () => {
@@ -98,7 +99,7 @@ test("native adapter loaded after our factory still prevents duplicate contract 
 });
 
 test("pi never performs session attention or registers OMP lifecycle handlers", async () => {
-  const ref = (await kata(["create", "Explicit pi parent", "--force-new", "--json"])).issue.short_id;
+  const ref = await issue("Explicit pi parent");
   await kata(["claim", ref, "--json"]); process.env.KATA_REF = ref;
   const app = await host();
   for (const reason of ["startup", "reload", "new", "resume", "fork"]) {
@@ -111,7 +112,7 @@ test("pi never performs session attention or registers OMP lifecycle handlers", 
 });
 
 test("pi leaves native attention baselines and the main ref to the native adapter", async () => {
-  const ref = (await kata(["create", "Native-owned pi attention", "--force-new", "--json"])).issue.short_id;
+  const ref = await issue("Native-owned pi attention");
   // Regression: startup with a user adapter and no baseline used to preseed it.
   await fc.assert(fc.asyncProperty(
     fc.constantFrom("startup", "reload", "new", "resume", "fork"),
@@ -185,7 +186,7 @@ test("pi mutates Bash input in place to use the selected executable without chan
 });
 
 test("pi adopts a successful Bash claim using isError without OMP exitCode details", async () => {
-  const ref = (await kata(["create", "Pi adopted parent", "--force-new", "--json"])).issue.short_id;
+  const ref = await issue("Pi adopted parent");
   await kata(["claim", ref, "--json"]);
   const app = await host(); await app.event("session_start", { reason: "startup" });
   await app.event("tool_result", { toolName: "bash", input: { command: `kata claim ${ref}` }, isError: false, details: {} });
@@ -200,15 +201,18 @@ test("pi keeps an unreachable Kata local and failures quiet with bounded hooks",
   await app.event("before_agent_start", prompt);
   expect(prompt.systemPromptOptions.sections).toEqual({});
   expect(app.calls.some(a => ["create", "claim", "meta", "close"].includes(a[0]))).toBe(false);
-  const slow = await host({ before: async () => { await Bun.sleep(600); return { code: 1, stdout: "", stderr: "offline" }; } });
-  const start = performance.now(); await slow.event("session_start", { reason: "startup" });
-  await slow.event("before_agent_start", { systemPromptOptions: { sections: {} } });
-  expect(performance.now() - start).toBeLessThan(600);
-  expect(slow.notices).toEqual([]);
+  // Kata does not answer until the test lets it: the hooks must return on their own bound, not on Kata's answer.
+  const held = holdKata(() => true, () => ({ code: 1, stdout: "", stderr: "offline" }));
+  const slow = await host({ before: held.before });
+  try {
+    expect(await finishes((async () => { await slow.event("session_start", { reason: "startup" }); await slow.event("before_agent_start", { systemPromptOptions: { sections: {} } }); })())).toBe(true);
+    expect(held.held).toBeGreaterThan(0);
+    expect(slow.notices).toEqual([]);
+  } finally { held.release(); }
 });
 
-for (const order of ["plugin-first", "native-first"]) test.skipIf(!!nativeMissing)(`real native adapter preserves parent attention with ${order}`, async () => {
-  const ref = (await kata(["create", "Real native ordering parent", "--force-new", "--json"])).issue.short_id;
+for (const order of ["plugin-first", "native-first"]) test(`real native adapter preserves parent attention with ${order}`, async () => {
+  const ref = await issue("Real native ordering parent");
   await kata(["claim", ref, "--json"]);
   process.env.KATA_REF = `pitest#${ref}`;
   globalRegistry[nativeKey] = {adapters:new Map(), active:new Map()};
@@ -219,8 +223,7 @@ for (const order of ["plugin-first", "native-first"]) test.skipIf(!!nativeMissin
   expect(globalRegistry[nativeKey].active.get(nativeCwd).startAttempted).toBe(true);
   const baseline = (await show(ref)).issue.metadata;
   expect(baseline["work.attention"]).toBe("ok");
-  const marker=JSON.parse(process.env.KATA_PI_PARENT!);
-  process.env.KATA_PI_PARENT=JSON.stringify({...marker,pid:process.pid+1});
+  asChild();
   globalRegistry[nativeKey]={adapters:new Map(),active:new Map()};
   const child=await host({nativeOrder:order, cwd:nativeCwd}); await child.event("session_start",{reason:"startup"});
   expect(globalRegistry[nativeKey].active.get(nativeCwd).ref).toBe("");
@@ -231,7 +234,7 @@ for (const order of ["plugin-first", "native-first"]) test.skipIf(!!nativeMissin
 });
 
 const attentionCalls = (app: any) => app.calls.filter((a: string[]) => a[1] === "attention-native").map((a: string[]) => [a[3], a[a.indexOf("--ref") + 1]]);
-test.skipIf(!!nativeMissing)("real native adapter sends no attention end for a session without KATA_REF when the plugin loads first", async () => {
+test("real native adapter sends no attention end for a session without KATA_REF when the plugin loads first", async () => {
   globalRegistry[nativeKey] = { adapters: new Map(), active: new Map() };
   const nativeCwd = realpathSync(cwd);
   const app = await host({ nativeOrder: "plugin-first", cwd: nativeCwd }); await app.event("session_start", { reason: "startup" });
@@ -241,8 +244,8 @@ test.skipIf(!!nativeMissing)("real native adapter sends no attention end for a s
   globalRegistry[nativeKey] = { adapters: new Map(), active: new Map() };
 });
 
-test.skipIf(!!nativeMissing)("real native adapter starts and ends attention once each on the lead's issue with KATA_REF", async () => {
-  const ref = (await kata(["create", "Real native attention lead", "--force-new", "--json"])).issue.short_id;
+test("real native adapter starts and ends attention once each on the lead's issue with KATA_REF", async () => {
+  const ref = await issue("Real native attention lead");
   await kata(["claim", ref, "--json"]);
   process.env.KATA_REF = `pitest#${ref}`;
   globalRegistry[nativeKey] = { adapters: new Map(), active: new Map() };
@@ -251,66 +254,4 @@ test.skipIf(!!nativeMissing)("real native adapter starts and ends attention once
   await app.event("session_shutdown", { reason: "quit" });
   expect(attentionCalls(app)).toEqual([["start", `pitest#${ref}`], ["end", `pitest#${ref}`]]);
   globalRegistry[nativeKey] = { adapters: new Map(), active: new Map() };
-});
-
-test("pi items that name a ticket work and log on it without creating an issue or a parent", async () => {
-  const app = await host(); await app.event("session_start", { reason: "startup" });
-  const ticket = (await kata(["create", "Existing pi work", "--force-new", "--json"])).issue.short_id;
-  const before = (await kata(["list", "--status", "all", "--limit", "0", "--json"])).issues.length;
-  const started = await app.call({ op: "init", items: [`pitest#${ticket}: write the first part`, `pitest#${ticket}: write the second part`] });
-  expect(started.isError).toBeUndefined();
-  expect(started.details.kata.parent).toBeUndefined();
-  expect((await kata(["list", "--status", "all", "--limit", "0", "--json"])).issues).toHaveLength(before);
-  expect((await show(ticket)).issue.owner).toBe("pi-builder");
-  expect((await show(ticket)).issue.metadata["todo.status"]).toBe("in_progress");
-  expect((await app.call({ op: "done", task: `pitest#${ticket}: write the first part`, message, evidence })).isError).toBeUndefined();
-  expect((await show(ticket)).issue.status).toBe("open");
-  const last = await app.call({ op: "done", task: `pitest#${ticket}: write the second part`, message, evidence: ["test:bun test pi last item"] });
-  expect(last.isError).toBeUndefined();
-  const closed = await show(ticket);
-  expect(closed.issue.status).toBe("closed");
-  expect(closed.comments).toHaveLength(2);
-  const rows = (await kata(["audit", "closes", "--json"])).rows.filter((r: any) => r.issue === ticket);
-  expect(rows).toHaveLength(1);
-  expect((await kata(["events", "--after", String(rows[0].event_id - 1), "--limit", "1", "--json"])).events[0].payload.evidence).toEqual([{ type: "test", command: "bun test pi last item" }]);
-  expect((await kata(["list", "--status", "all", "--limit", "0", "--json"])).issues).toHaveLength(before);
-});
-
-test("pi closes a claimed ticket named by an item once its plan children close", async () => {
-  const app = await host(); await app.event("session_start", { reason: "startup" });
-  const ticket = (await kata(["create", "Claimed pi ticket", "--force-new", "--json"])).issue.short_id;
-  await kata(["claim", ticket, "--json"]);
-  await app.event("tool_result", { toolName: "bash", input: { command: `kata claim pitest#${ticket}` }, isError: false, details: {} });
-  const started = await app.call({ op: "init", items: [`pitest#${ticket}: write the greeting`, "Add the ignore file"] });
-  expect(started.isError, started.content[0].text).toBeUndefined();
-  expect(started.details.kata.parent).toBe(`pitest#${ticket}`);
-  await app.call({ op: "done", task: `pitest#${ticket}: write the greeting`, message, evidence: ["test:pi ticket item"] });
-  expect((await show(ticket)).issue.status).toBe("open");
-  expect((await app.call({ op: "done", task: "Add the ignore file", message, evidence })).isError).toBeUndefined();
-  const closed = await show(ticket);
-  expect(closed.issue.status).toBe("closed");
-  expect(closed.comments.filter((c: any) => /open child/.test(c.body))).toHaveLength(1);
-  const rows = (await kata(["audit", "closes", "--json"])).rows.filter((r: any) => r.issue === ticket);
-  expect(rows).toHaveLength(1);
-  expect((await kata(["events", "--after", String(rows[0].event_id - 1), "--limit", "1", "--json"])).events[0].payload.evidence).toEqual([{ type: "test", command: "pi ticket item" }]);
-});
-
-test("pi init without replace goes through when the new list keeps every open task", async () => {
-  const app = await host(); const parent = await app.init(["Open pi task"]);
-  const result = await app.call({ op: "init", items: ["Open pi task", "Added pi task"] });
-  expect(result.isError, result.content[0].text).toBeUndefined();
-  expect((await show(parent)).children.map((c: any) => c.title).sort()).toEqual(["Added pi task", "Open pi task"]);
-});
-
-test("pi accepts replace on todo init and refuses without it while tasks are open", async () => {
-  const app = await host(); const parent = await app.init(["Open pi task", "Other pi task"]);
-  expect(Value.Check(app.tool.parameters, { op: "init", items: ["Next pi task"], replace: true })).toBe(true);
-  const refused = await app.call({ op: "init", items: ["Next pi task"] });
-  expect(refused.isError).toBe(true);
-  expect(refused.content[0].text).toContain("Open pi task");
-  expect((await show(parent)).children.map((c: any) => c.title).sort()).toEqual(["Open pi task", "Other pi task"]);
-  const replaced = await app.call({ op: "init", items: ["Next pi task"], replace: true });
-  expect(replaced.isError).toBeUndefined();
-  const old = (await show(parent)).children.find((c: any) => c.title === "Open pi task");
-  expect(old.closed_reason).toBe("wontfix");
 });

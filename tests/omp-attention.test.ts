@@ -1,40 +1,22 @@
-import { afterAll, afterEach, beforeAll, beforeEach, expect, jest, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { afterEach, beforeAll, expect, jest, test } from "bun:test";
+import { mkdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
-import { assertIsolated } from "./isolation";
-import { adoptIsolatedKata, isolatedKata } from "./kata-fixture";
+import { finishes, holdKata, realKata, unique } from "./kata-fixture";
 import { ompHost } from "./omp-host";
-assertIsolated();
-const binary = process.env.KATA_TEST_EXECUTABLE!;
-if (!binary || !path.isAbsolute(binary)) throw new Error("Set KATA_TEST_EXECUTABLE to an absolute Kata binary.");
-const scratch = mkdtempSync(path.join(process.env.KATA_TEST_ROOT!, "omp-attention-"));
-const cwd = path.join(scratch, "workspace"); mkdirSync(cwd); mkdirSync(path.join(cwd, "sub"));
-const env = { ...process.env, KATA_HOME: path.join(scratch, "home"), KATA_AUTHOR: "v2-builder" };
-for (const key of ["KATA_SERVER", "KATA_DAEMON", "KATA_AUTH_TOKEN", "KATA_REF", "KATA_TEAMMATE", "KATA_INBOX_USER", "KATA_PI_PARENT", "KATA_ATTENTION_HOST"]) delete env[key];
-const run = isolatedKata(binary, env, cwd);
-async function checked(args: string[]) { const out = await run(args); if (out.code) throw new Error(out.stderr); return out.stdout; }
-async function kata(args: string[]) { return JSON.parse(await checked(args)); }
+const store = realKata({ prefix: "omp-attention", author: "v2-builder", project: "omptest", adopt: true });
+const { binary, scratch, cwd, env, run, text, kata } = store;
+mkdirSync(path.join(cwd, "sub"));
 const issue = async () => {
-  const ref = `omptest#${(await kata(["create", "OMP attention lead", "--force-new", "--json"])).issue.short_id}`;
-  await checked(["claim", ref]); return ref;
+  const ref = `omptest#${await store.issue("OMP attention lead")}`;
+  await text(["claim", ref]); return ref;
 };
-let restore: () => void, sequence = 0;
 const apps: ReturnType<typeof ompHost>[] = [];
 function host(before?: Parameters<typeof ompHost>[0]["before"], dir = cwd) {
-  const app = ompHost({ cwd: dir, sid: `attention-${++sequence}`, before, run: (args, opts) => run(args, opts.cwd, opts.timeout) });
+  const app = ompHost({ cwd: dir, sid: `attention-${unique()}`, before, run: (args, opts) => run(args, opts.cwd, opts.timeout) });
   apps.push(app); return app;
 }
-beforeAll(async () => {
-  await checked(["init", "--project", "omptest"]);
-  await checked(["agent-hook", "install", "pi", "--scope", "project", "--executable", binary]);
-});
-beforeEach(() => {
-  restore = adoptIsolatedKata(binary, env.KATA_HOME);
-  process.env.KATA_AUTHOR = "v2-builder";
-  for (const key of ["KATA_REF", "KATA_TEAMMATE", "KATA_INBOX_USER", "KATA_PI_PARENT", "KATA_ATTENTION_HOST"]) delete process.env[key];
-});
-afterEach(async () => { for (const app of apps.splice(0)) await app.event("session_shutdown"); delete process.env.KATA_ATTENTION_HOST; delete process.env.KATA_REF; restore(); });
-afterAll(async () => { await run(["daemon", "stop"]); rmSync(scratch, { recursive: true, force: true }); });
+beforeAll(async () => { await text(["agent-hook", "install", "pi", "--scope", "project", "--executable", binary]); });
+afterEach(async () => { for (const app of apps.splice(0)) await app.event("session_shutdown"); });
 
 // Removing the producer, or restoring the foreground startup race, fails this assertion at handler return.
 test("OMP publishes the native marker before session_start returns", async () => {
@@ -47,26 +29,25 @@ test("OMP publishes the native marker before session_start returns", async () =>
 });
 
 function heldBind() {
-  const entered = Promise.withResolvers<void>(), resume = Promise.withResolvers<void>();
-  const app = host(async args => { if (args[0] === "show") { entered.resolve(); await resume.promise; } });
-  return { app, entered, resume };
+  const held = holdKata(args => args[0] === "show");
+  return { app: host(held.before), held };
 }
 
 test("shutdown queued during startup ends the pending baseline and releases its marker", async () => {
   process.env.KATA_REF = await issue();
-  const { app, entered, resume } = heldBind();
-  const start = app.event("session_start"); await entered.promise;
-  const stop = app.event("session_shutdown"); resume.resolve(); await Promise.all([start, stop]);
+  const { app, held } = heldBind();
+  const start = app.event("session_start"); await held.entered;
+  const stop = app.event("session_shutdown"); held.release(); await Promise.all([start, stop]);
   expect(app.calls.filter(a => a[1] === "attention-native").map(a => a[3])).toEqual(["start", "end"]);
   expect(process.env.KATA_ATTENTION_HOST).toBeUndefined();
 });
 
 test("switch selects the previous baseline after pending startup", async () => {
   process.env.KATA_REF = await issue();
-  const { app, entered, resume } = heldBind();
-  const start = app.event("session_start"); await entered.promise;
+  const { app, held } = heldBind();
+  const start = app.event("session_start"); await held.entered;
   const next = { ...app.ctx, sessionManager: { ...app.ctx.sessionManager, getSessionId: () => "attention-switched" } };
-  const switching = app.event("session_switch", {}, next); resume.resolve(); await Promise.all([start, switching]);
+  const switching = app.event("session_switch", {}, next); held.release(); await Promise.all([start, switching]);
   expect(app.calls.filter(a => a[1] === "attention-native").map(a => a[3])).toEqual(["start", "end", "start"]);
 });
 
@@ -89,33 +70,33 @@ test("failed end releases our marker and preserves a replacement marker", async 
 });
 
 test("no explicit ref keeps bounded startup and makes no daemon locate call", async () => {
-  const entered = Promise.withResolvers<void>(), resume = Promise.withResolvers<void>();
-  const app = host(async args => { if (args[0] === "list") { entered.resolve(); await resume.promise; } });
+  const held = holdKata(args => args[0] === "list");
+  const app = host(held.before);
   const start = app.event("session_start");
   try {
-    await entered.promise;
-    expect(await Promise.race([start.then(() => true), new Promise(r => setTimeout(() => r(false), 1000))])).toBe(true);
+    await held.entered;
+    expect(await finishes(start, 1000)).toBe(true);
     expect(app.calls.some(a => a[0] === "daemon" && a[1] === "locate")).toBe(false);
     expect(process.env.KATA_ATTENTION_HOST).toBeUndefined();
-  } finally { resume.resolve(); await start; }
+  } finally { held.release(); await start; }
 });
 
 test("a hung attention start holds explicit-ref startup for the attention bound only", async () => {
   process.env.KATA_REF = await issue();
-  const entered = Promise.withResolvers<void>(), resume = Promise.withResolvers<void>();
-  const app = host(async args => { if (args[1] === "attention-native" && args[3] === "start") { entered.resolve(); await resume.promise; } });
+  const held = holdKata(args => args[1] === "attention-native" && args[3] === "start");
+  const app = host(held.before);
   jest.useFakeTimers();
   let returned = false;
   const start = app.event("session_start").then(() => { returned = true; });
   const settle = async () => { for (let i = 0; i < 20; i++) await Promise.resolve(); };
   try {
-    await entered.promise;
+    await held.entered;
     jest.advanceTimersByTime(9_999); await settle();
     expect(returned).toBe(false);
     jest.advanceTimersByTime(1); await settle();
     expect(returned).toBe(true);
     expect(process.env.KATA_ATTENTION_HOST).toBeUndefined();
-  } finally { jest.useRealTimers(); resume.resolve(); await start; }
+  } finally { jest.useRealTimers(); held.release(); await start; }
 });
 
 // Run the real generated native consumer in another process: its live-parent check excludes its own PID.

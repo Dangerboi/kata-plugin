@@ -1,20 +1,9 @@
-import { assertIsolated } from "./isolation";
-assertIsolated();
 // Separate from the extension suite: checks the daemon's lifecycle CAS contract.
-import { mkdtempSync, mkdirSync } from "node:fs";
-import path from "node:path";
-import { isolatedKata } from "./kata-fixture";
+import { kataStore } from "./kata-fixture";
 
-const binary = process.env.KATA_TEST_EXECUTABLE;
-if (!binary || !path.isAbsolute(binary)) throw new Error("Set KATA_TEST_EXECUTABLE to an absolute Kata binary path.");
-const scratch = mkdtempSync(path.join(process.env.KATA_TEST_ROOT!, "omp-kata-revisions-"));
-const cwd = path.join(scratch, "workspace");
-mkdirSync(cwd);
-const env: NodeJS.ProcessEnv = { ...process.env, KATA_HOME: path.join(scratch, "khome"), KATA_AUTHOR: "revision-a" };
-for (const key of ["KATA_SERVER", "KATA_DAEMON", "KATA_AUTH_TOKEN", "KATA_REF", "KATA_TEAMMATE", "KATA_INBOX_USER", "KATA_SESSION_ID"]) delete env[key];
-const run = isolatedKata(binary, env, cwd, 15000);
-async function command(args: string[]) { const out = await run(args); if (out.code) throw new Error(out.stderr); return out.stdout; }
-async function kata(args: string[]) { return JSON.parse(await command([...args, "--json"])); }
+const store = kataStore("revisions", "revision-a");
+const { binary, scratch, text: command } = store;
+const kata = (args: string[]) => store.kata([...args, "--json"]);
 try {
   await command(["init", "--project", "revision-conformance"]);
   const original = (await kata(["create", "Ownership revision contract", "--force-new"])).issue;

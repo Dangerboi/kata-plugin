@@ -1,127 +1,86 @@
-import { afterAll, afterEach, beforeAll, beforeEach, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync } from "node:fs";
-import path from "node:path";
-import { assertIsolated } from "./isolation";
-import { isolatedKata, until } from "./kata-fixture";
-import { openCodeHost, userMessage, type FakeSession, type OpenCodeInstance } from "./opencode-host";
-import opencode from "../plugins/opencode/kata";
-import { TRANSCRIPT_ENV } from "../core/kata-cli";
-assertIsolated();
-const binary = process.env.KATA_TEST_EXECUTABLE!;
-if (!binary || !path.isAbsolute(binary)) throw new Error("Set KATA_TEST_EXECUTABLE to the guarded Kata binary.");
-const scratch = mkdtempSync(path.join(process.env.KATA_TEST_ROOT!, "opencode-shell-"));
-const cwd = path.join(scratch, "workspace");
-mkdirSync(cwd);
-const home = path.join(scratch, "home");
-const env = { ...process.env, KATA_HOME: home, KATA_AUTHOR: "opencode-builder" };
-for (const key of ["KATA_SERVER", "KATA_DAEMON", "KATA_AUTH_TOKEN", "KATA_REF", "KATA_TEAMMATE", "KATA_INBOX_USER", ...TRANSCRIPT_ENV]) delete env[key];
-const run = isolatedKata(binary, env, cwd);
-async function kata(args: string[]): Promise<any> {
-	const out = await run(args, cwd);
-	if (out.code) throw new Error(out.stderr);
-	return JSON.parse(out.stdout);
-}
-const show = (ref: string) => kata(["show", ref, "--json"]);
+import { expect, test } from "bun:test";
+import { userMessage, type FakeSession, type OpenCodeInstance } from "./opencode-host";
+import { assignmentOf, openCodeKata, todos } from "./opencode-fixture";
+import { SUBAGENT_PREFIX } from "../plugins/opencode/subagents";
+import { teammateFor } from "../core/delegates";
 
-const PREAMBLE = "You are a subagent spawned by another session.\n";
-let sequence = 0;
-const open: OpenCodeInstance[] = [];
+const { binary, kata, sh, closeEvents, startHost, startLead } = openCodeKata("opencode-shell");
 
-const touched = ["KATA_HOME", "KATA_REF", "KATA_TEAMMATE", "KATA_INBOX_USER", "KATA_DEFAULT_PROJECT", ...TRANSCRIPT_ENV];
-const previous = new Map(touched.map(key => [key, process.env[key]]));
-const restore = (keys: readonly string[]) => {
-	for (const key of keys) {
-		const value = previous.get(key);
-		if (value === undefined) delete process.env[key]; else process.env[key] = value;
-	}
-};
-beforeAll(async () => {
-	process.env.KATA_HOME = home;
-	const out = await run(["init", "--project", "pi-port-opencode"]);
-	if (out.code) throw new Error(out.stderr);
-});
-beforeEach(() => { for (const key of touched.slice(1)) delete process.env[key]; });
-afterEach(() => restore(touched.slice(1)));
-afterAll(async () => {
-	await Promise.all(open.map(host => host.shutdown()));
-	await run(["daemon", "stop"]);
-	restore(touched);
-});
-
-async function lead() {
-	const host = await openCodeHost({ plugin: opencode, directory: cwd, options: { executable: binary, author: "opencode-builder" } });
-	open.push(host);
-	return { host, id: host.createSession({ id: `oc-sh-${++sequence}-${Date.now().toString(36)}` }).id };
-}
-const todos = (...items: [string, string][]) => ({ todos: items.map(([content, status]) => ({ content, status })) });
-const qref = (issue: any): string => issue.qualified_id ?? `pi-port-opencode#${issue.short_id}`;
-const refIn = (system: string) => /Your Kata issue is (\S+?);/.exec(system)?.[1] ?? "";
-const teammateIn = (system: string) => /your teammate is ([a-z0-9._-]+?)\. Keep/.exec(system)?.[1] ?? "";
-async function closeEvents(): Promise<any[]> {
-	const events: any[] = [];
-	for (let after = 0; ;) {
-		const page = await kata(["events", "--after", String(after), "--limit", "500", "--json"]);
-		if (!page.events.length) return events.filter(e => e.type === "issue.closed");
-		events.push(...page.events);
-		after = page.next_after_id;
-	}
-}
-// A foreground delegate bound to a plan item; `work` gets its session and the assignment section of its prompt.
+// A foreground delegate bound to a plan item. `work` gets its session and its prompt's system text; what it throws fails
+// the test, because the host turns an error thrown inside a tool's execute into an error result the caller never sees.
 async function delegate(host: OpenCodeInstance, leadID: string, prompt: string, work: (child: FakeSession, system: string) => Promise<void>) {
-	await host.callTool(leadID, "subagent", { agent: "general", description: "Work item", prompt }, {
+	const failures: unknown[] = [];
+	const result = await host.callTool(leadID, "subagent", { agent: "general", description: "Work item", prompt }, {
 		execute: async given => {
-			const child = host.createSession({ parentID: leadID, messages: [userMessage(PREAMBLE + given.prompt)] });
-			await work(child, (await host.context(child.id)).system.join("\n"));
+			const child = host.createSession({ parentID: leadID, messages: [userMessage(SUBAGENT_PREFIX + given.prompt)] });
+			try { await work(child, (await host.context(child.id)).system.join("\n")); }
+			catch (error) { failures.push(error); throw error; }
 			host.addAssistantText(child.id, "Done.");
 			return { output: { sessionID: child.id, status: "completed", output: "Done." }, content: "Done.", metadata: { sessionID: child.id, status: "completed" } };
 		},
 	});
+	if (failures.length) throw failures[0];
+	expect(result.status, result.text).toBe("completed");
 }
 const shell = (host: OpenCodeInstance, id: string, command: string) => host.callTool(id, "shell", { command }, { execute: () => "ok" });
-// The rewritten command as the shell would run it, against the isolated store.
-const runCommand = (command: string) => (async () => {
-	const proc = Bun.spawn(["bash", "-c", command], { cwd, env, stdout: "pipe", stderr: "pipe" });
-	const [stdout, stderr] = await Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text()]);
-	return { code: await proc.exited, stdout, stderr };
-})();
 const closeCommand = (ref: string) => `kata close ${ref} --done --message "Implemented the item and verified it in the shell suite." --test "bun test opencode shell"`;
 
 test("a delegate's kata close runs under its teammate with its own transcript pair", async () => {
-	const { host, id } = await lead();
+	const { host, id } = await startLead({ executable: binary });
 	await host.callTool(id, "todowrite", todos(["Implement shell routing", "in_progress"]));
-	let ref = "", teammate = "", childID = "", ran: any;
+	let ref = "", teammate = "", childID = "", ran: any, out: { code: number; stderr: string } | undefined;
 	await delegate(host, id, "Please implement shell routing.", async (child, system) => {
-		ref = refIn(system); teammate = teammateIn(system); childID = child.id;
+		({ ref, teammate } = assignmentOf(system));
+		childID = child.id;
 		ran = await shell(host, child.id, closeCommand(ref));
-		expect(ran.status, ran.text).toBe("completed");
-		const out = await runCommand(ran.input.command);
-		expect(out.code, out.stderr).toBe(0);
+		out = await sh(ran.input.command);
 	});
+	expect(ran.status, ran.text).toBe("completed");
+	expect(out!.code, out!.stderr).toBe(0);
 	expect(ran.input.command).toContain(`--teammate '${teammate}'`);
 	expect(ran.input.command).toContain(`KATA_TRANSCRIPT_SESSION_ID='${childID}'`);
 	expect(ran.input.command).toContain(" kata --teammate ");
 	expect(ran.input.command).not.toContain(binary);
-	const issue = (await kata(["show", ref, "--json"])).issue;
-	expect(issue.status).toBe("closed");
-	const close = (await closeEvents()).find(e => e.issue_uid === issue.uid);
+	const view = await kata(["show", ref, "--json"]);
+	expect(view.issue.status).toBe("closed");
+	const close = (await closeEvents()).find(e => e.issue_uid === view.issue.uid);
 	expect(close.payload.transcript).toMatchObject({ agent: "opencode", session_id: childID });
-	const comments = (await kata(["show", ref, "--json"])).comments ?? [];
-	expect(comments.map((comment: any) => comment.teammate)).toContain(teammate);
+	expect((view.comments ?? []).map((comment: any) => comment.teammate)).toContain(teammate);
 });
 
 test("--as is refused for a delegate and the command does not run", async () => {
-	const { host, id } = await lead();
+	const { host, id } = await startLead({ executable: binary });
 	await host.callTool(id, "todowrite", todos(["Implement shell guard", "in_progress"]));
+	let refused: any;
 	await delegate(host, id, "Please implement shell guard.", async (child, system) => {
-		const result = await shell(host, child.id, `kata comment ${refIn(system)} --as someone-else --body "hi"`);
-		expect(result.status).toBe("error");
-		expect(result.text).toContain("--as is not permitted");
-		expect(result.executed).toBe(false);
+		refused = await shell(host, child.id, `kata comment ${assignmentOf(system).ref} --as someone-else --body "hi"`);
 	});
+	expect(refused.status).toBe("error");
+	expect(refused.text).toContain("--as is not permitted");
+	expect(refused.executed).toBe(false);
+});
+
+test("a child session the lead does not track runs Kata under a teammate derived from its session, and --as is refused", async () => {
+	const { host, id } = await startLead({ executable: binary });
+	await host.callTool(id, "todowrite", todos(["Lead item", "pending"]));
+	// No `subagent` call of the lead made these sessions: a delegate's own subagent, or a child from before a restart.
+	const child = host.createSession({ parentID: id }), grandchild = host.createSession({ parentID: child.id });
+	for (const session of [child, grandchild]) {
+		const teammate = teammateFor(session.id, id);
+		const listed = await shell(host, session.id, "kata list --agent");
+		expect(listed.input.command).toBe(`env KATA_AUTHOR='opencode-builder' kata --teammate '${teammate}' list --agent`);
+		const closed = await shell(host, session.id, "kata close x#1 --done");
+		expect(closed.input.command).toContain(`KATA_TRANSCRIPT_SESSION_ID='${session.id}'`);
+		expect(closed.input.command).toContain(`kata --teammate '${teammate}' close x#1 --done`);
+		const refused = await shell(host, session.id, 'kata comment x#1 --as someone-else --body "hi"');
+		expect(refused.status).toBe("error");
+		expect(refused.text).toContain("--as is not permitted");
+		expect(refused.executed).toBe(false);
+	}
 });
 
 test("a lead's command is unchanged apart from the author and the close transcript pair", async () => {
-	const { host, id } = await lead();
+	const { host, id } = await startLead({ executable: binary });
 	await host.callTool(id, "todowrite", todos(["Lead item", "pending"]));
 	const author = "KATA_AUTHOR='opencode-builder'";
 	const pair = `env KATA_TRANSCRIPT_AGENT='opencode' KATA_TRANSCRIPT_SESSION_ID='${id}' KATA_CLOSE_TRANSCRIPT_ENABLED='true' ${author} `;
@@ -134,7 +93,7 @@ test("a lead's command is unchanged apart from the author and the close transcri
 });
 
 test("commands that are not Kata are untouched", async () => {
-	const { host, id } = await lead();
+	const { host, id } = await startLead({ executable: binary });
 	await host.callTool(id, "todowrite", todos(["Another item", "in_progress"]));
 	const commands = ["ls -la", "echo kata close", "git commit -m 'kata close'", "cat <<EOF\nkata close x\nEOF"];
 	for (const command of commands) expect((await shell(host, id, command)).input.command).toBe(command);
@@ -145,31 +104,24 @@ test("commands that are not Kata are untouched", async () => {
 
 // The server's own environment holds neither setting: only the plugin options name the actor.
 test("shell kata commands carry the configured author and teammate when the server environment has none", async () => {
-	const host = await openCodeHost({ plugin: opencode, directory: cwd, options: { executable: binary, author: "configured-author", teammate: "configured-mate" } });
-	open.push(host);
-	const id = host.createSession({ id: `oc-sh-env-${Date.now().toString(36)}` }).id;
+	delete process.env.KATA_AUTHOR;
+	const host = await startHost({ executable: binary, author: "configured-author", teammate: "configured-mate" });
+	const id = host.createSession().id;
 	await host.callTool(id, "todowrite", todos(["Configured actor item", "in_progress"]));
-	const bare = { ...env };
-	delete bare.KATA_AUTHOR;
-	delete bare.KATA_TEAMMATE;
-	const runBare = async (command: string) => {
-		const proc = Bun.spawn(["bash", "-c", command], { cwd, env: bare, stdout: "pipe", stderr: "pipe" });
-		const [stdout, stderr] = await Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text()]);
-		return { code: await proc.exited, stdout, stderr };
-	};
 
 	const listed = await shell(host, id, "kata list --agent");
 	expect(listed.input.command).toContain("KATA_AUTHOR='configured-author'");
 	expect(listed.input.command).toContain("KATA_TEAMMATE='configured-mate'");
 
-	let ref = "", childID = "";
+	let ref = "", childID = "", ran: any, out: { code: number; stderr: string } | undefined;
 	await delegate(host, id, "Please finish the Configured actor item.", async (child, system) => {
-		ref = refIn(system); childID = child.id;
-		const ran = await shell(host, child.id, closeCommand(ref));
-		expect(ran.input.command).toContain("KATA_AUTHOR='configured-author'");
-		const out = await runBare(ran.input.command);
-		expect(out.code, out.stderr).toBe(0);
+		ref = assignmentOf(system).ref;
+		childID = child.id;
+		ran = await shell(host, child.id, closeCommand(ref));
+		out = await sh(ran.input.command, ["KATA_AUTHOR", "KATA_TEAMMATE"]);
 	});
+	expect(ran.input.command).toContain("KATA_AUTHOR='configured-author'");
+	expect(out!.code, out!.stderr).toBe(0);
 	const issue = (await kata(["show", ref, "--json"])).issue;
 	expect(issue.status).toBe("closed");
 	const close = (await closeEvents()).find(e => e.issue_uid === issue.uid);

@@ -34,20 +34,17 @@ test("the OpenCode manifest resolves a local folder and an npm install to the pl
   expect(Bun.resolveSync(manifest.name, dir)).toBe(path.join(dir, "kata.ts"));
   expect(manifest.publishConfig.access).toBe("public");
   expect(manifest.dependencies).toBeUndefined();
-  // Trusted publishing names publish-pi.yml, so the OpenCode package publishes from a job in that file.
+  // Trusted publishing names publish-pi.yml, so every package publishes from a job in that file.
   expect(existsSync(path.join(root, ".github/workflows/publish-opencode.yml"))).toBe(false);
-  expect(flow).toContain("publish-opencode:");
-  expect(flow).toContain("working-directory: plugins/opencode");
+  expect(Object.keys(publishJobs)).toEqual(["verify", "publish", "publish-omp", "publish-opencode"]);
+  // The job with publish rights runs pinned actions, and only after the verify job.
+  for (const name of ["publish", "publish-omp", "publish-opencode"]) expect(publishJobs[name]).toContain("needs: verify");
+  expect([...flow.matchAll(/uses: (\S+)/g)].map(match => match[1]).filter(use => !use.startsWith("./") && !/@[0-9a-f]{40}$/.test(use))).toEqual([]);
+  expect(publishJobs["publish-opencode"]).toContain("working-directory: plugins/opencode");
   expect(flow).toContain("id-token: write");
-  // Each package releases on its own tag. GitHub's "v*" filter does not match "opencode-v*", so both are listed.
-  expect(flow).toContain('tags: ["v*", "opencode-v*"]');
-  expect(publishJobs.publish).toContain("if: startsWith(inputs.tag || github.ref_name, 'v')");
-  expect(publishJobs["publish-opencode"]).toContain("if: startsWith(inputs.tag || github.ref_name, 'opencode-v')");
-  expect(publishJobs["publish-opencode"]).toContain('[ "$TAG" != "opencode-v$version" ]');
-  expect(publishJobs["publish-opencode"]).toContain("exit 1");
 });
 
-test("the omp package is listed as an omp plugin and publishes with each root release", () => {
+test("the omp package is listed as an omp plugin and has a publish job of its own", () => {
   const manifest = json("plugins/oh-my-pi/package.json");
   // omp keys installed plugins by package name; the marketplace and npm installs share it, so they cannot load twice.
   expect(manifest.name).toBe("@dangerboi/kata-omp");
@@ -55,9 +52,7 @@ test("the omp package is listed as an omp plugin and publishes with each root re
   expect(manifest.keywords).toContain("omp-plugin");
   expect(manifest.publishConfig.access).toBe("public");
   expect(manifest.dependencies).toBeUndefined();
-  expect(publishJobs["publish-omp"]).toContain("if: startsWith(inputs.tag || github.ref_name, 'v')");
   expect(publishJobs["publish-omp"]).toContain("working-directory: plugins/oh-my-pi");
-  expect(publishJobs["publish-omp"]).toContain("run: npm publish");
 });
 
 test("pi reads the newest changelog entry as the published version", () => {
@@ -68,14 +63,14 @@ test("pi reads the newest changelog entry as the published version", () => {
   expect(json("package.json").version).toBe(json("plugins/pi/package.json").version);
 });
 
-for (const [plugin, modules] of [["pi", ["kata-core.ts"]], ["oh-my-pi", ["kata-core.ts"]], ["opencode", ["kata-core.ts", "seam.ts", "settings.ts", "todowrite.ts", "subagents.ts"]]] as const) {
+for (const plugin of ["pi", "oh-my-pi", "opencode"]) {
   test(`the ${plugin} npm tarball carries the license, changelog and every module, and leaves the folder clean`, () => {
     const dir = path.join(root, "plugins", plugin);
     const run = Bun.spawnSync(["npm", "pack", "--dry-run", "--json"], { cwd: dir, stderr: "pipe" });
     expect(run.exitCode).toBe(0);
     const out = run.stdout.toString();
     const files = JSON.parse(out.slice(out.indexOf("[")))[0].files.map((f: { path: string }) => f.path);
-    expect(files).toEqual(expect.arrayContaining(["LICENSE", "CHANGELOG.md", "README.md", "package.json", "kata.ts", ...modules]));
+    expect(files).toEqual(expect.arrayContaining(["LICENSE", "CHANGELOG.md", "README.md", "package.json"]));
     // Every module the entry reaches ships: the tarball holds each .ts file the folder has.
     for (const file of readdirSync(dir).filter(name => name.endsWith(".ts"))) expect(files).toContain(file);
     expect(existsSync(path.join(dir, "LICENSE")) || existsSync(path.join(dir, "CHANGELOG.md"))).toBe(false);

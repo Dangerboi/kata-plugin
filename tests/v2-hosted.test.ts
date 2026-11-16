@@ -1,6 +1,6 @@
 import fc from "fast-check";
 import { expect, test } from "bun:test";
-import { later } from "./kata-fixture";
+import { holdKata } from "./kata-fixture";
 import { v2Fixture } from "./v2-fixture";
 
 // The omp adapter against a real Kata: hosted bindings and refreshes, the contract hook and the inbox section.
@@ -99,10 +99,10 @@ test("tracked worker todo uses its assigned issue and teammate from an unbound w
   expect(worker.widgets).toEqual([]);
 });
 
-for (const children of [0, {}, [null]]) test(`malformed hosted children ${JSON.stringify(children)} never expose a cached plan`, async () => {
+test("hosted children [null] never expose a cached plan", async () => {
   let corrupt = false;
   const app = host({ before: (args: string[]) => corrupt && args[0] === "show"
-    ? { code: 0, stdout: JSON.stringify({ issue: {}, children }), stderr: "" } : undefined });
+    ? { code: 0, stdout: JSON.stringify({ issue: {}, children: [null] }), stderr: "" } : undefined });
   await app.init(["Cached task"]);
   corrupt = true;
   const result = await app.call({ op: "view" });
@@ -112,15 +112,14 @@ for (const children of [0, {}, [null]]) test(`malformed hosted children ${JSON.s
 });
 
 test("a pending stop-hook refresh does not describe cached tasks as current", async () => {
+  // The stop hook's read of the plan is held until the test lets Kata answer, so it is still pending when the hook returns.
   let outage = false;
-  const app = host({ before: async (args: string[]) => {
-    if (!outage || args[0] !== "show") return;
-    await new Promise(resolve => setTimeout(resolve, 400));
-    return { code: 1, stdout: "", stderr: "slow read outage" };
-  } });
+  const held = holdKata(args => outage && args[0] === "show", () => ({ code: 1, stdout: "", stderr: "slow read outage" }));
+  const app = host({ before: held.before });
   await app.init(["Cached stop task"]);
   outage = true;
-  expect(await app.event("session_stop", { messages: [] })).toBeUndefined();
+  try { expect(await app.event("session_stop", { messages: [] })).toBeUndefined(); }
+  finally { held.release(); }
   await app.call({ op: "view" }); // drain the background hook
 });
 
@@ -134,8 +133,8 @@ test("a sub identity cannot reuse the main adapter's bound session", async () =>
   expect((await show(parent)).children.map((c: any) => c.title)).toEqual(["Main task"]);
 });
 
-// Generated malformed response values must not turn the last good snapshot
-// into an authoritative response. {} is the named shrunk regression above.
+// Generated malformed response values must not turn the last good snapshot into an authoritative response.
+// 0 and {} are regressions found earlier; they run first.
 test("arbitrary non-array hosted children never expose cached state", async () => {
   let children: unknown;
   let corrupt = false;
@@ -149,7 +148,7 @@ test("arbitrary non-array hosted children never expose cached state", async () =
     expect(result.isError).toBe(true);
     expect(result.details.kata.phases).toEqual([]);
     expect(result.content[0].text).not.toContain("0/1 done");
-  }), { numRuns: 100, seed: 251025 });
+  }), { numRuns: 100, seed: 251025, examples: [[0], [{}]] });
 });
 
 test("a later init can replace a parameter-bound parent", async () => {
@@ -241,6 +240,20 @@ test("a request sent mid-session reaches the inbox section by the next turn and 
   expect(await turn()).not.toContain("midsession-ping-7731");
 });
 
+test("the inbox trusts Kata's effective actor once the plan has a parent, not the author setting read before it", async () => {
+  process.env.KATA_INBOX_USER = "v2-builder/effective";
+  const parent = await issue();
+  // Kata reports another effective actor than KATA_AUTHOR, as a daemon that authenticates its clients does.
+  const app = host({ entries: [{ type: "custom", customType: "io.kata.omp.parent", data: { parent } }],
+    before: (a: string[]) => a[0] === "status" ? { code: 0, stdout: JSON.stringify({ actor: "daemon-actor" }), stderr: "" } : undefined });
+  await app.event("session_start"); await app.contractReady;
+  expect((await app.call({ op: "view" })).details.kata.parent).toBe(`v2test#${parent}`);
+  expect((await run(["notify", parent, "--to", "v2-builder/effective", "--message", "effective-actor-5521", "--json"], cwd, 5000, { KATA_AUTHOR: "daemon-actor" })).code).toBe(0);
+  await app.event("before_agent_start", { systemPrompt: ["base"] });
+  const prompt = (await app.event("before_agent_start", { systemPrompt: ["base"] })).systemPrompt.join("\n");
+  expect(prompt).toContain(`from="daemon-actor" message="effective-actor-5521"`);
+});
+
 test("only requests from the session's own actor reach the inbox section", async () => {
   process.env.KATA_INBOX_USER = "v2-builder/trust";
   const app = host(); await app.event("session_start"); await app.contractReady;
@@ -300,4 +313,15 @@ test("a bare actor in KATA_INBOX_USER is a person's inbox: the session reads non
   await slashed.event("before_agent_start", { systemPrompt: ["base"] });
   expect(slashed.calls.filter(a => a[0] === "inbox")).toEqual([]);
   expect(slashed.notices).toHaveLength(1);
+});
+
+test("blank evidence entries are dropped before the close, and evidence that is only blank is refused", async () => {
+  const app = host(); const parent = await app.init(["Blank evidence task", "Only blank evidence task"]);
+  const done = await app.call({ op: "done", task: "Blank evidence task", message, evidence: ["", "  ", ...evidence] });
+  expect(done.isError).toBeUndefined();
+  expect(app.calls.filter(a => a[0] === "close").flat()).not.toContain("");
+  expect((await show(parent)).children.find((c: any) => c.title === "Blank evidence task").status).toBe("closed");
+  const blank = await app.call({ op: "done", task: "Only blank evidence task", message, evidence: [" "] });
+  expect(blank.isError).toBe(true);
+  expect(blank.content[0].text).toContain("evidence");
 });

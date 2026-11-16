@@ -1,3 +1,4 @@
+// Generated from core/plan-parent.ts; edit there.
 // Which plan parent, and which workspace, a plan serves. A pure decision over
 // the sources the core gathers; it never reads the environment or calls Kata.
 // Reachability of Kata (the core's `scope`) and the local plan stay outside.

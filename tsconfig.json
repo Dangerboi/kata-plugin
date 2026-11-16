@@ -14,6 +14,7 @@
     "core/**/*.ts",
     "plugins/oh-my-pi/*.ts",
     "plugins/pi/*.ts",
-    "plugins/opencode/*.ts"
+    "plugins/opencode/*.ts",
+    "scripts/*.ts"
   ]
 }

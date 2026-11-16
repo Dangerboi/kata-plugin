@@ -1,5 +1,6 @@
+// Generated from core/settlement.ts; edit there.
 import { isUnusable, type Kata } from "./kata-cli";
-import { isMission, missionCloseArgs, projectOf, qualifiedRef, type Binding, type Change, type KataIssue, type KataShow, type Status, type Task } from "./model";
+import { isMission, missionCloseArgs, projectOf, qualifiedRef, sessionParentKeys, type Binding, type Change, type KataIssue, type KataShow, type Status, type Task } from "./model";
 
 // Settlement: the closes the plugin still owes a session. Throttled task closes,
 // ticket closes waiting on open children, and the automatic parent's close (with
@@ -62,15 +63,14 @@ export interface Settlement {
 	// `parents: false` leaves the automatic parents open (the host closes them when the session ends).
 	drain(options?: { parents?: boolean }): Promise<void>;
 	snapshot(): SettlementSnapshot;
-	// Whether closes are still owed: a pending close (a task's or a ticket's), or (`parents`, the default) an automatic parent whose close the last
+	// Whether closes are still owed: a pending close (a task's or a ticket's), or an automatic parent whose close the last
 	// audit still means to make, not one it left open on purpose (flagged needs-review, closed, or no longer this session's).
 	// A parent not yet audited is owed.
-	owes(options?: { parents?: boolean }): boolean;
+	owes(): boolean;
 	restore(saved: SettlementSnapshot | undefined): void;
 }
 
 const codeOf = (error: unknown) => (error as { code?: string } | undefined)?.code;
-// Qualified refs of a ticket's open children.
 export const openChildren = (view: KataShow, ticket: string): string[] => (view.children ?? []).filter(c => c.status !== "closed").map(c => qualifiedRef(c, ticket));
 
 function proofArgs(items: any[]): string[] {
@@ -88,6 +88,7 @@ function proofArgs(items: any[]): string[] {
 
 export function createSettlement(deps: SettlementDeps): Settlement {
 	const { namespace, kata, owned, clock, debug } = deps;
+	const keys = sessionParentKeys(namespace);
 	const autoParents = new Map<string, Binding>();
 	const retries = new Map<string, TaskClose>();
 	const pendingCloses = new Map<string, PendingClose>();
@@ -117,7 +118,6 @@ export function createSettlement(deps: SettlementDeps): Settlement {
 		await deps.flag(ref, cwd, error).catch(debug);
 	}
 
-	// Drop a pending task close and its failure count.
 	function dropTask(ref: string) { retries.delete(ref); failures.delete(`task:${ref}`); }
 
 	async function drainTasks() {
@@ -160,14 +160,14 @@ export function createSettlement(deps: SettlementDeps): Settlement {
 			try {
 				if (deps.delegatesRunning()) return;
 				initial = await kata.show(parent, workspace);
-				if (initial.issue.status === "closed" || initial.issue.metadata?.[`${namespace}.auto_parent`] !== true || initial.issue.metadata?.[`${namespace}.session_id`] !== binding.sessionId) { parentDone.add(parent); continue; }
+				if (initial.issue.status === "closed" || initial.issue.metadata?.[keys.auto] !== true || initial.issue.metadata?.[keys.session] !== binding.sessionId) { parentDone.add(parent); continue; }
 				// A mission whose delegate's settle never closed it (cut off at shutdown, killed, its close throttled) would hold the
 				// parent open for good: the audit closes it once nothing else is open. No revision guard: the close decides nothing, and
 				// one that lands after the delegate's own close (a pi child settling in its own process) changes nothing.
 				const open = (initial.children ?? []).filter(c => c.status !== "closed");
 				if (open.length && open.every(c => isMission(namespace, c))) {
 					for (const c of open) await kata.run(missionCloseArgs(qualifiedRef(c, parent)), workspace);
-					initial = await kata.fresh(() => kata.show(parent, workspace));
+					initial = await kata.show(parent, workspace);
 				}
 				const children = initial.children ?? [];
 				if (!children.length || children.some(c => c.status !== "closed")) { parentDone.add(parent); continue; }
@@ -239,7 +239,7 @@ export function createSettlement(deps: SettlementDeps): Settlement {
 			retries.set(task.ref, { task: { ...task }, to, change: { ...change }, cwd, at: clock() + RETRY_MS, ...(parent ? { parent } : {}) });
 			failures.delete(`task:${task.ref}`);
 			schedule();
-			return `Kata deferred closing "${task.content}" under its sibling throttle. It remains open and will retry after 60 seconds.`;
+			return `Kata deferred closing "${task.content}" under its sibling throttle. It remains open and will retry after ${RETRY_MS / 1000} seconds.`;
 		},
 		cancelTaskClose: dropTask,
 		hasTaskClose: ref => retries.has(ref),
@@ -272,7 +272,7 @@ export function createSettlement(deps: SettlementDeps): Settlement {
 			autoParents: [...autoParents.values()], retries: [...retries.entries()],
 			...(pendingCloses.size ? { pendingCloses: [...pendingCloses.entries()] } : {}),
 		}),
-		owes: ({ parents = true } = {}) => retries.size > 0 || pendingCloses.size > 0 || (parents && [...autoParents.keys()].some(parent => !parentDone.has(parent))),
+		owes: () => retries.size > 0 || pendingCloses.size > 0 || [...autoParents.keys()].some(parent => !parentDone.has(parent)),
 		restore(saved) {
 			retries.clear(); autoParents.clear(); pendingCloses.clear(); failures.clear(); flagged.clear(); parentDone.clear();
 			clearTimer();

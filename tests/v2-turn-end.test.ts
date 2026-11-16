@@ -1,10 +1,11 @@
 import { expect, test } from "bun:test";
 import { mkdirSync } from "node:fs";
 import path from "node:path";
+import { finishes, holdKata } from "./kata-fixture";
 import { v2Fixture } from "./v2-fixture";
 
 // The omp adapter against a real Kata: turn-end waits for delegate hand-backs, parent evidence and failed claims.
-const { scratch, cwd, run, kata, show, issue, unique, host, evidence, message, ran } = v2Fixture();
+const { scratch, cwd, run, kata, show, issue, unique, host, evidence, message, ran, closesOf, sessionParents } = v2Fixture();
 
 test("async snapshot settles a delegate when terminal lifecycle delivery is missing", async () => {
   let recent: any[] = [];
@@ -43,11 +44,8 @@ for (const yielded of [false, true]) test(`a delegate's report is ${yielded ? "w
 
 test("a missed delegate exit found at a prompt does not wait for the settlement", async () => {
   let recent: any[] = [], slow = false;
-  const reached = Promise.withResolvers<void>(), gate = Promise.withResolvers<void>();
-  const app = host({ snapshot: () => ({ running: [], recent }), before: async (args: string[]) => {
-    if (slow && ["show", "label", "close", "comment"].includes(args[0])) { reached.resolve(); await gate.promise; }
-    return undefined;
-  } });
+  const held = holdKata(args => slow && ["show", "label", "close", "comment"].includes(args[0]));
+  const app = host({ snapshot: () => ({ running: [], recent }), before: held.before });
   try {
     await app.event("session_start"); const parent = await app.init(["Wait for slow settlement"]);
     app.emit("task:subagent:lifecycle", { id: "slow-exit", agent: "task", status: "started", sessionFile: `${scratch}/slow-exit.jsonl`, description: "Wait for slow settlement" });
@@ -55,42 +53,52 @@ test("a missed delegate exit found at a prompt does not wait for the settlement"
     await ran(app, "slow-exit", `${scratch}/slow-exit.jsonl`);
     recent = [{ id: "slow-exit", type: "task", status: "cancelled" }]; slow = true;
     await app.event("before_agent_start", { systemPrompt: ["base"] });
-    await reached.promise;
-    gate.resolve();
+    await held.entered;
+    held.release();
     await app.call({ op: "view" });
     const task = (await show(parent)).children.find((c: any) => c.title === "Wait for slow settlement");
     expect((await show(`v2test#${task.short_id}`)).labels.some((l: any) => l.label === "needs-review")).toBe(true);
-  } finally { gate.resolve(); }
+  } finally { held.release(); }
 });
 
-// Real delays, like the neighbouring tests: the hook races real Kata processes, which fake timers cannot order.
+// Kata is held until the test lets it answer, so a turn that ends meanwhile did not wait for it. The hooks race real
+// Kata processes, which fake timers cannot order.
 test("a lead turn with no exited delegate ends within the short bound even when Kata is slow", async () => {
   let slow = false;
-  const app = host({ before: async (args: string[]) => { if (slow) await Bun.sleep(1500); return undefined; } });
+  const held = holdKata(() => slow);
+  const app = host({ before: held.before });
   await app.event("session_start"); await app.init(["Slow Kata, nothing exited"]);
   app.emit("task:subagent:lifecycle", { id: "still-running", agent: "task", status: "started", sessionFile: `${scratch}/still-running.jsonl`, description: "Slow Kata, nothing exited" });
   await app.call({ op: "view" });
   slow = true;
-  const start = performance.now();
-  await app.event("session_stop", { messages: [] });
-  expect(performance.now() - start).toBeLessThan(1000);
-  slow = false; await app.call({ op: "view" }); // drain the background hook
+  try {
+    expect(await finishes(app.event("session_stop", { messages: [] }))).toBe(true);
+    expect(held.held).toBeGreaterThan(0);
+  } finally { slow = false; held.release(); }
+  await app.call({ op: "view" }); // drain the background hook
 });
 
 test("a lead turn with an exited delegate waits for its slow hand back before the turn ends", async () => {
-  let recent: any[] = [], slow = false;
-  const app = host({ snapshot: () => ({ running: [], recent }), before: async (args: string[]) => {
-    if (slow && ["show", "label", "close", "comment", "meta", "notify"].includes(args[0])) await Bun.sleep(150);
-    return undefined;
-  } });
+  let recent: any[] = [], slow = false, labelled = false;
+  const held = holdKata(args => slow && args[0] === "label", async (args, opts) => {
+    const out = await run(args, opts.cwd, opts.timeout);
+    labelled = out.code === 0;
+    return out;
+  });
+  const app = host({ snapshot: () => ({ running: [], recent }), before: held.before });
   await app.event("session_start"); const parent = await app.init(["Slow hand back at turn end"]);
   app.emit("task:subagent:lifecycle", { id: "slow-hand-back", agent: "task", status: "started", sessionFile: `${scratch}/slow-hand-back.jsonl`, description: "Slow hand back at turn end" });
   await app.call({ op: "view" });
   await ran(app, "slow-hand-back", `${scratch}/slow-hand-back.jsonl`);
   recent = [{ id: "slow-hand-back", type: "task", status: "cancelled" }]; slow = true;
-  const start = performance.now();
-  await app.event("session_stop", { messages: [] });
-  expect(performance.now() - start).toBeGreaterThan(250);
+  const stop = app.event("session_stop", { messages: [] });
+  try {
+    await held.entered;
+    // The hand back's first write is held. A turn that waited only the short bound would end well inside this wait.
+    expect(await finishes(stop, 750)).toBe(false);
+  } finally { held.release(); }
+  await stop;
+  expect(labelled).toBe(true);
   const task = (await show(parent)).children.find((c: any) => c.title === "Slow hand back at turn end");
   expect((await show(`v2test#${task.short_id}`)).labels.some((l: any) => l.label === "needs-review")).toBe(true);
 });
@@ -113,13 +121,14 @@ test("a lead turn does not wait out the deadline for a hand back that keeps fail
 });
 
 test("a lead turn also waits for a delegate that exits while the first one's hand back runs", async () => {
-  let recent: any[] = [], slow = false, fired = false;
-  const app = host({ snapshot: () => ({ running: [], recent }), before: async (args: string[]) => {
+  let recent: any[] = [], slow = false, fired = false, labels = 0;
+  // The second label write is the late exit's hand back; it is held, so the turn end can only have waited for it.
+  const held = holdKata(args => slow && args[0] === "label" && ++labels === 2);
+  const app = host({ snapshot: () => ({ running: [], recent }), before: async (args: string[], opts: any) => {
     if (!slow) return undefined;
     // The first hand back's first write: the cleanup pass already holds its list, so the second exit is not on it.
     if (args[0] === "label" && !fired) { fired = true; app.emit("task:subagent:lifecycle", { id: "late-exit", status: "completed", sessionFile: `${scratch}/late-exit.jsonl` }); }
-    if (["show", "label", "close", "comment", "meta", "notify"].includes(args[0])) await Bun.sleep(150);
-    return undefined;
+    return held.before(args, opts);
   } });
   await app.event("session_start"); const parent = await app.init(["Early exit at turn end", "Late exit at turn end"]);
   for (const [id, description] of [["early-exit", "Early exit at turn end"], ["late-exit", "Late exit at turn end"]]) {
@@ -128,7 +137,12 @@ test("a lead turn also waits for a delegate that exits while the first one's han
     await ran(app, id, `${scratch}/${id}.jsonl`);
   }
   recent = [{ id: "early-exit", type: "task", status: "cancelled" }]; slow = true;
-  await app.event("session_stop", { messages: [] });
+  const stop = app.event("session_stop", { messages: [] });
+  try {
+    await held.entered;
+    expect(await finishes(stop, 750)).toBe(false);
+  } finally { held.release(); }
+  await stop;
   expect(fired).toBe(true);
   const children = (await show(parent)).children;
   for (const title of ["Early exit at turn end", "Late exit at turn end"]) {
@@ -139,22 +153,23 @@ test("a lead turn also waits for a delegate that exits while the first one's han
 
 test("an aborted turn-end wait returns at once and leaves the reminder state alone", async () => {
   let recent: any[] = [], slow = false;
-  const app = host({ snapshot: () => ({ running: [], recent }), before: async (args: string[]) => {
-    if (slow && ["show", "label", "close", "comment", "meta", "notify"].includes(args[0])) await Bun.sleep(150);
-    return undefined;
-  } });
+  const held = holdKata(args => slow && args[0] === "label");
+  const app = host({ snapshot: () => ({ running: [], recent }), before: held.before });
   await app.event("session_start"); const parent = await app.init(["Aborted hand back", "Lead keeps working"]);
   app.emit("task:subagent:lifecycle", { id: "aborted-wait", agent: "task", status: "started", sessionFile: `${scratch}/aborted-wait.jsonl`, description: "Aborted hand back" });
   await app.call({ op: "view" });
   await ran(app, "aborted-wait", `${scratch}/aborted-wait.jsonl`);
   recent = [{ id: "aborted-wait", type: "task", status: "cancelled" }]; slow = true;
-  const controller = new AbortController(), start = performance.now();
-  setTimeout(() => controller.abort(), 400);
-  const aborted = await app.event("session_stop", { messages: [], signal: controller.signal });
-  expect(performance.now() - start).toBeLessThan(900);
-  expect(aborted).toBeUndefined();
+  const controller = new AbortController();
+  const stop = app.event("session_stop", { messages: [], signal: controller.signal });
+  try {
+    // The turn end is waiting on the hand back, whose first write is held: only the abort can end the wait.
+    await held.entered;
+    controller.abort();
+    expect(await finishes(stop)).toBe(true);
+  } finally { held.release(); }
+  expect(await stop).toBeUndefined();
   // The hand back keeps running in the background; the next stop still gets the first reminder.
-  slow = false;
   const next = await app.event("session_stop", { messages: [] });
   expect(next.additionalContext).toContain("reminder 1/");
   const task = (await show(parent)).children.find((c: any) => c.title === "Aborted hand back");
@@ -162,7 +177,7 @@ test("an aborted turn-end wait returns at once and leaves the reminder state alo
 });
 
 test("relative lifecycle session paths join the child's absolute session path", async () => {
-  const app = host(); await app.event("session_start"); const parent = await app.init(["Relative child path"]);
+  const app = host(); await app.event("session_start"); await app.init(["Relative child path"]);
   app.emit("task:subagent:lifecycle", { id: "relative-child", agent: "task", status: "started", sessionFile: "../relative-session.jsonl", description: "Relative child path" });
   const child = host({ agent: { kind: "sub", id: "relative-child", parentId: app.ctx.agent.id }, sessionFile: path.join(scratch, "relative-session.jsonl") });
   await child.event("session_start");
@@ -173,12 +188,17 @@ test("relative lifecycle session paths join the child's absolute session path", 
 });
 
 test("a delegate's first prompt waits for a slow binding instead of dropping it", async () => {
-  const app = host({ before: async (args: string[]) => { if (args[0] === "meta" && args[3] === "omp.subagent_id") await Bun.sleep(600); return undefined; } });
+  // The delegate's binding write is held while its first prompt starts.
+  const held = holdKata(args => args[0] === "meta" && args[3] === "omp.subagent_id");
+  const app = host({ before: held.before });
   await app.event("session_start"); await app.init(["Slow delegate binding"]);
   app.emit("task:subagent:lifecycle", { id: "slow-child", agent: "task", status: "started", sessionFile: `${scratch}/slow-child.jsonl`, description: "Slow delegate binding" });
   const child = host({ agent: { kind: "sub", id: "slow-child", parentId: app.ctx.agent.id }, sessionFile: `${scratch}/slow-child.jsonl` });
+  await held.entered;
   await child.event("session_start");
-  const result = await child.event("before_agent_start", { systemPrompt: ["base"] });
+  const prompt = child.event("before_agent_start", { systemPrompt: ["base"] });
+  held.release();
+  const result = await prompt;
   expect(result.systemPrompt.join("\n")).toContain("<kata_binding>");
   expect(result.systemPrompt.join("\n")).toContain("Your Kata issue is");
 });
@@ -195,7 +215,7 @@ test("explicitly adopting the auto issue revokes and persists automatic close au
 
 test("Kata rejects incompatible parent evidence without dropping it from the union", async () => {
   const app = host(); const parent = await app.init(["Typed union task"]);
-  const audit = (await kata(["create", "No-change verification", "--parent", parent, "--force-new", "--json"])).issue.short_id;
+  const audit = await issue("No-change verification", { parent });
   await kata(["close", audit, "--audit-no-change", "--message", "Audited the current implementation and verified no additional changes were required.", "--reviewed", "README.md", "--evidence", "no-change-audit:Existing behavior already satisfies the specification", "--json"]);
   await app.call({ op: "done", message, evidence });
   expect(app.calls.some(a => a[0] === "close" && a[1] === parent && a.includes("no-change-audit:Existing behavior already satisfies the specification"))).toBe(true);
@@ -223,9 +243,8 @@ test("auto-parent close skips children's attachment evidence and carries the res
   const app = host({ before: withAttachment(true) }); const parent = await app.init(["Attachment and test evidence"]);
   expect((await app.call({ op: "done", message, evidence })).isError).toBeUndefined();
   expect((await show(parent)).issue.status).toBe("closed");
-  const row = (await kata(["audit", "closes", "--json"])).rows.find((r: any) => r.issue === parent.split("#")[1]);
-  const stored = (await kata(["events", "--after", String(row.event_id - 1), "--limit", "1", "--json"])).events[0];
-  expect(stored.payload.evidence).toEqual([{ type: "test", command: "bun test fixture" }]);
+  const [close] = await closesOf(parent);
+  expect(close.payload.evidence).toEqual([{ type: "test", command: "bun test fixture" }]);
 });
 
 test("auto parent whose children carry only attachment evidence stays open for review", async () => {
@@ -249,7 +268,7 @@ test("auto-parent evidence resolves cross-project children in their own projects
   const other = path.join(scratch, `evidence-${unique()}`); mkdirSync(other);
   await kata(["init", "--project", "v2evidence", "--json"], other);
   const app = host(); const parent = await app.init(["Local evidence task"]);
-  const extra = (await kata(["create", "Cross-project evidence", "--parent", parent, "--force-new", "--json"], other)).issue.short_id;
+  const extra = await issue("Cross-project evidence", { parent, workspace: other });
   await kata(["close", `v2evidence#${extra}`, "--done", "--message", "Verified this cross-project component with its own independent test evidence.", "--test", "cross-project validation", "--json"], other);
   await app.call({ op: "done", message, evidence });
   expect((await show(parent)).issue.status).toBe("closed");
@@ -269,7 +288,7 @@ for (const entry of ["lazy", "titled"]) test(`${entry} failed claim resumes the 
   const app = host({ before: (a: string[]) => a[0] === "claim" && rejectClaim ? { code: 1, stderr: "temporary claim failure", stdout: "" } : undefined });
   await app.event("session_start");
   await app.call({ op: "init", items: ["Recovered task"], ...(entry === "titled" ? { message: "A titled plan parent" } : {}) });
-  const list = (await kata(["list", "--status", "all", "--meta", `omp.session_id=${app.sid}`, "--json"])).issues;
+  const list = await sessionParents(app.sid);
   const parents = list.filter((i: any) => !i.metadata?.["todo.phase"]);
   expect(parents).toHaveLength(1);
   const parent = parents[0];
@@ -290,7 +309,7 @@ for (const entry of ["lazy", "titled"]) test(`${entry} failed claim resumes the 
   expect(closed.issue.status).toBe("closed");
   expect(closed.children).toHaveLength(1);
   expect(closed.children[0].status).toBe("closed");
-  const finalParents = (await kata(["list", "--status", "all", "--meta", `omp.session_id=${app.sid}`, "--json"])).issues.filter((i: any) => !i.metadata?.["todo.phase"]);
+  const finalParents = (await sessionParents(app.sid)).filter((i: any) => !i.metadata?.["todo.phase"]);
   expect(finalParents).toHaveLength(1);
   expect(finalParents[0].short_id).toBe(parent.short_id);
 });

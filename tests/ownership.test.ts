@@ -1,38 +1,12 @@
-import { assertIsolated } from "./isolation";
-import { adoptIsolatedKata, isolatedKata } from "./kata-fixture";
+import { expect, test } from "bun:test";
+import { realKata, unique } from "./kata-fixture";
 import { ompHost } from "./omp-host";
-assertIsolated();
-import { afterAll, afterEach, beforeAll, beforeEach, expect, test } from "bun:test";
-import { mkdtempSync, mkdirSync } from "node:fs";
-import os from "node:os";
-import path from "node:path";
 
-const binary = process.env.KATA_TEST_EXECUTABLE;
-if (!binary || !path.isAbsolute(binary)) throw new Error("Set KATA_TEST_EXECUTABLE to an absolute kata-main binary path.");
-const scratch = mkdtempSync(path.join(process.env.KATA_TEST_ROOT!, "omp-kata-ownership-"));
-const cwd = path.join(scratch, "workspace");
-mkdirSync(cwd);
-const env = { ...process.env, KATA_HOME: path.join(scratch, "khome"), KATA_AUTHOR: "actor-a", KATA_TEAMMATE: "worker-a" };
-for (const key of ["KATA_SERVER", "KATA_DAEMON", "KATA_AUTH_TOKEN", "KATA_REF", "KATA_SESSION_ID", "KATA_INBOX_USER"]) delete env[key];
-process.env.KATA_AUTHOR = "actor-a";
-process.env.KATA_TEAMMATE = "worker-a";
-delete process.env.KATA_REF;
-delete process.env.KATA_INBOX_USER;
-
-const run = isolatedKata(binary, env, cwd, 15000);
-async function kata(args: string[]) {
-  const out = await run(args);
-  if (out.code !== 0) throw new Error(`${args.join(" ")}: ${out.stderr}`);
-  return JSON.parse(out.stdout);
-}
-let sequence = 0;
-async function issue(meta: string[] = [], parent?: string) {
-  const args = ["create", `Ownership regression ${++sequence}`, "--force-new", "--json"];
-  if (parent) args.push("--parent", parent);
-  for (const value of meta) args.push("--meta", value);
-  return (await kata(args)).issue.short_id as string;
-}
-async function show(ref: string) { return (await kata(["show", ref, "--json"])).issue; }
+const TEAMMATE = { KATA_TEAMMATE: "worker-a" };
+const store = realKata({ prefix: "ownership", author: "actor-a", project: "omptest", adopt: true, env: TEAMMATE, process: TEAMMATE });
+const { cwd, run, kata, show } = store;
+const issue = (meta: string[] = [], parent?: string) => store.issue(`Ownership regression ${unique()}`, { meta, parent });
+const issueOf = async (ref: string) => (await show(ref)).issue;
 async function set(ref: string, key: string, value: string) { await kata(["meta", "set", ref, key, value, "--json"]); }
 async function claim(ref: string, actor = "actor-a") { await kata(["claim", ref, "--as", actor, "--json"]); }
 
@@ -58,15 +32,6 @@ function host(parent: string | undefined, before?: Before) {
     input: (text: string) => app.event("input", { text, source: "interactive" }),
   };
 }
-beforeAll(async () => {
-  const result = await run(["init", "--project", "omptest"]);
-  if (result.code !== 0) throw new Error(result.stderr);
-  console.log(`Real Kata throwaway store: ${scratch}`);
-}, 20000);
-afterAll(async () => { await run(["daemon", "stop"]); });
-let restore: (() => void) | undefined;
-beforeEach(() => { restore = adoptIsolatedKata(binary!, env.KATA_HOME); });
-afterEach(() => restore?.());
 
 // Removing the ownership gate or swallowing claim failures must fail these.
 for (const op of ["start", "block", "unblock"]) {
@@ -81,10 +46,10 @@ for (const op of ["start", "block", "unblock"]) {
       const result = await app.call({ op, task: ref, reason: "waiting on a service" });
       expect(result.isError).toBe(true);
       expect(result.content[0].text).toMatch(/own|teammate/i);
-      expect((await show(ref)).metadata["work.attention"]).toBe("needs-human");
-      expect((await show(ref)).metadata["work.attention_msg"]).toBe("foreign worker note");
+      expect((await issueOf(ref)).metadata["work.attention"]).toBe("needs-human");
+      expect((await issueOf(ref)).metadata["work.attention_msg"]).toBe("foreign worker note");
       expect(app.calls.filter(args => args[0] === "meta" && args[3]?.startsWith("work."))).toEqual([]);
-    }, 20000);
+    });
   }
 }
 test("failed claim on an unowned task is reported before attention writes", async () => {
@@ -94,8 +59,8 @@ test("failed claim on an unowned task is reported before attention writes", asyn
   await app.begin();
   const result = await app.call({ op: "start", task: ref });
   expect(result.isError).toBe(true);
-  expect((await show(ref)).metadata["work.attention"]).toBeUndefined();
-  expect((await show(ref)).metadata["todo.status"]).toBe("pending");
+  expect((await issueOf(ref)).metadata["work.attention"]).toBeUndefined();
+  expect((await issueOf(ref)).metadata["todo.status"]).toBe("pending");
 });
 test("failed parent claim is reported before creating or starting children", async () => {
   let parentRef: string | undefined;
@@ -107,7 +72,7 @@ test("failed parent claim is reported before creating or starting children", asy
   });
   const result = await app.call({ op: "init", message: "A fresh plan with a failed parent claim", items: ["A child that must never start"] });
   expect(result.isError).toBe(true);
-  expect((await kata(["show", parentRef!, "--json"])).children ?? []).toEqual([]);
+  expect((await show(parentRef!)).children ?? []).toEqual([]);
   expect(app.calls.filter(args => args[0] === "meta" && args[3]?.startsWith("work."))).toEqual([]);
 });
 test("automatic advance refuses a foreign pending task", async () => {
@@ -118,7 +83,7 @@ test("automatic advance refuses a foreign pending task", async () => {
   await app.begin();
   const result = await app.call({ op: "append", items: ["A separate pending plan task"] });
   expect(result.isError).toBe(true);
-  expect((await show(ref)).metadata["work.attention"]).toBe("needs-human");
+  expect((await issueOf(ref)).metadata["work.attention"]).toBe("needs-human");
 });
 test("owned tasks can start, block, and unblock using guarded attention writes", async () => {
   const parent = await issue();
@@ -126,14 +91,14 @@ test("owned tasks can start, block, and unblock using guarded attention writes",
   const app = host(parent);
   await app.begin();
   expect((await app.call({ op: "start", task: ref })).isError).toBeUndefined();
-  expect((await show(ref)).owner).toBe("actor-a");
+  expect((await issueOf(ref)).owner).toBe("actor-a");
   expect((await app.call({ op: "block", task: ref, reason: "waiting for review" })).isError).toBeUndefined();
-  expect((await show(ref)).metadata["work.attention"]).toBe("stuck");
+  expect((await issueOf(ref)).metadata["work.attention"]).toBe("stuck");
   expect((await app.call({ op: "unblock", task: ref })).isError).toBeUndefined();
-  const final = await show(ref);
+  const final = await issueOf(ref);
   expect(final.metadata["work.attention"]).toBe("ok");
   expect(final.metadata["work.attention_msg"]).toBeUndefined();
-}, 20000);
+});
 test("closed task block skips all work metadata writes", async () => {
   const parent = await issue();
   const ref = await issue(["todo.phase=Tasks", "todo.status=pending"], parent);
@@ -143,8 +108,8 @@ test("closed task block skips all work metadata writes", async () => {
   await app.begin();
   const result = await app.call({ op: "block", task: ref, reason: "too late" });
   expect(result.isError).toBe(true);
-  expect((await show(ref)).status).toBe("closed");
-  expect((await show(ref)).metadata["work.attention"]).toBeUndefined();
+  expect((await issueOf(ref)).status).toBe("closed");
+  expect((await issueOf(ref)).metadata["work.attention"]).toBeUndefined();
 });
 test("explicit restart reopens an owned task after start and done", async () => {
   const parent = await issue();
@@ -153,9 +118,9 @@ test("explicit restart reopens an owned task after start and done", async () => 
   await app.begin();
   expect((await app.call({ op: "start", task: ref })).isError).toBeUndefined();
   expect((await app.call({ op: "done", task: ref, message: "Verified the restart fixture before closing its first lifecycle.", evidence: ["test:ownership harness"] })).isError).toBeUndefined();
-  expect((await show(ref)).status).toBe("closed");
+  expect((await issueOf(ref)).status).toBe("closed");
   expect((await app.call({ op: "start", task: ref })).isError).toBeUndefined();
-  const final = await show(ref);
+  const final = await issueOf(ref);
   expect(final.status).toBe("open");
   expect(final.owner).toBe("actor-a");
   expect(final.metadata.teammate).toBe("worker-a");
@@ -172,8 +137,8 @@ for (const foreign of ["actor", "teammate"]) {
     const app = host(parent);
     await app.begin();
     expect((await app.call({ op: "start", task: ref })).isError).toBe(true);
-    expect((await show(ref)).status).toBe("closed");
-    expect((await show(ref)).metadata["work.attention"]).toBe("stuck");
+    expect((await issueOf(ref)).status).toBe("closed");
+    expect((await issueOf(ref)).metadata["work.attention"]).toBe("stuck");
   });
 }
 for (const race of ["teammate", "metadata"]) {
@@ -192,8 +157,8 @@ for (const race of ["teammate", "metadata"]) {
     await app.begin();
     expect((await app.call({ op: "start", task: ref })).isError).toBe(true);
     expect(raced).toBe(true);
-    expect((await show(ref)).metadata["work.attention"]).toBe("stuck");
-    expect((await show(ref)).metadata["todo.status"]).toBe("pending");
+    expect((await issueOf(ref)).metadata["work.attention"]).toBe("stuck");
+    expect((await issueOf(ref)).metadata["todo.status"]).toBe("pending");
   });
 }
 for (const foreign of ["actor", "teammate", "closed"]) {
@@ -203,13 +168,11 @@ for (const foreign of ["actor", "teammate", "closed"]) {
     if (foreign === "teammate") await set(parent, "teammate", "worker-b");
     if (foreign === "closed") await kata(["close", parent, "--wontfix", "--message", "This isolated session attention task is retired because its regression fixture has completed.", "--json"]);
     process.env.KATA_REF = parent;
-    try {
-      const app = host(parent);
-      await app.begin();
-      expect(app.calls.filter(args => args[0] === "agent-hook" || (args[0] === "meta" && args[3]?.startsWith("work.")))).toEqual([]);
-      expect((await show(parent)).metadata["work.attention"]).toBe("needs-human");
-      expect(app.notices).toEqual([]);
-    } finally { delete process.env.KATA_REF; }
+    const app = host(parent);
+    await app.begin();
+    expect(app.calls.filter(args => args[0] === "agent-hook" || (args[0] === "meta" && args[3]?.startsWith("work.")))).toEqual([]);
+    expect((await issueOf(parent)).metadata["work.attention"]).toBe("needs-human");
+    expect(app.notices).toEqual([]);
   });
 }
 for (const race of ["owner", "teammate", "close", "owner-ABA"]) {
@@ -232,58 +195,51 @@ for (const race of ["owner", "teammate", "close", "owner-ABA"]) {
     await app.begin();
     const result = await app.call({ op: "start", task: ref });
     expect(result.isError).toBe(true);
-    expect((await show(ref)).metadata["work.attention"]).toBeUndefined();
-    expect((await show(ref)).metadata["todo.status"]).toBe("pending");
+    expect((await issueOf(ref)).metadata["work.attention"]).toBeUndefined();
+    expect((await issueOf(ref)).metadata["todo.status"]).toBe("pending");
   });
 }
 test("owned session attention is delegated to Kata's native hook", async () => {
   const parent = await issue();
   await claim(parent);
   process.env.KATA_REF = parent;
-  try {
-    const app = host(parent);
-    await app.begin();
-    const started = await show(parent);
-    expect(started.metadata["work.attention"]).toBe("ok");
-    expect(started.metadata["work.attention_session"]).toBeTruthy();
-    await app.shutdown();
-    const ended = await show(parent);
-    expect(ended.metadata["work.attention"]).toBe("needs-human");
-    expect(ended.metadata["work.attention_session"]).not.toBe(started.metadata["work.attention_session"]);
-    expect(app.calls.filter(args => args[0] === "meta" && args[3]?.startsWith("work."))).toEqual([]);
-  } finally { delete process.env.KATA_REF; }
+  const app = host(parent);
+  await app.begin();
+  const started = await issueOf(parent);
+  expect(started.metadata["work.attention"]).toBe("ok");
+  expect(started.metadata["work.attention_session"]).toBeTruthy();
+  await app.shutdown();
+  const ended = await issueOf(parent);
+  expect(ended.metadata["work.attention"]).toBe("needs-human");
+  expect(ended.metadata["work.attention_session"]).not.toBe(started.metadata["work.attention_session"]);
+  expect(app.calls.filter(args => args[0] === "meta" && args[3]?.startsWith("work."))).toEqual([]);
 });
 test("session end leaves a blocker set during the session", async () => {
   const parent = await issue();
   await claim(parent);
   process.env.KATA_REF = parent;
-  try {
-    const app = host(parent);
-    await app.begin();
-    await set(parent, "work.attention", "stuck");
-    await set(parent, "work.attention_msg", "waiting on an upstream fix");
-    await app.shutdown();
-    const final = await show(parent);
-    expect(final.metadata["work.attention"]).toBe("stuck");
-    expect(final.metadata["work.attention_msg"]).toBe("waiting on an upstream fix");
-
-  } finally { delete process.env.KATA_REF; }
+  const app = host(parent);
+  await app.begin();
+  await set(parent, "work.attention", "stuck");
+  await set(parent, "work.attention_msg", "waiting on an upstream fix");
+  await app.shutdown();
+  const final = await issueOf(parent);
+  expect(final.metadata["work.attention"]).toBe("stuck");
+  expect(final.metadata["work.attention_msg"]).toBe("waiting on an upstream fix");
 });
 test("session shutdown respects a teammate handoff", async () => {
   const parent = await issue();
   await claim(parent);
   process.env.KATA_REF = parent;
-  try {
-    const app = host(parent);
-    await app.begin();
-    await set(parent, "teammate", "worker-b");
-    await set(parent, "work.attention", "stuck");
-    await set(parent, "work.attention_msg", "another worker is investigating");
-    const callsBefore = app.calls.length;
-    await app.shutdown();
-    expect(app.calls.slice(callsBefore).filter(args => args[0] === "meta")).toEqual([]);
-    expect((await show(parent)).metadata["work.attention_msg"]).toBe("another worker is investigating");
-  } finally { delete process.env.KATA_REF; }
+  const app = host(parent);
+  await app.begin();
+  await set(parent, "teammate", "worker-b");
+  await set(parent, "work.attention", "stuck");
+  await set(parent, "work.attention_msg", "another worker is investigating");
+  const callsBefore = app.calls.length;
+  await app.shutdown();
+  expect(app.calls.slice(callsBefore).filter(args => args[0] === "meta")).toEqual([]);
+  expect((await issueOf(parent)).metadata["work.attention_msg"]).toBe("another worker is investigating");
 });
 for (const op of ["start", "block", "unblock"]) {
 test(`${op} preserves a changed decision before the conditional attention write`, async () => {
@@ -302,7 +258,7 @@ test(`${op} preserves a changed decision before the conditional attention write`
   await app.begin();
   expect((await app.call({ op, task: ref, reason: "replace the blocker" })).isError).toBe(true);
   expect(raced).toBe(true);
-  const final = await show(ref);
+  const final = await issueOf(ref);
   expect(final.metadata["work.attention"]).toBe("stuck");
   expect(final.metadata["work.attention_msg"]).toBe("new task blocker before conditional write");
   expect(final.metadata["todo.status"]).toBe(status);
@@ -322,7 +278,7 @@ test("an attention message race cannot be cleared during unblock", async () => {
   await app.begin();
   const result = await app.call({ op: "unblock", task: ref });
   expect(result.isError).toBe(true);
-  expect((await show(ref)).metadata["work.attention_msg"]).toBe("new blocker from another writer");
+  expect((await issueOf(ref)).metadata["work.attention_msg"]).toBe("new blocker from another writer");
 });
 test("slash command start reports ownership failure without attention writes", async () => {
   const parent = await issue();
@@ -332,20 +288,20 @@ test("slash command start reports ownership failure without attention writes", a
   await app.begin();
   await app.input(`/todo start ${ref}`);
   expect(app.notices.some(message => /not owned/.test(message))).toBe(true);
-  expect((await show(ref)).metadata["work.attention"]).toBe("stuck");
+  expect((await issueOf(ref)).metadata["work.attention"]).toBe("stuck");
 });
 test("init automatic advance cannot claim another teammate's task", async () => {
   const parent = await issue();
   const app = host(parent);
   await app.begin();
   expect((await app.call({ op: "init", ref: parent, items: ["A stable initialized task"] })).isError).toBeUndefined();
-  const ref = (await kata(["show", parent, "--json"])).children[0].short_id;
+  const ref = (await show(parent)).children[0].short_id;
   await set(ref, "todo.status", "pending");
   await set(ref, "teammate", "worker-b");
   await set(ref, "work.attention", "needs-human");
   const result = await app.call({ op: "init", ref: parent, items: ["A stable initialized task"] });
   expect(result.isError).toBe(true);
-  expect((await show(ref)).metadata["work.attention"]).toBe("needs-human");
+  expect((await issueOf(ref)).metadata["work.attention"]).toBe("needs-human");
 });
 test("successful done does not overwrite the next foreign task", async () => {
   const parent = await issue();
@@ -357,6 +313,6 @@ test("successful done does not overwrite the next foreign task", async () => {
   await app.begin();
   const result = await app.call({ op: "done", task: first, message: "Completed the first isolated fixture with real Kata ownership checks.", evidence: ["test:ownership harness"] });
   expect(result.isError).toBe(true);
-  expect((await show(first)).status).toBe("closed");
-  expect((await show(next)).metadata["work.attention"]).toBe("needs-human");
+  expect((await issueOf(first)).status).toBe("closed");
+  expect((await issueOf(next)).metadata["work.attention"]).toBe("needs-human");
 });

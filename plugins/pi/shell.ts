@@ -1,9 +1,16 @@
+// Generated from core/shell.ts; edit there.
 import path from "node:path";
+import { closeEnv } from "./kata-cli";
 import { projectOf, type Binding } from "./model";
 
 // Kata invocations inside a bash command, and the rewrite that pins a delegate's to its teammate.
 
 export function quote(value: string): string { return `'${value.replace(/'/g, "'\\''")}'`; }
+// `env NAME='value' ... ` in front of a command; empty for no variables.
+export function envPrefix(vars: Record<string, string>): string {
+	const assignments = Object.entries(vars).map(([name, value]) => `${name}=${quote(value)}`);
+	return assignments.length ? `env ${assignments.join(" ")} ` : "";
+}
 
 type ShellWord = { value: string; start: number; end: number };
 // Inspect command positions only. Quoted arguments and heredoc bodies are data;
@@ -63,7 +70,7 @@ export function shellOptions(words: ShellWord[]) {
 	return { options, occurrences, args, value };
 }
 
-export function delegateCommand(command: string, executable: string, executableVars: readonly string[], teammate: string, binding?: Binding, transcriptSession?: { agent: string; id: string }): string {
+export function delegateCommand(command: string, executable: string, executableVars: readonly string[], teammate: string, binding?: Binding, transcriptSession?: { agent: string; id: string | undefined }, extraEnv: Record<string, string> = {}): string {
 	const edits: { start: number; end: number; value: string }[] = [];
 	for (const invocation of kataCommands(command, executable, executableVars)) {
 		const parsed = shellOptions(invocation.words);
@@ -76,7 +83,8 @@ export function delegateCommand(command: string, executable: string, executableV
 		}
 		edits.push({ start: invocation.executable.end, end: invocation.executable.end, value: flags });
 		// An in-process delegate has its own session; without this its close would record the lead's.
-		if (transcriptSession && parsed.args[0] === "close") edits.push({ start: invocation.executable.start, end: invocation.executable.start, value: `env KATA_TRANSCRIPT_AGENT=${quote(transcriptSession.agent)} KATA_TRANSCRIPT_SESSION_ID=${quote(transcriptSession.id)} ` });
+		const prefix = envPrefix({ ...(transcriptSession ? closeEnv(parsed.args, transcriptSession.agent, transcriptSession.id) : undefined), ...extraEnv });
+		if (prefix) edits.push({ start: invocation.executable.start, end: invocation.executable.start, value: prefix });
 	}
 	for (const edit of edits.sort((a, b) => b.start - a.start)) command = command.slice(0, edit.start) + edit.value + command.slice(edit.end);
 	return command;

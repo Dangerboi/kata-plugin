@@ -1,23 +1,9 @@
-import { diffTodoList, listOf, type ListItem, type ListOp, type PlanItem } from "./todo-list";
-import type { Lead, TodoResult } from "./lead";
+import { diffTodoList, LIST_STATUSES, listOf, planTail, type ListItem, type ListOp, type PlanItem } from "./todo-list";
+import { RULES } from "./kata-core";
+import { PROOF_MIN } from "./model";
+import type { Planner, TodoResult } from "./lead";
 import type { Seam } from "./seam";
-
-const STATUSES = ["pending", "in_progress", "completed", "cancelled"] as const;
-
-// DESCRIPTION in kata-core.ts, for the list interface: the model sends the whole list, not ops.
-const DESCRIPTION = `Track multi-step work as a todo list stored in Kata. Send the WHOLE list on every call: todos [{content, status}] with status pending, in_progress, completed or cancelled. Items are identified by exact content: keep the wording of an item stable between calls. Create the list before work for 3+ steps or several user requests, one item per request; mark an item in_progress when you start it and completed right after it is verified. Nothing starts on its own, and several items may be in progress.
-Every call is compared with the Kata plan. A call that disagrees with it is refused and changes nothing; the error carries the current list: send it again with your changes on top.
-- completed needs \`message\` (40+ characters: what changed and how it was verified) and \`evidence\` (an array: commit:<sha>, test:<cmd>, pr:<url>, reviewed-paths:<path>). Unverified work: do not complete it; pause it instead.
-- cancelled needs \`reason\`. A new item cannot be cancelled: leave it out.
-- To pause an item (waiting on the user, an agent or a service), keep it in_progress and set \`blocker\` to the reason; remove the blocker to resume. A started item cannot go back to pending.
-- An open item missing from your list is refused: keep it, or cancel it with a reason. Items added to the plan outside this session (by the user or a teammate) are requested work: send them back unchanged.
-- An item Kata has closed (a delegate closed its own issue, or the user did) stays completed or cancelled: resend it with that status and no message, evidence or reason.
-- An item that works an existing ticket starts with its qualified ref: \`<project>#<short_id>: <action>\`. It creates no issue: starting it claims the ticket, completing it comments on it, and the last completed item of a ticket closes it with that item's evidence. A ref that does not resolve, or a closed ticket, is an error.
-- Every other item becomes a child issue of one parent issue. On the first call pass \`ref\` with the Kata issue this plan serves (search first: kata search "<terms>" --agent); without it the session gets its own parent issue.
-- The tool does the Kata bookkeeping for its items (claims, attention, closes). Do not run \`kata claim\`, \`kata meta set ... work.attention\` or \`kata close\` for them yourself, and never add such bookkeeping as an item.
-- A \`subagent\` call is bound to an item only when its prompt names that item: its exact content in quotes, its ref, or for a ticket item its ticket's ref. Naming a ticket outside the plan by qualified ref binds it to that ticket. A prompt that names neither gets no issue to work, the plugin records its run and report as a closed child issue of the plan parent, and you complete the item yourself. A bound delegate closes that issue itself, with its own evidence, once its work is verified, unless its prompt says to leave the issue open; the item then shows completed.
-- An item another session started stays that session's until it ends: a call that changes it is refused. If that session crashed or was killed (or the user says so), send the list again with \`takeover: true\`; never take over work another session may still be doing.
-- Contents are kept as written (spaces and newlines included); send them back exactly as the list shows them. When the plan has the same content twice (in two phases), the list shows it once and a change to it applies to every open copy. The exception is copies that name the same ticket: todowrite cannot change them, so ask the user to remove the duplicate item. If the copies were closed both ways (some completed, some cancelled), the item may be sent as either.`;
+import { DESCRIPTION } from "./wording";
 
 const SCHEMA = {
 	type: "object",
@@ -29,9 +15,9 @@ const SCHEMA = {
 				type: "object",
 				properties: {
 					content: { type: "string", description: "Exact task text; also the item's identity." },
-					status: { type: "string", enum: [...STATUSES] },
-					message: { type: "string", description: "completed: what changed and how it was verified (40+ characters)." },
-					evidence: { type: "array", items: { type: "string" }, description: "completed: commit:<sha>, test:<cmd>, pr:<url>, reviewed-paths:<path>." },
+					status: { type: "string", enum: [...LIST_STATUSES] },
+					message: { type: "string", description: `completed: what changed and how it was verified (${PROOF_MIN}+ characters).` },
+					evidence: { type: "array", items: { type: "string" }, description: `completed: ${RULES.evidence}.` },
 					reason: { type: "string", description: "cancelled: why." },
 					blocker: { type: "string", description: "in_progress: what the item is waiting on." },
 				},
@@ -53,7 +39,7 @@ function parseInput(input: any): { todos: ListItem[]; ref?: string; takeover: bo
 	const todos = input.todos.map((item: any, index: number): ListItem => {
 		const where = `todos[${index}]`;
 		if (!item || typeof item.content !== "string") throw new Error(`${where}.content must be a string.`);
-		if (!STATUSES.includes(item.status)) throw new Error(`${where}.status must be one of ${STATUSES.join(", ")}.`);
+		if (!LIST_STATUSES.includes(item.status)) throw new Error(`${where}.status must be one of ${LIST_STATUSES.join(", ")}.`);
 		if (item.evidence !== undefined && (!Array.isArray(item.evidence) || item.evidence.some((e: unknown) => typeof e !== "string"))) throw new Error(`${where}.evidence must be an array of strings.`);
 		return { content: item.content, status: item.status, message: text(item.message, `${where}.message`), evidence: item.evidence, reason: text(item.reason, `${where}.reason`), blocker: text(item.blocker, `${where}.blocker`) };
 	});
@@ -63,23 +49,11 @@ function parseInput(input: any): { todos: ListItem[]; ref?: string; takeover: bo
 
 const planOf = (result: TodoResult): PlanItem[] => (result.kata.phases ?? []).flatMap(phase => phase.tasks.map(({ content, status, blocker, ref }) => ({ content, status, blocker, ref })));
 
-// The list tail every refusal and failure ends with, so the model can resend it.
-const listTail = (result: TodoResult) => JSON.stringify({ todos: listOf(planOf(result)) });
-
-// The core texts name the omp `todo` tool; here the model has todowrite, which takes the whole list. The delegate check uses it too.
-export const speak = (text: string) => text
-	.replace(/Use todo op=(init|view)( to refresh)?\./g, "Send the list with todowrite$2.")
-	.replace(/Call todo op=init first\./g, "Send the list with todowrite first.")
-	.replace(/repeat the call with takeover: true/g, "send the list again with takeover: true")
-	.replace(/take it over first \(todo start with takeover: true\)/g, "take it over first (send the list with takeover: true)")
-	// todowrite takes `ref` only on a session's first call, so the way out of a shared ticket is a fresh session.
-	.replace(/\(todo init with ref ([^)\s]+)\)/g, "(start a session whose first todowrite passes ref $1)");
-
 function coreOp(op: ListOp, init: { ref?: string } | undefined, takeover: boolean): [string, Record<string, unknown>] {
 	const taken = takeover ? { takeover: true } : {};
 	switch (op.op) {
-		// The first items of a session with no plan start it: one phase.
-		case "append": return init ? ["init", { list: [{ phase: "Tasks", items: op.items }], ...(init.ref ? { ref: init.ref } : {}) }] : ["append", { items: op.items }];
+		// The first items of a session with no plan start it, in the core's one default phase.
+		case "append": return init ? ["init", { items: op.items, ...(init.ref ? { ref: init.ref } : {}) }] : ["append", { items: op.items }];
 		case "start": return ["start", { task: op.task, ...taken }];
 		case "done": return ["done", { task: op.task, message: op.message, evidence: op.evidence, ...taken }];
 		case "drop": return ["drop", { task: op.task, message: op.message, ...taken }];
@@ -88,14 +62,14 @@ function coreOp(op: ListOp, init: { ref?: string } | undefined, takeover: boolea
 	}
 }
 
-// One todowrite call: reload the Kata plan, diff the list against it, apply the ops in order. A refusal changes nothing.
-async function write(seam: Seam, lead: Pick<Lead, "id" | "exclusive" | "todo">, input: unknown) {
+// One todowrite call, as one job of the session's core: reload the Kata plan, diff the list against it, apply the ops in order. A refusal changes nothing.
+async function write(seam: Seam, planner: Planner, input: unknown) {
 	const { todos, ref, takeover } = parseInput(input);
-	return lead.exclusive(async () => {
-		let result = await lead.todo("view");
-		if (result.isError) throw new Error(speak(result.text));
+	return planner.batch(async () => {
+		let result = await planner.todo("view");
+		if (result.isError) throw new Error(result.text);
 		const hasPlan = !!result.kata.parent || !!result.kata.local || planOf(result).length > 0;
-		const accepted = new Set(await seam.storage.get<string[]>(lead.id, "accepted") ?? []);
+		const accepted = new Set(await seam.storage.accepted(planner.id));
 		const diff = diffTodoList(planOf(result), accepted, todos);
 		if ("refusal" in diff) throw new Error(diff.refusal);
 
@@ -103,16 +77,16 @@ async function write(seam: Seam, lead: Pick<Lead, "id" | "exclusive" | "todo">, 
 		for (const op of diff.ops) {
 			const [name, params] = coreOp(op, init, takeover);
 			init = undefined;
-			result = await lead.todo(name, params);
+			result = await planner.todo(name, params);
 			if (op.op === "append" && !result.isError) for (const item of op.items) accepted.add(item);
 			// An earlier op may have been applied: say what the plan is now, and remember the items this call already added.
 			if (result.isError) {
-				await seam.storage.set(lead.id, "accepted", [...accepted]);
-				throw new Error(`${speak(result.kata.notice || result.text)}\nEarlier changes of this call may have been applied. The current Kata plan is below. Send the list again with your changes applied on top:\n${listTail(result)}`);
+				await seam.storage.accept(planner.id, [...accepted]);
+				throw new Error(`${result.kata.notice || result.text}\nEarlier changes of this call may have been applied. ${planTail(planOf(result))}`);
 			}
 		}
-		await seam.storage.set(lead.id, "accepted", todos.map(item => item.content));
-		return { content: speak(result.text), metadata: { todos: listOf(planOf(result)), ...(result.kata.parent ? { parent: result.kata.parent } : {}) } };
+		await seam.storage.accept(planner.id, todos.map(item => item.content));
+		return { content: result.text, metadata: { todos: listOf(planOf(result)), ...(result.kata.parent ? { parent: result.kata.parent } : {}) } };
 	});
 }
 
@@ -123,17 +97,13 @@ export function install(seam: Seam): Promise<unknown> {
 		input: SCHEMA,
 		options: { codemode: false },
 		async execute(input: unknown, context: { sessionID: string }) {
-			const session = await seam.sessionOf(context.sessionID);
-			if (session?.parentID === undefined) {
-				const lead = session && await seam.leadOf(context.sessionID);
-				if (!lead) throw new Error("todowrite is for the lead session: a delegate reports its work in its reply, and the lead tracks it.");
-				return write(seam, lead, input);
-			}
+			const role = await seam.roleOf(context.sessionID);
+			if (role.kind === "lead") return write(seam, role.lead, input);
+			if (role.kind === "other") throw new Error("todowrite could not read this session from OpenCode, so it changed nothing. Send the list again.");
 			// A delegate bound to an issue plans under it, through its own core; one that is not bound has no plan, and the lead tracks its work.
-			const delegate = await seam.delegateOf(context.sessionID);
-			if (!delegate) throw new Error("todowrite is for the lead session: a delegate reports its work in its reply, and the lead tracks it.");
-			await delegate.lead.core.delegates.apply({ type: "nextUse", id: delegate.record.id });
-			return write(seam, delegate.lead.delegateCore(context.sessionID), input);
+			if (!role.record) throw new Error("todowrite is for the lead session: a delegate reports its work in its reply, and the lead tracks it.");
+			await role.lead.delegateEvent({ type: "nextUse", id: role.record.id });
+			return write(seam, role.lead.delegatePlan(context.sessionID), input);
 		},
 	}));
 }

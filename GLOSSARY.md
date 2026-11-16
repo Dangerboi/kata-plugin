@@ -14,7 +14,7 @@ _Avoid_: subagent, child, worker
 
 **Assignment**:
 The issue a delegate works and the teammate it works it as.
-_Avoid_: binding, worker binding
+_Avoid_: binding, worker binding (`Binding` is the stored plan parent and workspace pair, not the assignment)
 
 **Untracked delegate**:
 A delegate with no assignment, because its task named no plan task it could take and no ticket, or (a pi child) the plugin refused its assignment; the lead tracks its work. When it exits with a report, the plugin records its run as a mission; a refused pi child gets no mission, and its report goes on the tickets or plan items it named only when it named several.
@@ -36,7 +36,7 @@ The lead session that started or blocked an open plan task (`todo.session`); oth
 _Avoid_: owner (Kata's owner is an actor)
 
 **Release**:
-A lead session giving up the plan tasks it holds when it ends: it shuts down, or switches to another session. A reload does not end it, and a fork that replaces it in the same process inherits its tasks instead.
+A lead session giving up the plan tasks it holds when it ends: it shuts down, or switches to another session. A reload does not end it, and a fork that replaces it in the same process inherits its tasks instead. A task whose close is still pending is not released.
 
 **Take over**:
 A lead session making itself the holder of a plan task another session holds, on explicit request, with a comment naming both sessions.
@@ -87,7 +87,7 @@ The closes the plugin still owes for a session: its pending closes and its autom
 _Avoid_: reconcile, close queue
 
 **Ended session**:
-A lead session deleted or archived while it still owes closes or delegate cleanups; its saved state waits for the next plugin setup, which finishes the work and forgets it.
+A lead session deleted or archived while it still owes closes or delegate cleanups; it is finished once that work is done, by the instance that holds it or else by the next plugin setup, and its saved state is then forgotten.
 _Avoid_: pending end, ended mark
 
 ## Inbox

@@ -22,7 +22,7 @@
     "smoke:omp": "bun scripts/vendor-core.ts --check && bun scripts/smoke-omp.ts",
     "smoke:opencode": "bun scripts/vendor-core.ts --check && bun scripts/smoke-opencode.ts",
     "smoke:omp-attention": "bun scripts/vendor-core.ts --check && bun scripts/smoke-omp-attention.ts",
-    "test:todo": "bun tests/run.ts",
+    "test:files": "bun tests/run.ts",
     "test:changed": "bun tests/run.ts changed",
     "test:revisions": "bun tests/run.ts revisions",
     "build:plugins": "bun scripts/vendor-core.ts",

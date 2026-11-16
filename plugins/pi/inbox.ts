@@ -1,3 +1,4 @@
+// Generated from core/inbox.ts; edit there.
 // The session inbox: the requests Kata holds for one session address. Two feeds fill it, the `kata inbox`
 // read (every turn, or the seed of a live follower) and the `kata events --tail` stream (live). Both go
 // through one trust rule and one render, and a live follower owns the retry and backoff policy for the
@@ -29,9 +30,9 @@ function capField(value: unknown, limit: number): Capped {
 /** The one trust rule: a request counts only when its writer is the session's own actor. */
 const isTrusted = (request: { from?: unknown }, mine: string | undefined) => typeof request.from === "string" && request.from === mine;
 
-export function trustedInbox(requests: unknown, mine: string, recipient: string): { requests: any[]; text: string } {
+export function trustedInbox(requests: unknown, mine: string, recipient: string): string {
 	const kept = (Array.isArray(requests) ? requests : []).filter(r => r && typeof r.ref === "string" && typeof r.message === "string" && isTrusted(r, mine));
-	if (!kept.length) return { requests: [], text: "" };
+	if (!kept.length) return "";
 	const lines = kept.map(r => {
 		const cuts: Capped[] = [];
 		const cut = (value: unknown, limit: number) => { const c = capField(value, limit); cuts.push(c); return c.text; };
@@ -62,7 +63,7 @@ export function trustedInbox(requests: unknown, mine: string, recipient: string)
 		omitted++;
 		shown--;
 	}
-	return { requests: kept, text: (out + footer()).replace(/\n$/, "") };
+	return (out + footer()).replace(/\n$/, "");
 }
 
 // A request as Kata stores it in the slot `notify.<base64url(address)>` of one issue.
@@ -209,7 +210,7 @@ export function createInboxFollower(deps: InboxFollowerDeps): InboxFollower {
 	function publish() {
 		if (mine === undefined) return;
 		const requests = [...states].filter(([, s]) => s.slot).map(([issue, s]) => ({ ref: issue, title: s.title, ...s.slot }));
-		deps.publish(trustedInbox(requests, mine, deps.address).text);
+		deps.publish(trustedInbox(requests, mine, deps.address));
 	}
 
 	function apply(issue: string, slot: Slot | null, o: { eventId?: number; quiet: boolean; ref?: string; title?: string; read?: boolean }) {
