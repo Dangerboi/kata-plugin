@@ -206,9 +206,9 @@ const needsParent = (contents: string[]) => contents.some(content => !itemTicket
 // Whether `target` names the task's issue: its qualified ref, or its short id alone.
 const hasRef = (task: Task, target: string) => task.ref === target || task.ref.split("#")[1] === target;
 // Why a task or item left the plan: the caller's words, else a reason Kata's wontfix accepts.
-const whyRetired = (change: Change) => change.message || change.reason || "no longer needed";
+const whyDropped = (change: Change) => change.message || change.reason || "no longer needed";
 // The comment a ticket gets when its item leaves the plan: a drop never closes a ticket.
-const leftPlan = (verb: "Dropped" | "Removed", task: Task, change: Change) => `${verb} from the todo plan: "${task.content}". Reason: ${whyRetired(change)}. The ticket stays open.`;
+const leftPlan = (verb: "Dropped" | "Removed", task: Task, change: Change) => `${verb} from the todo plan: "${task.content}". Reason: ${whyDropped(change)}. The ticket stays open.`;
 const delegatedMessage = (kind: "task" | "ticket", ref: string, wording: ToolWording) => `Kata ${kind} ${ref} is delegated. Its subagent must manage and close it. ${wording.refresh}`;
 
 function phasesOf(tasks: Task[]): { name: string; tasks: Task[] }[] {
@@ -1011,7 +1011,7 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 	// tells two tasks of one title apart: with Kata's close throttle on, a close that repeats a sibling's message is
 	// refused (`duplicate_message`).
 	function wontfix(verb: string, task: Task, change: Change): string {
-		return `${verb} from the todo plan under ${plan.parent}: "${task.content}" (${task.ref}). Reason: ${whyRetired(change)}. This task was intentionally retired from the plan without asserting completion.`;
+		return `${verb} from the todo plan under ${plan.parent}: "${task.content}" (${task.ref}). Reason: ${whyDropped(change)}. This task was intentionally retired from the plan without asserting completion.`;
 	}
 
 	const leads = (t: Task) => !t.delegated && !t.holder && !delegates.holds(t.ticket ?? t.ref);
@@ -1713,10 +1713,11 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 		// Matching reads which issues already carry this child's teammate: none yet, so any unused value matches the same.
 		const delegateScope = { parent: binding.parent, workspace: binding.workspace, label: binding.label, leadTeammate: parent.teammate, teammate: kept ?? teammateFor(salt), leadSession: parent.sessionId };
 		// A prompt the assignment rules refuse is untracked and makes no mission: its report goes on the tickets or plan items it
-		// named, when it named several, and nowhere for a conflict (a taken or held task). A check Kata could not run leaves it untracked.
+		// named, when it named several, and nowhere for a conflict (a taken or held task). A check Kata could not run decides
+		// nothing: the child starts undecided and its next use decides it. Any other failure leaves it untracked.
 		let reserved: Reservation | undefined, untracked = false, refused: Refused | undefined;
 		try { reserved = (await delegates.check([prompt], id, delegateScope))[0]; }
-		catch (error) { debug(error); if (error instanceof Refusal) refused = { targets: error.targets }; else untracked = true; }
+		catch (error) { debug(error); if (error instanceof Refusal) refused = { targets: error.targets }; else if (!isUnusable(error)) untracked = true; }
 		const name = childName(host.getSessionName?.(), reserved, id);
 		const teammate = kept ?? teammateFor(name, salt);
 		process.env.KATA_TEAMMATE = teammate;

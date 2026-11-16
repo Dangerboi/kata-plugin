@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { later } from "./kata-fixture";
-import { siblingThrottle } from "./kata-errors";
+import { daemonUnavailable, siblingThrottle } from "./kata-errors";
 import { launchesPi } from "../plugins/pi/kata";
 import { piFixture } from "./pi-fixture";
 
@@ -506,4 +506,19 @@ test("a resumed child whose first run closed its plan task reports its next run 
   await endWithReport(resumed, "Empty input is covered now.");
   expect(await reportsOn(record.ref)).toEqual([[record.teammate, `Report from subagent ${record.name} (after a follow-up):\n\nEmpty input is covered now.`]]);
   expect((await show(record.ref)).issue.status).toBe("closed");
+});
+
+test("a child whose named ticket Kata could not read at its start is assigned the ticket on its next prompt", async () => {
+  const parent = await host(); await parent.event("session_start", { reason: "startup" });
+  await parent.init(["Lead outage fixture work"]);
+  const ticket = `pitest#${await issue("Outage ticket for a child")}`;
+  let down = true;
+  const child = await childOf({ before: (a: string[]) => down && a[0] === "show" && a.includes(ticket) ? daemonUnavailable() : undefined });
+  await child.event("before_agent_start", { prompt: `Work ${ticket}`, systemPromptOptions: { sections: {} } });
+  // Not untracked: an assignment that failed on Kata is retried on the child's next use.
+  expect(delegateRecord(child)).toMatchObject({ state: "failed" });
+  down = false;
+  await child.event("before_agent_start", { prompt: "Carry on", systemPromptOptions: { sections: {} } });
+  expect(delegateRecord(child)).toMatchObject({ state: "assigned", ref: ticket });
+  leaveChild();
 });

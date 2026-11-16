@@ -67,7 +67,7 @@ All notable changes to kata-plugin are listed here. The format follows [Keep a C
 - OpenCode: a failed storage or session read in a hook no longer fails a child session's tool calls.
 - A delegate whose assignment failed on an issue another teammate owns no longer comments on, labels or notifies that issue when it exits.
 - A mission whose close Kata throttled is saved at once, so a lead that ends or is killed before the retry still closes it when resumed.
-- A subagent that starts without a checked `task` call follows the same rules as the check.
+- A delegate that starts without a checked `task` call follows the same rules as the check.
   - A spawn that names a blocked ticket item runs untracked, as one naming a blocked plan task does.
   - One that names a ticket it cannot take (closed, or another teammate's) is untracked and leaves a mission, instead of failing with its report lost.
   - A ticket Kata could not be read for is no such refusal: the assignment is retried on the delegate's next use.
