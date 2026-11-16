@@ -3,13 +3,13 @@ import { createKataCore } from "../core/kata-core";
 import { teammateFor, type DelegateEvent } from "../core/delegates";
 import { TODO_WORDING, type ToolWording } from "../core/model";
 import { eventually, EVIDENCE, holdKata, MESSAGE, memoryDelegateStore, realKata, unique } from "./kata-fixture";
-import { siblingThrottle } from "./kata-errors";
+import { daemonUnavailable, siblingThrottle } from "./kata-errors";
 
 // The delegate lifecycle through the core's delegate events, against real Kata in a throwaway store.
 const LEAD = "lead-mate";
 const { binary, cwd, run, kata, show, issue, deleteIssue, commentsOf, sessionParents, closesOf } = realKata({ prefix: "delegates", author: "lead-actor", project: "delegates-test", process: { KATA_TEAMMATE: LEAD } });
 const labels = (view: any) => (view.labels ?? []).map((l: any) => l.label);
-let failing: ((args: string[]) => boolean) | undefined, throttled: ((args: string[]) => boolean) | undefined, holding: ((args: string[], opts: any) => Promise<unknown>) | undefined;
+let failing: ((args: string[]) => boolean) | undefined, throttled: ((args: string[]) => boolean) | undefined, unreachable: ((args: string[]) => boolean) | undefined, holding: ((args: string[], opts: any) => Promise<unknown>) | undefined;
 
 // A lead session and its delegates: each is an agent with its own core, as in omp, sharing the one delegate store.
 // `from` resumes a past session (same id and entries, no records in memory) or, with `fork`, forks it (new id, parentSession in the header).
@@ -19,7 +19,7 @@ function lead(from?: { entries: any[]; id: string; fork?: boolean }, wording?: T
   const store = memoryDelegateStore();
   const agent = () => createKataCore({
     appendEntry: (customType, data) => entries.push({ type: "custom", customType, data }),
-    exec: async (_file, args, opts) => { await holding?.(args, opts); if (throttled?.(args)) return siblingThrottle(); return failing?.(args) ? { code: 1, stdout: "", stderr: "delegation service permission denied" } : run(args, opts.cwd); },
+    exec: async (_file, args, opts) => { await holding?.(args, opts); if (throttled?.(args)) return siblingThrottle(); if (unreachable?.(args)) return daemonUnavailable(); return failing?.(args) ? { code: 1, stdout: "", stderr: "delegation service permission denied" } : run(args, opts.cwd); },
     isMain: ctx => ctx.agent?.kind === "main",
     delegateStore: store,
   }, { namespace: "omp", executable: binary, executableVars: ["KATA_OMP_EXECUTABLE"], wording });
@@ -59,7 +59,7 @@ function lead(from?: { entries: any[]; id: string; fork?: boolean }, wording?: T
   return { core, ctx, id, entries, store, plan, view, delegate, started, delegated, scout, timers, delegates: core.delegates };
 }
 
-beforeEach(() => { failing = undefined; throttled = undefined; holding = undefined; });
+beforeEach(() => { failing = undefined; throttled = undefined; unreachable = undefined; holding = undefined; });
 
 const taskOf = async (parent: string, title: string) => (await show(parent)).children.find((c: any) => c.title === title);
 const PROJECT = "delegates-test";
@@ -775,6 +775,19 @@ test("a spawn naming a ticket outside the plan is reserved as that ticket and as
   await a.delegates.apply(a.started("lambda", `Work ${ref}`, { call: "lambda-call" }));
   expect((await show(ref)).issue.metadata["omp.subagent_id"]).toBe("lambda");
   expect(await a.delegate("lambda").assignment()).toContain(ref);
+});
+
+test("a delegate naming a ticket outside the plan keeps it when Kata is unreachable for that one read, and is assigned it on its next use", async () => {
+  const a = lead(); await a.plan(["Build the xi widget"]);
+  const ticket = (await kata(["create", "Outage ticket", "--force-new", "--json"])).issue.short_id, ref = `delegates-test#${ticket}`;
+  const delegate = a.delegate("xi");
+  unreachable = args => args[0] === "show" && args.includes(ref);
+  await a.delegates.apply(a.started("xi", `Work ${ref}`));
+  expect(await delegate.assignment()).toBeUndefined();
+  unreachable = undefined;
+  await a.delegates.apply({ type: "nextUse", id: "xi" });
+  expect(await delegate.assignment()).toContain(ref);
+  expect((await show(ref)).issue.metadata["omp.subagent_id"]).toBe("xi");
 });
 
 test("a delegate refused an issue another delegate holds leaves it with its holder when it exits", async () => {

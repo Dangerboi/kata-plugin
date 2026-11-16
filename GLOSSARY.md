@@ -14,7 +14,7 @@ _Avoid_: subagent, child, worker
 
 **Assignment**:
 The issue a delegate works and the teammate it works it as.
-_Avoid_: binding, worker binding
+_Avoid_: binding, worker binding (`Binding` is the stored plan parent and workspace pair, not the assignment)
 
 **Untracked delegate**:
 A delegate with no assignment, because its task named no plan task it could take and no ticket, or (a pi child) the plugin refused its assignment; the lead tracks its work. When it exits with a report, the plugin records its run as a mission; a refused pi child gets no mission, and its report goes on the tickets or plan items it named only when it named several.

@@ -10,7 +10,7 @@ Session start exports `KATA_CLOSE_TRANSCRIPT_ENABLED=true` (unless already set),
 | `KATA_REF` | Explicit main parent and main session-attention target. |
 | `KATA_DEFAULT_PROJECT` | Existing Kata project that collects the plans of folders without a project. Issues carry a label naming the repo. omp gives extensions no per-plugin settings, so this variable is the only switch. |
 | `KATA_AUTHOR`, `KATA_TEAMMATE` | Existing actor and optional main teammate. |
-| `KATA_INBOX_USER` | The session's inbox address, `<actor>/<name>`. A bare `<actor>` is a person's own inbox: the session reads none and says so once. Only requests from the session's own actor are shown. |
+| `KATA_INBOX_USER` | The session's inbox address, `<actor>/<name>`. A bare `<actor>` is a personal inbox: the session reads none and says so once. Only requests from the session's own actor are shown. |
 | `KATA_OMP_LIVE_INBOX` | `0` turns off live delivery of inbox requests to the main session and keeps the per-turn read. tern-kata sets it for the agents it starts, because it delivers there itself. |
 | `KATA_CLOSE_TRANSCRIPT_ENABLED` | `false` in the environment that launches omp stops closes recording the session; unset, session start sets `true`. |
 | `KATA_OMP_DEBUG` | Optional append-only diagnostic log. |

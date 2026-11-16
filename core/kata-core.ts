@@ -10,7 +10,7 @@ import { createTicketCompletion } from "./autocomplete";
 import { kataCommands, quote, shellOptions } from "./shell";
 import { closedTaskStatus, digest, FULL_ID_REF, heldBySession, heldMessage, itemTicket, OPEN, PROOF_MIN, projectOf, proofProblem, QUALIFIED_REF_ONLY, qualifiedRef, SESSION_KEY, sessionParentKeys, slug, tasksOf, textOf, TITLE_MAX, TODO_WORDING, WORKING, type Binding, type Change, type KataIssue, type KataShow, type Plan, type Status, type Task, type ToolWording } from "./model";
 
-// Canonical shared source. scripts/vendor-core.ts copies this file into each
+// Canonical shared source. scripts/vendor-core.ts copies it with the rest of core/ into each
 // self-contained plugin; host adapters own their event/schema/identity APIs.
 
 // The context of a host event, as the core reads it. omp and pi pass their extension context; a host with none builds this.
@@ -195,7 +195,7 @@ function delegateContext(executable: string, name: string, ref: string, teammate
 }
 
 // A delegate that matched no plan item and named no ticket has no issue. Its
-// binding says so instead of sending it to one: the lead tracks the work.
+// context says so instead of sending it to one: the lead tracks the work.
 function untrackedDelegateContext(name: string): string {
 	return `You are subagent ${name}. The lead session tracks this work and you have no Kata issue. Do not create, claim, close, comment on or edit Kata issues, including one named by an inherited KATA_REF. Reading Kata is fine. Report your results in your reply.`;
 }
@@ -876,7 +876,7 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 				decision = await mark(ref, task, from, to, change, cwd, decision);
 				break;
 			case "completed": {
-				const message = change.message ? `${change.message} (task: ${task.content}; ${task.ref})` : "";
+				const message = `${change.message} (task: ${task.content}; ${task.ref})`;
 				// The close message is only the close reason; the comment keeps it in the issue's activity.
 				const args = ["close", ref, "--done", "--if-match", String(decision.revision), "--message", message, "--comment", `Done: ${change.message}\nEvidence: ${change.evidence!.join(", ")}`];
 				for (const e of change.evidence!) args.push("--evidence", e);
@@ -1203,9 +1203,9 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 	function refuseDropped(replace: boolean, tasks: Task[], wanted: Set<string>): void {
 		const open = tasks.filter(t => OPEN.has(t.status) && !wanted.has(itemKey(t)));
 		const held = open.filter(t => t.holder);
-		if (replace && held.length) throw new Error(`The new todo list leaves out tasks another session started, so init changed nothing:\n${held.map(t => `- ${MARK[t.status]} ${t.content} (session ${t.holder})`).join("\n")}\nIf that session crashed or was killed, take them over first (${wording.takeOverFirst}), or keep them in the list.`);
+		if (replace && held.length) throw new Error(`The new list leaves out tasks another session started, so nothing changed:\n${held.map(t => `- ${MARK[t.status]} ${t.content} (session ${t.holder})`).join("\n")}\nIf that session crashed or was killed, take them over first (${wording.takeOverFirst}), or keep them in the list.`);
 		if (replace || !open.length) return;
-		throw new Error(`The new todo list leaves out open tasks, so init changed nothing:\n${open.map(t => `- ${MARK[t.status]} ${t.content}`).join("\n")}\n${wording.leftOut}`);
+		throw new Error(`The new list leaves out open tasks, so nothing changed:\n${open.map(t => `- ${MARK[t.status]} ${t.content}`).join("\n")}\n${wording.leftOut}`);
 	}
 
 	// Moves tasks another session started to this one, and says which it moved (by ref). Nothing tells the plugin
@@ -1588,7 +1588,7 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 		if (user && !isSessionAddress(user)) {
 			if (!entry.personInbox) {
 				entry.personInbox = true;
-				uiOf(ctx)?.notify?.(`KATA_INBOX_USER=${user} is a person's inbox, so this session reads none. Use ${user}/<name> for a session inbox.`, "warning");
+				uiOf(ctx)?.notify?.(`KATA_INBOX_USER=${user} is a personal inbox, so this session reads none. Use ${user}/<name> for a session inbox.`, "warning");
 			}
 		} else if (inbox && user && !entry.inboxPending) {
 			// Only requests from the session's own actor reach the prompt. A failed read (or actor
@@ -1596,7 +1596,7 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 			entry.inboxPending = (async () => {
 				const mine = await actor(cwd);
 				const out = JSON.parse(await kata.run(["inbox", "--for", user], cwd));
-				entry.inbox = trustedInbox(out?.requests, mine, user).text;
+				entry.inbox = trustedInbox(out?.requests, mine, user);
 			})().catch(debug).finally(() => { entry.inboxPending = undefined; });
 		}
 		return Promise.all([entry.pending, entry.inboxPending]).then(() => undefined);
@@ -1742,7 +1742,7 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 			await serial(async () => {
 				const session = attentionSession;
 				attentionSession = undefined;
-				await load(plan.workspace || ctx.cwd).catch(debug);
+				await load(plan.workspace).catch(debug);
 				const ends = main(ctx) && !closing.continues && !closing.forking;
 				// A pi child that started before this lead had a plan made the session's automatic parent itself (see join),
 				// and may have left missions under it: an ending lead with no plan binds that parent, so its close is audited.
@@ -1796,7 +1796,7 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 					const previous = attentionSession;
 					if (options.attentionHarness && id && previous?.id !== id) {
 						if (previous) await attention("end", previous);
-						attentionSession = { id, cwd: plan.workspace || path.resolve(ctx.cwd), ref: explicit && plan.parent, hostCwd: path.resolve(ctx.cwd), hostRef: explicit };
+						attentionSession = { id, cwd: plan.workspace, ref: explicit && plan.parent, hostCwd: path.resolve(ctx.cwd), hostRef: explicit };
 						await attention("start", attentionSession);
 					}
 					await moveMarks(ending, undefined);

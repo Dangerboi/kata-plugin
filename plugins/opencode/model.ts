@@ -6,7 +6,7 @@ import { createHash } from "node:crypto";
 export type Status = "pending" | "in_progress" | "completed" | "abandoned" | "blocked";
 export const OPEN: ReadonlySet<Status> = new Set(["pending", "in_progress", "blocked"]);
 export const WORKING: ReadonlySet<Status> = new Set(["in_progress", "blocked"]);
-export const openTaskStatus = (value: unknown): Status => value === "in_progress" || value === "blocked" ? value : "pending";
+const openTaskStatus = (value: unknown): Status => value === "in_progress" || value === "blocked" ? value : "pending";
 export const closedTaskStatus = (closedReason?: string): "completed" | "abandoned" => closedReason === "wontfix" ? "abandoned" : "completed";
 // `holder`: another lead session that started this plan task and has not released it (see heldBySession).
 export type Task = { ref: string; content: string; phase: string; status: Status; ticket?: string; at?: number; blocker?: string; delegated?: boolean; holder?: string; review?: boolean; revision?: number; proof?: { message?: string; evidence?: string[] } };

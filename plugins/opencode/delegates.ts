@@ -1,6 +1,6 @@
 // Generated from core/delegates.ts; edit there.
 import { closedTaskStatus, digest, heldBySession, heldMessage, itemTicket, missionCloseArgs, missionKey, OPEN, projectOf, qualifiedRefs, tasksOf, TITLE_MAX, TODO_WORDING, type Binding, type KataIssue, type KataShow, type Plan, type Task, type ToolWording } from "./model";
-import { isKataCode, type Kata } from "./kata-cli";
+import { isKataCode, isUnusable, type Kata } from "./kata-cli";
 
 // The delegate lifecycle, shared by every host: an omp or OpenCode lead and the pi child (see GLOSSARY.md: Delegate,
 // Assignment, Untracked delegate, Mission, Hand back, Report). Adapters translate host events into DelegateEvents;
@@ -51,12 +51,15 @@ export type Reservation = { ref?: string; ticket?: boolean; title?: string };
 // `wait`: the spawn names a task of a local plan, which has no issue until the plan is replayed.
 type Resolved = Reservation & { wait?: true };
 
+// How a refusal calls a spawn that no check() numbered.
+const THE_TASK = "The task";
+
 // The one decision of what a spawn's text works in a plan, for check() and for a delegate that starts with nothing reserved.
 // Nothing is guessed: a text that names no task or ticket works nothing, and so does one that names a blocked item. A text
 // that names several targets, a task or ticket in `taken` (refs other spawns and delegates hold), a task another delegate or
 // session holds, or a ticket other open items name is refused. `spawn` is how a refusal calls the spawn; its advice is in
 // the words of the host's todo tool.
-export function resolve(text: string, plan: Pick<Plan, "tasks" | "parent" | "local">, taken: ReadonlySet<string>, projects: ReadonlySet<string>, spawn = "The task", wording: ToolWording = TODO_WORDING): Resolved {
+export function resolve(text: string, plan: Pick<Plan, "tasks" | "parent" | "local">, taken: ReadonlySet<string>, projects: ReadonlySet<string>, spawn = THE_TASK, wording: ToolWording = TODO_WORDING): Resolved {
 	const { tasks: named, tickets: others } = namedTargets(plan.tasks, text, projects, plan.parent);
 	const targets = [...new Set([...named.map(t => t.ticket ?? t.ref), ...others])];
 	if (targets.length > 1) throw new Refusal(`${spawn} names more than one ticket or plan item (${targets.join(", ")}). Name one ticket per task and split the work across tasks.`, targets);
@@ -313,7 +316,7 @@ export function createDelegates(env: DelegatesEnv): Delegates {
 			return { tasks, parent: scope.parent, workspace, label: scope.label, auto: false, local: false };
 		}
 		const first = env.plan();
-		await env.load(first.workspace || env.cwd());
+		await env.load(first.workspace);
 		const plan = env.plan();
 		return { tasks: plan.tasks, parent: plan.parent, workspace: plan.workspace, label: plan.label, auto: plan.auto, local: !!plan.local };
 	}
@@ -324,7 +327,10 @@ export function createDelegates(env: DelegatesEnv): Delegates {
 		if (!found.ticket) return;
 		let ticket: KataIssue;
 		try { ticket = await env.owned(found.ref!, workspace, "check", false, undefined, { ...(leadTeammate === undefined ? undefined : { teammate: leadTeammate }), ticket: true }); }
-		catch (error) { throw new Refusal(`${which} names ${found.ref}, which cannot be delegated: ${failure(error)}`); }
+		catch (error) {
+			// An unusable Kata says nothing about the ticket: it is not a refusal, so the delegate is retried on its next use.
+			if (isUnusable(error)) throw error;
+			throw new Refusal(`${which} names ${found.ref}, which cannot be delegated: ${failure(error)}`); }
 		found.title ??= ticket.title;
 	}
 
@@ -365,7 +371,7 @@ export function createDelegates(env: DelegatesEnv): Delegates {
 			// one batch, and a background spawn can start after its call was released).
 			src = await source(scope);
 			let found: Resolved;
-			try { found = resolve(r.text, src, taken(r), await env.kata.projectNames(src.workspace), undefined, env.wording); await reserve(found, "The task", src.workspace, r.leadTeammate); }
+			try { found = resolve(r.text, src, taken(r), await env.kata.projectNames(src.workspace), THE_TASK, env.wording); await reserve(found, THE_TASK, src.workspace, r.leadTeammate); }
 			catch (error) {
 				if (!(error instanceof Refusal)) throw error;
 				env.debug(error);

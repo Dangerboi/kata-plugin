@@ -22,7 +22,7 @@ Use `/todo` to see the plan. A task stays unfinished if Kata refuses its close. 
 
 ## Pi
 
-Start pi with the package loaded. Use the same two-task prompt. `/todo` is supplied by this plugin. If the assistant stops with actionable work remaining, a bounded hidden reminder can request continuation. Pi does not track subagents.
+Start pi with the package loaded. Use the same two-task prompt. `/todo` is supplied by this plugin. If the assistant stops with actionable work remaining, a bounded hidden reminder can request continuation. Pi tracks the child pi processes it starts; it has no other subagent concept.
 
 Inspect the closed children and automatic parent with `kata list --status all`. Explicit `KATA_REF` parents remain manually managed in every harness.
 
