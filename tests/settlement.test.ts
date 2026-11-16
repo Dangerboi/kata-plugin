@@ -2,26 +2,25 @@ import { expect, test } from "bun:test";
 import { KataError } from "../core/kata-cli";
 import { missionCloseArgs, missionKey } from "../core/model";
 import { createSettlement, MAX_FAILURES, RETRY_MS, type CloseRequest, type TaskClose } from "../core/settlement";
-import { realKata } from "./kata-fixture";
-const store = realKata({ prefix: "settlement", author: "actor-a", project: "settlement-test" });
+import { EVIDENCE, MESSAGE as message, realKata, unique } from "./kata-fixture";
+const PROJECT = "settlement-test";
+const store = realKata({ prefix: "settlement", author: "actor-a", project: PROJECT });
 const withJson = (args: string[]) => args.includes("--json") ? args : [...args, "--json"];
 const kata = (args: string[]) => store.kata(withJson(args));
-const { cwd, run, show } = store;
-const message = "Verified the isolated settlement fixture with the behavioral regression suite.";
+const { cwd, run, show, closesOf } = store;
 const SESSION = "settle-session";
 
-let seq = 0;
 // A qualified ref for a new issue; an automatic parent carries the session markers, a mission the subagent-run marker.
 async function create(title: string, options: { parent?: string; auto?: boolean; mission?: boolean } = {}) {
-  const out = await kata(["create", `${title} ${++seq}`, "--force-new", ...(options.parent ? ["--parent", options.parent] : []), ...(options.mission ? ["--meta", `${missionKey("omp")}=true`] : [])]);
-  const ref = `${(out.event ?? out.original_event).project_name}#${out.issue.short_id}`;
+  const short = await store.issue(`${title} ${unique()}`, { parent: options.parent, meta: options.mission ? [`${missionKey("omp")}=true`] : [] });
+  const ref = `${PROJECT}#${short}`;
   if (options.auto) {
     await kata(["meta", "set", ref, "omp.auto_parent", "true", "--json-value"]);
     await kata(["meta", "set", ref, "omp.session_id", JSON.stringify(SESSION), "--json-value"]);
   }
   return ref;
 }
-const closeDone = (ref: string) => kata(["close", ref, "--done", "--message", message, "--evidence", "test:settlement fixture"]);
+const closeDone = (ref: string) => kata(["close", ref, "--done", "--message", message, "--evidence", EVIDENCE[0]]);
 const closeMission = (ref: string) => kata(missionCloseArgs(ref));
 const closeWontfix = (ref: string) => kata(["close", ref, "--wontfix", "--message", `${message} The task was intentionally retired without asserting completion.`]);
 const labels = async (ref: string) => (await show(ref)).labels.map((l: any) => l.label);
@@ -225,8 +224,8 @@ test("missions beside plan tasks leave the parent's done close to the plan tasks
   s.settlement.addAutoParent({ parent, workspace: cwd, sessionId: SESSION, auto: true });
   await s.settlement.drain();
   expect((await show(parent)).issue.closed_reason).toBe("done");
-  const row = (await kata(["audit", "closes"])).rows.find((r: any) => r.issue === parent.split("#")[1]);
-  expect(row.evidence_types).toEqual(["test"]);
+  const [close] = await closesOf(parent);
+  expect(close.payload.evidence.map((e: any) => e.type)).toEqual(["test"]);
   expect(await labels(parent)).not.toContain("needs-review");
 });
 

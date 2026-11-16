@@ -2,25 +2,22 @@ import { beforeAll, expect, test } from "bun:test";
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync } from "node:fs";
 import path from "node:path";
-import { realKata } from "./kata-fixture";
+import { EVIDENCE as evidence, MESSAGE as message, realKata, unique } from "./kata-fixture";
 import { daemonUnavailable, missingExecutable } from "./kata-errors";
 import { ompHost } from "./omp-host";
 const { scratch, run, text, kata, show } = realKata({ prefix: "takeover", author: "v2-builder", adopt: true });
 const projects = async () => (await kata(["projects", "list", "--json"])).projects.map((p: any) => p.name).sort();
 const issues = async (project: string) => (await kata(["list", "--project", project, "--status", "all", "--limit", "100", "--json"])).issues;
-let sequence = 0;
 function repo(name: string, remote = `https://github.com/someone/${name}.git`) {
-  const dir = path.join(scratch, `r${++sequence}`, name);
+  const dir = path.join(scratch, `r${unique()}`, name);
   mkdirSync(dir, { recursive: true });
   const git = (...args: string[]) => execFileSync("git", args, { cwd: dir, env: { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null" } });
   git("init", "-q"); if (remote) git("remote", "add", "origin", remote);
   return dir;
 }
 const status = (dir: string) => execFileSync("git", ["status", "--porcelain", "--ignored"], { cwd: dir }).toString();
-const evidence = ["test:bun test takeover"];
-const message = "Implemented this takeover fixture and verified it with the isolated suite.";
 function host(options: any = {}) {
-  const sid = `takeover-${++sequence}`;
+  const sid = `takeover-${unique()}`;
   return ompHost({ run: (args, opts) => run(args, opts.cwd, opts.timeout), cwd: options.cwd, sid, sessionFile: `${scratch}/${sid}.jsonl`, before: options.before, callId: "takeover" });
 }
 beforeAll(async () => { await text(["projects", "create", "takeover-home"]); });

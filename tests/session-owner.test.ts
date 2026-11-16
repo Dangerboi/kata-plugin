@@ -1,18 +1,13 @@
 import { expect, test } from "bun:test";
-import { eventually, later, realKata } from "./kata-fixture";
+import { eventually, EVIDENCE, later, MESSAGE, realKata, unique } from "./kata-fixture";
 import { siblingThrottle } from "./kata-errors";
 import { ompHost } from "./omp-host";
 import { TRANSCRIPT_ENV } from "../core/kata-cli";
 
 // Two lead sessions of one user, no KATA_TEAMMATE: same actor, same empty teammate. Only the session marker tells them apart.
-const { cwd, run, kata, show } = realKata({ prefix: "session-owner", author: "actor-a", project: "omptest", adopt: true });
-let sequence = 0;
-async function issue(meta: string[] = [], parent?: string) {
-  const args = ["create", `Session owner ${++sequence}`, "--force-new", "--json"];
-  if (parent) args.push("--parent", parent);
-  for (const value of meta) args.push("--meta", value);
-  return (await kata(args)).issue.short_id as string;
-}
+const store = realKata({ prefix: "session-owner", author: "actor-a", project: "omptest", adopt: true });
+const { cwd, run, kata, show, closesOf } = store;
+const issue = (meta: string[] = [], parent?: string) => store.issue(`Session owner ${unique()}`, { meta, parent });
 const meta = async (ref: string) => (await show(ref)).issue.metadata ?? {};
 
 // `header` makes the lead a fork of another session.
@@ -31,7 +26,7 @@ function lead(sid: string, parent: string, header?: unknown) {
       sessionManager: { ...app.ctx.sessionManager, getSessionId: () => next, getHeader: () => header, ...(branch ? { getBranch: () => branch } : {}) } }),
   };
 }
-const proof = { message: "Finished the step and checked the result with the session test.", evidence: ["test:session-owner"] };
+const proof = { message: MESSAGE, evidence: EVIDENCE };
 
 test("a task one lead started is refused to another lead of the same actor and teammate", async () => {
   const parent = await issue();
@@ -369,7 +364,7 @@ test("tasks of one title in two phases are dropped with close messages of their 
   expect((await a.call({ op: "init", ref: parent, list: [{ phase: "Build", items: ["Same title"] }, { phase: "Verify", items: ["Same title"] }] })).isError).toBeUndefined();
   const ids: string[] = (await show(parent)).children.map((c: { short_id: string }) => c.short_id);
   for (const id of ids) expect((await a.call({ op: "drop", task: `omptest#${id}`, message: "covered elsewhere" })).isError).toBeUndefined();
-  const messages = (await kata(["audit", "closes", "--json"])).rows.filter((r: { issue: string }) => ids.includes(r.issue)).map((r: { message: string }) => r.message);
+  const messages = (await Promise.all(ids.map(closesOf))).flat().map(event => event.payload.message);
   expect(messages).toHaveLength(2);
   // With Kata's close throttle on, a close that repeats a sibling's message is refused (duplicate_message).
   expect(new Set(messages).size).toBe(2);

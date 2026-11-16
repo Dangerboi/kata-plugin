@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { realKata } from "./kata-fixture";
+import { realKata, unique } from "./kata-fixture";
 import { createInboxFollower, deliveryText, parseStreamLine, projectHead, knownProjectHead, slotKey, type InboxFollowerDeps } from "../core/inbox";
 
 // ------------------------------------------------------------------ follower with fakes
@@ -374,9 +374,9 @@ test("a stream that keeps dropping right after a line backs off further each tim
 });
 
 // ------------------------------------------------------------------ project head, real Kata
-const { text, kata } = realKata({ prefix: "live", author: "v2-builder", project: "omp-v2-live" });
-let sequence = 0;
-const issue = async () => (await kata(["create", `Live inbox ${++sequence}`, "--force-new", "--json"])).issue.short_id;
+const store = realKata({ prefix: "live", author: "v2-builder", project: "omp-v2-live" });
+const { text, kata } = store;
+const issue = () => store.issue(`Live inbox ${unique()}`);
 
 test("the project head found after a purge is the newest event, so the stream does not replay what follows the marker", async () => {
 	const doomed = await issue();

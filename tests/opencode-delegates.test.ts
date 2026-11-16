@@ -1,12 +1,12 @@
 import { expect, test } from "bun:test";
-import { until } from "./kata-fixture";
+import { EVIDENCE as evidence, MESSAGE as message, until } from "./kata-fixture";
 import { userMessage, type FakeSession, type OpenCodeInstance } from "./opencode-host";
-import { assignmentOf, evidence, message, openCodeKata, PROJECT, qref, statusOf, todos, write } from "./opencode-fixture";
+import { assignmentOf, openCodeKata, qref, statusOf, todos, write } from "./opencode-fixture";
 import opencode from "../plugins/opencode/kata";
 import { SUBAGENT_PREFIX } from "../plugins/opencode/subagents";
 
 const {
-	kata, show, startLead, restart, parentOf, itemsOf, labelsOf, commentsOf, closeAs, savedOf, forgotten,
+	show, startLead, restart, parentOf, ticketRef, itemsOf, labelsOf, commentsOf, closeAs, savedOf, forgotten,
 	kataCalls, holdCalls, releaseCalls,
 } = openCodeKata("opencode-delegates");
 
@@ -170,8 +170,7 @@ test("a spawn the rules refuse never runs and leaves Kata unchanged", async () =
 });
 
 test("a spawn naming an item another lead session holds is refused in todowrite's words", async () => {
-	const created = await kata(["create", "Ticket two leads delegate under", "--body", "Shared by two sessions.", "--project", PROJECT, "--force-new", "--json"]);
-	const ticket = `${PROJECT}#${created.issue.short_id}`;
+	const ticket = await ticketRef("Ticket two leads delegate under", "Shared by two sessions.");
 	const a = await startLead({ ref: ticket });
 	await write(a.host, a.id, todos(["Shared parser item", "in_progress"]));
 	const b = await startLead({ ref: ticket });
@@ -490,8 +489,7 @@ test("a lead archived with a call still pending and work owed gets its reservati
 });
 
 test("a spawn that would delegate a ticket other open items name is told the way out in todowrite's words", async () => {
-	const created = await kata(["create", "Ticket two items work", "--body", "Worked by two plan items.", "--project", PROJECT, "--force-new", "--json"]);
-	const ticket = `${PROJECT}#${created.issue.short_id}`;
+	const ticket = await ticketRef("Ticket two items work", "Worked by two plan items.");
 	const { host, id } = await startLead();
 	await write(host, id, todos([`${ticket}: write the parser`, "pending"], [`${ticket}: test the parser`, "pending"]));
 	const { result, child } = await spawn(host, id, { prompt: `Work on ${ticket}.` }, async () => "never");

@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, beforeEach } from "bun:test";
 import { mkdirSync, readFileSync } from "node:fs";
 import path from "node:path";
-import { fakeHost, realKata, unique } from "./kata-fixture";
+import { EVIDENCE, fakeHost, MESSAGE, realKata, unique } from "./kata-fixture";
 import { daemonUnavailable } from "./kata-errors";
 import piKata from "../plugins/pi/kata";
 
@@ -62,7 +62,7 @@ export function piFixture() {
   return {
     ...store, outside, unique, host, asChild, nativeKey, globalRegistry,
     down: daemonUnavailable,
-    evidence: ["test:bun test pi fixture"],
-    message: "Implemented the stock pi fixture and verified it with the isolated integration suite.",
+    evidence: EVIDENCE,
+    message: MESSAGE,
   };
 }

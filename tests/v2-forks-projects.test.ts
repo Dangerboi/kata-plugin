@@ -1,7 +1,6 @@
 import { expect, test } from "bun:test";
 import { writeFileSync } from "node:fs";
 import path from "node:path";
-import { later } from "./kata-fixture";
 import { v2Fixture } from "./v2-fixture";
 
 // The omp adapter against a real Kata: /tan sub sessions, forks, issues moved between projects and default priority.
@@ -184,7 +183,7 @@ test("a parent moved once or twice is not re-adopted by every later todo call th
 test("a ticket in another project is never taken for a plan item by its short id", async () => {
   const app = host(); await app.event("session_start");
   const foreign = await otherProject();
-  const ticket = (await kata(["create", "--project", foreign, "Foreign ticket", "--force-new", "--json"])).issue.short_id;
+  const ticket = await issue("Foreign ticket", { project: foreign });
   await app.init(["Plain item"]);
   const result = await app.call({ op: "done", task: `${foreign}#${ticket}`, message, evidence });
   expect(result.isError).toBe(true);
@@ -194,8 +193,8 @@ test("a ticket in another project is never taken for a plan item by its short id
 test("a project renamed mid-session is found by the very next call using the new name", async () => {
   const app = host(); await app.event("session_start");
   const project = await otherProject(), renamed = `${project}x`;
-  const first = (await kata(["create", "--project", project, "First in renamed", "--force-new", "--json"])).issue.short_id;
-  const second = (await kata(["create", "--project", project, "Second in renamed", "--force-new", "--json"])).issue.short_id;
+  const first = await issue("First in renamed", { project });
+  const second = await issue("Second in renamed", { project });
   await app.init(["Plain item"]);
   expect((await app.call({ op: "append", items: [`${project}#${first}: first`] })).isError).toBeUndefined();
   // Drop the old-name item so no background refresh of it fails first and clears the cached project list.
@@ -283,7 +282,7 @@ test("an automatic parent an earlier version created under a default priority is
   expect(result.isError, result.content?.[0]?.text).toBeUndefined();
   expect(earlier.made.issue?.priority).toBe(2);
   expect(result.details.kata.parent).toBe(`v2test#${earlier.made.issue?.short_id}`);
-  expect((await kata(["list", "--status", "all", "--meta", `omp.session_id=${sid}`, "--json"])).issues).toHaveLength(1);
+  expect(await sessionParents(sid)).toHaveLength(1);
 }));
 
 test("omp reports an old Kata as an upgrade error, never a local plan", async () => {

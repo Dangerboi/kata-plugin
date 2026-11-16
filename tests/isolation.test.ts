@@ -1,11 +1,11 @@
 import { Database } from "bun:sqlite";
 import { expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { TRANSCRIPT_ENV } from "../core/kata-cli";
 import { cleanEnv } from "../scripts/smoke-lib";
-import { assertIsolated, SCRUBBED_ENV, snapshot, assertUnchanged } from "./isolation";
+import { assertIsolated, FIXTURE_ACTORS, FIXTURE_PROJECT, SCRUBBED_ENV, snapshot, assertUnchanged } from "./isolation";
 assertIsolated();
 // Scratch directories live under the run's root, which the runner removes.
 const scratch = (prefix: string) => mkdtempSync(path.join(process.env.KATA_TEST_ROOT!, prefix));
@@ -66,6 +66,17 @@ test("semantic canary fails closed on invalid databases and missing schema versi
   const f = fixture();
   try { f.db.exec("DELETE FROM meta"); expect(() => snapshot(f.root)).toThrow(); }
   finally { f.db.close(); }
+});
+
+test("every actor and project the test files name literally is in the canary lists", () => {
+  const actors = new Set<string>(), projects = new Set<string>();
+  for (const file of readdirSync(import.meta.dir).filter(name => name.endsWith(".ts") && !name.startsWith("isolation"))) {
+    const source = readFileSync(path.join(import.meta.dir, file), "utf8");
+    for (const match of source.matchAll(/\bauthor: "([^"]+)"/g)) actors.add(match[1]);
+    for (const match of source.matchAll(/\bproject: "([^"]+)"|"--project", "([^"]+)"|"projects", "create", "([^"]+)"/g)) projects.add(match[1] ?? match[2] ?? match[3]);
+  }
+  expect([...actors].filter(actor => !FIXTURE_ACTORS.has(actor))).toEqual([]);
+  expect([...projects].filter(project => !FIXTURE_PROJECT.test(project))).toEqual([]);
 });
 
 test("the scrubbed variables include every transcript variable the core exports", () => {

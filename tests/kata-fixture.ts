@@ -59,7 +59,28 @@ export function kataStore(prefix: string, author: string, extra: Record<string, 
       after = page.next_after_id;
     }
   }
-  return { binary, scratch, cwd, home, env, run, text, kata, show, events };
+  /** Creates an issue and returns its short id. */
+  async function issue(title: string, options: { parent?: string; meta?: string[]; owner?: string; project?: string; body?: string; workspace?: string } = {}): Promise<string> {
+    const args = ["create", title, "--force-new", "--json"];
+    if (options.parent) args.push("--parent", options.parent);
+    if (options.owner) args.push("--owner", options.owner);
+    if (options.body) args.push("--body", options.body);
+    if (options.project) args.push("--project", options.project);
+    for (const value of options.meta ?? []) args.push("--meta", value);
+    return (await kata(args, options.workspace)).issue.short_id;
+  }
+  const deleteIssue = (ref: string) => kata(["delete", ref, "--force", "--confirm", `DELETE ${ref}`, "--json"]);
+  const commentsOf = async (ref: string): Promise<string[]> => ((await show(ref)).comments ?? []).map((comment: any) => comment.body);
+  /** The issues an adapter recorded for a session (`<namespace>.session_id`); `label`: only its automatic parents, which carry `<namespace>-session`. */
+  async function sessionParents(namespace: string, sid: string, label = false): Promise<any[]> {
+    return (await kata(["list", "--status", "all", "--meta", `${namespace}.session_id=${sid}`, ...(label ? ["--label", `${namespace}-session`] : []), "--json"])).issues;
+  }
+  /** The close events of an issue (a short or a qualified ref), oldest first, with their payloads. */
+  async function closesOf(ref: string): Promise<any[]> {
+    const shortId = ref.split("#").pop();
+    return (await events()).filter(event => event.type === "issue.closed" && event.issue_short_id === shortId);
+  }
+  return { binary, scratch, cwd, home, env, run, text, kata, show, events, issue, deleteIssue, commentsOf, sessionParents, closesOf };
 }
 
 export interface RealKataOptions {
@@ -232,5 +253,31 @@ export async function finishes(work: Promise<unknown>, ms = 5000): Promise<boole
   try { return await Promise.race([work.then(() => true), new Promise<boolean>(resolve => { timer = setTimeout(() => resolve(false), ms); })]); }
   finally { clearTimeout(timer); }
 }
-// Against a real event stream, "nothing was delivered" can only be observed by waiting out the stream's latency.
+// For the one thing a real event stream cannot show structurally: that nothing arrives after a wait. Where an ordering
+// (a later event arrives after an earlier one) or a structural fact (no stream child started) exists, use it instead.
 export const settle = (ms = 700) => new Promise(resolve => setTimeout(resolve, ms));
+
+/** A close message and evidence that Kata accepts, for the tests whose subject is not the proof itself. */
+export const MESSAGE = "Implemented this isolated fixture and verified its behavior with the regression suite.";
+export const EVIDENCE = ["test:bun test fixture"];
+
+/**
+ * Holds the Kata calls `applies` accepts until `release()`: `before` goes in a host's `before` option or an exec wrapper.
+ * `entered` settles when the first held call arrives, `held` counts them. A released call goes to Kata, or to `then`
+ * when given, which answers in Kata's place so a test can fail the call after the wait.
+ */
+export function holdKata(applies: (args: string[], opts: any) => boolean = () => true, then?: (args: string[], opts: any) => Promise<any> | any) {
+  const gate = Promise.withResolvers<void>(), reached = Promise.withResolvers<void>();
+  let held = 0;
+  return {
+    before: async (args: string[], opts: any) => {
+      if (!applies(args, opts)) return undefined;
+      held++; reached.resolve();
+      await gate.promise;
+      return then?.(args, opts);
+    },
+    entered: reached.promise,
+    release: () => gate.resolve(),
+    get held() { return held; },
+  };
+}

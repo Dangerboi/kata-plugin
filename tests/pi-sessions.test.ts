@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { eventually, later, until } from "./kata-fixture";
+import { eventually, holdKata, until } from "./kata-fixture";
 import { piFixture } from "./pi-fixture";
 
 // Close transcripts and ownership of tasks across leads, reloads and forks.
@@ -38,17 +38,18 @@ test("a close driven through pi's real exec records the pi session when close tr
 });
 
 test("a slow shutdown of the old instance does not delete the next session's transcript identity", async () => {
-  let slow = false, resumed = 0; const release = Promise.withResolvers<void>();
-  const lead = await host({ before: async () => { if (slow) { await release.promise; resumed++; } return undefined; } });
+  let slow = false, resumed = 0;
+  const held = holdKata(() => slow, () => { resumed++; });
+  const lead = await host({ before: held.before });
   await lead.event("session_start", { reason: "startup" }); await lead.init(["Slow shutdown task"]);
   slow = true;
   const shutdown = lead.event("session_shutdown", { reason: "new" });
-  await new Promise(resolve => setTimeout(resolve, 400));
+  await held.entered;
   const next = await host(); await next.event("session_start", { reason: "new" });
   await shutdown;
-  release.resolve(); slow = false;
+  held.release(); slow = false;
   expect(await until(() => resumed > 0)).toBe(true);
-  await new Promise(resolve => setTimeout(resolve, 300));
+  await lead.call({ op: "view" }); // drain the background hook
   expect([process.env.KATA_TRANSCRIPT_AGENT, process.env.KATA_TRANSCRIPT_SESSION_ID]).toEqual(["pi", next.sid]);
 });
 

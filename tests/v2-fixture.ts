@@ -1,6 +1,6 @@
 import { mkdirSync } from "node:fs";
 import path from "node:path";
-import { realKata, unique } from "./kata-fixture";
+import { EVIDENCE, MESSAGE, realKata, unique } from "./kata-fixture";
 import { daemonUnavailable, siblingThrottle } from "./kata-errors";
 import { ompHost } from "./omp-host";
 import { TRANSCRIPT_ENV } from "../core/kata-cli";
@@ -11,10 +11,10 @@ import { TRANSCRIPT_ENV } from "../core/kata-cli";
  */
 export function v2Fixture() {
   const store = realKata({ prefix: "v2", author: "v2-builder", project: "v2test", adopt: true });
-  const { scratch, cwd, run, kata, show, events } = store;
+  const { scratch, cwd, run, kata } = store;
   const outside = path.join(scratch, "outside");
   mkdirSync(outside);
-  async function issue(title = "Explicit parent") { return (await kata(["create", `${title} ${unique()}`, "--force-new", "--json"])).issue.short_id; }
+  const issue = (title = "Explicit parent", options: Parameters<typeof store.issue>[1] = {}) => store.issue(`${title} ${unique()}`, options);
   function host(options: any = {}) {
     const sid = options.sid === null ? undefined : options.sid || `v2-${unique()}`;
     const app = ompHost({
@@ -48,17 +48,16 @@ export function v2Fixture() {
   async function ran(lead: ReturnType<typeof host>, id: string, sessionFile: string) {
     await host({ sessionFile, agent: { kind: "sub", id, parentId: lead.ctx.agent.id } }).event("tool_call", { toolName: "read", input: { path: "README.md" } });
   }
-  // The transcript session each close of an issue recorded.
-  const closeSessions = async (shortId: string) => (await events()).filter((e: any) => e.type === "issue.closed" && e.issue_short_id === shortId).map((e: any) => e.payload?.transcript?.session_id);
+  const closeSessions = async (shortId: string) => (await store.closesOf(shortId)).map((e: any) => e.payload?.transcript?.session_id);
   const total = async () => (await kata(["list", "--status", "all", "--limit", "0", "--json"])).issues.length;
-  const commentsOf = async (ref: string): Promise<string[]> => ((await show(ref)).comments ?? []).map((c: any) => c.body);
-  async function sessionParents(sid: string) { return (await kata(["list", "--status", "all", "--meta", `omp.session_id=${sid}`, "--json"])).issues; }
+  // The omp adapter's records of a session.
+  const sessionParents = (sid: string) => store.sessionParents("omp", sid);
 
   return {
     ...store, outside, issue, unique, host,
     down: daemonUnavailable,
-    evidence: ["test:bun test fixture"],
-    message: "Implemented this isolated fixture and verified its behavior with the regression suite.",
-    hostTimers, throttledClose, ran, closeSessions, total, commentsOf, sessionParents,
+    evidence: EVIDENCE,
+    message: MESSAGE,
+    hostTimers, throttledClose, ran, closeSessions, total, sessionParents,
   };
 }

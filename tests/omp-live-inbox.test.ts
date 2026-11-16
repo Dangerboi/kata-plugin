@@ -1,16 +1,17 @@
 import { afterEach, expect, test } from "bun:test";
-import { eventually, realKata, settle, until } from "./kata-fixture";
+import { eventually, realKata, settle, unique, until } from "./kata-fixture";
 import { ompHost } from "./omp-host";
 import { TRANSCRIPT_ENV } from "../core/kata-cli";
 
 // What the omp adapter wires around the session inbox module: when it follows live, the aside it delivers
 // with, its stream child, and the sessions that never follow. The module itself is tested in live-inbox.test.ts.
-const { scratch, cwd, run, kata } = realKata({ prefix: "live", author: "v2-builder", project: "omp-v2-live", adopt: true });
-let sequence = 0;
-const issue = async () => (await kata(["create", `Live inbox ${++sequence}`, "--force-new", "--json"])).issue.short_id;
+const store = realKata({ prefix: "live", author: "v2-builder", project: "omp-v2-live", adopt: true });
+const { scratch, cwd, run, kata } = store;
+const issue = () => store.issue(`Live inbox ${unique()}`);
+const children = () => Bun.spawnSync(["pgrep", "-f", `events --tail --json --workspace ${cwd}`]).stdout.toString().split("\n").filter(Boolean);
 
 function host(options: { agent?: object } = {}) {
-	const sid = `live-${++sequence}`, sent: any[][] = [];
+	const sid = `live-${unique()}`, sent: any[][] = [];
 	const app = ompHost({ run: (args, opts) => run(args, opts.cwd, opts.timeout), cwd, sid, sessionFile: `${scratch}/${sid}.jsonl`, agent: options.agent,
 		sendUserMessage: (...args) => { sent.push(args); },
 		afterEvent: () => { for (const key of TRANSCRIPT_ENV) delete process.env[key]; } });
@@ -44,8 +45,12 @@ test("a notify reaches the main session as an aside, the section is current with
 	await app.section();
 	expect(app.calls.filter(a => a[0] === "inbox").length).toBe(reads);
 	await kata(["notify", ref, "--to", address, "--clear", "--json"]);
-	await settle();
-	expect(app.sent).toHaveLength(1);
+	// The stream is ordered: a later notify is delivered after the clear, so the clear was processed before it reached us.
+	const sentinel = await issue();
+	await kata(["notify", sentinel, "--to", address, "--message", "after-clear-5530", "--json"]);
+	expect(await until(() => app.sent.length === 2)).toBe(true);
+	expect(app.sent[1][0]).toContain("after-clear-5530");
+	await kata(["notify", sentinel, "--to", address, "--clear", "--json"]);
 	await eventually(async () => (await app.section()).includes("live-ping-8841"), false);
 });
 
@@ -56,7 +61,8 @@ test("nothing is delivered after session shutdown", async () => {
 	expect(await until(() => app.calls.some(a => a[0] === "inbox"))).toBe(true);
 	await app.event("session_shutdown");
 	await kata(["notify", ref, "--to", address, "--message", "after-shutdown-2207", "--json"]);
-	await settle(1000);
+	// A stopped stream child cannot deliver.
+	expect(await until(() => children().length === 0)).toBe(true);
 	expect(app.sent).toEqual([]);
 	await kata(["notify", ref, "--to", address, "--clear", "--json"]);
 });
@@ -64,7 +70,6 @@ test("nothing is delivered after session shutdown", async () => {
 test("a session switch kills the old stream child and leaves exactly one", async () => {
 	const address = "v2-builder/live-switch";
 	const app = await open(address);
-	const children = () => Bun.spawnSync(["pgrep", "-f", `events --tail --json --workspace ${cwd}`]).stdout.toString().split("\n").filter(Boolean);
 	expect(await until(() => children().length === 1)).toBe(true);
 	const [first] = children();
 	await app.event("session_switch");
@@ -78,7 +83,8 @@ test("a delegate starts no follower and keeps the per-turn section", async () =>
 	const app = await open(address, { agent: { kind: "sub", id: "Worker" } });
 	const ref = await issue();
 	await kata(["notify", ref, "--to", address, "--message", "delegate-note-6602", "--json"]);
-	await settle();
+	expect(await app.section()).toContain("delegate-note-6602");
+	expect(app.calls.some(a => a[0] === "events")).toBe(false);
 	expect(app.sent).toEqual([]);
 	await kata(["notify", ref, "--to", address, "--clear", "--json"]);
 });
@@ -89,11 +95,9 @@ test("KATA_OMP_LIVE_INBOX=0 delivers nothing live and keeps the per-turn section
 	const app = await open(address);
 	const ref = await issue();
 	await kata(["notify", ref, "--to", address, "--message", "per-turn-only-9912", "--json"]);
-	await settle();
-	expect(app.sent).toEqual([]);
-	await app.section();
 	expect(await app.section()).toContain("per-turn-only-9912");
 	expect(app.calls.some(a => a[0] === "events")).toBe(false);
+	expect(app.sent).toEqual([]);
 	await kata(["notify", ref, "--to", address, "--clear", "--json"]);
 });
 
@@ -101,7 +105,8 @@ test("a bare actor address starts no follower", async () => {
 	const app = await open("v2-builder");
 	const ref = await issue();
 	await kata(["notify", ref, "--to", "v2-builder", "--message", "person-only-live-1", "--json"]);
-	await settle();
+	await app.section();
+	expect(app.calls.some(a => a[0] === "events")).toBe(false);
 	expect(app.sent).toEqual([]);
 	await kata(["notify", ref, "--to", "v2-builder", "--clear", "--json"]);
 });

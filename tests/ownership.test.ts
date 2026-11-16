@@ -1,16 +1,11 @@
 import { expect, test } from "bun:test";
-import { realKata } from "./kata-fixture";
+import { realKata, unique } from "./kata-fixture";
 import { ompHost } from "./omp-host";
 
 const TEAMMATE = { KATA_TEAMMATE: "worker-a" };
-const { cwd, run, kata, show } = realKata({ prefix: "ownership", author: "actor-a", project: "omptest", adopt: true, env: TEAMMATE, process: TEAMMATE });
-let sequence = 0;
-async function issue(meta: string[] = [], parent?: string) {
-  const args = ["create", `Ownership regression ${++sequence}`, "--force-new", "--json"];
-  if (parent) args.push("--parent", parent);
-  for (const value of meta) args.push("--meta", value);
-  return (await kata(args)).issue.short_id as string;
-}
+const store = realKata({ prefix: "ownership", author: "actor-a", project: "omptest", adopt: true, env: TEAMMATE, process: TEAMMATE });
+const { cwd, run, kata, show } = store;
+const issue = (meta: string[] = [], parent?: string) => store.issue(`Ownership regression ${unique()}`, { meta, parent });
 const issueOf = async (ref: string) => (await show(ref)).issue;
 async function set(ref: string, key: string, value: string) { await kata(["meta", "set", ref, key, value, "--json"]); }
 async function claim(ref: string, actor = "actor-a") { await kata(["claim", ref, "--as", actor, "--json"]); }
@@ -173,13 +168,11 @@ for (const foreign of ["actor", "teammate", "closed"]) {
     if (foreign === "teammate") await set(parent, "teammate", "worker-b");
     if (foreign === "closed") await kata(["close", parent, "--wontfix", "--message", "This isolated session attention task is retired because its regression fixture has completed.", "--json"]);
     process.env.KATA_REF = parent;
-    try {
-      const app = host(parent);
-      await app.begin();
-      expect(app.calls.filter(args => args[0] === "agent-hook" || (args[0] === "meta" && args[3]?.startsWith("work.")))).toEqual([]);
-      expect((await issueOf(parent)).metadata["work.attention"]).toBe("needs-human");
-      expect(app.notices).toEqual([]);
-    } finally { delete process.env.KATA_REF; }
+    const app = host(parent);
+    await app.begin();
+    expect(app.calls.filter(args => args[0] === "agent-hook" || (args[0] === "meta" && args[3]?.startsWith("work.")))).toEqual([]);
+    expect((await issueOf(parent)).metadata["work.attention"]).toBe("needs-human");
+    expect(app.notices).toEqual([]);
   });
 }
 for (const race of ["owner", "teammate", "close", "owner-ABA"]) {
@@ -210,50 +203,43 @@ test("owned session attention is delegated to Kata's native hook", async () => {
   const parent = await issue();
   await claim(parent);
   process.env.KATA_REF = parent;
-  try {
-    const app = host(parent);
-    await app.begin();
-    const started = await issueOf(parent);
-    expect(started.metadata["work.attention"]).toBe("ok");
-    expect(started.metadata["work.attention_session"]).toBeTruthy();
-    await app.shutdown();
-    const ended = await issueOf(parent);
-    expect(ended.metadata["work.attention"]).toBe("needs-human");
-    expect(ended.metadata["work.attention_session"]).not.toBe(started.metadata["work.attention_session"]);
-    expect(app.calls.filter(args => args[0] === "meta" && args[3]?.startsWith("work."))).toEqual([]);
-  } finally { delete process.env.KATA_REF; }
+  const app = host(parent);
+  await app.begin();
+  const started = await issueOf(parent);
+  expect(started.metadata["work.attention"]).toBe("ok");
+  expect(started.metadata["work.attention_session"]).toBeTruthy();
+  await app.shutdown();
+  const ended = await issueOf(parent);
+  expect(ended.metadata["work.attention"]).toBe("needs-human");
+  expect(ended.metadata["work.attention_session"]).not.toBe(started.metadata["work.attention_session"]);
+  expect(app.calls.filter(args => args[0] === "meta" && args[3]?.startsWith("work."))).toEqual([]);
 });
 test("session end leaves a blocker set during the session", async () => {
   const parent = await issue();
   await claim(parent);
   process.env.KATA_REF = parent;
-  try {
-    const app = host(parent);
-    await app.begin();
-    await set(parent, "work.attention", "stuck");
-    await set(parent, "work.attention_msg", "waiting on an upstream fix");
-    await app.shutdown();
-    const final = await issueOf(parent);
-    expect(final.metadata["work.attention"]).toBe("stuck");
-    expect(final.metadata["work.attention_msg"]).toBe("waiting on an upstream fix");
-
-  } finally { delete process.env.KATA_REF; }
+  const app = host(parent);
+  await app.begin();
+  await set(parent, "work.attention", "stuck");
+  await set(parent, "work.attention_msg", "waiting on an upstream fix");
+  await app.shutdown();
+  const final = await issueOf(parent);
+  expect(final.metadata["work.attention"]).toBe("stuck");
+  expect(final.metadata["work.attention_msg"]).toBe("waiting on an upstream fix");
 });
 test("session shutdown respects a teammate handoff", async () => {
   const parent = await issue();
   await claim(parent);
   process.env.KATA_REF = parent;
-  try {
-    const app = host(parent);
-    await app.begin();
-    await set(parent, "teammate", "worker-b");
-    await set(parent, "work.attention", "stuck");
-    await set(parent, "work.attention_msg", "another worker is investigating");
-    const callsBefore = app.calls.length;
-    await app.shutdown();
-    expect(app.calls.slice(callsBefore).filter(args => args[0] === "meta")).toEqual([]);
-    expect((await issueOf(parent)).metadata["work.attention_msg"]).toBe("another worker is investigating");
-  } finally { delete process.env.KATA_REF; }
+  const app = host(parent);
+  await app.begin();
+  await set(parent, "teammate", "worker-b");
+  await set(parent, "work.attention", "stuck");
+  await set(parent, "work.attention_msg", "another worker is investigating");
+  const callsBefore = app.calls.length;
+  await app.shutdown();
+  expect(app.calls.slice(callsBefore).filter(args => args[0] === "meta")).toEqual([]);
+  expect((await issueOf(parent)).metadata["work.attention_msg"]).toBe("another worker is investigating");
 });
 for (const op of ["start", "block", "unblock"]) {
 test(`${op} preserves a changed decision before the conditional attention write`, async () => {

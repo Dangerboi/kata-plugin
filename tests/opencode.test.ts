@@ -1,15 +1,15 @@
 import { expect, test } from "bun:test";
-import { eventually, finishes, later, settle, until } from "./kata-fixture";
-import { currentList, evidence, message, openCodeKata, PROJECT, qref, statusOf, todos, write } from "./opencode-fixture";
+import { EVIDENCE as evidence, eventually, finishes, later, MESSAGE as message, settle, until } from "./kata-fixture";
+import { currentList, openCodeKata, PROJECT, qref, SAVED, statusOf, todos, write } from "./opencode-fixture";
 import { type OpenCodeInstance } from "./opencode-host";
 import opencode from "../plugins/opencode/kata";
 
 const {
-	kata, show, startHost, startLead, newSession, restart, parentOf, childrenOf, closeEvents, savedOf, forgotten,
+	kata, show, startHost, startLead, newSession, restart, parentOf, ticketRef, childrenOf, closeEvents, savedOf, forgotten,
 	kataCalls, forgetCalls, throttleCloses, holdCalls, releaseCalls,
 } = openCodeKata("opencode");
 
-test("setup registers todowrite once, with the list schema, and registers no other tool", async () => {
+test("setup registers todowrite with the list schema and registers no other tool", async () => {
 	const host = await startHost();
 	expect(host.registrationErrors).toEqual([]);
 	const tool = host.tool("todowrite");
@@ -63,7 +63,7 @@ test("a later list starts, completes and cancels items; the closes carry the evi
 	expect([built, checked, skipped].map(statusOf)).toEqual(["closed:done", "in_progress", "closed:wontfix"]);
 	const closes = await closeEvents();
 	const builtClose = closes.find(e => e.issue_uid === built.uid), skippedClose = closes.find(e => e.issue_uid === skipped.uid);
-	expect(builtClose.payload.evidence).toEqual([{ type: "test", command: "bun test opencode fixture" }]);
+	expect(builtClose.payload.evidence).toEqual([{ type: "test", command: "bun test fixture" }]);
 	expect(builtClose.payload.transcript).toMatchObject({ agent: "opencode", session_id: id });
 	expect(skippedClose.payload.reason).toBe("wontfix");
 	// The closed items go back as they are (the model may drop the proof it sent): accepted.
@@ -305,7 +305,7 @@ for (const [how, resumed, clearedAtOnce] of [
 			restarted = await restart(host);
 			expect(await until(() => !savedOf(restarted, id).ended)).toBe(true);
 			// The resumed lead finishes its refused close, and ends nothing: a short wait for what a wrong ending would do.
-			for (let wait = 0; wait < 100 && statusOf((await childrenOf(ref))[0]) !== "closed:done"; wait++) await settle(100);
+			await eventually(async () => statusOf((await childrenOf(ref))[0]), "closed:done", 10_000);
 			await settle(1500);
 		});
 		const [first, second] = await childrenOf(ref);
@@ -419,24 +419,18 @@ test("sessions of one location keep separate plans, and a delegate's child sessi
 });
 
 test("settings come from plugin options first, then the server's environment", async () => {
-	const ticket = async (title: string) => {
-		const created = await kata(["create", title, "--body", "A ticket a session plans under.", "--project", PROJECT, "--force-new", "--json"]);
-		return `${PROJECT}#${created.issue.short_id}`;
-	};
-	// plugin option
+	const ticket = (title: string) => ticketRef(title, "A ticket a session plans under.");
 	const optionRef = await ticket("Ticket named by an option");
 	const withOption = await startLead({ ref: optionRef });
 	let result = await write(withOption.host, withOption.id, todos(["Planned under the option ref", "pending"]));
 	expect(result.status, result.text).toBe("completed");
 	expect((await childrenOf(optionRef)).map(c => c.title)).toEqual(["Planned under the option ref"]);
-	// environment of the server
 	const envRef = await ticket("Ticket named by the environment");
 	process.env.KATA_REF = envRef;
 	const withEnv = await startLead();
 	result = await write(withEnv.host, withEnv.id, todos(["Planned under the env ref", "pending"]));
 	expect(result.status, result.text).toBe("completed");
 	expect((await childrenOf(envRef)).map(c => c.title)).toEqual(["Planned under the env ref"]);
-	// the option wins over the environment
 	const winnerRef = await ticket("Ticket named by an option next to an environment ref");
 	const winner = await startLead({ ref: winnerRef });
 	result = await write(winner.host, winner.id, todos(["Planned under the option ref, not the env one", "pending"]));
@@ -444,7 +438,6 @@ test("settings come from plugin options first, then the server's environment", a
 	expect((await childrenOf(winnerRef)).map(c => c.title)).toEqual(["Planned under the option ref, not the env one"]);
 	expect((await childrenOf(envRef)).map(c => c.title)).toEqual(["Planned under the env ref"]);
 	delete process.env.KATA_REF;
-	// the first todowrite names the ticket itself
 	const listRef = await ticket("Ticket named by the first list");
 	const named = await startLead();
 	result = await write(named.host, named.id, { ...todos(["Planned under the list ref", "pending"]), ref: listRef });
@@ -470,8 +463,7 @@ test("todowrite in a session OpenCode cannot read says so, and does not call the
 });
 
 test("a first list under a ticket that leaves out the ticket's open items is refused in todowrite's words, and the list with them is accepted", async () => {
-	const created = await kata(["create", "Ticket with an open item", "--body", "An earlier session planned under it.", "--project", PROJECT, "--force-new", "--json"]);
-	const ticket = `${PROJECT}#${created.issue.short_id}`;
+	const ticket = await ticketRef("Ticket with an open item", "An earlier session planned under it.");
 	const earlier = await startLead({ ref: ticket });
 	await write(earlier.host, earlier.id, todos(["Left by an earlier session", "pending"]));
 	const { host, id } = await startLead();
@@ -504,7 +496,7 @@ test("a saved session whose resume is still reading storage when the instance st
 	// Holds the resume at its read of the session's `ended` part.
 	const gated: typeof opencode = { id: opencode.id, async setup(ctx: any) {
 		const get = ctx.storage.get;
-		ctx.storage.get = async (key: string) => { if (key.endsWith("/ended")) await gate; return get(key); };
+		ctx.storage.get = async (key: string) => { if (key.endsWith(SAVED.ended)) await gate; return get(key); };
 		return opencode.setup(ctx);
 	} };
 	const host = await startHost({ plugin: gated });
@@ -529,8 +521,7 @@ test("a saved session whose resume is still reading storage when the instance st
 });
 
 test("a second lead on the same ticket is refused an item the first started, and takeover: true takes it over", async () => {
-	const created = await kata(["create", "Ticket two leads plan under", "--body", "Shared by two sessions.", "--project", PROJECT, "--force-new", "--json"]);
-	const ticket = `${PROJECT}#${created.issue.short_id}`;
+	const ticket = await ticketRef("Ticket two leads plan under", "Shared by two sessions.");
 	const a = await startLead({ ref: ticket });
 	await write(a.host, a.id, todos(["Shared item", "in_progress"]));
 	const b = await startLead({ ref: ticket });

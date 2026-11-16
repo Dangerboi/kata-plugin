@@ -72,8 +72,6 @@ export interface OpenCodeInstance {
 	readonly ctx: any;
 	readonly shared: Shared;
 	readonly sessions: Map<string, FakeSession>;
-	/** Every tool call `callTool` started on this instance, when it started (before `execute.before`). */
-	readonly calls: { tool: string }[];
 	/** Registration errors the tool editor reported (invalid definitions are skipped, like OpenCode). */
 	readonly registrationErrors: { name: string; message: string }[];
 	/** Registered tools after the plugin's transforms, keyed by effective name. */
@@ -84,8 +82,8 @@ export interface OpenCodeInstance {
 	/** Appends an assistant message whose content is one text part. */
 	addAssistantText(sessionID: string, text: string): void;
 	callTool(sessionID: string, toolName: string, input: unknown, options?: ToolCallOptions): Promise<ToolCallResult>;
-	/** Runs the `context` hooks; returns the final event and the system text parts. */
-	context(sessionID: string): Promise<{ event: any; system: string[] }>;
+	/** Runs the `context` hooks; returns the system text parts they left. */
+	context(sessionID: string): Promise<{ system: string[] }>;
 	/** Pushes one event to every matching `ctx.event.subscribe` stream and lets consumers run. `created`: when OpenCode made the event; default now. */
 	emit(type: string, data?: Record<string, unknown>, created?: number): Promise<void>;
 	/** Runs the plugin's cleanup, ends event streams and drops its hooks and tools. Idempotent. */
@@ -94,7 +92,7 @@ export interface OpenCodeInstance {
 	restart(): Promise<OpenCodeInstance>;
 }
 
-export function assistantMessage(text: string) {
+function assistantMessage(text: string) {
 	return { type: "assistant", agent: "build", model: { providerID: "fake", id: "fake" }, content: [{ type: "text", text }], time: { created: 0 } };
 }
 
@@ -138,7 +136,7 @@ const unsupported = (name: string) => {
 async function start(options: OpenCodeHostOptions, shared: Shared): Promise<OpenCodeInstance> {
 	const { plugin } = options;
 	const directory = options.directory ?? "/fake/workspace";
-	const calls: { tool: string }[] = [], registrationErrors: { name: string; message: string }[] = [];
+	const registrationErrors: { name: string; message: string }[] = [];
 	const hooks = { before: [] as ((event: any) => any)[], after: [] as ((event: any) => any)[], context: [] as ((event: any) => any)[] };
 	const subscribers = new Set<{ types?: readonly string[]; push: (event: any) => void; end: () => void; idle: () => Promise<void> }>();
 	let registry = new Map<string, any>();
@@ -149,9 +147,6 @@ async function start(options: OpenCodeHostOptions, shared: Shared): Promise<Open
 	const transform = (callback: (editor: any) => void) => {
 		const tools = registry;
 		const editor = {
-			list: () => [...tools.values()],
-			get: (id: string) => tools.get(id),
-			namespace: () => {},
 			add: (tool: any) => {
 				const id = effectiveName(tool);
 				if (tool.options?.codemode === false && id === "execute")
@@ -160,16 +155,6 @@ async function start(options: OpenCodeHostOptions, shared: Shared): Promise<Open
 					return void registrationErrors.push({ name: id, message: `Invalid tool definition ${id}: input must be a schema` });
 				tools.set(id, { ...tool, id, options: tool.options && { ...tool.options } });
 			},
-			update: (id: string, update: (tool: any) => void) => {
-				const current = tools.get(id);
-				if (!current) return;
-				const tool = { ...current, options: current.options && { ...current.options } };
-				update(tool);
-				tool.name = current.name;
-				tool.id = id;
-				tools.set(id, tool);
-			},
-			remove: (id: string) => void tools.delete(id),
 		};
 		callback(editor);
 	};
@@ -177,9 +162,6 @@ async function start(options: OpenCodeHostOptions, shared: Shared): Promise<Open
 	const encodeSession = (session: FakeSession) => ({
 		id: session.id,
 		...(session.parentID === undefined ? {} : { parentID: session.parentID }),
-		projectID: "prj_fake",
-		cost: 0,
-		tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
 		time: { created: session.created, updated: session.created, ...(session.archived === undefined ? {} : { archived: session.archived }) },
 		...(session.title === undefined ? {} : { title: session.title }),
 		location: { directory: session.location.directory },
@@ -309,7 +291,6 @@ async function start(options: OpenCodeHostOptions, shared: Shared): Promise<Open
 		const id = nextID("call");
 		const base = { sessionID, agent: "build", messageID: nextID("msg"), id };
 		const before = { tool: name, ...base, input: clone(rawInput) as any };
-		calls.push({ tool: name });
 		const fail = (error: { message: string }, input: unknown, executed: boolean): ToolCallResult =>
 			({ status: "error", text: error.message, input, executed });
 
@@ -348,7 +329,6 @@ async function start(options: OpenCodeHostOptions, shared: Shared): Promise<Open
 		ctx: guarded,
 		shared,
 		sessions: shared.sessions,
-		calls,
 		registrationErrors,
 		tools: () => new Map(registry),
 		tool: (name: string) => registry.get(name),
@@ -371,7 +351,6 @@ async function start(options: OpenCodeHostOptions, shared: Shared): Promise<Open
 		callTool: run,
 		async context(sessionID: string) {
 			const session = requireSession(sessionID);
-			// SessionContext (session.d.ts) has no `first`; it is added because the plugin contract asked for it.
 			const event: any = {
 				sessionID,
 				agent: "build",
@@ -380,11 +359,10 @@ async function start(options: OpenCodeHostOptions, shared: Shared): Promise<Open
 				options: {},
 				system: [],
 				messages: clone(session.messages),
-				first: session.messages.length <= 1,
 			};
 			await trigger(hooks.context, event);
 			// system parts are { type: "text", text }; bare strings are tolerated.
-			return { event, system: event.system.map((part: any) => (typeof part === "string" ? part : part.text)) };
+			return { system: event.system.map((part: any) => (typeof part === "string" ? part : part.text)) };
 		},
 		async emit(type: string, data: Record<string, unknown> = {}, created = Date.now()) {
 			const event = { id: nextID("evt"), type, created, data: clone(data) };

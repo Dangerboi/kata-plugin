@@ -2,9 +2,9 @@ import { beforeAll, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { createKataCore } from "../core/kata-core";
-import { isolatedKata, later, memoryDelegateStore, realKata } from "./kata-fixture";
+import { EVIDENCE, isolatedKata, later, memoryDelegateStore, MESSAGE as message, realKata } from "./kata-fixture";
 import { daemonUnavailable, notInitialized, notInitializedBound, notInitializedNoData, notInitializedProject, siblingThrottle } from "./kata-errors";
-const { binary, scratch: root, cwd, env, run, text, kata, show } = realKata({ prefix: "reliability", author: "actor-a", project: "reliability-test" });
+const { binary, scratch: root, cwd, env, run, text, kata, show, issue, closesOf, deleteIssue, sessionParents } = realKata({ prefix: "reliability", author: "actor-a", project: "reliability-test" });
 const outside = path.join(root, "outside"), localProject = path.join(root, "local-project");
 mkdirSync(outside); mkdirSync(localProject);
 const issueOf = async (ref: string) => (await show(ref)).issue;
@@ -20,8 +20,7 @@ function app(options: any = {}) {
 }
 // Kata unusable: the only case that selects a local plan.
 const down = daemonUnavailable;
-const message = "Verified the isolated reliability task with the behavioral regression suite.";
-const done = { op: "done", message, evidence: ["test:reliability fixture"] };
+const done = { op: "done", message, evidence: EVIDENCE };
 async function init(a: ReturnType<typeof app>, items = ["First", "Second"], options: { replace?: true } = {}) {
   const r = await a.call({ op: "init", items, ...options }); if (r.isError) throw new Error(r.content[0].text); return r.details.kata.parent!;
 }
@@ -223,10 +222,8 @@ test("bounded audit still closes with the exact current evidence union", async (
   await a.call({ ...done, task: "First", evidence: ["test:first accepted proof"] });
   await a.call({ ...done, task: "Second", evidence: ["test:second accepted proof"] });
   expect((await issueOf(p)).status).toBe("closed");
-  const rows = (await kata(["audit", "closes", "--json"])).rows;
-  const row = rows.find((r: any) => r.issue === p.split("#")[1]);
-  const event = (await kata(["events", "--after", String(row.event_id - 1), "--limit", "1", "--json"])).events[0];
-  expect(event.payload.evidence.toSorted((a: any, b: any) => a.command.localeCompare(b.command))).toEqual([{ type: "test", command: "first accepted proof" }, { type: "test", command: "second accepted proof" }]);
+  const [close] = await closesOf(p);
+  expect(close.payload.evidence.toSorted((a: any, b: any) => a.command.localeCompare(b.command))).toEqual([{ type: "test", command: "first accepted proof" }, { type: "test", command: "second accepted proof" }]);
 });
 
 test("authenticated daemon actor can create and complete a plan despite local actor mismatch", async () => {
@@ -271,7 +268,7 @@ test("adoption leaves a populated automatic parent's relationship unchanged", as
 test("adoption refuses a foreign empty automatic parent", async () => {
   const a = app(); const old = (await a.core.tools.call(a.ctx, { startsChild: true })).parent!;
   await kata(["claim", old, "--as", "actor-b", "--force", "--json"]);
-  const next = `reliability-test#${(await kata(["create", "Adoption destination", "--force-new", "--json"])).issue.short_id}`;
+  const next = `reliability-test#${await issue("Adoption destination")}`;
   await kata(["claim", next, "--json"]);
   const before = await issueOf(old);
   await claimed(a, next);
@@ -290,8 +287,8 @@ test("blank append leaves a completed automatic parent closed", async () => {
 // Current membership, not the parent recorded at close time, determines the union.
 test("bounded evidence lookup includes a reparented closed child", async () => {
   const a = app(); const p = await init(a, ["Current child"]);
-  const other = (await kata(["create", "Previous parent", "--force-new", "--json"])).issue.short_id;
-  const child = (await kata(["create", "Reparented proof", "--parent", other, "--force-new", "--json"])).issue.short_id;
+  const other = await issue("Previous parent");
+  const child = await issue("Reparented proof", { parent: other });
   await kata(["close", child, "--done", "--message", message, "--test", "reparented verification", "--json"]);
   await kata(["edit", child, "--parent", p, "--json"]);
   expect((await a.call({ ...done, task: "Current child" })).isError).toBeUndefined();
@@ -550,7 +547,6 @@ test("a refusal without data falls back to the folder name", async () => {
 });
 
 // A person can delete the automatic parent (Kata 0.22's TUI does it with X). The plan goes with it; its tasks stay.
-const deleteIssue = (ref: string) => kata(["delete", ref, "--force", "--confirm", `DELETE ${ref}`, "--json"]);
 test("after the automatic parent is deleted, init says so, creates a new parent and leaves the old tasks alone", async () => {
   const a = app(); const parent = await init(a); const first = await child(parent, "First");
   await deleteIssue(parent);
@@ -563,7 +559,7 @@ test("after the automatic parent is deleted, init says so, creates a new parent 
   expect((await issueOf(first)).status).toBe("open");
 });
 test("a deleted automatic parent is reported on every op beside ticket items, until a ticket-only init starts a new plan", async () => {
-  const ticket = `reliability-test#${(await kata(["create", "Deletion notice ticket", "--force-new", "--json"])).issue.short_id}`;
+  const ticket = `reliability-test#${await issue("Deletion notice ticket")}`;
   const a = app(); const parent = await init(a, ["First", `${ticket}: check it`]);
   await deleteIssue(parent);
   const finished = await a.call({ ...done, task: "First" });
@@ -578,7 +574,7 @@ test("a deleted automatic parent is reported on every op beside ticket items, un
   expect((await a.call({ op: "view" })).content[0].text).not.toContain("was deleted");
 });
 // The session's automatic parents Kata still has (a deleted one is left out).
-const sessionParents = async (a: { ctx: any }) => (await kata(["list", "--status", "all", "--meta", `omp.session_id=${a.ctx.sessionManager.getSessionId()}`, "--label", "omp-session", "--json"])).issues;
+const parentsOf = (a: { ctx: any }) => sessionParents("omp", a.ctx.sessionManager.getSessionId(), true);
 test("a session resumed after its automatic parent was deleted reports it and starts a new plan on init", async () => {
   const a = app(); const parent = await init(a);
   await deleteIssue(parent);
@@ -603,7 +599,7 @@ test("append after the automatic parent is deleted asks for init and creates no 
   expect(appended.isError).toBe(true);
   expect(appended.content[0].text).toContain(`${parent} was deleted`);
   expect(appended.content[0].text).toContain("op=init");
-  expect(await sessionParents(a)).toEqual([]);
+  expect(await parentsOf(a)).toEqual([]);
 });
 test("init refuses to drop the open tasks of a deleted parent that was restored meanwhile", async () => {
   const a = app(); const parent = await init(a); const first = await child(parent, "First");
@@ -614,13 +610,13 @@ test("init refuses to drop the open tasks of a deleted parent that was restored 
   expect((await issueOf(first)).status).toBe("open");
 });
 test("a deleted explicit parent stays an error and no automatic parent replaces it", async () => {
-  const ref = `reliability-test#${(await kata(["create", "Explicit parent to delete", "--force-new", "--json"])).issue.short_id}`;
+  const ref = `reliability-test#${await issue("Explicit parent to delete")}`;
   const a = app();
   expect((await a.call({ op: "init", ref, items: ["First"] })).isError).toBeUndefined();
   await deleteIssue(ref);
   expect((await a.call({ op: "view" })).isError).toBe(true);
   expect((await a.call({ op: "init", items: ["Fresh"] })).isError).toBe(true);
-  expect(await sessionParents(a)).toEqual([]);
+  expect(await parentsOf(a)).toEqual([]);
 });
 test("a deleted automatic parent's pending task closes never run, also when the retry timer fires first", async () => {
   let throttle = true;

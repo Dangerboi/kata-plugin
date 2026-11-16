@@ -1,6 +1,6 @@
 import fc from "fast-check";
 import { expect, test } from "bun:test";
-import { later } from "./kata-fixture";
+import { holdKata } from "./kata-fixture";
 import { v2Fixture } from "./v2-fixture";
 
 // The omp adapter against a real Kata: hosted bindings and refreshes, the contract hook and the inbox section.
@@ -113,17 +113,13 @@ test("hosted children [null] never expose a cached plan", async () => {
 
 test("a pending stop-hook refresh does not describe cached tasks as current", async () => {
   // The stop hook's read of the plan is held until the test lets Kata answer, so it is still pending when the hook returns.
-  const kataAnswers = Promise.withResolvers<void>();
   let outage = false;
-  const app = host({ before: async (args: string[]) => {
-    if (!outage || args[0] !== "show") return;
-    await kataAnswers.promise;
-    return { code: 1, stdout: "", stderr: "slow read outage" };
-  } });
+  const held = holdKata(args => outage && args[0] === "show", () => ({ code: 1, stdout: "", stderr: "slow read outage" }));
+  const app = host({ before: held.before });
   await app.init(["Cached stop task"]);
   outage = true;
   try { expect(await app.event("session_stop", { messages: [] })).toBeUndefined(); }
-  finally { kataAnswers.resolve(); }
+  finally { held.release(); }
   await app.call({ op: "view" }); // drain the background hook
 });
 

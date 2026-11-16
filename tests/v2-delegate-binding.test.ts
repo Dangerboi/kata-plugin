@@ -1,12 +1,11 @@
 import { expect, test } from "bun:test";
 import { writeFileSync } from "node:fs";
-import path from "node:path";
 import { later } from "./kata-fixture";
 import { siblingThrottle } from "./kata-errors";
 import { v2Fixture } from "./v2-fixture";
 
 // The omp adapter against a real Kata: binding task delegations to plan items, untracked delegates and hand-backs.
-const { scratch, outside, kata, show, issue, host, down, evidence, message, ran, closeSessions, total, commentsOf, sessionParents } = v2Fixture();
+const { scratch, outside, kata, show, issue, host, down, evidence, message, ran, closeSessions, total, commentsOf, sessionParents, closesOf } = v2Fixture();
 
 test("batch delegates bind named plan tasks by spawn index without duplicates", async () => {
   const app = host(); await app.event("session_start");
@@ -80,7 +79,7 @@ for (const planned of [true, false]) test(`a task prompt naming a ticket outside
   const bound = (await show(`v2test#${ticket}`)).issue;
   expect(bound.metadata["omp.subagent_id"]).toBe(`ticket-${planned}`);
   expect(bound.owner).toBe("v2-builder");
-  const owned = (await kata(["list", "--status", "all", "--meta", `omp.session_id=${app.sid}`, "--json"])).issues;
+  const owned = await sessionParents(app.sid);
   expect(owned.filter((i: any) => i.title.startsWith("Subagent"))).toHaveLength(0);
   if (parent) expect((await show(parent)).children).toHaveLength(1);
   else expect(owned.filter((i: any) => i.short_id !== ticket)).toHaveLength(0);
@@ -140,7 +139,7 @@ test("queued close survives extension recreation and retries only after its dead
   expect(resumed.calls.some(a => a[0] === "close")).toBe(false);
   await later(async () => { const restarted = host({ sid: app.sid, entries }); await restarted.event("session_start"); await restarted.call({ op: "view" }); });
   expect((await show(parent)).issue.status).toBe("closed");
-  expect((await kata(["audit", "closes", "--json"])).rows.filter((r: any) => r.issue === parent.split("#")[1])).toHaveLength(1);
+  expect(await closesOf(parent)).toHaveLength(1);
 });
 
 // The 2026-10-19 eval: omp sent todo init and the tests delegation in one batch.

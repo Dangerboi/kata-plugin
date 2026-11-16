@@ -2,7 +2,7 @@ import { afterEach, beforeEach, expect } from "bun:test";
 import { chmodSync, existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { siblingThrottle } from "./kata-errors";
-import { realKata, unique } from "./kata-fixture";
+import { EVIDENCE, MESSAGE, realKata, unique } from "./kata-fixture";
 import { openCodeHost, type FakeSession, type OpenCodePlugin, type OpenCodeInstance } from "./opencode-host";
 import opencode from "../plugins/opencode/kata";
 import { eventsHandled } from "../plugins/opencode/seam";
@@ -10,10 +10,9 @@ import { eventsHandled } from "../plugins/opencode/seam";
 export const PROJECT = "pi-port-opencode";
 const AUTHOR = "opencode-builder";
 
-export const message = "Implemented the item and verified it with the isolated OpenCode adapter suite.";
-export const evidence = ["test:bun test opencode fixture"];
-
 const quote = (value: string) => `'${value.replace(/'/g, "'\\''")}'`;
+/** The end of the storage keys a session's saved parts live under, named once for `savedOf` and for tests that gate a read of one. */
+export const SAVED = { entries: "/entries", ended: "/ended" };
 
 export const todos = (...items: ([string, string] | Record<string, unknown>)[]) => ({
 	todos: items.map(item => (Array.isArray(item) ? { content: item[0], status: item[1] } : item)),
@@ -44,7 +43,7 @@ export function assignmentOf(system: string) {
  */
 export function openCodeKata(prefix: string) {
 	const store = realKata({ prefix, author: AUTHOR, project: PROJECT, adopt: true });
-	const { binary, scratch, cwd, env, kata, show } = store;
+	const { binary, scratch, cwd, env, show } = store;
 
 	const wrapper = path.join(scratch, "kata-wrapper.sh");
 	const calls = path.join(scratch, "calls.log"), throttle = path.join(scratch, "throttle"), hold = path.join(scratch, "hold");
@@ -91,20 +90,19 @@ exec "${binary}" "$@"
 		return restarted;
 	}
 
-	/** The lead's automatic parent. */
+	/** A ticket outside any plan, qualified, with a body. */
+	const ticketRef = async (title: string, body: string) => `${PROJECT}#${await store.issue(title, { body, project: PROJECT })}`;
 	async function parentOf(id: string): Promise<any> {
-		const list = (await kata(["list", "--status", "all", "--meta", `opencode.session_id=${id}`, "--label", "opencode-session", "--json"])).issues;
+		const list = await store.sessionParents("opencode", id, true);
 		expect(list).toHaveLength(1);
 		return list[0];
 	}
-	/** The children of an issue, in creation order. */
 	async function childrenOf(ref: string): Promise<any[]> {
 		return [...(await show(ref)).children ?? []].sort((a, b) => Date.parse(a.created_at) - Date.parse(b.created_at));
 	}
 	const itemsOf = async (id: string) => childrenOf(qref(await parentOf(id)));
 	const closeEvents = async () => (await store.events()).filter(event => event.type === "issue.closed");
 	const labelsOf = async (issue: any): Promise<string[]> => ((await show(qref(issue))).labels ?? []).map((label: any) => label.label);
-	const commentsOf = async (ref: string): Promise<string[]> => ((await show(ref)).comments ?? []).map((comment: any) => comment.body);
 
 	/** Runs a shell command as a delegate's shell would, against this store: the `kata` on PATH is the adopted binary. `without` names variables the command's environment must not hold. */
 	async function sh(command: string, without: string[] = []) {
@@ -118,7 +116,7 @@ exec "${binary}" "$@"
 	async function closeAs(system: string) {
 		const { close } = assignmentOf(system);
 		if (!close) throw new Error(`The delegate's prompt holds no close command:\n${system}`);
-		const out = await sh(`${close} --message ${quote(message)} --evidence ${quote("test:bun test opencode delegates")}`);
+		const out = await sh(`${close} --message ${quote(MESSAGE)} --evidence ${quote(EVIDENCE[0])}`);
 		if (out.code) throw new Error(out.stderr);
 	}
 
@@ -128,13 +126,13 @@ exec "${binary}" "$@"
 	 */
 	function savedOf(host: OpenCodeInstance, id: string) {
 		const keys = [...host.shared.kv.keys()].filter(key => key.includes(`/${id}/`));
-		return { any: keys.length > 0, entries: keys.some(key => key.endsWith("/entries")), ended: keys.some(key => key.endsWith("/ended")) };
+		return { any: keys.length > 0, entries: keys.some(key => key.endsWith(SAVED.entries)), ended: keys.some(key => key.endsWith(SAVED.ended)) };
 	}
 	const forgotten = (host: OpenCodeInstance, id: string) => !savedOf(host, id).any;
 
 	return {
 		...store, wrapper, kataCalls, forgetCalls, throttleCloses, holdCalls, releaseCalls,
 		startHost, startLead, newSession, restart,
-		parentOf, childrenOf, itemsOf, closeEvents, labelsOf, commentsOf, sh, closeAs, savedOf, forgotten,
+		parentOf, ticketRef, childrenOf, itemsOf, closeEvents, labelsOf, sh, closeAs, savedOf, forgotten,
 	};
 }

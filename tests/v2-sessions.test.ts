@@ -3,13 +3,13 @@ import { execFile } from "node:child_process";
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { promisify } from "node:util";
-import { finishes, later } from "./kata-fixture";
+import { finishes, holdKata, later } from "./kata-fixture";
 import { missingExecutable, siblingThrottle } from "./kata-errors";
 import { v2Fixture } from "./v2-fixture";
 
 // The omp adapter against a real Kata: session start and end, transcripts, automatic parents and their closes.
 const exec = promisify(execFile);
-const { binary, scratch, cwd, outside, env, run, kata, show, events, issue, unique, host, down, evidence, message, hostTimers, throttledClose, ran, closeSessions } = v2Fixture();
+const { binary, scratch, cwd, outside, env, run, kata, show, events, issue, unique, host, down, evidence, message, hostTimers, throttledClose, ran, closeSessions, closesOf } = v2Fixture();
 
 test("subagent start and shutdown never touch main attention or widget", async () => {
   const ref = await issue(); await kata(["claim", ref, "--json"]); await kata(["meta", "set", ref, "work.attention", "ok", "--json"]);
@@ -121,10 +121,9 @@ test("auto parents carry typed identity and close exactly once from child eviden
   for (const task of ["Implement fixture", "Verify fixture"]) expect((await app.call({ op: "done", task, message, evidence })).isError).toBeUndefined();
   expect((await show(ref)).issue.status).toBe("closed");
   await app.call({ op: "view" }); await app.event("session_stop");
-  const rows = (await kata(["audit", "closes", "--json"])).rows.filter((r: any) => r.issue === ref.split("#")[1]);
-  expect(rows).toHaveLength(1);
-  const evt = (await kata(["events", "--after", String(rows[0].event_id - 1), "--limit", "1", "--json"])).events[0];
-  expect(evt.payload.evidence).toEqual([{ type: "test", command: "bun test fixture" }]);
+  const closes = await closesOf(ref);
+  expect(closes).toHaveLength(1);
+  expect(closes[0].payload.evidence).toEqual([{ type: "test", command: "bun test fixture" }]);
   // Every project-scoped Kata call pins the plan's workspace, so a worktree or a moved cwd never resolves another project.
   expect(app.calls.filter(a => a[0] !== "version").every(a => a.includes("--workspace"))).toBe(true);
 });
@@ -165,19 +164,18 @@ test("contract is cached verbatim, inbox read every turn, slow hooks bounded and
   expect(app.calls.filter(a => a[0] === "agent-contract-hook")).toHaveLength(1);
   expect(app.calls.filter(a => a[0] === "inbox")).toHaveLength(3);
   // Kata does not answer until the test lets it: the hooks must return on their own bound, not on Kata's answer.
-  const kataAnswers = Promise.withResolvers<void>();
-  let asked = 0;
-  const slow = host({ before: async () => { asked++; await kataAnswers.promise; return { code: 1, stderr: "offline", stdout: "" }; } });
+  const held = holdKata(() => true, () => ({ code: 1, stderr: "offline", stdout: "" }));
+  const slow = host({ before: held.before });
   try {
     expect(await finishes((async () => { await slow.event("session_start"); await slow.event("before_agent_start", { systemPrompt: ["base"] }); })())).toBe(true);
-    expect(asked).toBeGreaterThan(0);
+    expect(held.held).toBeGreaterThan(0);
     expect(slow.notices).toEqual([]);
-  } finally { kataAnswers.resolve(); }
+  } finally { held.release(); }
 });
 
 test("external closes reconcile an auto parent, including non-todo children", async () => {
   const app = host(); const ref = await app.init(["External task"]);
-  const extra = (await kata(["create", "External verification child", "--parent", ref, "--force-new", "--json"])).issue.short_id;
+  const extra = await issue("External verification child", { parent: ref });
   expect((await app.call({ op: "done", message, evidence })).isError).toBeUndefined();
   expect((await show(ref)).issue.status).toBe("open");
   await kata(["close", extra, "--done", "--message", "Externally verified this additional child with an independent test run.", "--test", "external verifier", "--json"]);
@@ -410,7 +408,7 @@ test("membership changes during evidence retrieval prevent auto-parent close", a
 test("cross-project adoption pins new children to the claimed project", async () => {
   const other = path.join(scratch, `other-${unique()}`); mkdirSync(other);
   await kata(["init", "--project", "v2other", "--json"], other);
-  const foreign = (await kata(["create", "Cross-project claimed issue", "--owner", "v2-builder", "--force-new", "--json"], other)).issue.short_id;
+  const foreign = await issue("Cross-project claimed issue", { owner: "v2-builder", workspace: other });
   const app = host(); const original = await app.init(["Original task"]);
   await app.event("tool_result", { toolName: "bash", input: { command: `kata --workspace '${other}' claim ${foreign}` }, isError: false });
   const current = await app.call({ op: "view" });
