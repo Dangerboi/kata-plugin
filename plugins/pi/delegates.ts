@@ -526,7 +526,8 @@ export function createDelegates(env: DelegatesEnv): Delegates {
 	// One exited delegate: a closed issue settles it, returned to the lead when the delegate held it; a delegate that never
 	// acted is rolled back; otherwise the open issue is commented, flagged and handed back. Every step can run again after a failure.
 	async function settleOne(r: DelegateRecord) {
-		if (r.state === "untracked") return settleUntracked(r);
+		// A delegate that exits before anything decided its target (no plan yet, or Kata could not be read) ran as an untracked one.
+		if (r.state === "untracked" || !refOf(r)) return settleUntracked(r);
 		const ref = refOf(r);
 		const settled = () => { r.state = "settled"; save(r); };
 		if (!ref || !r.binding) return settled();

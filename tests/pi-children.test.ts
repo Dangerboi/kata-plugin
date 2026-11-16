@@ -522,3 +522,16 @@ test("a child whose named ticket Kata could not read at its start is assigned th
   expect(delegateRecord(child)).toMatchObject({ state: "assigned", ref: ticket });
   leaveChild();
 });
+
+test("a one-shot child whose start Kata could not check, and that names nothing, still leaves its report as a mission", async () => {
+  const parent = await host(); await parent.event("session_start", { reason: "startup" });
+  const ref = await parent.init(["Lead outage mission work"]);
+  // Kata goes away between the child's start reading its parent and the check reading it again.
+  let down = false, reads = 0;
+  const child = await childOf({ before: (a: string[]) => down && a[0] === "show" && a.includes(ref) && ++reads > 1 ? daemonUnavailable() : undefined });
+  down = true;
+  await child.event("before_agent_start", { prompt: "Survey the unrelated build system", systemPromptOptions: { sections: {} } });
+  down = false;
+  await endWithReport(child, "The build system is plain make.");
+  expect((await missionsUnder(ref)).map((c: any) => c.status)).toEqual(["closed"]);
+});
