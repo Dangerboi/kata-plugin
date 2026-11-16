@@ -72,8 +72,8 @@ test("every actor and project the test files name literally is in the canary lis
   const actors = new Set<string>(), projects = new Set<string>();
   for (const file of readdirSync(import.meta.dir).filter(name => name.endsWith(".ts") && !name.startsWith("isolation"))) {
     const source = readFileSync(path.join(import.meta.dir, file), "utf8");
-    for (const match of source.matchAll(/\bauthor: "([^"]+)"/g)) actors.add(match[1]);
-    for (const match of source.matchAll(/\bproject: "([^"]+)"|"--project", "([^"]+)"|"projects", "create", "([^"]+)"/g)) projects.add(match[1] ?? match[2] ?? match[3]);
+    for (const match of source.matchAll(/\bauthor: "([^"]+)"|\bAUTHOR = "([^"]+)"/g)) actors.add(match[1] ?? match[2]);
+    for (const match of source.matchAll(/\bproject: "([^"]+)"|\bPROJECT = "([^"]+)"|"--project", "([^"]+)"|"projects", "create", "([^"]+)"/g)) projects.add(match[1] ?? match[2] ?? match[3] ?? match[4]);
   }
   expect([...actors].filter(actor => !FIXTURE_ACTORS.has(actor))).toEqual([]);
   expect([...projects].filter(project => !FIXTURE_PROJECT.test(project))).toEqual([]);
