@@ -1,6 +1,6 @@
 # Use with Kata agent hooks
 
-Kata's native hooks (Claude Code uses them directly: `kata agent-hook install claude --attention`) provide contract/inbox context and optional session attention. This repository adds delegated issue tracking or todo plans. These plugins require Kata 0.23.0.
+Kata's native hooks (Claude Code uses them directly: `kata agent-hook install claude --attention`, also with the Claude Code plugin) provide contract/inbox context and optional session attention. This repository adds delegated issue tracking or todo plans. These plugins require Kata 0.23.0.
 
 ## Pi
 
@@ -23,3 +23,11 @@ kata agent-hook install opencode
 ```
 
 Run it once for the contract, the inbox and session attention. The OpenCode plugin asks the core for the plan section only (`context: false`) and leaves the contract, the inbox and attention to Kata's hook, so nothing needs configuring on the plugin side. The installer probes `opencode --version` to pick the v1 or v2 API (`--api v1|v2` overrides the probe) and installs at user scope; add `--local` for the project folder, or `--attention=false` for the contract alone. Do not install a second session-attention writer for the same issue alongside it.
+
+## Claude Code
+
+```sh
+kata agent-hook install claude --attention
+```
+
+Run it once for the contract, the inbox and session attention. The Claude Code plugin (`kata-cc`) does not add them by default: its `contract` option is off, and the plugin sends only the plan section, so nothing needs configuring on the plugin side. Turn `contract` on only when you do not install Kata's hook; with both, the model reads the contract twice. The plugin's live inbox follower is separate from the hook; `KATA_CLAUDE_LIVE_INBOX=0` turns it off and leaves delivery to the hook ([reference](../reference/claude-code.md#live-inbox)).

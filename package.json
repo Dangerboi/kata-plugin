@@ -21,13 +21,16 @@
     "test": "bun tests/run.ts all",
     "smoke:omp": "bun scripts/vendor-core.ts --check && bun scripts/smoke-omp.ts",
     "smoke:opencode": "bun scripts/vendor-core.ts --check && bun scripts/smoke-opencode.ts",
+    "smoke:claude": "bun scripts/vendor-core.ts --check && bun scripts/smoke-claude.ts",
     "smoke:omp-attention": "bun scripts/vendor-core.ts --check && bun scripts/smoke-omp-attention.ts",
     "test:files": "bun tests/run.ts",
     "test:changed": "bun tests/run.ts changed",
     "test:revisions": "bun tests/run.ts revisions",
     "build:plugins": "bun scripts/vendor-core.ts",
     "check:plugins": "bun scripts/vendor-core.ts --check",
-    "typecheck": "tsc -p tsconfig.json"
+    "validate:claude": "claude plugin validate . && claude plugin validate plugins/claude-code",
+    "test:claude": "claude plugin test plugins/claude-code",
+    "typecheck": "tsc -p tsconfig.json && tsc -p plugins/claude-code/tsconfig.json"
   },
   "devDependencies": {
     "@earendil-works/pi-coding-agent": "1.0.2",

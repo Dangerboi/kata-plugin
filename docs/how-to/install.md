@@ -1,10 +1,10 @@
 # Install
 
-Install Kata 0.23.0 or later. Oh-my-pi, pi and OpenCode need no Kata project in the folder: a folder without a Kata project uses `KATA_DEFAULT_PROJECT` or its inferred project (see the [oh-my-pi reference](../reference/oh-my-pi.md)). These plugins use `agent-contract-hook`, revision guards, typed evidence, `audit closes`, and `events`.
+Install Kata 0.23.0 or later. Oh-my-pi, pi, OpenCode and Claude Code need no Kata project in the folder: a folder without a Kata project uses `KATA_DEFAULT_PROJECT` or its inferred project (see the [oh-my-pi reference](../reference/oh-my-pi.md)). These plugins use `agent-contract-hook`, revision guards, typed evidence, `audit closes`, and `events`.
 
 ## Runtime compatibility
 
-Both plugins check `kata version --json` before using the CLI. They require JSON schema 1 (`kata_api_version: 1`) and a version that proves Kata 0.23.0 or later. For older or unprovable versions, plan tools fail with an upgrade or installation message (Kata error code `unsupported_version`); missing executables, unreachable Kata and timed-out probes still use the local plan fallback.
+Every plugin checks `kata version --json` before using the CLI. They require JSON schema 1 (`kata_api_version: 1`) and a version that proves Kata 0.23.0 or later. For older or unprovable versions, plan tools fail with an upgrade or installation message (Kata error code `unsupported_version`); missing executables, unreachable Kata and timed-out probes still use the local plan fallback.
 
 Background contract injection and plugin-managed attention hooks quietly skip incompatible Kata; they do not show the upgrade error. Use a plan tool to see the error and installation guidance.
 
@@ -110,3 +110,40 @@ See [Use with Kata agent hooks](use-with-kata-agent-hooks.md#opencode). Optional
 Tested with OpenCode 2.2.7. To check another release, run `bun run smoke:opencode` from a checkout (see [development](../development.md#smoke-test-against-a-real-opencode)).
 
 The TUI sidebar shows the plan with no extra setting. Set `experimental.todo: true` in `opencode.json` only if you want the plan in the desktop composer pill too.
+
+## Claude Code
+
+Needs Claude Code 2.1.326 or later (the mod API is early access; see the [limits](../explanation/limits.md#claude-code)) and Kata 0.23.0 or later. In Claude Code:
+
+```
+/plugin install kata-cc --marketplace Dangerboi/kata-plugin
+```
+
+Or from a shell:
+
+```sh
+claude plugin marketplace add Dangerboi/kata-plugin
+claude plugin install kata-cc@kata-plugin
+```
+
+The plugin is active in the session you install it in and in every later one; there is no restart. It replaces Claude Code's task tools with Kata's `todo` in every folder, with no configuration. It has no npm package: the marketplace installs from the repository's Git. A marketplace added from a local folder reads the plugin from that folder in place:
+
+```sh
+claude plugin marketplace add /path/to/kata-plugin
+claude plugin install kata-cc@kata-plugin
+```
+
+To update, refresh the marketplace first, then update and reload:
+
+```sh
+claude plugin marketplace update kata-plugin
+claude plugin update kata-cc@kata-plugin
+```
+
+Then run `/reload-plugins` in a running session. A change reaches an installed copy only when the plugin's `version` moved.
+
+For one run without installing, load the folder: `claude --plugin-dir /path/to/kata-plugin/plugins/claude-code`.
+
+Run `kata agent-hook install claude --attention` for Kata's contract, inbox and attention; the plugin does not add them unless its `contract` option is on. See [Use with Kata agent hooks](use-with-kata-agent-hooks.md#claude-code). Options (`liveInbox`, `contract`, `kataExecutable`, `debugFile`) are listed in the [reference](../reference/claude-code.md#settings). Optional: send the plans of repos that have no Kata project to one Kata project by exporting `KATA_DEFAULT_PROJECT` where Claude Code runs. The close of each task records the Claude Code session ([Record agent sessions on closes](record-session-transcripts.md)).
+
+Tested with Claude Code 2.1.326. To check another release, run `bun run validate:claude` and `bun run test:claude`, and, when a login and a few cents of spend are acceptable, `bun run smoke:claude` from a checkout (see [development](../development.md#smoke-test-against-a-real-claude-code)).

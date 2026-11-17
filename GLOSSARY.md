@@ -9,7 +9,7 @@ The main agent session: it holds the plan and starts delegates.
 _Avoid_: main agent, coordinator, parent session
 
 **Delegate**:
-An agent the lead starts to do part of the work: an omp `task` subagent, a pi child process or an OpenCode subagent session.
+An agent the lead starts to do part of the work: an omp `task` subagent, a pi child process, an OpenCode subagent session or a Claude Code `Agent`, Workflow agent or teammate.
 _Avoid_: subagent, child, worker
 
 **Assignment**:

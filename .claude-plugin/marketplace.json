@@ -1,0 +1,17 @@
+{
+  "name": "kata-plugin",
+  "owner": {
+    "name": "Dangerboi"
+  },
+  "metadata": {
+    "description": "Kata work tracking for coding agents"
+  },
+  "plugins": [
+    {
+      "name": "kata-cc",
+      "description": "Kata work tracking for Claude Code: a Kata-backed todo tool, delegate tracking, a plan band and a live inbox",
+      "version": "1.0.0",
+      "source": "./plugins/claude-code"
+    }
+  ]
+}
