@@ -27,7 +27,7 @@ function remember(command: string, original: string) {
 	if (rewrites.size > MAX_REWRITES) rewrites.delete(rewrites.keys().next().value!);
 }
 
-// The lead's Bash: a `kata close` carries the lead's transcript pair, as a close the plugin makes does. A subagent's calls
+// The lead's Bash: a `kata close` carries the lead's transcript pair, as a close the plugin makes does. A delegate's calls
 // are routed in delegates.ts.
 export const onLeadShell: Hook<"tool.call"> = async ($, e, next) => {
 	const rt = runtime();

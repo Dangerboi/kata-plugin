@@ -221,8 +221,8 @@ interface Routed {
 
 // Where a kata command goes under the delegate's teammate: unchanged when it already carries it (and its workspace and
 // project, for a delegate with an issue, and a close's transcript pair), else the same command with what it lacks added.
-// A close records the lead's session (see `delegateCommand`). `--as` throws. Changes nothing, so a refusal can name the exact
-// command to run.
+// A close records the lead's session: a delegate has none of its own (its transcript is inside the lead's). `--as` throws.
+// Changes nothing, so a refusal can name the exact command to run.
 function shellRoute(rt: Runtime, session: Session, command: string, teammate: string, binding?: Binding): Routed {
 	const executable = rt.settings.executable;
 	const transcript = { env: rt.platform.env, agent: NAMESPACE, id: session.id };
