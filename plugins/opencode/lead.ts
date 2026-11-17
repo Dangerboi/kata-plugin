@@ -1,5 +1,5 @@
 import { waitAtMost } from "./kata-cli";
-import { createKataCore, type HostContext, type KataCore, type PlanView } from "./kata-core";
+import { createKataCore, type HostContext, type Job, type KataCore, type PlanView } from "./kata-core";
 import { teammateFor, type DelegateAssignment, type DelegateEvent, type DelegateRecord, type DelegateStore } from "./delegates";
 import { NAMESPACE, type SavedEntry, type SessionStorage } from "./saved";
 import { EXECUTABLE_VARS, type Settings } from "./settings";
@@ -21,10 +21,11 @@ export interface Planner {
 	// The session whose plan it is.
 	readonly id: string;
 	// Runs `fn` as one job of the core (its `todo.batch`): the read, diff and writes of one tool call share their Kata reads, and
-	// no other call, delegate event or timer of this core runs between them.
-	batch<T>(fn: () => Promise<T>): Promise<T>;
+	// no other call, delegate event or timer of this core runs between them. `fn` passes the job it is given to every `todo` it makes.
+	batch<T>(fn: (job: Job) => Promise<T>): Promise<T>;
 	// One todo op through the core (`view` binds and reloads the plan first). Never throws: the result says `isError`.
-	todo(op: string, params?: Record<string, unknown>): Promise<TodoResult>;
+	// `job`: the batch the op runs in; without one it queues as a job of its own.
+	todo(op: string, params?: Record<string, unknown>, job?: Job): Promise<TodoResult>;
 }
 
 // What a lead knows of one of its child sessions. `record`: the lead tracks it as a delegate. `assignment` (ref, workspace,
@@ -146,8 +147,8 @@ export function createLead(deps: LeadDeps): Lead {
 		const planner: Planner = {
 			id: sessionID,
 			batch: fn => core.todo.batch(ctx, fn),
-			async todo(op, params = {}) {
-				const result = await core.todo.apply(ctx, op, params);
+			async todo(op, params = {}, job) {
+				const result = await core.todo.apply(ctx, op, params, job);
 				return { text: result.content.map(part => part.text).join("\n"), kata: result.details.kata, isError: result.isError === true };
 			},
 		};
@@ -229,7 +230,7 @@ export function createLead(deps: LeadDeps): Lead {
 			return { teammate: record?.teammate ?? teammateFor(sessionID, id), record, assignment: core.delegates.assignment(contextOf(sessionID, [], true)) };
 		},
 		delegatePlan: sessionID => delegateCaller(sessionID).planner,
-		checkSpawn: (call, text) => core.todo.batch(ctx, async () => { await core.delegates.check([text], call); }),
+		checkSpawn: (call, text) => core.todo.batch(ctx, async job => { await core.delegates.check([text], call, undefined, job); }),
 		releaseSpawn: call => core.delegates.release(call),
 		began: (sessionID, spawn) => core.delegates.start({ id: sessionID, sessionId: sessionID, leadSessionId: id, ...spawn }),
 		delegateEvent: event => core.delegates.apply(event),

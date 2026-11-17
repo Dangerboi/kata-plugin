@@ -1,5 +1,5 @@
 // Generated from core/autocomplete.ts; edit there.
-import { isKataCode, type Kata } from "./kata-cli";
+import { isKataCode, NO_JOB, type Kata } from "./kata-cli";
 
 // `#` ticket completion in the host's editor: the provider wrapper and the per-session ticket lists it reads.
 
@@ -103,7 +103,7 @@ export function createTicketCompletion(kata: Kata, scope: () => { session?: stri
 		const list = entry;
 		if (list.failedAt && Date.now() - list.failedAt < TICKET_RETRY && !list.at) return Promise.reject(list.error);
 		if (!list.pending && Date.now() - list.at > TICKET_STALE) {
-			list.pending = kata.run(["list", "--limit", "1000", ...(project ? ["--project", project] : [])], cwd, { timeout: 5_000, workspace: !project }).then(out => {
+			list.pending = kata.run(NO_JOB, ["list", "--limit", "1000", ...(project ? ["--project", project] : [])], cwd, { timeout: 5_000, workspace: !project }).then(out => {
 				list.tickets = (JSON.parse(out).issues ?? []).map((i: Ticket) => ({ short_id: i.short_id, title: i.title, qualified_id: i.qualified_id }));
 				list.at = Date.now(); delete list.failedAt;
 			}, error => {
