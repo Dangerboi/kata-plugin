@@ -6,6 +6,7 @@ import type { Binding } from "../core/model";
 import { delegateCommand, kataCommands, shellOptions } from "../core/shell";
 import type { KataCore } from "../core/kata-core";
 import type { Engine } from "./engine";
+import type { Held } from "./host";
 import { contextOf, enter, runtime, type Entered, type Runtime } from "./lead";
 import { EXECUTABLE_VARS } from "./settings";
 
@@ -98,9 +99,9 @@ const textOf = (e: { prompt: string; description: string; name?: string }) => [e
 
 // What the agent's prompt gains: the assignment (its issue and commands, or that it has none) and, when the plugin owns the
 // contract, the contract.
-async function assignmentNote($: Engine, rt: Runtime, id: string, ms: number): Promise<string | undefined> {
+async function assignmentNote($: Engine, rt: Runtime, held: Held | undefined, id: string, ms: number): Promise<string | undefined> {
 	const asked = await waitAtMost(
-		coreOf(rt, id).session.beforePrompt(contextOf($, rt, id), { context: rt.settings.contract }),
+		coreOf(rt, id).session.beforePrompt(contextOf($, rt, id, held), { context: rt.settings.contract }),
 		ms,
 		() => undefined,
 		contextOf($, rt).timers!
@@ -143,12 +144,13 @@ type Spawn = Parameters<Hook<"agent.spawn">>[1];
 // A resumed run (a follow-up message to a finished agent, a woken teammate) goes on with the record it has: its issue while
 // that is open, else its mission. The engine accepts no rewrite of it, so nothing is added to its prompt.
 async function resumed($: Engine, { rt, ctx }: Entered, e: Spawn, next: Next<"agent.spawn">, spend: Spend) {
+	const lead = ctx.held!.id;
 	const known = e.resume ? recordOf(rt, e.resume.agentId) : undefined;
 	if (!known) return next(e);
 	const { sessionId: _session, ...unchanged } = known;
 	await waitAtMost(
 		rt.core.delegates.start(
-			{ id: known.id, sessionId: e.resume!.agentId, leadSessionId: rt.id!, text: e.prompt, untracked: true, name: unchanged.name, agent: unchanged.agent },
+			{ id: known.id, sessionId: e.resume!.agentId, leadSessionId: lead, text: e.prompt, untracked: true, name: unchanged.name, agent: unchanged.agent },
 			NO_JOB
 		),
 		await within(spend, ENGINE_MS),
@@ -167,6 +169,8 @@ async function resumed($: Engine, { rt, ctx }: Entered, e: Spawn, next: Next<"ag
 }
 
 async function spawned($: Engine, { rt, ctx }: Entered, e: Spawn, next: Next<"agent.spawn">, spend: Spend) {
+	// The session the spawn belongs to, taken before the waits below: a /resume during them must not name another.
+	const lead = ctx.held!.id;
 	const nested = e.parentAgentId !== undefined;
 	const base = e.workflow ? `${e.tool_use_id || e.workflow.runId}.${e.workflow.agentIndex}` : e.tool_use_id || "spawn";
 	const id = `${base}-${(await $.clock.now()).toString(36)}`;
@@ -192,7 +196,7 @@ async function spawned($: Engine, { rt, ctx }: Entered, e: Spawn, next: Next<"ag
 	const host = {
 		id,
 		sessionId: id,
-		leadSessionId: rt.id!,
+		leadSessionId: lead,
 		text,
 		name: e.name || e.description || undefined,
 		agent: e.subagentType || undefined,
@@ -205,7 +209,7 @@ async function spawned($: Engine, { rt, ctx }: Entered, e: Spawn, next: Next<"ag
 	if (e.permissionMode === "auto") autoMode.add(id);
 	let note: string | undefined;
 	try {
-		note = await assignmentNote($, rt, id, await within(spend, ENGINE_MS));
+		note = await assignmentNote($, rt, ctx.held, id, await within(spend, ENGINE_MS));
 	} catch {
 		/* The agent starts with the prompt it was given. */
 	}

@@ -321,3 +321,45 @@ test("a delegate's exit still running at a session switch saves to its own sessi
 	expect(snapshotOf(a).sessionId).toBe(a);
 	expect(JSON.stringify(snapshotOf(a))).not.toBe(before);
 }, 30_000);
+
+test("a delegate is recorded for the session its spawn began in when the session switches while the spawn waits on the core", async () => {
+	let armed = false;
+	let reached!: () => void;
+	const running = new Promise<void>(resolve => (reached = resolve));
+	let release!: () => void;
+	const gate = new Promise<void>(resolve => (release = resolve));
+	const h = host({
+		hold: () => {
+			if (!armed) return undefined;
+			armed = false;
+			reached();
+			return gate;
+		}
+	});
+	await h.start();
+	const a = h.state.session;
+	await h.todo({ op: "init", items: ["Implement parser module"] });
+	armed = true;
+	const spawning = h.spawn({ prompt: "Survey the build scripts and list the slow ones.", description: "Survey" }, "agent-switching");
+	await running;
+	// A new session replaces A while the spawn still waits on the core's queue.
+	h.state.session = crypto.randomUUID();
+	const before = latestEvent();
+	const viewing = h.todo({ op: "view" });
+	await afterEntry(before);
+	release();
+	await spawning;
+	await viewing;
+	await h.agentCall("agent-switching", "Read");
+	await h.agentTurn("agent-switching", "Slow ones: build-all.sh (found by the switching survey).");
+	let body = "";
+	await eventually(async () => {
+		const missions = (await kata(["list", "--status", "all", "--json"])).issues.filter((issue: any) => issue.metadata?.["claude.mission_subagent_id"]);
+		for (const mission of missions) {
+			if (!(await commentsOf(mission.short_id)).join("\n").includes("found by the switching survey")) continue;
+			body = (await show(mission.short_id)).issue.body ?? "";
+		}
+		return body.length > 0;
+	}, true);
+	expect(body).toContain(`session ${a}`);
+}, 30_000);
