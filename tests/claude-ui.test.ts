@@ -2,7 +2,7 @@ import { chmodSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { expect, test } from "bun:test";
 import { claudeKata, PROJECT } from "./claude-fixture";
-import { EVIDENCE, MESSAGE } from "./kata-fixture";
+import { EVIDENCE, eventually, MESSAGE } from "./kata-fixture";
 import { rememberCard } from "../plugins/claude-code/hooks/plan";
 
 // The Claude mod's plan band, todo cards, `#` ticket completion and /todo, against a real Kata. The render hooks themselves
@@ -41,6 +41,11 @@ const autocomplete = (h: ReturnType<typeof host>, text: string) =>
 	}));
 const rows = async (h: ReturnType<typeof host>, text: string) =>
 	(await autocomplete(h, text)).suggestions as { text: string; label: string; description?: string }[];
+/** A project's first list loads in the background when the typeahead's 400 ms bound passes, so a cold first ask may return no rows. */
+const warmRows = async (h: ReturnType<typeof host>, text: string) => {
+	await eventually(async () => (await rows(h, text)).length > 0, true);
+	return rows(h, text);
+};
 
 test("the plan the core pushes is what the band draws from, and a todo call leaves its card", async () => {
 	const h = host();
@@ -164,12 +169,12 @@ test("# offers open tickets from the bound project, in a project named after a s
 	engineUi(h);
 	await h.start();
 	await h.todo({ op: "init", items: ["Bind the plan"] });
-	const found = await rows(h, "see #tid");
+	const found = await warmRows(h, "see #tid");
 	expect(found).toHaveLength(1);
 	expect(found[0]).toEqual({ text: `${PROJECT}#${sampleId} `, label: `${PROJECT}#${sampleId}`, description: "Tidy the sample board" });
-	// A title word or a short id prefix finds it; another project's name needs its own `#`.
-	expect((await rows(h, `#${sampleId.slice(0, 2)}`)).map(r => r.label)).toContain(`${PROJECT}#${sampleId}`);
-	expect((await rows(h, `#${PROJECT}#cac`)).map(r => r.description)).toEqual(["Rework the ticket cache"]);
+	// A title word or a short id prefix finds it; another project's name needs its own `#`. A prefix of digits only is GitHub's, so it runs up to the id's first letter.
+	expect((await rows(h, `#${sampleId.match(/^\d*\D/)?.[0] ?? sampleId}`)).map(r => r.label)).toContain(`${PROJECT}#${sampleId}`);
+	expect((await warmRows(h, `#${PROJECT}#cac`)).map(r => r.description)).toEqual(["Rework the ticket cache"]);
 	expect(await rows(h, "build #3164")).toEqual([]);
 	expect(await rows(h, "#")).toEqual([]);
 	// Rows of plugins beneath stay, ahead of ours.
@@ -191,7 +196,7 @@ test("a slow Kata adds no rows and holds typing for 400 ms at most; the list sho
 	const begun = Date.now();
 	expect(await rows(h, "#slow")).toEqual([]);
 	expect(Date.now() - begun).toBeLessThan(1500);
-	await Bun.sleep(2300);
+	await eventually(async () => (await rows(h, "#slow")).length > 0, true);
 	const warm = Date.now();
 	expect((await rows(h, "#slow")).map(r => r.description)).toEqual(["Slow board ticket"]);
 	expect(Date.now() - warm).toBeLessThan(400);
