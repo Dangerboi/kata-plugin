@@ -83,12 +83,12 @@ test("waitAtMost and debugTo take their timer and file sink from the host", asyn
   expect(lines).toHaveLength(1);
 });
 
-test("core/ imports nothing from Node but AsyncLocalStorage, except the Node host module", () => {
+test("core/ imports nothing from Node, except the Node host module", () => {
   const offenders: string[] = [];
   for (const name of readdirSync("core").filter(n => n.endsWith(".ts") && n !== "node-host.ts")) {
     readFileSync(`core/${name}`, "utf8").split("\n").forEach((line, i) => {
       if (/^\s*\/\//.test(line)) return;
-      if (/from "node:(?!async_hooks)|\bprocess\.|\bsetTimeout\b|\bclearTimeout\b|\bBuffer\b/.test(line)) offenders.push(`${name}:${i + 1}: ${line.trim()}`);
+      if (/from "node:|\bprocess\.|\bsetTimeout\b|\bclearTimeout\b|\bBuffer\b/.test(line)) offenders.push(`${name}:${i + 1}: ${line.trim()}`);
     });
   }
   expect(offenders).toEqual([]);
