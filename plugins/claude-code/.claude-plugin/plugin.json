@@ -9,8 +9,24 @@
     "liveInbox": {
       "type": "boolean",
       "title": "Live inbox",
-      "description": "Deliver requests sent to this session through kata notify as they arrive, without waiting for the next prompt. Off: the inbox is read once per prompt. KATA_CLAUDE_LIVE_INBOX=0 also turns it off.",
+      "description": "Deliver requests sent to this session through kata notify as they arrive, without waiting for the next prompt. On unless this is off or KATA_CLAUDE_LIVE_INBOX=0; either one turns it off. When off, the inbox is read once per prompt.",
       "default": true
+    },
+    "contract": {
+      "type": "boolean",
+      "title": "Kata contract in prompts",
+      "description": "Add the Kata contract and the inbox to each prompt from this plugin. Leave off when `kata agent-hook install claude` is set up: it owns both, and with both on the model reads the contract twice.",
+      "default": false
+    },
+    "kataExecutable": {
+      "type": "string",
+      "title": "Kata executable",
+      "description": "The Kata executable this plugin runs. Blank: KATA_CLAUDE_EXECUTABLE, then `kata` from PATH. The Bash tool is not rewritten to use it."
+    },
+    "debugFile": {
+      "type": "string",
+      "title": "Debug log file",
+      "description": "Append-only diagnostic log the plugin writes. Blank: KATA_CLAUDE_DEBUG, else none."
     }
   }
 }

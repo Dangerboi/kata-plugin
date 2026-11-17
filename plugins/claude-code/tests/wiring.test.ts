@@ -82,3 +82,12 @@ test('the liveInbox option off starts no stream', { options: { liveInbox: false 
   await clock.settle()
   expect(seen.spawned).toEqual([])
 })
+
+test('the liveInbox option on does not override KATA_CLAUDE_LIVE_INBOX=0: either switch turns delivery off', { options: { liveInbox: true } }, async ($, on) => {
+  mock.store(on, {})
+  const clock = mock.clock(on)
+  const seen = stubInbox(on, { KATA_INBOX_USER: 'lead/worker', KATA_CLAUDE_LIVE_INBOX: '0' }, [slotLine(4, { from: 'lead', message: 'real-8820' })])
+  await $.session.start({ surface: 'terminal', isInteractive: true, cwd: '/work' } as any)
+  await clock.settle()
+  expect(seen.spawned).toEqual([])
+})

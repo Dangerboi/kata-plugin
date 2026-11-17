@@ -138,3 +138,32 @@ test("the stream child ends with the session", async () => {
   expect(h.submitted).toEqual([]);
   await clear(ref, address);
 });
+
+test("a stream that ends is followed again after the backoff, from the last event it delivered", async () => {
+  const address = addressOf("restart");
+  const h = live(address);
+  // The restart timer is the one this test fires; every other timer runs as it would.
+  const restarts: { ms: number; fire: () => void }[] = [];
+  const real = h.$.clock.after;
+  h.$.clock.after = (ms: number, fn: () => void) => {
+    if (ms !== 1000) return real(ms, fn);
+    restarts.push({ ms, fire: fn });
+    return { cancel: () => { const at = restarts.findIndex(r => r.fire === fn); if (at >= 0) restarts.splice(at, 1); } };
+  };
+  await h.start();
+  expect(await until(() => h.spawned.length === 1)).toBe(true);
+  const ref = await newIssue();
+  await notify(ref, address, "before-restart-3301");
+  expect(await until(() => h.submitted.length === 1)).toBe(true);
+  const workspace = h.spawned[0].argv[5];
+  Bun.spawnSync(["pkill", "-f", `events --tail --json --workspace ${workspace}`]);
+  expect(await until(() => restarts.length === 1)).toBe(true);
+  expect(h.spawned).toHaveLength(1);
+  restarts[0]!.fire();
+  expect(await until(() => h.spawned.length === 2)).toBe(true);
+  expect(h.spawned[1].argv).toContain("--last-event-id");
+  await notify(await newIssue(), address, "after-restart-8842");
+  expect(await until(() => h.submitted.length === 2)).toBe(true);
+  expect(texts(h.submitted)[1]).toContain("after-restart-8842");
+  await clear(ref, address);
+});
