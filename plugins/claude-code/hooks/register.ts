@@ -5,33 +5,27 @@ import { onTodoCall, onToolCall, onToolList } from "./todo";
 import { onDelegateCall, onSpawn } from "./delegates";
 import { onTurnStart } from "./inbox";
 import { configure } from "./lead";
-import { onBand, onTickets, onTodoCard, onTodoCommand, onTodoRan, onTodoUse } from "./ui";
+import { onBand, onTickets, onTodoCard, onTodoCommand, onTodoUse } from "./ui";
 
-// The hooks module: one line per event. Each feature is a module that exports its handlers; a later one
-// (delegates.ts, ui.tsx, inbox.ts) adds its own lines here and nothing else changes.
+// The hooks module: one line per event. `claude plugin validate` follows `$` through a helper only when the helper is declared at
+// the top of its file, so every helper that takes the `$` a hook gets lives there.
 export const register: Register = (on, options) => {
 	configure(options as Record<string, unknown>);
-	// Session
 	on("session.start", onStart);
 	on("classic.SessionStart", { source: ["resume", "fork", "clear"] }, onSessionSwitch);
 	on("session.end", onEnd);
-	// The todo tool: task tools out, `todo` in; the lead's call is answered here. Order matters: the todo hook answers
-	// without `next`, so the observer below never sees it.
+	// The task tools go out and `todo` comes in; the todo hook answers the lead's call without `next`, so `onToolCall` never sees it.
 	on("tool.list", onToolList);
-	on("tool.call", { tool: /^(todo)$/ }, onTodoRan);
 	on("tool.call", { tool: /^todo$/ }, onTodoCall);
 	on("tool.call", { agentId: /./ }, onDelegateCall);
 	on("tool.call", onToolCall);
-	// Delegates: spawns bind (Agent, Workflow, teammates), a subagent's answer is its report
 	on("agent.spawn", onSpawn);
-	// Prompt context and the end of a turn
 	on("prompt.submit", onPrompt);
 	on("session.compact", onCompact);
-	// Live inbox: whether the lead's loop is working decides how a request is delivered (the end is noted in onTurnComplete).
+	// The lead's loop working or idle decides how a live inbox request is delivered (the end is noted in onTurnComplete).
 	on("turn.start", onTurnStart);
 	on("turn.complete", onTurnComplete);
 	on("classic.Stop", onStop);
-	// The Claude UI: the plan band, the todo card, `#` tickets and /todo.
 	on("ui.render", { component: "AbovePrompt" }, onBand);
 	on("ui.render", { component: "ToolUse" }, onTodoUse);
 	on("ui.render", { component: "ToolResult" }, onTodoCard);

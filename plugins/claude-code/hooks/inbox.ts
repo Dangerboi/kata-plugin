@@ -1,6 +1,5 @@
-import type { Hook } from "claude-code";
+import type { EngineInterface, Hook } from "claude-code";
 import type { InboxStream, LiveInbox } from "../core/inbox";
-import type { Engine } from "./engine";
 
 // Live inbox delivery: the main session follows `kata events --tail` and each request addressed to it reaches the model
 // without waiting for a prompt. The core decides what is a request (own actor only, a clear delivers nothing, once per
@@ -29,7 +28,7 @@ export const resetInbox = () => {
 // the loop, which ends the child. Pieces are text as it came, so a line can span two of them. stderr is dropped.
 // The stream is the child's only handle: `$.process.spawn` documents `return()` on it as the kill, with a pull pending (the
 // loop always has one), and `next.signal` or the module unloading as the other ends. The mod has no process id to signal.
-function spawnEvents($: Engine, executable: string, args: string[], cwd: string): InboxStream {
+function spawnEvents($: EngineInterface, executable: string, args: string[], cwd: string): InboxStream {
 	const stream = $.process.spawn({ argv: [executable, ...args], cwd });
 	const pieces = stream[Symbol.asyncIterator]();
 	let ended!: () => void;
@@ -67,7 +66,7 @@ function spawnEvents($: Engine, executable: string, args: string[], cwd: string)
 
 // An idle session starts a turn on the request; a working one takes it with its next request, in the same turn. A refusal
 // (the person pressed Stop and has not typed since) is thrown so the core's debug log names it.
-async function deliverTo($: Engine, text: string): Promise<void> {
+async function deliverTo($: EngineInterface, text: string): Promise<void> {
 	if (busy) {
 		const done = await $.session.append({ message: { type: "user", content: [{ type: "text", text }] } });
 		if (done.deny) throw new Error(`inbox request not appended: ${done.deny}`);
@@ -78,6 +77,6 @@ async function deliverTo($: Engine, text: string): Promise<void> {
 }
 
 // What the core takes as `host.liveInbox`.
-export function liveInboxOf($: Engine, executable: string): LiveInbox {
+export function liveInboxOf($: EngineInterface, executable: string): LiveInbox {
 	return { spawn: (args, cwd) => spawnEvents($, executable, args, cwd), deliver: text => deliverTo($, text) };
 }

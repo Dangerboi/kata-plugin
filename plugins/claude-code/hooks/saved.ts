@@ -1,5 +1,5 @@
+import type { EngineInterface } from "claude-code";
 import { holdsWork, savedSnapshot, withEntry, type SavedEntry } from "../core/kata-core";
-import type { Engine } from "./engine";
 
 // `$.store` is one JSON file for every Claude session on the machine, 4 MiB in all, and reading then writing a key is not
 // atomic. So each session keeps everything it saves under one key of its own, `session/<id>`, which only that session
@@ -23,13 +23,13 @@ export const STALE_MS = 30 * 86_400_000;
 // Pruning also keeps the saved sessions together under this many bytes of JSON, well inside the store's 4 MiB.
 export const STORE_BUDGET = 2 * 1024 * 1024;
 
-export async function loadSession($: Engine, id: string): Promise<SavedSession | undefined> {
+export async function loadSession($: EngineInterface, id: string): Promise<SavedSession | undefined> {
 	const value = (await $.store.get(keyOf(id))) as Partial<SavedSession> | undefined;
 	return value && typeof value.directory === "string" && Array.isArray(value.entries) ? (value as SavedSession) : undefined;
 }
 
-// One session's saved record, written after each change the core appends, one write at a time.
-export function sessionWriter($: Engine, id: string, now: () => Promise<number>) {
+// `debug` gets the errors of a write: a record that was not saved must not fail the call that changed it.
+export function sessionWriter($: EngineInterface, id: string, now: () => Promise<number>, debug: (error: unknown) => void) {
 	let record: SavedSession | undefined;
 	let writing: Promise<unknown> = Promise.resolve();
 	// Set by `end`: a write that lands later (a job of the session still queued) leaves the record ended.
@@ -41,7 +41,7 @@ export function sessionWriter($: Engine, id: string, now: () => Promise<number>)
 				body.updatedAt = await now();
 				await $.store.set(keyOf(id), body);
 			})
-			.catch(() => undefined);
+			.catch(debug);
 		return writing;
 	};
 	return {
@@ -63,13 +63,13 @@ export function sessionWriter($: Engine, id: string, now: () => Promise<number>)
 		},
 		// The session ended. `owed`: the core still owes closes; a plan with open tasks keeps the record too, for a resume.
 		// Else its record goes.
-		async end(owed: boolean, at: number) {
+		async end(owed: boolean) {
 			if (!record) return;
+			const at = await now();
 			endedAt = at;
 			if (owed || holdsWork(savedSnapshot(record.entries, NAMESPACE))) {
 				record.endedAt = at;
 				await flush();
-				await writing;
 			} else {
 				await writing;
 				await $.store.delete(keyOf(id));
@@ -81,7 +81,7 @@ export function sessionWriter($: Engine, id: string, now: () => Promise<number>)
 
 // Drops what no later start can use: records past their keep time, then the oldest ended ones while the store is over budget.
 // The session `except` (the one starting) stays. A session that owes closes or has open tasks is kept until it is stale, not just ended.
-export async function pruneSessions($: Engine, now: number, except?: string): Promise<number> {
+export async function pruneSessions($: EngineInterface, now: number, except?: string): Promise<number> {
 	const rows: { key: string; at: number; ended: boolean; size: number }[] = [];
 	for (const key of (await $.store.keys()).filter(key => key.startsWith(PREFIX) && key !== keyOf(except ?? ""))) {
 		const record = (await $.store.get(key)) as Partial<SavedSession> | undefined;

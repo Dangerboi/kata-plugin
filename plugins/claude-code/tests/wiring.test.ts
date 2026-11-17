@@ -23,15 +23,28 @@ test("tool.list swaps the task tools for todo", { plugins: [lister] }, async ($,
 
 test("a todo call is refused before Kata for a bad op, and for a subagent", async ($, on) => {
 	mock.store(on, {});
-	mock.clock(on);
+	const clock = mock.clock(on);
+	const ran: string[][] = [];
+	on("session.start", ($: any, e: any) => ({ cwd: e.cwd }));
 	on("session.id", () => ({ value: "11111111-1111-4111-8111-111111111111" }));
 	on("session.cwd", () => ({ value: "/work" }));
 	on("fs.stat", () => ({ value: { kind: "dir", size: 0, mtimeMs: 0, isLink: false, realPath: "/work" } }));
+	on("env.get", () => ({ value: undefined }));
+	on("process.run", ($: any, e: any) => {
+		if (e.argv[0] !== "git") ran.push(e.argv);
+		const out = e.argv[0] === "git" ? "lead\n" : e.argv[1] === "version" ? '{"kata_api_version":1,"name":"kata","version":"v0.23.0","agent_format":1}' : "{}";
+		return { value: { exitCode: 0, stdout: out, stderr: "", isStdoutTruncated: false, isStderrTruncated: false } };
+	});
+	await $.session.start({ surface: "terminal", isInteractive: true, cwd: "/work" } as any);
+	await clock.settle();
+	const before = ran.length;
 	const bad = await $.tool.call({ tool: "todo", op: "bogus" } as any);
 	expect(bad.isError).toBe(true);
 	expect(String(bad.result)).toContain("todo needs op");
+	expect(ran.length).toBe(before);
 	const sub = await $.tool.call({ tool: "todo", op: "view", agentId: "a1" } as any);
-	expect(String(sub.result)).toContain("Kata");
+	expect(sub.isError).toBe(true);
+	expect(String(sub.result)).toContain("no Kata assignment");
 });
 
 // Live inbox: the kit stubs the stream child and answers Kata's reads, so only the wiring is under test (the real stream

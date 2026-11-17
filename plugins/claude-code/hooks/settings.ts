@@ -1,9 +1,9 @@
-import type { Engine } from "./engine";
+import type { EngineInterface } from "claude-code";
 
 // What the adapter reads from the host: plugin options first (plugin.json userConfig), then the environment.
 // `$.env.get` takes literal names only, so every variable the core or the adapter reads is spelled out here once; the
 // values are read when the runtime starts and live in an in-memory map the core's Platform reads synchronously.
-export async function readEnv($: Engine): Promise<Map<string, string>> {
+export async function readEnv($: EngineInterface): Promise<Map<string, string>> {
 	const found = new Map<string, string>();
 	const note = (name: string, value: string | undefined) => {
 		if (value !== undefined && value !== "") found.set(name, value);

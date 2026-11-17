@@ -1,64 +1,49 @@
+import type { EngineInterface } from "claude-code";
 import { closeEnv, type ExecResult, type Platform, type Timers } from "../core/kata-cli";
-import * as path from "../core/posix-path";
-import { posixPath } from "../core/posix-path";
 import type { DelegateRecord } from "../core/delegates";
-import type { Engine } from "./engine";
+import type { HostContext } from "../core/kata-core";
+import { posixPath } from "../core/posix-path";
 import { NAMESPACE, type sessionWriter } from "./saved";
 
 // Everything the core takes from its machine, built from `$`: the one place that knows the mod runtime has no Node.
 
-// What one session keeps in memory: its saved record and its delegates' records. An event's context names the session's, and
-// the core moves the host onto them when it binds to that session (the host's `switched`).
-export interface Held {
+// What one Claude session keeps in memory. An event's context names its session, and the core moves the host onto it when it
+// binds to that session (the host's `switched`).
+export interface Session {
 	id: string;
 	// Set for a fork: the session it was branched from.
 	header?: { parentSession: string };
+	// The saved record.
 	writer: ReturnType<typeof sessionWriter>;
+	// The lead's delegates by record id (delegates.ts).
 	records: Map<string, DelegateRecord>;
+	// What earlier prompts carried, by section: a section is sent again only when it changed.
+	sent: Record<string, string>;
+	// Delegates whose spawn arrived under auto mode, which refuses a hook's rewrite of a tool call (see `shellRoute`).
+	autoMode: Set<string>;
 }
 
 // The context the core gets with each event: the core's HostContext plus the event's own `$.process.run`, so a call made
-// for an event runs under that event's `$`. A timer or a retry that carries no event uses the latest one.
-export interface RunContext {
-	cwd: string;
-	held?: Held;
-	agent?: { kind?: string; id?: string };
-	sessionManager?: {
-		getSessionId?(): string | undefined;
-		getBranch?(): readonly unknown[];
-		getHeader?(): { parentSession?: unknown } | null | undefined;
-	};
-	run?: (
+// for an event runs under that event's `$`.
+export interface RunContext extends HostContext {
+	held: Session;
+	run: (
 		argv: readonly string[],
 		init: { cwd?: string; env?: Record<string, string>; timeoutMs?: number }
 	) => Promise<{ exitCode: number; stdout: string; stderr: string }>;
-	timers?: Timers;
-	ui?: { setWidget?(key: string, content: unknown): void; notify?(message: string, level?: string): void };
+	timers: Timers;
 }
 
-// The session cwd as `$.fs.stat` resolves it (symlinks and `..` gone), so a workspace recorded in Kata matches however the
-// session was started. A path that leads nowhere keeps its written form.
-export async function canonicalPath($: Engine, file: string): Promise<string> {
-	try {
-		const found = await $.fs.stat(file, { resolve: true });
-		if (found.realPath) return found.realPath;
-	} catch {
-		/* A missing path rejects: resolve its folder and join the name. */
-	}
-	const parent = path.dirname(file);
-	if (parent === file) return file;
-	try {
-		const found = await $.fs.stat(parent, { resolve: true });
-		if (found.realPath) return path.join(found.realPath, path.basename(file));
-	} catch {
-		/* Nothing resolves: as written. */
-	}
-	return file;
+export function timersOf($: EngineInterface): Timers {
+	return {
+		setTimer: (fire, ms) => $.clock.after(ms, fire),
+		clearTimer: handle => (handle as { cancel(): void }).cancel()
+	};
 }
 
-// The core's Platform. `setTimer` uses the clock of the `$` the runtime started under; a context with its own timers wins.
+// The core's Platform. Timers use the clock of the `$` the runtime started under; a context with its own timers wins.
 // There is no process environment: `env` is the map the runtime read at start, and what the core sets stays in it.
-export function platformOf($: Engine, env: Map<string, string>, state: { cwd: string; debugFile?: string }): Platform {
+export function platformOf($: EngineInterface, env: Map<string, string>, state: { cwd: string }): Platform {
 	let appended: Promise<unknown> = Promise.resolve();
 	return {
 		env: {
@@ -71,8 +56,7 @@ export function platformOf($: Engine, env: Map<string, string>, state: { cwd: st
 		cwd: () => state.cwd,
 		path: posixPath,
 		pid: 0,
-		setTimer: (fire, ms) => $.clock.after(ms, fire),
-		clearTimer: handle => (handle as { cancel(): void }).cancel(),
+		...timersOf($),
 		// `realPath` is absent when the path leads nowhere: reject, as realpath does for a missing path.
 		realpath: async file => {
 			const found = (await $.fs.stat(file, { resolve: true })).realPath;
@@ -94,7 +78,7 @@ export function platformOf($: Engine, env: Map<string, string>, state: { cwd: st
 // Kata through `$.process.run`: no shell, the transcript pair of a close in that call's own environment. Like pi.exec a
 // non-zero exit is a result. A rejection is a timeout (the run kills the child) when it came after the limit, else the
 // executable could not start (ENOENT, which the core reads as "Kata is missing").
-export function execOf($: Engine, env: Map<string, string>, latest: () => RunContext | undefined) {
+export function execOf($: EngineInterface, env: Map<string, string>, latest: () => RunContext | undefined) {
 	return async (file: string, args: string[], options: { cwd: string; timeout: number; ctx?: RunContext }): Promise<ExecResult> => {
 		const ctx = options.ctx ?? latest();
 		const pair = closeEnv({ get: name => env.get(name) }, args, NAMESPACE, ctx?.sessionManager?.getSessionId?.());

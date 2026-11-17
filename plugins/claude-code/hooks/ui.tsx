@@ -1,26 +1,23 @@
-import type { Hook } from "claude-code";
+import type { EngineInterface, Hook, MatchedHook } from "claude-code";
 import type { PlanView } from "../core/kata-core";
-import type { Engine, Render } from "./engine";
 import { enter, runtime, type Runtime } from "./lead";
-import { rememberCard } from "./plan";
+import { cardOf, planOf } from "./plan";
 
 // What the lead sees of its Kata plan, as omp shows it: the progress band above the prompt, the checklist card under each
 // `todo` call, `#` ticket completion and the /todo command. Render hooks draw from `$.state` (plan.ts) and never run Kata.
 
-const plan = { plugin: "kata-cc", key: "plan" } as const;
-const cards = { plugin: "kata-cc", key: "cards" } as const;
+// A `ui.render` hook for one component, as `on('ui.render', { component }, hook)` types it.
+type Render<C extends string> = MatchedHook<"ui.render", { readonly component: C }>;
 
 type Task = PlanView["phases"][number]["tasks"][number];
 const GLYPHS: Record<Task["status"], string> = { pending: "☐", in_progress: "▶", blocked: "⏸", completed: "✔", abandoned: "✗" };
 const closed = (task: Task) => task.status === "completed" || task.status === "abandoned";
 const clip = (text: string, width: number) => (text.length > width ? `${text.slice(0, Math.max(1, width - 1))}…` : text);
 
-// ------------------------------------------------------------------------------------------------------------- the band
-
 // `Kata plan 2/5 · 1 blocked · ▶ active task`, the bar filled by the tasks completed. A survey holds the band: yield to it.
 export const onBand: Render<"AbovePrompt"> = async ($, e, next) => {
 	if (e.props.hasSurvey) return next(e);
-	const { value: shown } = await $.state.get(plan);
+	const { value: shown } = await planOf($);
 	if (!shown) return next(e);
 	const { Progress, Text } = $.ui.resolve(e);
 	if (shown.error) return <Text dimColor>{clip(`Kata: ${shown.error.split("\n")[0]}`, e.props.bodyColumns)}</Text>;
@@ -34,9 +31,6 @@ export const onBand: Render<"AbovePrompt"> = async ($, e, next) => {
 	return <Progress label={label} value={done} max={tasks.length} valueText={`${done} of ${tasks.length}`} />;
 };
 
-// ------------------------------------------------------------------------------------------------------------ the card
-
-// `Todo <op> <task|phase> <n items>`, as omp's own todo call reads.
 function callTitle(input: unknown): string {
 	const args = (input ?? {}) as { op?: unknown; task?: unknown; phase?: unknown; items?: unknown; list?: unknown };
 	const parts = [typeof args.op === "string" ? args.op : "update"];
@@ -67,7 +61,7 @@ export const onTodoUse: Render<"ToolUse"> = async ($, e, next) => {
 // blocker. An error keeps the engine's row, which reads what the model read.
 export const onTodoCard: Render<"ToolResult"> = async ($, e, next) => {
 	if (e.props.tool !== "todo" || e.props.isErrored) return next(e);
-	const { value: card } = await $.state.get({ ...cards, id: e.props.tool_use_id });
+	const { value: card } = await cardOf($, e.props.tool_use_id);
 	const view = card?.view;
 	if (!view) return next(e);
 	const { Box, Text } = $.ui.resolve(e);
@@ -108,21 +102,6 @@ export const onTodoCard: Render<"ToolResult"> = async ($, e, next) => {
 	);
 };
 
-// A `todo` call that ran: its card is kept for the transcript's result row. Registered before the hook that answers the call.
-// A subagent's call answers from the core of its own issue: its card would show the lead's plan, so it has none.
-export const onTodoRan: Hook<"tool.call"> = async ($, e, next) => {
-	if (e.agentId !== undefined) return next(e);
-	const ran = await next(e);
-	try {
-		await rememberCard($, String(e.tool_use_id), ran);
-	} catch {
-		/* The row falls back to the model's text. */
-	}
-	return ran;
-};
-
-// ------------------------------------------------------------------------------------------------------------ `#` tickets
-
 // The rows are the core's ticket completion (`suggestTickets`), shared with omp: its cache, its 400 ms wait and its rules for tokens
 // (a digits-only `#1234` is GitHub's, `#<project>#<token>` names a project).
 // Typing is never held by Kata: a loaded list answers from the core's cache whatever Kata is doing (it refreshes in the
@@ -133,12 +112,13 @@ async function ticketRows(
 	e: { text: string; cursor: number },
 	signal: AbortSignal
 ): Promise<{ text: string; label: string; description?: string }[]> {
-	if (!rt.writer || rt.id === undefined) return [];
+	if (!rt.bound) return [];
 	try {
 		const line = e.text.slice(0, e.cursor).split("\n").pop() ?? "";
 		const found = await rt.core.suggestTickets(line, signal);
 		return (found?.items ?? []).map(item => ({ text: `${item.value} `, label: item.value, ...(item.description ? { description: item.description } : {}) }));
-	} catch {
+	} catch (error) {
+		rt.debug(error);
 		return [];
 	}
 }
@@ -149,17 +129,15 @@ export const onTickets: Hook<"prompt.autocomplete"> = async ($, e, next) => {
 	return ours.length ? { suggestions: [...beneath.suggestions, ...ours] } : beneath;
 };
 
-// ------------------------------------------------------------------------------------------------------------- /todo
-
-export async function registerTodoCommand($: Engine) {
+export async function registerTodoCommand($: EngineInterface) {
 	try {
 		await $.command.register({
 			name: "todo",
 			description: "Show or change the Kata plan",
 			argumentHint: "[start|done|drop|rm|append|block|unblock|takeover] [task]"
 		});
-	} catch {
-		/* The model's todo tool still works. */
+	} catch (error) {
+		runtime()?.debug(error);
 	}
 }
 

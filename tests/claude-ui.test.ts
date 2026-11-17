@@ -111,7 +111,7 @@ test("only the newest cards are kept", async () => {
 		}
 	};
 	held.set("plan", { phases: [{ name: "P", tasks: [{ content: "t", status: "pending", ref: "x#1" }] }] });
-	for (let i = 0; i < 45; i++) await rememberCard($, `id${i}`, { result: `r${i}` });
+	for (let i = 0; i < 45; i++) await rememberCard($, `id${i}`, `r${i}`);
 	expect(held.get("cardIds")).toHaveLength(40);
 	expect(held.get("cardIds")[0]).toBe("id5");
 	expect(held.get("cards#id4")).toBeNull();
@@ -240,7 +240,7 @@ test("todo calls that finish together each leave a card and none is lost from th
 	const ui = engineUi(h);
 	await h.start();
 	const ids = Array.from({ length: 6 }, (_, i) => `par-${i}`);
-	await Promise.all(ids.map(id => rememberCard(h.$, id, { result: `text of ${id}` })));
+	await Promise.all(ids.map(id => rememberCard(h.$, id, `text of ${id}`)));
 	expect((ui.held.get("cardIds") as string[]).sort()).toEqual([...ids].sort());
 	for (const id of ids) expect(ui.held.get(`cards#${id}`).text).toBe(`text of ${id}`);
 });
