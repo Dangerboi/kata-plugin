@@ -349,3 +349,46 @@ test("a process that exits before a queued switch has run ends the record of the
 	release();
 	await Promise.all([writing, switching]);
 });
+
+test("a process that exits before a queued switch has run deletes the switched-to record that has no work, whatever the old session owes", async () => {
+	const store = new Map<string, unknown>();
+	const x = crypto.randomUUID();
+	// X was resumed from a record with nothing left to do.
+	store.set(`session/${x}`, { directory: cwd, entries: [], updatedAt: Date.now() });
+
+	let mode: "off" | "fail-close" | "gate" = "off";
+	let reached!: () => void;
+	const running = new Promise<void>(resolve => (reached = resolve));
+	let release!: () => void;
+	const gate = new Promise<void>(resolve => (release = resolve));
+	const h = host({
+		store,
+		hold: argv => {
+			if (mode === "fail-close" && argv.includes("close")) throw new Error("Kata went away");
+			if (mode === "gate") {
+				mode = "off";
+				reached();
+				return gate;
+			}
+			return undefined;
+		}
+	});
+	await h.start();
+	await h.todo({ op: "init", items: ["Plan of the old session"] });
+	// A's close fails: A owes it.
+	mode = "fail-close";
+	await h.todo({ op: "done", task: "Plan of the old session", message: MESSAGE, evidence: EVIDENCE });
+	mode = "gate";
+	const writing = h.todo({ op: "view" });
+	await running;
+	// /resume X while A's call holds the core's queue: the switch job is queued behind it.
+	h.state.session = x;
+	const before = latestEvent();
+	const switching = h.todo({ op: "view" });
+	await afterEntry(before);
+	await h.end("prompt_input_exit");
+	// X has no work of its own: its record goes, A's debt is not X's.
+	expect(store.has(`session/${x}`)).toBe(false);
+	release();
+	await Promise.all([writing, switching]);
+});
