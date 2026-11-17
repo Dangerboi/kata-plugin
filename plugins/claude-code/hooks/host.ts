@@ -7,15 +7,16 @@ import type { sessionWriter } from "./saved";
 
 // Everything the core takes from its machine, built from `$`: the one place that knows the mod runtime has no Node.
 
-// The context the core gets with each event: the core's HostContext plus the event's own `$.process.run`, so a call made
-// for an event runs under that event's `$`. A timer or a retry that carries no event uses the latest one.
 // What one session keeps in memory: its saved record and its delegates' records. An event's context names the session's, and
 // the core moves the host onto them when it binds to that session (the host's `switched`).
 export interface Held {
+	id: string;
 	writer: ReturnType<typeof sessionWriter>;
 	records: Map<string, DelegateRecord>;
 }
 
+// The context the core gets with each event: the core's HostContext plus the event's own `$.process.run`, so a call made
+// for an event runs under that event's `$`. A timer or a retry that carries no event uses the latest one.
 export interface RunContext {
 	cwd: string;
 	held?: Held;

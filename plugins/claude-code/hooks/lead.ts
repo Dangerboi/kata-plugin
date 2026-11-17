@@ -49,17 +49,19 @@ export const configure = (given: Record<string, unknown> | undefined) => {
 };
 export const runtime = () => current;
 
+// The context for a call. Without `held` it names the session of the latest event, which every hook has just entered, so a hook
+// and `enter` reach the same record; the core's own binding may still lag it until the core's switch job has run.
 export function contextOf(
 	$: Engine,
 	rt: Runtime,
 	delegate?: string,
-	held: Held | undefined = rt.writer ? { writer: rt.writer, records: rt.records } : undefined
+	held: Held | undefined = rt.latest?.held
 ): RunContext {
 	return {
 		cwd: rt.state.cwd,
 		held,
 		...(delegate ? { agent: { kind: "sub", id: delegate } } : {}),
-		sessionManager: { getSessionId: () => rt.id, getBranch: () => held?.writer.entries ?? [], getHeader: () => rt.header },
+		sessionManager: { getSessionId: () => held?.id ?? rt.id, getBranch: () => held?.writer.entries ?? [], getHeader: () => rt.header },
 		run: (argv, init) => $.process.run(argv, init),
 		ui: planUi($),
 		timers: { setTimer: (fire, ms) => $.clock.after(ms, fire), clearTimer: handle => (handle as { cancel(): void }).cancel() }
@@ -155,7 +157,7 @@ async function attach($: Engine, hint: { fork?: boolean }): Promise<Entered> {
 	rt.sent = {};
 	// The previous session's delegates and cores stay with it (saved above, picked up when it resumes).
 	rt.callers.clear();
-	const held: Held = { writer: sessionWriter($, id, () => $.clock.now()), records: new Map() };
+	const held: Held = { id, writer: sessionWriter($, id, () => $.clock.now()), records: new Map() };
 	held.writer.start(await loadSession($, id), cwd, seed);
 	const ctx = (rt.latest = contextOf($, rt, undefined, held));
 	// The saved plan, pending closes and unfinished delegates of a resumed session are picked up by the core's bind.
