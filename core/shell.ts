@@ -1,5 +1,4 @@
-import path from "node:path";
-import { closeEnv } from "./kata-cli";
+import { closeEnv, type PathOps } from "./kata-cli";
 import { projectOf, type Binding } from "./model";
 
 // Kata invocations inside a bash command, and the rewrite that pins a delegate's to its teammate.
@@ -14,7 +13,7 @@ export function envPrefix(vars: Record<string, string>): string {
 type ShellWord = { value: string; start: number; end: number };
 // Inspect command positions only. Quoted arguments and heredoc bodies are data;
 // this lexer never infers whether a test/commit command proves completion.
-export function kataCommands(command: string, configuredExecutable = "kata", executableVars: readonly string[] = []): { executable: ShellWord; words: ShellWord[] }[] {
+export function kataCommands(path: Pick<PathOps, "basename">, command: string, configuredExecutable = "kata", executableVars: readonly string[] = []): { executable: ShellWord; words: ShellWord[] }[] {
 	const segments: ShellWord[][] = [[]];
 	let i = 0, heredoc: string | undefined, wantDelimiter = false;
 	while (i < command.length) {
@@ -69,9 +68,9 @@ export function shellOptions(words: ShellWord[]) {
 	return { options, occurrences, args, value };
 }
 
-export function delegateCommand(command: string, executable: string, executableVars: readonly string[], teammate: string, binding?: Binding, transcriptSession?: { agent: string; id: string | undefined }, extraEnv: Record<string, string> = {}): string {
+export function delegateCommand(path: Pick<PathOps, "basename">, command: string, executable: string, executableVars: readonly string[], teammate: string, binding?: Binding, transcriptSession?: { agent: string; id: string | undefined; enabled?: string }, extraEnv: Record<string, string> = {}): string {
 	const edits: { start: number; end: number; value: string }[] = [];
-	for (const invocation of kataCommands(command, executable, executableVars)) {
+	for (const invocation of kataCommands(path, command, executable, executableVars)) {
 		const parsed = shellOptions(invocation.words);
 		if (parsed.options.has("--as")) throw new Error("Kata subagents keep the current actor. Use your assigned --teammate; --as is not permitted.");
 		for (const previous of parsed.occurrences.get("--teammate") ?? []) edits.push({ start: previous[0].start, end: previous.at(-1)!.end, value: "" });
@@ -82,7 +81,7 @@ export function delegateCommand(command: string, executable: string, executableV
 		}
 		edits.push({ start: invocation.executable.end, end: invocation.executable.end, value: flags });
 		// An in-process delegate has its own session; without this its close would record the lead's.
-		const prefix = envPrefix({ ...(transcriptSession ? closeEnv(parsed.args, transcriptSession.agent, transcriptSession.id) : undefined), ...extraEnv });
+		const prefix = envPrefix({ ...(transcriptSession ? closeEnv(parsed.args, transcriptSession.agent, transcriptSession.id, transcriptSession.enabled) : undefined), ...extraEnv });
 		if (prefix) edits.push({ start: invocation.executable.start, end: invocation.executable.start, value: prefix });
 	}
 	for (const edit of edits.sort((a, b) => b.start - a.start)) command = command.slice(0, edit.start) + edit.value + command.slice(edit.end);

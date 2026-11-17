@@ -1,4 +1,5 @@
 import { debugTo, waitAtMost } from "./kata-cli";
+import { nodePlatform } from "./node-host";
 import { createLead, type Child, type Fate, type Lead } from "./lead";
 import { owes } from "./kata-core";
 import { coreState, sessionStorage, type SavedEntry, type SessionStorage } from "./saved";
@@ -104,7 +105,7 @@ export const eventsHandled = (ctx: object): Promise<void> => instances.get(ctx)?
 
 export function createSeam(ctx: any, settings: Settings): SeamRegistry {
 	const directory: string = ctx.location.directory;
-	const debug = debugTo(settings.debugFile);
+	const debug = debugTo(settings.debugFile, nodePlatform.appendFile);
 	const exec = createKataExec(settings);
 	const storage = sessionStorage(ctx.storage, directory);
 	const sessions = new Map<string, Promise<SessionInfo | undefined>>();
@@ -238,7 +239,7 @@ export function createSeam(ctx: any, settings: Settings): SeamRegistry {
 		},
 		async suspendAll() {
 			stopped = true;
-			await waitAtMost(resuming, RESUME_WAIT_MS, debug);
+			await waitAtMost(resuming, RESUME_WAIT_MS, debug, nodePlatform);
 			await Promise.all([...leads.values()].map(lead => lead.suspend().catch(debug)));
 		},
 	};

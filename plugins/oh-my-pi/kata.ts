@@ -20,8 +20,9 @@ import { spawn } from "node:child_process";
 import { BroadcastChannel, isMainThread, threadId } from "node:worker_threads";
 import { closeSync, openSync, readSync } from "node:fs";
 import { createInterface } from "node:readline";
-import { createKataCore, DESCRIPTION, sessionKey, TODO_OPS, TODO_PARAMS } from "./kata-core";
-import { closeEnv, execKata, exportTranscriptSession } from "./kata-cli";
+import { createKataCore, DESCRIPTION, TODO_OPS, TODO_PARAMS } from "./kata-core";
+import { closeEnvHere, execKata, exportTranscriptSession, nodePlatform, sessionKey } from "./node-host";
+import { NO_JOB } from "./kata-cli";
 import { delegateCommand, kataCommands as parseKataCommands } from "./shell";
 import { FINAL, isUntracked, teammateFor } from "./delegates";
 import { textOf } from "./model";
@@ -34,7 +35,7 @@ type DelegateEvents = Pick<Delegates, "apply" | "start">;
 
 const EXECUTABLE = process.env.KATA_OMP_EXECUTABLE || "kata";
 const EXECUTABLE_VARS = ["KATA_OMP_EXECUTABLE"];
-export const kataCommands = (command: string) => parseKataCommands(command, EXECUTABLE, EXECUTABLE_VARS);
+export const kataCommands = (command: string) => parseKataCommands(nodePlatform.path, command, EXECUTABLE, EXECUTABLE_VARS);
 
 // How a finished task job or lifecycle status ends its delegate; a status not listed is still running.
 const OUTCOME: Readonly<Record<string, DelegateOutcome>> = { completed: "completed", failed: "failed", aborted: "aborted", cancelled: "aborted" };
@@ -86,7 +87,7 @@ async function answerWorker(message: DelegateWire) {
 	if (!recordsBySession.has(message.key)) await recordArrival(message.key);
 	const record = recordsBySession.get(message.key);
 	if (record?.id !== message.id) return message.kind === "nextUse" ? delegateChannel.postMessage({ kind: "record", req: message.req } satisfies DelegateWire) : undefined;
-	await leads.get(record.leadSessionId)?.apply({ type: message.kind, id: message.id });
+	await leads.get(record.leadSessionId)?.apply({ type: message.kind, id: message.id }, NO_JOB);
 	if (message.kind === "nextUse") delegateChannel.postMessage({ kind: "record", req: message.req, record: recordsBySession.get(message.key) } satisfies DelegateWire);
 }
 let requestCount = 0;
@@ -155,12 +156,15 @@ export default function ompKata(pi: any) {
 		},
 	};
 	const core = createKataCore({
+		platform: nodePlatform,
+		// omp's timers, contained in the session and cleared at its shutdown.
+		contextTimers: ctx => typeof ctx?.setTimeout === "function" && typeof ctx.clearTimer === "function" ? { setTimer: (fire, ms) => ctx.setTimeout(fire, ms), clearTimer: handle => ctx.clearTimer(handle) } : undefined,
 		// omp's exec spawns with the environment it captured at startup and ignores an env option, so
 		// a close that must carry the transcript identity is spawned here, without a shell or an env program.
 		// A delegate runs in the lead's process: its closes carry its own session, never the lead's.
 		exec: (file, args, { ctx, ...options }) => {
 			const pair = transcriptPairOf(ctx);
-			const env = pair && closeEnv(args, pair.agent, pair.id);
+			const env = pair && closeEnvHere(args, pair.agent, pair.id);
 			return env ? execKata(file, args, { ...options, env }) : pi.exec(file, args, options);
 		},
 		appendEntry: (...args) => pi.appendEntry(...args),
@@ -205,7 +209,7 @@ export default function ompKata(pi: any) {
 			if (!outcome) continue;
 			const record = records.find(r => r.id === job.id || r.id === job.agentId);
 			if (!record || record.exited || running.some(r => r.id === job.id || r.agentId === record.id)) continue;
-			void core.delegates.apply({ type: "exited", id: record.id, outcome });
+			void core.delegates.apply({ type: "exited", id: record.id, outcome }, NO_JOB);
 		}
 	}
 	const enter = async (ctx: any) => { see(ctx); await syncJobs(ctx); };
@@ -233,7 +237,7 @@ export default function ompKata(pi: any) {
 			if (!main(ctx)) await nextUseOf(ctx);
 			const record = !main(ctx) ? store.of(ctx) : undefined;
 			if ((untrackedTan(ctx) || isUntracked(record)) && typeof ctx.invokeTool === "function") return ctx.invokeTool(params, { signal, onUpdate });
-			return core.todo.apply(ctx, params.op, params);
+			return core.todo.apply(ctx, params.op, params, NO_JOB);
 		},
 		// Tern and other TSP terminals draw the call and its result as omp's own todo card.
 		describeCall: describeTodoCall,
@@ -261,10 +265,10 @@ export default function ompKata(pi: any) {
 			return key ? askMain(key, ctx.agent.id) : undefined;
 		}
 		const record = store.of(ctx);
-		return record ? leads.get(record.leadSessionId)?.apply({ type: "nextUse", id: record.id }) : undefined;
+		return record ? leads.get(record.leadSessionId)?.apply({ type: "nextUse", id: record.id }, NO_JOB) : undefined;
 	};
 	const ranTool = (record: DelegateRecord) => {
-		if (isMainThread) void leads.get(record.leadSessionId)?.apply({ type: "ranTool", id: record.id });
+		if (isMainThread) void leads.get(record.leadSessionId)?.apply({ type: "ranTool", id: record.id }, NO_JOB);
 		else delegateChannel.postMessage({ kind: "ranTool", key: record.sessionId, id: record.id } satisfies DelegateWire);
 	};
 	// A worker's copy holds a delegate's record only once the main thread answered: wait for an answer still on its way,
@@ -300,9 +304,9 @@ export default function ompKata(pi: any) {
 				id: event.id, sessionId: event.sessionFile ? sessionKey(event.sessionFile, ctx.cwd) : `${lead.id}:${event.id}`, leadSessionId: lead.id,
 				text: [taskCalls.get(event.parentToolCallId)?.texts[index], event.description].filter(Boolean).join("\n"),
 				agent: typeof event.agent === "string" && event.agent ? event.agent : undefined, parentAgentId: ctx.agent?.id, call: event.parentToolCallId, index,
-			});
+			}, NO_JOB);
 		} else if (OUTCOME[event.status]) {
-			void lead.delegates.apply({ type: "exited", id: event.id, outcome: OUTCOME[event.status]! });
+			void lead.delegates.apply({ type: "exited", id: event.id, outcome: OUTCOME[event.status]! }, NO_JOB);
 		}
 	});
 
@@ -322,7 +326,7 @@ export default function ompKata(pi: any) {
 				: typeof error === "string" && error.trim() ? `Failed: ${error.trim()}` : undefined;
 		}
 		if (!text?.trim() || !seen || typeof payload.id !== "string") return;
-		void leadOf(seen)?.delegates?.apply({ type: "reported", id: payload.id, text });
+		void leadOf(seen)?.delegates?.apply({ type: "reported", id: payload.id, text }, NO_JOB);
 	});
 
 	pi.on("tool_call", async (event: any, ctx: any) => {
@@ -335,26 +339,26 @@ export default function ompKata(pi: any) {
 			const texts = items.map(item => [item?.task, item?.description, item?.name].filter(value => typeof value === "string").join("\n"));
 			forLead(leadSession());
 			taskCalls.set(event.toolCallId, { texts });
-			return core.delegates.check(texts, event.toolCallId)
+			return core.delegates.check(texts, event.toolCallId, undefined, NO_JOB)
 				.then(() => undefined, error => { over(event.toolCallId); return { block: true, reason: String(error) }; });
 		}
 		if (ctx.agent?.kind !== "sub" || event.toolName !== "bash" || typeof event.input?.command !== "string") return;
 		const commands = kataCommands(event.input.command);
 		if (!commands.length) return;
 		const teammate = record?.teammate || teammateFor(ctx.agent.id, leadSession());
-		try { return { input: { ...event.input, command: delegateCommand(event.input.command, EXECUTABLE, EXECUTABLE_VARS, teammate, record?.binding, transcriptPairOf(ctx)) } }; }
+		try { return { input: { ...event.input, command: delegateCommand(nodePlatform.path, event.input.command, EXECUTABLE, EXECUTABLE_VARS, teammate, record?.binding, transcriptPairOf(ctx)) } }; }
 		catch (error) { return { block: true, reason: String(error) }; }
 	});
 
 	// The session a close made in `ctx` records. A delegate runs in the lead's process, so its closes carry its own session,
 	// never the lead's: its id is unknown until its session file has a header, and until then `id` is undefined (its closes
 	// record nothing). Undefined for the lead before session start exported its pair: its closes go as omp spawns them.
-	function transcriptPairOf(ctx: any): { agent: string; id: string | undefined } | undefined {
+	function transcriptPairOf(ctx: any): { agent: string; id: string | undefined; enabled?: string } | undefined {
 		if (!ctx || main(ctx)) {
 			const { KATA_TRANSCRIPT_AGENT: agent, KATA_TRANSCRIPT_SESSION_ID: id } = process.env;
-			return agent && id ? { agent, id } : undefined;
+			return agent && id ? { agent, id, enabled: process.env.KATA_CLOSE_TRANSCRIPT_ENABLED } : undefined;
 		}
-		return childSession(store.of(ctx)?.sessionId) ?? { agent: "omp", id: undefined };
+		return { enabled: process.env.KATA_CLOSE_TRANSCRIPT_ENABLED, ...(childSession(store.of(ctx)?.sessionId) ?? { agent: "omp", id: undefined }) };
 	}
 
 	// A delegate's session file starts with a header carrying its own session id, the one AgentsView lists it under.

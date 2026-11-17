@@ -1,5 +1,5 @@
 import { delegateCommand, envPrefix, kataCommands, shellOptions } from "./shell";
-import { closeEnv } from "./kata-cli";
+import { closeEnvHere, nodePlatform } from "./node-host";
 import { EXECUTABLE_VARS } from "./settings";
 import { CallRefused, type Seam } from "./seam";
 
@@ -14,8 +14,8 @@ export function install(seam: Seam): void {
 
 	// A lead's Kata commands: edits go from the end of the command so earlier offsets stay valid.
 	function route(command: string, leadID: string): string {
-		for (const invocation of kataCommands(command, executable, EXECUTABLE_VARS).reverse()) {
-			const prefix = envPrefix({ ...closeEnv(shellOptions(invocation.words).args, "opencode", leadID), ...seam.settings.kataEnv });
+		for (const invocation of kataCommands(nodePlatform.path, command, executable, EXECUTABLE_VARS).reverse()) {
+			const prefix = envPrefix({ ...closeEnvHere(shellOptions(invocation.words).args, "opencode", leadID), ...seam.settings.kataEnv });
 			if (prefix) command = command.slice(0, invocation.executable.start) + prefix + command.slice(invocation.executable.start);
 		}
 		return command;
@@ -24,7 +24,7 @@ export function install(seam: Seam): void {
 	seam.before(async event => {
 		if (event.tool !== "shell" || typeof event.input?.command !== "string") return;
 		let command: string = event.input.command;
-		if (!kataCommands(command, executable, EXECUTABLE_VARS).length) return;
+		if (!kataCommands(nodePlatform.path, command, executable, EXECUTABLE_VARS).length) return;
 		const role = await seam.roleOf(event.sessionID);
 		// A session that cannot be read runs the command as written: a failed lookup never refuses a call.
 		if (role.kind === "other") return;
@@ -32,7 +32,7 @@ export function install(seam: Seam): void {
 		else {
 			// The child keeps its own teammate (--teammate); only the author comes from the settings.
 			const { KATA_AUTHOR } = seam.settings.kataEnv;
-			try { command = delegateCommand(command, executable, EXECUTABLE_VARS, role.teammate, role.assignment?.binding, { agent: "opencode", id: event.sessionID }, KATA_AUTHOR ? { KATA_AUTHOR } : {}); }
+			try { command = delegateCommand(nodePlatform.path, command, executable, EXECUTABLE_VARS, role.teammate, role.assignment?.binding, { agent: "opencode", id: event.sessionID, enabled: nodePlatform.env.get("KATA_CLOSE_TRANSCRIPT_ENABLED") }, KATA_AUTHOR ? { KATA_AUTHOR } : {}); }
 			catch (error) { throw new CallRefused(error instanceof Error ? error.message : String(error)); }
 		}
 		if (command !== event.input.command) event.input = { ...event.input, command };

@@ -1,5 +1,5 @@
 // Generated from core/settlement.ts; edit there.
-import { isUnusable, type Kata } from "./kata-cli";
+import { isUnusable, type Job, type Kata } from "./kata-cli";
 import { isMission, missionCloseArgs, projectOf, qualifiedRef, sessionParentKeys, type Binding, type Change, type KataIssue, type KataShow, type Status, type Task } from "./model";
 
 // Settlement: the closes the plugin still owes a session. Throttled task closes,
@@ -25,21 +25,21 @@ export type SettlementSnapshot = {
 export interface SettlementDeps {
 	namespace: string;
 	kata: Pick<Kata, "run" | "show" | "projects" | "fresh">;
-	owned(ref: string, cwd: string, mayClaim?: boolean | "check", allowClosed?: boolean, revision?: number): Promise<KataIssue>;
+	owned(job: Job, ref: string, cwd: string, mayClaim?: boolean | "check", allowClosed?: boolean, revision?: number): Promise<KataIssue>;
 	clock(): number;
 	// Calls `fire` once after `ms` and returns what cancels it.
 	timer(fire: () => void, ms: number): () => void;
-	// The timer fired: the core runs its drain inside its serial queue.
+	// The timer fired: the core runs its drain as a job of its serial queue.
 	due(): void;
 	delegatesRunning(): boolean;
 	// Whether the session still has an open item naming this ticket.
 	itemsOpen(ticket: string): boolean;
 	// Re-run a throttled close (the transition or removal), then reload and advance the plan.
-	performTask(pending: TaskClose): Promise<void>;
+	performTask(job: Job, pending: TaskClose): Promise<void>;
 	// Close the ticket with the saved request.
-	performTicket(ticket: string, request: PendingClose): Promise<void>;
+	performTicket(job: Job, ticket: string, request: PendingClose): Promise<void>;
 	// A close was dropped: label the issue needs-review and comment with Kata's error code.
-	flag(ref: string, cwd: string, error: unknown): Promise<void>;
+	flag(job: Job, ref: string, cwd: string, error: unknown): Promise<void>;
 	debug(error: unknown): void;
 }
 
@@ -61,7 +61,7 @@ export interface Settlement {
 	// Arm the timer (the core's local plan retries on it too).
 	schedule(): void;
 	// `parents: false` leaves the automatic parents open (the host closes them when the session ends).
-	drain(options?: { parents?: boolean }): Promise<void>;
+	drain(job: Job, options?: { parents?: boolean }): Promise<void>;
 	snapshot(): SettlementSnapshot;
 	// Whether closes are still owed: a pending close (a task's or a ticket's), or an automatic parent whose close the last
 	// audit still means to make, not one it left open on purpose (flagged needs-review, closed, or no longer this session's).
@@ -108,71 +108,71 @@ export function createSettlement(deps: SettlementDeps): Settlement {
 	function clearTimer() { cancelTimer?.(); cancelTimer = undefined; }
 
 	// A failed close counts one drain; the third drops it and flags the issue. Kata being unreachable counts none.
-	async function failed(key: string, ref: string, cwd: string, error: unknown, drop: () => void) {
+	async function failed(job: Job, key: string, ref: string, cwd: string, error: unknown, drop: () => void) {
 		debug(error);
 		if (isUnusable(error)) return;
 		const count = (failures.get(key) ?? 0) + 1;
 		if (count < MAX_FAILURES) { failures.set(key, count); return; }
 		failures.delete(key);
 		drop();
-		await deps.flag(ref, cwd, error).catch(debug);
+		await deps.flag(job, ref, cwd, error).catch(debug);
 	}
 
 	function dropTask(ref: string) { retries.delete(ref); failures.delete(`task:${ref}`); }
 
-	async function drainTasks() {
+	async function drainTasks(job: Job) {
 		for (const [ref, pending] of retries) {
 			if (pending.at > clock()) continue;
 			try {
-				const current: KataIssue = (await kata.show(ref, pending.cwd)).issue;
+				const current: KataIssue = (await kata.show(job, ref, pending.cwd)).issue;
 				if (pending.task.revision === undefined || current.status !== "open" || current.revision !== pending.task.revision) { dropTask(ref); continue; }
-				await deps.performTask(pending);
+				await deps.performTask(job, pending);
 				if (retries.get(ref) === pending) retries.delete(ref);
 				failures.delete(`task:${ref}`);
 			} catch (error) {
 				// Throttled again: the close is pending anew, not failed.
 				if (retries.get(ref) !== pending) continue;
-				await failed(`task:${ref}`, pending.task.ref, pending.cwd, error, () => retries.delete(ref));
+				await failed(job, `task:${ref}`, pending.task.ref, pending.cwd, error, () => retries.delete(ref));
 			}
 		}
 	}
 
-	async function drainTickets() {
+	async function drainTickets(job: Job) {
 		for (const [ticket, pending] of pendingCloses) {
 			try {
-				const view: KataShow = await kata.show(ticket, pending.cwd);
+				const view: KataShow = await kata.show(job, ticket, pending.cwd);
 				if (view.issue.status !== "open" || deps.itemsOpen(ticket)) { pendingCloses.delete(ticket); failures.delete(`ticket:${ticket}`); continue; }
 				if (openChildren(view, ticket).length) continue;
-				await deps.performTicket(ticket, pending);
+				await deps.performTicket(job, ticket, pending);
 				pendingCloses.delete(ticket); failures.delete(`ticket:${ticket}`);
 			} catch (error) {
 				if (codeOf(error) === "sibling_throttle") { debug(error); continue; }
-				await failed(`ticket:${ticket}`, ticket, pending.cwd, error, () => pendingCloses.delete(ticket));
+				await failed(job, `ticket:${ticket}`, ticket, pending.cwd, error, () => pendingCloses.delete(ticket));
 			}
 		}
 	}
 
-	async function auditAutoParents() {
+	async function auditAutoParents(job: Job) {
 		parentDone.clear();
 		for (const binding of autoParents.values()) {
 			const { parent, workspace } = binding;
 			let decision: KataIssue | undefined, initial: KataShow | undefined;
 			try {
 				if (deps.delegatesRunning()) return;
-				initial = await kata.show(parent, workspace);
+				initial = await kata.show(job, parent, workspace);
 				if (initial.issue.status === "closed" || initial.issue.metadata?.[keys.auto] !== true || initial.issue.metadata?.[keys.session] !== binding.sessionId) { parentDone.add(parent); continue; }
 				// A mission whose delegate's settle never closed it (cut off at shutdown, killed, its close throttled) would hold the
 				// parent open for good: the audit closes it once nothing else is open. No revision guard: the close decides nothing, and
 				// one that lands after the delegate's own close (a pi child settling in its own process) changes nothing.
 				const open = (initial.children ?? []).filter(c => c.status !== "closed");
 				if (open.length && open.every(c => isMission(namespace, c))) {
-					for (const c of open) await kata.run(missionCloseArgs(qualifiedRef(c, parent)), workspace);
-					initial = await kata.show(parent, workspace);
+					for (const c of open) await kata.run(job, missionCloseArgs(qualifiedRef(c, parent)), workspace);
+					initial = await kata.show(job, parent, workspace);
 				}
 				const children = initial.children ?? [];
 				if (!children.length || children.some(c => c.status !== "closed")) { parentDone.add(parent); continue; }
 				if (flagged.get(parent) === verdictKey(initial)) { parentDone.add(parent); continue; }
-				decision = await owned(parent, workspace, false, false, initial.issue.revision);
+				decision = await owned(job, parent, workspace, false, false, initial.issue.revision);
 				// Retired tasks and missions add no evidence: a mission records a delegate's run and proves no change.
 				const proven: KataIssue[] = [];
 				let missionCount = 0;
@@ -185,13 +185,13 @@ export function createSettlement(deps: SettlementDeps): Settlement {
 				for (const child of proven) {
 					let project = child.qualified_id ? projectOf(child.qualified_id) : undefined;
 					if (!project && child.project_id === initial.issue.project_id) project = projectOf(parent);
-					project ??= (await kata.projects(workspace)).find(p => p.id === child.project_id)?.name;
+					project ??= (await kata.projects(job, workspace)).find(p => p.id === child.project_id)?.name;
 					if (!project) throw new Error("Kata child project unavailable");
-					if (!audits.has(project)) audits.set(project, JSON.parse(await kata.run(["audit", "closes", "--project", project, "--since", since!], workspace)).rows);
+					if (!audits.has(project)) audits.set(project, JSON.parse(await kata.run(job, ["audit", "closes", "--project", project, "--since", since!], workspace)).rows);
 					const rows = audits.get(project)!;
 					const row = rows.filter((r: any) => r.issue === child.short_id).sort((a: any, b: any) => b.event_id - a.event_id)[0];
 					if (!row?.event_id) throw new Error("Kata child close event unavailable");
-					const page = JSON.parse(await kata.run(["events", "--project", project, "--after", String(row.event_id - 1), "--limit", "1"], workspace));
+					const page = JSON.parse(await kata.run(job, ["events", "--project", project, "--after", String(row.event_id - 1), "--limit", "1"], workspace));
 					const event = page.events?.[0];
 					if (page.reset_required || event?.event_id !== row.event_id || event.type !== "issue.closed" || event.issue_uid !== child.uid || Date.parse(event.payload?.closed_at) !== Date.parse(child.closed_at ?? "") || !Array.isArray(event.payload?.evidence) || !event.payload.evidence.length) throw new Error("Kata current child evidence unavailable");
 					evidence.push(...event.payload.evidence);
@@ -209,22 +209,22 @@ export function createSettlement(deps: SettlementDeps): Settlement {
 					basis = "Evidence is the union of their current Kata-recorded close events.";
 				}
 				// Read again past the operation's earlier reads: the children may have changed while the evidence was gathered.
-				const final: KataShow = await kata.fresh(() => kata.show(parent, workspace));
+				const final: KataShow = await kata.show(kata.fresh(job), parent, workspace);
 				const finalChildren = final.children ?? [];
 				if (final.issue.status === "closed") { parentDone.add(parent); continue; }
 				if (deps.delegatesRunning()) continue;
 				if (final.issue.revision !== initial.issue.revision || finalChildren.length !== children.length || finalChildren.some(c => c.status !== "closed" || !children.some(old => old.uid === c.uid && old.revision === c.revision))) continue;
-				await kata.run(["close", parent, "--if-match", String(final.issue.revision), "--idempotency-key", `${namespace}-parent-close:${parent}:${final.issue.revision}`, "--message", `${namespace.toUpperCase()} session ${binding.sessionId}: all ${finalChildren.length} child issues are closed in Kata and delegated work has settled. ${basis}`, ...verdict], workspace);
+				await kata.run(job, ["close", parent, "--if-match", String(final.issue.revision), "--idempotency-key", `${namespace}-parent-close:${parent}:${final.issue.revision}`, "--message", `${namespace.toUpperCase()} session ${binding.sessionId}: all ${finalChildren.length} child issues are closed in Kata and delegated work has settled. ${basis}`, ...verdict], workspace);
 				parentDone.add(parent);
 			} catch (error) {
 				debug(error);
 				if (codeOf(error) === "sibling_throttle") { schedule(); continue; }
 				try {
-					const live = await kata.fresh(() => owned(parent, workspace));
+					const live = await owned(kata.fresh(job), parent, workspace);
 					if (decision && live.revision !== decision.revision) continue;
-					await kata.run(["label", "add", parent, "needs-review"], workspace);
+					await kata.run(job, ["label", "add", parent, "needs-review"], workspace);
 					if (initial && !isUnusable(error)) {
-						const current: KataShow = await kata.show(parent, workspace);
+						const current: KataShow = await kata.show(job, parent, workspace);
 						flagged.set(parent, verdictKey(initial, current.issue.revision));
 						// Left open on purpose, flagged for a person: not a close the audit still means to make.
 						parentDone.add(parent);
@@ -260,11 +260,11 @@ export function createSettlement(deps: SettlementDeps): Settlement {
 		},
 		schedule,
 		// Never throws. A running delegate pauses only the automatic-parent audit.
-		async drain({ parents = true } = {}) {
+		async drain(job, { parents = true } = {}) {
 			try {
-				await drainTasks();
-				await drainTickets();
-				if (parents) await auditAutoParents();
+				await drainTasks(job);
+				await drainTickets(job);
+				if (parents) await auditAutoParents(job);
 			} catch (error) { debug(error); }
 			if (retries.size) schedule();
 		},

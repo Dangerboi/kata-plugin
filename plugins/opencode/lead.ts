@@ -1,5 +1,6 @@
-import { waitAtMost } from "./kata-cli";
-import { createKataCore, type HostContext, type KataCore, type PlanView } from "./kata-core";
+import { NO_JOB, waitAtMost } from "./kata-cli";
+import { nodePlatform } from "./node-host";
+import { createKataCore, type HostContext, type Job, type KataCore, type PlanView } from "./kata-core";
 import { teammateFor, type DelegateAssignment, type DelegateEvent, type DelegateRecord, type DelegateStore } from "./delegates";
 import { NAMESPACE, type SavedEntry, type SessionStorage } from "./saved";
 import { EXECUTABLE_VARS, type Settings } from "./settings";
@@ -21,10 +22,11 @@ export interface Planner {
 	// The session whose plan it is.
 	readonly id: string;
 	// Runs `fn` as one job of the core (its `todo.batch`): the read, diff and writes of one tool call share their Kata reads, and
-	// no other call, delegate event or timer of this core runs between them.
-	batch<T>(fn: () => Promise<T>): Promise<T>;
+	// no other call, delegate event or timer of this core runs between them. `fn` passes the job it is given to every `todo` it makes.
+	batch<T>(fn: (job: Job) => Promise<T>): Promise<T>;
 	// One todo op through the core (`view` binds and reloads the plan first). Never throws: the result says `isError`.
-	todo(op: string, params?: Record<string, unknown>): Promise<TodoResult>;
+	// `job`: the batch the op runs in; without one it queues as a job of its own.
+	todo(op: string, params: Record<string, unknown>, job: Job): Promise<TodoResult>;
 }
 
 // What a lead knows of one of its child sessions. `record`: the lead tracks it as a delegate. `assignment` (ref, workspace,
@@ -127,6 +129,7 @@ export function createLead(deps: LeadDeps): Lead {
 	function callerOf(sessionID: string, saved: SavedEntry[], delegateStore: DelegateStore): Caller {
 		const main = sessionID === id;
 		const core = createKataCore({
+			platform: nodePlatform,
 			exec: (file, args, { ctx, ...options }) => deps.exec(ctx?.sessionManager?.getSessionId?.() ?? id, file, args, options),
 			appendEntry: main ? appendEntry : () => {},
 			isMain: () => main,
@@ -146,8 +149,8 @@ export function createLead(deps: LeadDeps): Lead {
 		const planner: Planner = {
 			id: sessionID,
 			batch: fn => core.todo.batch(ctx, fn),
-			async todo(op, params = {}) {
-				const result = await core.todo.apply(ctx, op, params);
+			async todo(op, params, job) {
+				const result = await core.todo.apply(ctx, op, params, job);
 				return { text: result.content.map(part => part.text).join("\n"), kata: result.details.kata, isError: result.isError === true };
 			},
 		};
@@ -155,7 +158,7 @@ export function createLead(deps: LeadDeps): Lead {
 	}
 	const { core, ctx, planner } = callerOf(id, entries, delegates);
 
-	const ready = planner.todo("view").then(() => undefined, debug);
+	const ready = planner.todo("view", {}, NO_JOB).then(() => undefined, debug);
 
 	const delegateCallers = new Map<string, Caller>();
 	function delegateCaller(sessionID: string): Caller {
@@ -219,9 +222,9 @@ export function createLead(deps: LeadDeps): Lead {
 
 	return {
 		...planner,
-		get ready() { return waitAtMost(ready, READY_MS, debug).then(() => undefined); },
+		get ready() { return waitAtMost(ready, READY_MS, debug, nodePlatform).then(() => undefined); },
 		async planSection() {
-			await waitAtMost(ready, READY_MS, debug);
+			await waitAtMost(ready, READY_MS, debug, nodePlatform);
 			return (await core.session.beforePrompt(ctx, { context: false })).sections.todo;
 		},
 		child(sessionID) {
@@ -229,10 +232,10 @@ export function createLead(deps: LeadDeps): Lead {
 			return { teammate: record?.teammate ?? teammateFor(sessionID, id), record, assignment: core.delegates.assignment(contextOf(sessionID, [], true)) };
 		},
 		delegatePlan: sessionID => delegateCaller(sessionID).planner,
-		checkSpawn: (call, text) => core.todo.batch(ctx, async () => { await core.delegates.check([text], call); }),
+		checkSpawn: (call, text) => core.todo.batch(ctx, async job => { await core.delegates.check([text], call, undefined, job); }),
 		releaseSpawn: call => core.delegates.release(call),
-		began: (sessionID, spawn) => core.delegates.start({ id: sessionID, sessionId: sessionID, leadSessionId: id, ...spawn }),
-		delegateEvent: event => core.delegates.apply(event),
+		began: (sessionID, spawn) => core.delegates.start({ id: sessionID, sessionId: sessionID, leadSessionId: id, ...spawn }, NO_JOB),
+		delegateEvent: event => core.delegates.apply(event, NO_JOB),
 		async assignmentSection(sessionID, after) {
 			const own = delegateCaller(sessionID);
 			return (await own.core.session.beforePrompt(own.ctx, { context: false, after })).sections.assignment;

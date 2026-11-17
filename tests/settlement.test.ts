@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 import { KataError } from "../core/kata-cli";
 import { missionCloseArgs, missionKey } from "../core/model";
+import { NO_JOB } from "../core/kata-cli";
 import { createSettlement, MAX_FAILURES, RETRY_MS, type CloseRequest, type TaskClose } from "../core/settlement";
 import { EVIDENCE, MESSAGE as message, realKata, unique } from "./kata-fixture";
 const PROJECT = "settlement-test";
@@ -47,16 +48,16 @@ function build(options: { fail?: (args: string[]) => Error | undefined; running?
   };
   const settlement = createSettlement({
     namespace: "omp",
-    kata: { run: runKata, show: async ref => JSON.parse(await runKata(["show", ref])), projects: async () => [], fresh: fn => fn() },
-    owned: async ref => (await show(ref)).issue,
+    kata: { run: (_job, args) => runKata(args), show: async (_job, ref) => JSON.parse(await runKata(["show", ref])), projects: async () => [], fresh: job => job },
+    owned: async (_job, ref) => (await show(ref)).issue,
     clock: () => now,
     timer: fire => { timers.add(fire); return () => { timers.delete(fire); }; },
     due: () => { due++; },
     delegatesRunning: () => options.running?.() ?? false,
     itemsOpen: ticket => itemsOpen.has(ticket),
-    performTask: pending => handlers.task(pending),
-    performTicket: ticket => handlers.ticket(ticket),
-    flag: async (ref, _cwd, error) => { flagged.push({ ref, error }); },
+    performTask: (_job, pending) => handlers.task(pending),
+    performTicket: (_job, ticket) => handlers.ticket(ticket),
+    flag: async (_job, ref, _cwd, error) => { flagged.push({ ref, error }); },
     debug: () => {},
   });
   return { settlement, timers, calls, flagged, performed, handlers, itemsOpen,
@@ -71,10 +72,10 @@ test("a throttled task close waits out the retry window, then runs once and leav
   expect(s.timers.size).toBe(1);
   expect(s.settlement.snapshot().retries.map(([ref]) => ref)).toEqual([child]);
   s.advance(RETRY_MS - 1);
-  await s.settlement.drain();
+  await s.settlement.drain(NO_JOB);
   expect(s.performed).toEqual([]);
   s.advance(1);
-  await s.settlement.drain();
+  await s.settlement.drain(NO_JOB);
   expect(s.performed).toEqual([child]);
   expect((await show(child)).issue.status).toBe("closed");
   expect(s.settlement.snapshot().retries).toEqual([]);
@@ -87,7 +88,7 @@ test("the timer wakes the core, and a close that is throttled again is pending a
   s.settlement.pendTaskClose(await taskOf(child), "completed", change, cwd);
   s.fire();
   expect(s.dueCount()).toBe(1);
-  for (let i = 0; i < MAX_FAILURES + 1; i++) { s.advance(RETRY_MS + 1); await s.settlement.drain(); }
+  for (let i = 0; i < MAX_FAILURES + 1; i++) { s.advance(RETRY_MS + 1); await s.settlement.drain(NO_JOB); }
   expect(s.performed).toHaveLength(MAX_FAILURES + 1);
   expect(s.timers.size).toBe(1);
   expect(s.flagged).toEqual([]);
@@ -100,7 +101,7 @@ test("a pending close that Kata no longer needs is dropped without running", asy
   s.settlement.pendTaskClose(await taskOf(child), "completed", change, cwd);
   await closeDone(child);
   s.advance(RETRY_MS + 1);
-  await s.settlement.drain();
+  await s.settlement.drain(NO_JOB);
   expect(s.performed).toEqual([]);
   expect(s.settlement.snapshot().retries).toEqual([]);
 });
@@ -121,12 +122,12 @@ test("a close is never dropped for the drains Kata was unreachable, and complete
   const outage = new KataError("daemon unavailable", { exit: 7, code: "daemon_unavailable" });
   const s = build({ fail: args => down && args[0] === "show" ? outage : undefined });
   s.settlement.pendTaskClose(await taskOf(child), "completed", change, cwd);
-  for (let i = 0; i < MAX_FAILURES + 2; i++) { s.advance(RETRY_MS + 1); await s.settlement.drain(); }
+  for (let i = 0; i < MAX_FAILURES + 2; i++) { s.advance(RETRY_MS + 1); await s.settlement.drain(NO_JOB); }
   expect(s.flagged).toEqual([]);
   expect(s.settlement.snapshot().retries.map(([ref]) => ref)).toEqual([child]);
   down = false;
   s.advance(RETRY_MS + 1);
-  await s.settlement.drain();
+  await s.settlement.drain(NO_JOB);
   expect(s.performed).toEqual([child]);
   expect((await show(child)).issue.status).toBe("closed");
 });
@@ -139,17 +140,17 @@ test("a pending close that fails for another reason is retried on three drains, 
   s.settlement.pendTaskClose(await taskOf(child), "completed", change, cwd);
   for (let i = 1; i < MAX_FAILURES; i++) {
     s.advance(RETRY_MS + 1);
-    await s.settlement.drain();
+    await s.settlement.drain(NO_JOB);
     expect(s.flagged).toEqual([]);
     expect(s.settlement.hasTaskClose(child)).toBe(true);
   }
   s.advance(RETRY_MS + 1);
-  await s.settlement.drain();
+  await s.settlement.drain(NO_JOB);
   expect(s.performed).toHaveLength(MAX_FAILURES);
   expect(s.flagged).toEqual([{ ref: child, error: refusal }]);
   expect(s.settlement.snapshot().retries).toEqual([]);
   s.advance(RETRY_MS + 1);
-  await s.settlement.drain();
+  await s.settlement.drain(NO_JOB);
   expect(s.performed).toHaveLength(MAX_FAILURES);
 });
 
@@ -158,11 +159,11 @@ test("a ticket close waits for its open children, retried at each drain with no 
   const child = await create("Blocking child", { parent: ticket });
   const s = build();
   s.settlement.holdTicketClose(ticket, request, cwd);
-  await s.settlement.drain();
+  await s.settlement.drain(NO_JOB);
   expect(s.performed).toEqual([]);
   expect(s.timers.size).toBe(0);
   await closeDone(child);
-  await s.settlement.drain();
+  await s.settlement.drain(NO_JOB);
   expect(s.performed).toEqual([ticket]);
   expect((await show(ticket)).issue.status).toBe("closed");
   expect(s.settlement.snapshot().pendingCloses).toBeUndefined();
@@ -173,7 +174,7 @@ test("a held ticket close is abandoned when a session item for the ticket is ope
   const s = build();
   s.settlement.holdTicketClose(ticket, request, cwd);
   s.itemsOpen.add(ticket);
-  await s.settlement.drain();
+  await s.settlement.drain(NO_JOB);
   expect(s.performed).toEqual([]);
   expect(s.settlement.snapshot().pendingCloses).toBeUndefined();
 });
@@ -184,7 +185,7 @@ test("a held ticket close that keeps failing is dropped and flagged after three 
   const refusal = Object.assign(new Error("kata close failed"), { code: "validation" });
   s.handlers.ticket = async () => { throw refusal; };
   s.settlement.holdTicketClose(ticket, request, cwd);
-  for (let i = 0; i < MAX_FAILURES; i++) await s.settlement.drain();
+  for (let i = 0; i < MAX_FAILURES; i++) await s.settlement.drain(NO_JOB);
   expect(s.flagged).toEqual([{ ref: ticket, error: refusal }]);
   expect(s.settlement.snapshot().pendingCloses).toBeUndefined();
 });
@@ -194,10 +195,10 @@ test("an automatic parent closes once every child is closed with evidence", asyn
   const child = await create("Only task", { parent });
   const s = build();
   s.settlement.addAutoParent({ parent, workspace: cwd, sessionId: SESSION, auto: true });
-  await s.settlement.drain();
+  await s.settlement.drain(NO_JOB);
   expect((await show(parent)).issue.status).toBe("open");
   await closeDone(child);
-  await s.settlement.drain();
+  await s.settlement.drain(NO_JOB);
   expect((await show(parent)).issue.status).toBe("closed");
 });
 
@@ -208,7 +209,7 @@ test("an automatic parent whose children are only recorded subagent runs and ret
   await closeWontfix(await create("Retired task", { parent }));
   const s = build();
   s.settlement.addAutoParent({ parent, workspace: cwd, sessionId: SESSION, auto: true });
-  await s.settlement.drain();
+  await s.settlement.drain(NO_JOB);
   const closed = await show(parent);
   expect(closed.issue.status).toBe("closed");
   expect(closed.issue.closed_reason).toBe("audit-no-change");
@@ -222,7 +223,7 @@ test("missions beside plan tasks leave the parent's done close to the plan tasks
   await closeDone(await create("Only task", { parent }));
   const s = build();
   s.settlement.addAutoParent({ parent, workspace: cwd, sessionId: SESSION, auto: true });
-  await s.settlement.drain();
+  await s.settlement.drain(NO_JOB);
   expect((await show(parent)).issue.closed_reason).toBe("done");
   const [close] = await closesOf(parent);
   expect(close.payload.evidence.map((e: any) => e.type)).toEqual(["test"]);
@@ -235,10 +236,10 @@ test("a mission its settle never closed is closed by the audit once nothing else
   const task = await create("Only task", { parent });
   const s = build();
   s.settlement.addAutoParent({ parent, workspace: cwd, sessionId: SESSION, auto: true });
-  await s.settlement.drain();
+  await s.settlement.drain(NO_JOB);
   expect((await show(mission)).issue.status).toBe("open");
   await closeDone(task);
-  await s.settlement.drain();
+  await s.settlement.drain(NO_JOB);
   expect((await show(mission)).issue).toMatchObject({ status: "closed", closed_reason: "audit-no-change" });
   expect((await show(parent)).issue).toMatchObject({ status: "closed", closed_reason: "done" });
   expect(await labels(parent)).not.toContain("needs-review");
@@ -253,11 +254,11 @@ test("a running delegate pauses only the automatic-parent audit", async () => {
   s.settlement.addAutoParent({ parent, workspace: cwd, sessionId: SESSION, auto: true });
   s.settlement.pendTaskClose(await taskOf(other), "completed", change, cwd);
   s.advance(RETRY_MS + 1);
-  await s.settlement.drain();
+  await s.settlement.drain(NO_JOB);
   expect(s.performed).toEqual([other]);
   expect((await show(parent)).issue.status).toBe("open");
   running = false;
-  await s.settlement.drain();
+  await s.settlement.drain(NO_JOB);
   expect((await show(parent)).issue.status).toBe("closed");
 });
 
@@ -266,7 +267,7 @@ test("a throttled automatic-parent close is not flagged and arms the timer", asy
   await closeDone(await create("Only task", { parent }));
   const s = build({ fail: args => args[0] === "close" && args.includes(parent) ? throttled() : undefined });
   s.settlement.addAutoParent({ parent, workspace: cwd, sessionId: SESSION, auto: true });
-  await s.settlement.drain();
+  await s.settlement.drain(NO_JOB);
   expect(s.timers.size).toBe(1);
   expect(await labels(parent)).not.toContain("needs-review");
   expect((await show(parent)).issue.status).toBe("open");
@@ -278,19 +279,19 @@ test("a parent flagged for missing evidence is audited again only when its revis
   const s = build();
   s.settlement.addAutoParent({ parent, workspace: cwd, sessionId: SESSION, auto: true });
   const labelCalls = () => s.calls.filter(args => args[0] === "label").length;
-  await s.settlement.drain();
+  await s.settlement.drain(NO_JOB);
   expect(await labels(parent)).toContain("needs-review");
   expect(labelCalls()).toBe(1);
-  await s.settlement.drain();
-  await s.settlement.drain();
+  await s.settlement.drain(NO_JOB);
+  await s.settlement.drain(NO_JOB);
   expect(labelCalls()).toBe(1);
   await kata(["meta", "set", parent, "reviewer", "someone"]);
-  await s.settlement.drain();
+  await s.settlement.drain(NO_JOB);
   expect(labelCalls()).toBe(2);
-  await s.settlement.drain();
+  await s.settlement.drain(NO_JOB);
   expect(labelCalls()).toBe(2);
   await closeWontfix(await create("Another retired task", { parent }));
-  await s.settlement.drain();
+  await s.settlement.drain(NO_JOB);
   expect(labelCalls()).toBe(3);
 });
 
@@ -301,15 +302,15 @@ test("a parent flagged because its close was refused is audited again only when 
   const s = build({ fail: args => args[0] === "close" && args.includes(parent) ? refusal : undefined });
   s.settlement.addAutoParent({ parent, workspace: cwd, sessionId: SESSION, auto: true });
   const audits = () => s.calls.filter(args => args[0] === "audit" || args[0] === "label").length;
-  await s.settlement.drain();
+  await s.settlement.drain(NO_JOB);
   expect(await labels(parent)).toContain("needs-review");
   const after = audits();
   expect(after).toBeGreaterThan(0);
-  await s.settlement.drain();
-  await s.settlement.drain();
+  await s.settlement.drain(NO_JOB);
+  await s.settlement.drain(NO_JOB);
   expect(audits()).toBe(after);
   await closeDone(await create("Later task", { parent }));
-  await s.settlement.drain();
+  await s.settlement.drain(NO_JOB);
   expect(audits()).toBeGreaterThan(after);
 });
 
@@ -319,11 +320,11 @@ test("restore clears the verdict memory, so a session start audits a flagged par
   const s = build();
   s.settlement.addAutoParent({ parent, workspace: cwd, sessionId: SESSION, auto: true });
   const labelCalls = () => s.calls.filter(args => args[0] === "label").length;
-  await s.settlement.drain();
-  await s.settlement.drain();
+  await s.settlement.drain(NO_JOB);
+  await s.settlement.drain(NO_JOB);
   expect(labelCalls()).toBe(1);
   s.settlement.restore(s.settlement.snapshot());
-  await s.settlement.drain();
+  await s.settlement.drain(NO_JOB);
   expect(labelCalls()).toBe(2);
 });
 
@@ -351,7 +352,7 @@ test("an automatic parent follows a rehomed ref and can be dropped", async () =>
   s.settlement.addAutoParent({ parent: "old#aaaa", workspace: cwd, sessionId: SESSION, auto: true });
   s.settlement.renamePlan("old#aaaa", parent);
   expect(s.settlement.snapshot().autoParents.map(b => b.parent)).toEqual([parent]);
-  await s.settlement.drain();
+  await s.settlement.drain(NO_JOB);
   expect((await show(parent)).issue.status).toBe("closed");
   s.settlement.dropAutoParent(parent);
   expect(s.settlement.snapshot().autoParents).toEqual([]);
