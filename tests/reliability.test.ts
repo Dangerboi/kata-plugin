@@ -10,13 +10,13 @@ mkdirSync(outside); mkdirSync(localProject);
 const issueOf = async (ref: string) => (await show(ref)).issue;
 let seq = 0;
 function app(options: any = {}) {
-  const entries: any[] = options.entries || [], calls: string[][] = [];
+  const entries: any[] = options.entries || [], calls: string[][] = [], contexts: any[] = [];
   const id = options.sid || `reliability-${++seq}`;
   const ctx = { cwd: options.cwd || cwd, sessionManager: { getSessionId: () => id, getBranch: () => entries } };
   const core = createKataCore({ appendEntry: (customType, data) => entries.push({ type: "custom", customType, data }),
-    exec: async (_file, args, opts) => { calls.push(args); return await options.before?.(args) ?? run(args, opts.cwd); }, delegateStore: memoryDelegateStore(),
+    exec: async (_file, args, opts) => { calls.push(args); contexts.push(opts.ctx); return await options.before?.(args) ?? run(args, opts.cwd); }, delegateStore: memoryDelegateStore(),
   }, { namespace: "omp", executable: binary, executableVars: ["KATA_OMP_EXECUTABLE"], explicitRef: () => options.ref });
-  return { core, calls, entries, ctx, call: (p: any) => core.todo.apply(ctx, p.op, p) };
+  return { core, calls, contexts, entries, ctx, call: (p: any) => core.todo.apply(ctx, p.op, p) };
 }
 // Kata unusable: the only case that selects a local plan.
 const down = daemonUnavailable;
@@ -630,6 +630,24 @@ test("a deleted automatic parent's pending task closes never run, also when the 
   // The timer's drain runs in the serial queue; the view after it waits for it.
   await later(async () => { fires.at(-1)!(); await a.call({ op: "view" }); });
   expect((await issueOf(first)).status).toBe("open");
+});
+
+test("a todo call's Kata calls serve its own context while another event moves the latest one", async () => {
+  const mover: { ctx?: any; moved?: boolean } = {};
+  const a = app({ before: (args: string[]) => {
+    if (args[0] !== "meta" || mover.moved) return undefined;
+    mover.moved = true;
+    void a.core.tools.call(mover.ctx);
+    return undefined;
+  } });
+  await init(a);
+  mover.ctx = { ...a.ctx, sessionManager: { ...a.ctx.sessionManager, getSessionId: () => "other-event" } };
+  mover.moved = false;
+  a.contexts.length = 0;
+  expect((await a.call({ op: "start", task: "Second" })).isError).toBeUndefined();
+  expect(mover.moved).toBe(true);
+  expect(a.contexts.length).toBeGreaterThan(2);
+  expect(a.contexts.every(ctx => ctx === a.ctx)).toBe(true);
 });
 
 test("a batch is one job: its todo calls run inside it in order, and a call made meanwhile waits for the whole batch", async () => {
