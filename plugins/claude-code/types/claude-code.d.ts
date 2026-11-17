@@ -45,7 +45,9 @@ declare module "claude-code" {
 	// answers `{ decision }`, it does not change the call. `input` is the tool's arguments (`{ command }` for Bash).
 	export type ToolCheckDecision = "allow" | "ask" | "deny";
 	export type ToolCheckInput = { tool: string; input: unknown; tool_use_id?: string; agentId?: string; isReadOnly?: true };
-	export type ToolCheckResult = { decision: ToolCheckDecision; reason?: string; rule?: string };
+	// `hook`: the classic hook event that decided or asked (`PreToolUse`); `plugin`: the plugin whose hook made an ask. Both
+	// absent on core's own verdict.
+	export type ToolCheckResult = { decision: ToolCheckDecision; reason?: string; rule?: string; hook?: string; plugin?: string };
 
 	// One entry per event the plugin hooks, or a test answers: [what `e` is, what the hook answers].
 	export interface EventTable {

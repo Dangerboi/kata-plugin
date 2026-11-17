@@ -81,8 +81,8 @@ export function claudeHost(options: {
 	options?: Record<string, unknown>;
 	/** Runs before a Kata call (`holdKata(…).before`): the call waits for it, and an answer it returns stands in for Kata's. */
 	before?: (argv: string[], init: any) => Promise<unknown> | undefined;
-	/** The engine's own permission decision at `tool.check`, from the session's rules and mode; default: ask. */
-	rules?: (e: { tool: string; input: any }) => { decision: "allow" | "ask" | "deny"; reason?: string };
+	/** The engine's own permission decision at `tool.check` (a query has no `tool_use_id`): rules, mode and PreToolUse hooks; default: ask. */
+	rules?: (e: { tool: string; input: any; tool_use_id?: string }) => { decision: "allow" | "ask" | "deny"; reason?: string; hook?: string };
 }) {
 	reset();
 	const state = { session: options.session ?? crypto.randomUUID(), cwd: options.cwd };

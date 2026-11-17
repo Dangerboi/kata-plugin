@@ -16,14 +16,15 @@ export async function runRewritten(e: ToolCallEvent, next: Next<"tool.call">, co
 	return done.deny !== undefined && /changed this call's input/i.test(done.deny) ? exact : done;
 }
 
-// The command each rewrite started from, by the rewritten text, the latest REMEMBERED: the permission check judges a rewritten
-// call as the command the model wrote (`onShellCheck`). Keyed by text, so the model's repeat of a refused rewrite is found too.
-const REMEMBERED = 64;
+// The command each rewrite started from, by the rewritten text, the latest MAX_REWRITES: the permission check judges a
+// rewritten call as the command the model wrote (`onShellCheck`). Keyed by text, so the model's repeat of a refused rewrite is
+// found too.
+const MAX_REWRITES = 64;
 const rewrites = new Map<string, string>();
 function remember(command: string, original: string) {
 	rewrites.delete(command);
 	rewrites.set(command, original);
-	if (rewrites.size > REMEMBERED) rewrites.delete(rewrites.keys().next().value!);
+	if (rewrites.size > MAX_REWRITES) rewrites.delete(rewrites.keys().next().value!);
 }
 
 // The lead's Bash: a `kata close` carries the lead's transcript pair, as a close the plugin makes does. A subagent's calls
@@ -38,13 +39,15 @@ export const onLeadShell: Hook<"tool.call"> = async ($, e, next) => {
 };
 
 // What a rewrite adds (`env KATA_TRANSCRIPT_...=…`, `--teammate`) keeps a settings allow rule such as `Bash(kata *)` from
-// matching: Claude Code's rules match no allow past an unknown variable's assignment. A rewritten call that core would put
-// to its decider is allowed when the model's own command is allowed outright; any other verdict stands.
+// matching: Claude Code matches no allow rule past an unknown variable's assignment (deny and ask rules see past it). When
+// core's own rules would put a rewritten call to its decider, the call is allowed if the model's own command is allowed
+// outright. An ask from a hook (a PreToolUse guard, another plugin) stands, as does every other verdict: the query runs no
+// PreToolUse hook and carries no call id.
 export const onShellCheck: Hook<"tool.check"> = async ($, e, next) => {
 	const decided = await next(e);
 	const input = e.input as Record<string, unknown>;
 	const original = typeof input.command === "string" ? rewrites.get(input.command) : undefined;
-	if (decided.decision !== "ask" || original === undefined) return decided;
+	if (decided.decision !== "ask" || decided.hook !== undefined || decided.plugin !== undefined || original === undefined) return decided;
 	const judged = await $.tool.check({ tool: e.tool, input: { ...input, command: original } });
 	return judged.decision === "allow" ? judged : decided;
 };
