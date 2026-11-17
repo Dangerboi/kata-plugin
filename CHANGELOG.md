@@ -49,7 +49,7 @@ All notable changes to kata-plugin are listed here. The format follows [Keep a C
 
 - A plan item named as the plan view lists it, `<content> (<ticket or ref>)`, is that item for every op.
   - `init` and `append` drop that suffix, and a ticket item's own ref repeated after its action, so an item copied from the view keeps its content and shows its ticket once.
-  - The stop reminder lists open tasks the same way, followed by their status.
+  - The stop reminder lists open items the same way, followed by their status.
 
 #### Delegates
 
