@@ -239,7 +239,7 @@ test("an agent still running when the session ends is picked up by the resumed s
 	expect(bash.command).toContain("--teammate");
 });
 
-test("a spawn whose Kata hangs still returns inside the hook's budget, with the agent started and no binding", async () => {
+test("a spawn whose Kata hangs still returns inside the hook's budget, with the agent started and no assignment", async () => {
 	const flag = join(scratch, "hang-all");
 	const hang = join(scratch, "hang-kata.sh");
 	writeFileSync(hang, `#!/bin/sh\nif [ -e "${flag}" ]; then sleep 30; fi\nexec "${binary}" "$@"\n`);
