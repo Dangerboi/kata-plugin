@@ -28,6 +28,16 @@ export const labelled = (i?: Issue) => !!i?.events.some(e => /label/.test(e.type
 export const closeEvent = (i?: Issue) => eventsOf(i, "issue.closed")[0]?.payload;
 /** Evidence recorded by the first close. */
 export const closeEvidence = (i?: Issue): { type?: string; command?: string }[] => closeEvent(i)?.evidence ?? [];
+/** The teammate an issue carried when it first closed, replayed from its creation and metadata events. */
+export const closingTeammate = (i?: Issue) => {
+	let teammate = "";
+	for (const e of i?.events ?? []) {
+		if (e.type === "issue.closed") return teammate;
+		if (e.type === "issue.created") teammate = e.payload?.metadata?.teammate ?? "";
+		else if (e.payload?.diff?.teammate) teammate = e.payload.diff.teammate.to ?? "";
+	}
+	return teammate;
+};
 /** Transcript (agent, session_id) recorded by the first close. */
 export const closeTranscript = (i?: Issue): { agent?: string; session_id?: string } | undefined => closeEvent(i)?.transcript;
 

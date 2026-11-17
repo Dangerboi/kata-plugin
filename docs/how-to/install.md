@@ -113,7 +113,7 @@ The TUI sidebar shows the plan with no extra setting. Set `experimental.todo: tr
 
 ## Claude Code
 
-Needs Claude Code 2.1.326 or later (the mod API is early access; see the [limits](../explanation/limits.md#claude-code)) and Kata 0.23.0 or later. In Claude Code:
+Tested with Claude Code 2.1.326 (the mod API is early access; see the [limits](../explanation/limits.md#claude-code)) and needs Kata 0.23.0 or later. In Claude Code:
 
 ```
 /plugin install kata-cc --marketplace Dangerboi/kata-plugin

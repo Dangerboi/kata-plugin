@@ -7,7 +7,7 @@
 import { setTimeout as sleep } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import { ownComment } from "../core/delegates";
-import { closeCount, closeEvent, closeEvidence, closeTranscript, eventsOf, labelled, type Check, type Issue } from "./smoke-lib";
+import { closeCount, closeEvent, closeEvidence, closeTranscript, closingTeammate, eventsOf, labelled, type Check, type Issue } from "./smoke-lib";
 import type { SmokeContext, SmokeTurn } from "./smoke-provider";
 
 export type TurnContext = SmokeContext & {
@@ -100,16 +100,6 @@ const lastRef = (ctx: TurnContext, pattern: RegExp) => ctx.texts.join("\n").matc
 const notified = (i?: Issue) => Object.keys(i?.metadata ?? {}).some(key => key.startsWith("notify."));
 // A delegate that closed its issue and exited: bound by the lead's session, outcome completed, no subagent key.
 const returnedToLead = (i?: Issue) => !!i?.metadata["omp.session_id"] && i.metadata["omp.status"] === "completed" && !i.metadata["omp.subagent_id"];
-// The teammate an issue carried when it first closed, replayed from its creation and metadata events.
-const closingTeammate = (i?: Issue) => {
-	let teammate = "";
-	for (const e of i?.events ?? []) {
-		if (e.type === "issue.closed") return teammate;
-		if (e.type === "issue.created") teammate = e.payload?.metadata?.teammate ?? "";
-		else if (e.payload?.diff?.teammate) teammate = e.payload.diff.teammate.to ?? "";
-	}
-	return teammate;
-};
 
 const evidence = "test:bun smoke scenario ran";
 const recorded = { type: "test", command: "bun smoke scenario ran" }; // how Kata stores it
