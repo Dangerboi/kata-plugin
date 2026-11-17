@@ -1,9 +1,9 @@
 import { expect, test } from "bun:test";
-import { claudeKata } from "./claude-fixture";
+import { claudeKata, PROJECT } from "./claude-fixture";
 import { EVIDENCE, MESSAGE } from "./kata-fixture";
 
 // The Claude mod's todo tool and session handling, against a real Kata: a hand-made `$` stands in for the engine.
-const { host, kata, show, closesOf, cwd } = claudeKata("claude-todo");
+const { host, kata, show, closesOf, cwd, issue } = claudeKata("claude-todo");
 
 const parentOf = async (id: string) => (await kata(["list", "--status", "all", "--meta", `claude.session_id=${id}`, "--json"])).issues[0];
 const childrenOf = async (parent: any) => (await show(parent.short_id)).children as any[];
@@ -172,4 +172,43 @@ test("with no Kata the plan stays session-local and the call is not an error", a
   const init = await h.todo({ op: "init", items: ["Offline task"] });
   expect(init.isError, init.result).toBeUndefined();
   expect(init.result).toContain("Session-local plan");
+});
+
+test("a fork starts with its source's plan and leaves the source resumable", async () => {
+  const store = new Map<string, unknown>();
+  const source = host({ store });
+  await source.start();
+  await source.todo({ op: "init", items: ["Shared by the fork"] });
+  const origin = source.state.session;
+  // /branch: the process goes on under a new id and a SessionStart of source `fork` says so.
+  source.state.session = crypto.randomUUID();
+  await source.fire("classic.SessionStart", { source: "fork" });
+  expect((await source.todo({ op: "view" })).result).toContain("Shared by the fork");
+  expect(store.has(`session/${origin}`)).toBe(true);
+  expect(store.has(`session/${source.state.session}`)).toBe(true);
+});
+
+test("a plan with an explicit parent survives the end of the process and a resume", async () => {
+  const parent = `${PROJECT}#${await issue("Explicit parent")}`;
+  const store = new Map<string, unknown>();
+  const first = host({ store });
+  await first.start();
+  expect((await first.todo({ op: "init", ref: parent, items: ["Keep through the exit"] })).isError).toBeUndefined();
+  await first.end("prompt_input_exit");
+  expect(store.has(`session/${first.state.session}`)).toBe(true);
+  const resumed = host({ store, session: first.state.session });
+  await resumed.start();
+  expect((await resumed.todo({ op: "view" })).result).toContain("Keep through the exit");
+});
+
+test("a session-local plan survives the end of the process and a resume", async () => {
+  const store = new Map<string, unknown>();
+  const first = host({ store, options: { kataExecutable: "/nonexistent/kata" } });
+  await first.start();
+  await first.todo({ op: "init", items: ["Local and open"] });
+  await first.end("prompt_input_exit");
+  expect(store.has(`session/${first.state.session}`)).toBe(true);
+  const resumed = host({ store, session: first.state.session, options: { kataExecutable: "/nonexistent/kata" } });
+  await resumed.start();
+  expect((await resumed.todo({ op: "view" })).result).toContain("Local and open");
 });

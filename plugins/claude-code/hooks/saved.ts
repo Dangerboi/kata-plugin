@@ -1,4 +1,5 @@
 import { owes, snapshotEntry, type Snapshot } from '../core/kata-core'
+import { OPEN } from '../core/model'
 import type { Engine } from './engine'
 
 // `$.store` is one JSON file for every Claude session on the machine, 4 MiB in all, and reading then writing a key is not
@@ -27,6 +28,11 @@ export const STORE_BUDGET = 2 * 1024 * 1024
 export const coreState = (saved: SavedSession | undefined): Partial<Snapshot> | undefined =>
   saved?.entries.find(entry => entry.customType === snapshotEntry(NAMESPACE))?.data as Partial<Snapshot> | undefined
 
+// Whether a saved session has work a resume would take up: what the core owes (closes, delegates) or a plan that still has
+// open tasks, whatever holds it (an automatic parent, an explicit one, named tickets or a session-local plan).
+export const hasWork = (snapshot: Partial<Snapshot> | undefined): boolean =>
+  owes(snapshot) || [...(snapshot?.plan?.tasks ?? []), ...(snapshot?.named ?? [])].some(task => OPEN.has(task.status))
+
 export async function loadSession($: Engine, id: string): Promise<SavedSession | undefined> {
   const value = (await $.store.get(keyOf(id))) as Partial<SavedSession> | undefined
   return value && typeof value.directory === 'string' && Array.isArray(value.entries) ? (value as SavedSession) : undefined
@@ -42,7 +48,8 @@ export function sessionWriter($: Engine, id: string, now: () => Promise<number>)
     return writing
   }
   return {
-    start(saved: SavedSession | undefined, directory: string) { record = saved ? structuredClone(saved) : { directory, entries: [], updatedAt: 0 }; record.directory = directory },
+    // `seed`: the entries a fork copies from its source when it has no record of its own.
+    start(saved: SavedSession | undefined, directory: string, seed?: readonly SavedEntry[]) { record = saved ? structuredClone(saved) : { directory, entries: seed ? structuredClone([...seed]) : [], updatedAt: 0 }; record.directory = directory },
     get entries() { return record?.entries ?? [] },
     append(customType: string, data: unknown) {
       if (!record) return
@@ -50,23 +57,24 @@ export function sessionWriter($: Engine, id: string, now: () => Promise<number>)
       delete record.endedAt
       void flush()
     },
-    // The session ended. `owed`: it still has work to finish at a resume; else its record goes.
+    // The session ended. `owed`: the core still owes closes; a plan with open tasks keeps the record too, for a resume.
+    // Else its record goes.
     async end(owed: boolean, at: number) {
       if (!record) return
-      if (owed) { record.endedAt = at; await flush(); await writing } else { await writing; await $.store.delete(keyOf(id)) }
+      if (owed || hasWork(coreState(record))) { record.endedAt = at; await flush(); await writing } else { await writing; await $.store.delete(keyOf(id)) }
     },
     settled: () => writing,
   }
 }
 
 // Drops what no later start can use: records past their keep time, then the oldest ended ones while the store is over budget.
-// The session `except` (the one starting) stays. A session that owes closes is kept until it is stale, not just ended.
+// The session `except` (the one starting) stays. A session that owes closes or has open tasks is kept until it is stale, not just ended.
 export async function pruneSessions($: Engine, now: number, except?: string): Promise<number> {
   const rows: { key: string; at: number; ended: boolean; size: number }[] = []
   for (const key of (await $.store.keys()).filter(key => key.startsWith(PREFIX) && key !== keyOf(except ?? ''))) {
     const record = (await $.store.get(key)) as Partial<SavedSession> | undefined
     if (!record || !Array.isArray(record.entries)) { rows.push({ key, at: 0, ended: true, size: 0 }); continue }
-    const owing = owes(coreState(record as SavedSession))
+    const owing = hasWork(coreState(record as SavedSession))
     const at = record.endedAt ?? record.updatedAt ?? 0
     const expired = record.endedAt !== undefined ? now - at > (owing ? STALE_MS : ENDED_KEEP_MS) : now - at > STALE_MS
     rows.push({ key, at: expired ? 0 : at, ended: record.endedAt !== undefined, size: JSON.stringify(record).length })

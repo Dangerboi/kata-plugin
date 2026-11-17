@@ -108,7 +108,8 @@ export function claudeHost(options: { cwd: string; binary: string; session?: str
       if (!hook) return terminal(e);
       const next: any = (n: any) => run(i + 1, n);
       next.signal = new AbortController().signal;
-      next.budget = { remainingMs: 1500 };
+      // The engine's own budgets: 10 s for a hook, 1.5 s for the whole chain of `session.end`.
+      next.budget = { remainingMs: event === "session.end" ? 1500 : 10_000 };
       Object.assign(next, extra);
       try { return await hook.fn($, e, next); } catch { return run(i + 1, e); }
     };

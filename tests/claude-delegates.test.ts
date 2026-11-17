@@ -1,9 +1,11 @@
+import { chmodSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import { expect, test } from "bun:test";
 import { claudeKata } from "./claude-fixture";
 import { EVIDENCE, eventually, MESSAGE } from "./kata-fixture";
 
 // Subagents and Workflow agents on the Claude mod, against a real Kata: a hand-made `$` stands in for the engine.
-const { host, kata, show, commentsOf, env, cwd } = claudeKata("claude-delegates");
+const { host, kata, show, commentsOf, env, cwd, scratch, binary } = claudeKata("claude-delegates");
 
 const itemsOf = async (h: ReturnType<typeof host>) => {
   const parent = (await kata(["list", "--status", "all", "--meta", `claude.session_id=${h.state.session}`, "--label", "claude-session", "--json"])).issues[0];
@@ -225,3 +227,20 @@ test("an agent still running when the session ends is picked up by the resumed s
   const bash = await second.agentCall("agent-survivor", "Bash", { command: `kata show ${ref}` });
   expect(bash.command).toContain("--teammate");
 });
+
+test("a spawn whose Kata hangs still returns inside the hook's budget, with the agent started and no binding", async () => {
+  const flag = join(scratch, "hang-all");
+  const hang = join(scratch, "hang-kata.sh");
+  writeFileSync(hang, `#!/bin/sh\nif [ -e "${flag}" ]; then sleep 30; fi\nexec "${binary}" "$@"\n`);
+  chmodSync(hang, 0o755);
+  const h = host({ options: { kataExecutable: hang } });
+  await h.start();
+  await h.todo({ op: "init", items: ["Implement parser module"] });
+  writeFileSync(flag, "");
+  const begun = Date.now();
+  // A budget of 5 s: what is waited before the engine's spawn and after it must fit inside, not add up past it.
+  const spawned = await h.fire("agent.spawn", { tool_use_id: "toolu_hang", prompt: "Implement parser module", description: "Parser", subagentType: "general-purpose", provider: { plugin: "engine", tier: "core" }, parentModel: "sonnet", background: true, fork: false },
+    (e: any) => ({ model: "haiku", agentId: "agent-hang", prompt: e.prompt }), { budget: { remainingMs: 5000 } });
+  expect(Date.now() - begun).toBeLessThan(5000);
+  expect(spawned.agentId).toBe("agent-hang");
+}, 20_000);

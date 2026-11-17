@@ -25,6 +25,8 @@ export const resetInbox = () => { busy = false }
 
 // `kata events --tail --json` as a child of the host: no shell. The child lives while the loop below reads it; `kill` ends
 // the loop, which ends the child. Pieces are text as it came, so a line can span two of them. stderr is dropped.
+// The stream is the child's only handle: `$.process.spawn` documents `return()` on it as the kill, with a pull pending (the
+// loop always has one), and `next.signal` or the module unloading as the other ends. The mod has no process id to signal.
 function spawnEvents($: Engine, executable: string, cwd: string, cursor: number | undefined): InboxStream {
   const stream = $.process.spawn({ argv: [executable, 'events', '--tail', '--json', '--workspace', cwd, ...(cursor ? ['--last-event-id', String(cursor)] : [])], cwd })
   const pieces = stream[Symbol.asyncIterator]()

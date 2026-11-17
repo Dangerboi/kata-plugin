@@ -68,9 +68,9 @@ for (const surface of SURFACES) {
   })
 
   test(`the todo result is a checklist card with refs and blocker notes on ${surface}`, async ($, on) => {
-    standing(on, [['tu1', { text: 'the plan', view: copy(VIEW) }]])
+    standing(on, [['tu1', { text: 'the plan', notice: 'Kata parent proj#gone was deleted.', view: copy(VIEW) }]])
     const ui = await $.ui.mount({ plugin: 'kata-cc', surface, component: 'ToolResult', requestId: 'tu1', props: { tool_use_id: 'tu1', tool: 'todo', output: 'the plan', isErrored: false } } as any)
-    for (const text of [/Todo 2\/4/, /proj#top1/, /Wire the CLI/, /proj#bb22/, /waiting for a release/, /Write the guide/]) {
+    for (const text of [/Todo 2\/4/, /proj#top1/, /Wire the CLI/, /proj#bb22/, /waiting for a release/, /Write the guide/, /Kata parent proj#gone was deleted/]) {
       expect(await ui.find({ type: 'Text', text })).toBeDefined()
     }
     await ui.unmount()
@@ -122,7 +122,7 @@ test('an unreachable Kata adds no row to the typeahead', async ($, on) => {
   expect((await ask($)).suggestions).toEqual([])
 })
 
-test('a Kata that never answers holds the typeahead for the core\'s wait and adds no row', async ($, on) => {
+test('a Kata that never answers holds the first fill for the core\'s wait at most and adds no row', async ($, on) => {
   const clock = booted(on, () => new Promise(() => undefined))
   const started = $.session.start({ surface: 'terminal', isInteractive: true, cwd: '/work' })
   for (let i = 0; i < 12; i++) await clock.advance(1000)

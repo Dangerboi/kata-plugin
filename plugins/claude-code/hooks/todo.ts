@@ -4,6 +4,7 @@ import type { Hook } from 'claude-code'
 import type { Engine } from './engine'
 import { delegateTodo } from './delegates'
 import { contextOf, enter, runtime } from './lead'
+import { leaveNotice } from './plan'
 
 // The task tools Claude Code offers are replaced by one Kata-backed `todo`. TaskStop stays: it stops background tasks.
 export const REPLACED = new Set(['TaskCreate', 'TaskGet', 'TaskList', 'TaskUpdate', 'TodoWrite'])
@@ -42,7 +43,7 @@ const failure = (text: string) => ({ isError: true as const, result: text })
 
 // `todo` is answered here, with no permission prompt: the call runs the core and its text is the result.
 export async function onTodoCall($: Engine, e: Record<string, unknown> & { agentId?: string }) {
-  const { tool: _tool, tool_use_id: _id, agentId, requestMeta: _meta, ...params } = e as Record<string, unknown> & { agentId?: string }
+  const { tool: _tool, tool_use_id: callId, agentId, requestMeta: _meta, ...params } = e as Record<string, unknown> & { agentId?: string; tool_use_id?: string }
   const op = params.op
   if (typeof op !== 'string' || !(TODO_OPS as readonly string[]).includes(op)) return failure(`todo needs op: one of ${TODO_OPS.join(', ')}.`)
   // A subagent shares the tool pool but not the lead's plan: its call reaches the core of its own issue.
@@ -55,6 +56,7 @@ export async function onTodoCall($: Engine, e: Record<string, unknown> & { agent
     const out = await rt.core.todo.apply(ctx, op, params, NO_JOB)
     await rt.core.tools.result(ctx, { toolName: 'todo', isError: out.isError === true })
     const text = out.content.map(part => part.text).join('\n')
+    leaveNotice(String(callId), (out.details as { kata?: { notice?: string } } | undefined)?.kata?.notice)
     return out.isError === true ? failure(text) : { result: text }
   } catch (error) {
     return failure(`Kata todo could not run: ${error instanceof Error ? error.message : String(error)}`)

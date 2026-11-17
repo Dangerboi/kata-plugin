@@ -18,10 +18,10 @@ export interface Runtime {
   core: KataCore
   settings: Settings
   env: Map<string, string>
+  // The session's folder (what the core's Platform reads) and the debug file; `cwd` is held here only.
   state: { cwd: string; debugFile?: string }
   // The session the core is bound to; changes at /clear, /resume and /branch, which fire no `session.start`.
   id?: string
-  cwd: string
   header?: { parentSession: string }
   writer?: ReturnType<typeof sessionWriter>
   latest?: RunContext
@@ -48,7 +48,7 @@ export const runtime = () => current
 
 export function contextOf($: Engine, rt: Runtime, delegate?: string): RunContext {
   return {
-    cwd: rt.cwd,
+    cwd: rt.state.cwd,
     ...(delegate ? { agent: { kind: 'sub', id: delegate } } : {}),
     sessionManager: { getSessionId: () => rt.id, getBranch: () => rt.writer?.entries ?? [], getHeader: () => rt.header },
     run: (argv, init) => $.process.run(argv, init),
@@ -72,7 +72,6 @@ async function create($: Engine): Promise<Runtime> {
   const settings = resolveSettings(options, env)
   const state = { cwd: '', debugFile: settings.debugFile }
   const records = new Map<string, DelegateRecord>()
-  const rt = { settings, env, state, cwd: '', sent: {}, ready: Promise.resolve(), records, callers: new Map(), spawning: new Set() } as Runtime
   const platform = platformOf($, env, state)
   const exec = execOf($, env, () => rt.latest)
   const build = (store: DelegateStore, main: boolean) => createKataCore({
@@ -84,8 +83,12 @@ async function create($: Engine): Promise<Runtime> {
     delegateStore: store,
     liveInbox: main && settings.liveInbox ? liveInboxOf($, settings.executable) : undefined,
   }, { namespace: NAMESPACE, executable: settings.executable, executableVars: EXECUTABLE_VARS, debugFile: settings.debugFile, widget: (_line, view) => view })
-  rt.core = build(delegateStore(records), true)
-  rt.coreFor = store => build(store, false)
+  // The cores only call back into `rt` once an event runs, after this literal is built.
+  const rt: Runtime = {
+    settings, env, state, sent: {}, ready: Promise.resolve(), records, callers: new Map(), spawning: new Set(),
+    core: build(delegateStore(records), true),
+    coreFor: store => build(store, false),
+  }
   return rt
 }
 
@@ -104,13 +107,15 @@ async function attach($: Engine, hint: { fork?: boolean }): Promise<Entered> {
   const id = await $.session.id()
   const cwd = await canonicalPath($, await $.session.cwd())
   const rt = (current ??= await create($))
-  rt.cwd = cwd
   rt.state.cwd = cwd
   if (rt.id === id && rt.writer) {
     const ctx = (rt.latest = contextOf($, rt))
     return { rt, ctx }
   }
   const previous = rt.id
+  // A fork's own record is empty: it starts from what its source saved (the core's bind reads the source's snapshot
+  // through the header), taken before the source's writer ends.
+  const seed = hint.fork && previous && rt.writer ? rt.writer.entries : undefined
   if (rt.writer) await rt.writer.end(rt.core.session.owes(), await $.clock.now())
   rt.id = id
   rt.previous = previous
@@ -120,7 +125,7 @@ async function attach($: Engine, hint: { fork?: boolean }): Promise<Entered> {
   rt.records.clear()
   rt.callers.clear()
   rt.writer = sessionWriter($, id, () => $.clock.now())
-  rt.writer.start(await loadSession($, id), cwd)
+  rt.writer.start(await loadSession($, id), cwd, seed)
   const ctx = (rt.latest = contextOf($, rt))
   // The saved plan, pending closes and unfinished delegates of a resumed session are picked up by the core's bind.
   await rt.core.session.start(ctx)

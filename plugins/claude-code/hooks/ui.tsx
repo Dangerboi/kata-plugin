@@ -75,6 +75,7 @@ export const onTodoCard: Render<'ToolResult'> = async ($, e, next) => {
         <Text bold>Todo {tasks.filter(closed).length}/{tasks.length} </Text>
         <Text dimColor>{view.local ? 'session-local' : view.parent ?? 'tickets'}</Text>
       </Box>
+      {card?.notice && <Text color="warning">{card.notice}</Text>}
       {phases.map((phase, p) => (
         <Box key={`p${p}`} flexDirection="column">
           {phases.length > 1 && <Text dimColor>{phase.name}</Text>}
@@ -95,7 +96,9 @@ export const onTodoCard: Render<'ToolResult'> = async ($, e, next) => {
 }
 
 // A `todo` call that ran: its card is kept for the transcript's result row. Registered before the hook that answers the call.
+// A subagent's call answers from the core of its own issue: its card would show the lead's plan, so it has none.
 export const onTodoRan: Hook<'tool.call'> = async ($, e, next) => {
+  if (e.agentId !== undefined) return next(e)
   const ran = await next(e)
   try { await rememberCard($, String(e.tool_use_id), ran) } catch { /* The row falls back to the model's text. */ }
   return ran
@@ -122,17 +125,22 @@ function providerOf(rt: Runtime): Provider {
   return provider
 }
 
-// Never waits on Kata beyond the core's bound, and never fails typing: an unreachable or slow Kata adds no rows.
-export const onTickets: Hook<'prompt.autocomplete'> = async ($, e, next) => {
-  const beneath = await next(e)
-  const rt = runtime()
-  if (!rt?.writer || rt.id === undefined) return beneath
+// Typing is never held by Kata: a loaded list answers from the core's cache whatever Kata is doing (it refreshes in the
+// background), and only the first fill of a session's list waits, for the core's 400 ms at most. The wait runs beside the
+// plugins beneath, not after them, and an unreachable or failing Kata adds no rows.
+async function ticketRows(rt: Runtime, e: { text: string; cursor: number }, signal: AbortSignal): Promise<{ text: string; label: string; description?: string }[]> {
+  if (!rt.writer || rt.id === undefined) return []
   try {
     const line = e.text.slice(0, e.cursor).split('\n').pop() ?? ''
-    const found = await providerOf(rt).getSuggestions([line], 0, line.length, next.signal)
-    if (!found?.items.length) return beneath
-    return { suggestions: [...beneath.suggestions, ...found.items.map(item => ({ text: `${item.value} `, label: item.value, ...(item.description ? { description: item.description } : {}) }))] }
-  } catch { return beneath }
+    const found = await providerOf(rt).getSuggestions([line], 0, line.length, signal)
+    return (found?.items ?? []).map(item => ({ text: `${item.value} `, label: item.value, ...(item.description ? { description: item.description } : {}) }))
+  } catch { return [] }
+}
+
+export const onTickets: Hook<'prompt.autocomplete'> = async ($, e, next) => {
+  const rt = runtime()
+  const [beneath, ours] = await Promise.all([next(e), rt ? ticketRows(rt, e, next.signal) : []])
+  return ours.length ? { suggestions: [...beneath.suggestions, ...ours] } : beneath
 }
 
 // ------------------------------------------------------------------------------------------------------------- /todo

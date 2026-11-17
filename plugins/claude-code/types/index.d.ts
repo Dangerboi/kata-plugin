@@ -10,6 +10,8 @@ declare module 'claude-code' {
   }
   interface KataTodoCard {
     text: string
+    // What the result said before the plan: a close Kata deferred, a deleted parent.
+    notice?: string
     view?: KataPlan
   }
   interface PluginState {

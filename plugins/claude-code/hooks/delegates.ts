@@ -17,15 +17,29 @@ import { EXECUTABLE_VARS } from './settings'
 // which a Workflow's agents share, plus the agent's index and a stamp), and its `sessionId` becomes the engine's agent id
 // as soon as the spawn returns it. Everything that arrives with an agent id finds the record by that.
 
-// How long a spawn waits for the core to decide what an agent works before it starts the agent without the binding. A hook
-// has 10 s; the agent still gets its issue, and learns of it from its next todo call.
+// How long one wait of a spawn may take: the core's decision on what an agent works, before the agent starts without the
+// binding (it still gets its issue, and learns of it from its next todo call). The waits of one spawn share the hook's own
+// budget (`Spend`), so together they never run past it.
 const BIND_MS = 7000
+// What a spawn hook keeps back for the engine's own spawn (`next`) and its return, and what a wait after the spawn keeps back.
+const ENGINE_MS = 3000
+const RETURN_MS = 500
 // How long a delegate's own events (report, exit, settle) may hold one hook.
 const EVENT_MS = 8000
 // How long a call that names an agent the module has no record of yet waits for the spawn hooks still running.
 const SPAWN_MS = 3000
 
 type Next<E extends 'agent.spawn' | 'tool.call'> = Parameters<Hook<E>>[2]
+
+// A hook's budget (10 s, from its call to its return; `$.clock` waits count) as one account: `left(keep)` is what remains
+// of it less `keep`, never below 0. Made when the hook is called, so every wait draws from the same time.
+type Spend = (keep: number) => Promise<number>
+
+async function budgetOf($: Engine, next: Next<'agent.spawn'>): Promise<Spend> {
+  const total = next.budget.remainingMs
+  const begun = await $.clock.now()
+  return async keep => Math.max(0, total - keep - ((await $.clock.now()) - begun))
+}
 
 // Delegates whose spawn arrived under auto mode, which refuses a hook's rewrite of a tool call (see `shellRoute` below).
 const autoMode = new Set<string>()
@@ -77,25 +91,28 @@ const textOf = (e: { prompt: string; description: string; name?: string }) => [e
 
 // What the agent's prompt gains: the assignment (its issue and commands, or that it has none) and, when the plugin owns the
 // contract, the contract.
-async function bindingNote($: Engine, rt: Runtime, id: string): Promise<string | undefined> {
-  const { sections } = await coreOf(rt, id).session.beforePrompt(contextOf($, rt, id), { context: rt.settings.contract })
+async function bindingNote($: Engine, rt: Runtime, id: string, ms: number): Promise<string | undefined> {
+  const asked = await waitAtMost(coreOf(rt, id).session.beforePrompt(contextOf($, rt, id), { context: rt.settings.contract }), ms, () => undefined, contextOf($, rt).timers!)
+  if (!asked) return undefined
+  const { sections } = asked
   const tagged = (name: string, text: string | undefined) => (text ? `<kata_${name}>\n${text}\n</kata_${name}>` : undefined)
   return [tagged('contract', sections.contract), tagged('binding', sections.assignment)].filter(Boolean).join('\n\n') || undefined
 }
 
 // The record of an agent that never ran, or whose run failed, gives back what its assignment wrote.
-async function abandon($: Engine, rt: Runtime, id: string) {
+async function abandon($: Engine, rt: Runtime, id: string, ms = EVENT_MS) {
   rt.core.delegates.release(id)
-  await waitAtMost(rt.core.delegates.apply({ type: 'exited', id, outcome: 'failed' }, NO_JOB), EVENT_MS, () => undefined, contextOf($, rt).timers!)
+  await waitAtMost(rt.core.delegates.apply({ type: 'exited', id, outcome: 'failed' }, NO_JOB), ms, () => undefined, contextOf($, rt).timers!)
 }
 
 // `Agent` calls, Workflow agents, teammates and nested spawns bind here. Forks no tool call starts (`/btw`, `/fork`) are no
 // delegation of the lead's work and run as they are. An infrastructure failure never stops the spawn.
 export const onSpawn: Hook<'agent.spawn'> = async ($, e, next) => {
   if (e.fork && !e.tool_use_id) return next(e)
+  const spend = await budgetOf($, next)
   let entered: Entered
   try { entered = await enter($) } catch { return next(e) }
-  const run = e.resume ? resumed($, entered, e, next) : spawned($, entered, e, next)
+  const run = e.resume ? resumed($, entered, e, next, spend) : spawned($, entered, e, next, spend)
   entered.rt.spawning.add(run)
   try { return await run } finally { entered.rt.spawning.delete(run) }
 }
@@ -105,43 +122,47 @@ type Spawn = Parameters<Hook<'agent.spawn'>>[1]
 
 // A resumed run (a follow-up message to a finished agent, a woken teammate) goes on with the record it has: its issue while
 // that is open, else its mission. The engine accepts no rewrite of it, so nothing is added to its prompt.
-async function resumed($: Engine, { rt, ctx }: Entered, e: Spawn, next: Next<'agent.spawn'>) {
+async function resumed($: Engine, { rt, ctx }: Entered, e: Spawn, next: Next<'agent.spawn'>, spend: Spend) {
   const known = e.resume ? recordOf(rt, e.resume.agentId) : undefined
   if (!known) return next(e)
   const { sessionId: _session, ...unchanged } = known
-  await waitAtMost(rt.core.delegates.start({ id: known.id, sessionId: e.resume!.agentId, leadSessionId: rt.id!, text: e.prompt, untracked: true, name: unchanged.name, agent: unchanged.agent }, NO_JOB), BIND_MS, () => undefined, ctx.timers!)
+  await waitAtMost(rt.core.delegates.start({ id: known.id, sessionId: e.resume!.agentId, leadSessionId: rt.id!, text: e.prompt, untracked: true, name: unchanged.name, agent: unchanged.agent }, NO_JOB), Math.min(BIND_MS, await spend(ENGINE_MS)), () => undefined, ctx.timers!)
   let result: AgentSpawnResult
-  try { result = await next(e) } catch (error) { await abandon($, rt, known.id); throw error }
-  if ('deny' in result) await abandon($, rt, known.id)
+  try { result = await next(e) } catch (error) { await abandon($, rt, known.id, await spend(RETURN_MS)); throw error }
+  if ('deny' in result) await abandon($, rt, known.id, await spend(RETURN_MS))
   return result
 }
 
-async function spawned($: Engine, { rt, ctx }: Entered, e: Spawn, next: Next<'agent.spawn'>) {
+async function spawned($: Engine, { rt, ctx }: Entered, e: Spawn, next: Next<'agent.spawn'>, spend: Spend) {
   const nested = e.parentAgentId !== undefined
   const base = e.workflow ? `${e.tool_use_id || e.workflow.runId}.${e.workflow.agentIndex}` : e.tool_use_id || 'spawn'
   const id = `${base}-${(await $.clock.now()).toString(36)}`
   const text = textOf(e)
+  // Each wait draws on what is left of the hook's budget, less what the engine's spawn and the return need.
+  const before = async () => Math.min(BIND_MS, await spend(ENGINE_MS))
   // A nested spawn is the delegate's own, not the lead's: it is never matched against the lead's plan.
   if (!nested) {
-    try { await rt.core.tools.call(ctx, { startsChild: true }) } catch { /* The parent is made when it is first needed. */ }
-    try { await rt.core.delegates.check([text], id, undefined, NO_JOB) } catch (error) {
+    await waitAtMost(rt.core.tools.call(ctx, { startsChild: true }), await before(), () => undefined, ctx.timers!) // The parent is made when it is first needed.
+    let failure: unknown
+    await waitAtMost(rt.core.delegates.check([text], id, undefined, NO_JOB), await before(), error => { failure = error }, ctx.timers!)
+    if (failure) {
       rt.core.delegates.release(id)
       // The rules refuse a spawn that names an item another delegate holds, or a ticket it cannot take.
-      if (error instanceof Refusal) return { deny: error.message }
+      if (failure instanceof Refusal) return { deny: failure.message }
     }
   }
   const host = { id, sessionId: id, leadSessionId: rt.id!, text, name: e.name || e.description || undefined, agent: e.subagentType || undefined, parentAgentId: e.parentAgentId, call: id, untracked: nested }
   const began = rt.core.delegates.start(host, NO_JOB)
-  await waitAtMost(began, BIND_MS, () => undefined, ctx.timers!)
+  await waitAtMost(began, await before(), () => undefined, ctx.timers!)
   if (e.permissionMode === 'auto') autoMode.add(id)
   let note: string | undefined
-  try { note = await bindingNote($, rt, id) } catch { /* The agent starts with the prompt it was given. */ }
+  try { note = await bindingNote($, rt, id, await before()) } catch { /* The agent starts with the prompt it was given. */ }
   let result: AgentSpawnResult
-  try { result = await next(note ? { ...e, prompt: `${e.prompt}\n\n${note}` } : e) } catch (error) { await abandon($, rt, id); throw error }
+  try { result = await next(note ? { ...e, prompt: `${e.prompt}\n\n${note}` } : e) } catch (error) { await abandon($, rt, id, await spend(RETURN_MS)); throw error }
   const agentId = 'deny' in result ? undefined : (result.agentId ?? result.teammateId)
-  if (!agentId) { await abandon($, rt, id); return result }
+  if (!agentId) { await abandon($, rt, id, await spend(RETURN_MS)); return result }
   // From here the engine's own id finds the record. A second `started` for a record that goes on only moves its session.
-  await waitAtMost(rt.core.delegates.start({ ...host, sessionId: agentId }, NO_JOB), BIND_MS, () => undefined, ctx.timers!)
+  await waitAtMost(rt.core.delegates.start({ ...host, sessionId: agentId }, NO_JOB), Math.min(BIND_MS, await spend(RETURN_MS)), () => undefined, ctx.timers!)
   return result
 }
 

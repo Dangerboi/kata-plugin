@@ -7,7 +7,7 @@ import { rememberCard } from "../plugins/claude-code/hooks/plan";
 
 // The Claude mod's plan band, todo cards, `#` ticket completion and /todo, against a real Kata. The render hooks themselves
 // are drawn in plugins/claude-code/tests/ui.test.tsx; here the state they draw from and the rows the typeahead gets.
-const { host, issue, scratch, binary } = claudeKata("claude-ui");
+const { host, issue, scratch, binary, kata } = claudeKata("claude-ui");
 
 /** The engine's `$.state`, `$.ui.toast` and `$.command.register` for a host the hand-made `$` lacks them. */
 function engineUi(h: ReturnType<typeof host>) {
@@ -169,4 +169,58 @@ test("an unreachable Kata adds no rows, fails nothing and shows no error", async
   const init = await h.todo({ op: "init", items: ["Offline task"] });
   expect(init.isError, init.result).toBeUndefined();
   expect(ui.toasts.some(t => /unreachable/i.test(t))).toBe(true);
+});
+
+test("a subagent's todo call leaves no card, and the lead's cards stay", async () => {
+  const h = host();
+  const ui = engineUi(h);
+  await h.start();
+  await h.fire("tool.call", { tool: "todo", tool_use_id: "lead-card", op: "init", items: ["Implement parser module", "Document the output"] }, () => { throw new Error("no"); });
+  await h.spawn({ prompt: "Implement parser module", description: "Parser" }, "agent-card");
+  const sub = await h.fire("tool.call", { tool: "todo", tool_use_id: "sub-card", agentId: "agent-card", op: "view" }, () => { throw new Error("no"); });
+  expect(sub.isError, sub.result).toBeUndefined();
+  expect(ui.held.has("cards#sub-card")).toBe(false);
+  expect(ui.held.get("cardIds")).toEqual(["lead-card"]);
+});
+
+test("todo calls that finish together each leave a card and none is lost from the list", async () => {
+  const h = host();
+  const ui = engineUi(h);
+  await h.start();
+  const ids = Array.from({ length: 6 }, (_, i) => `par-${i}`);
+  await Promise.all(ids.map(id => rememberCard(h.$, id, { result: `text of ${id}` })));
+  expect((ui.held.get("cardIds") as string[]).sort()).toEqual([...ids].sort());
+  for (const id of ids) expect(ui.held.get(`cards#${id}`).text).toBe(`text of ${id}`);
+});
+
+test("a result's notice (a deleted parent) is kept on the card", async () => {
+  const h = host();
+  const ui = engineUi(h);
+  await h.start();
+  await h.todo({ op: "init", items: ["Notice task"] });
+  const parent = (await kata(["list", "--status", "all", "--meta", `claude.session_id=${h.state.session}`, "--json"])).issues[0];
+  await kata(["delete", `${PROJECT}#${parent.short_id}`, "--force", "--confirm", `DELETE ${PROJECT}#${parent.short_id}`, "--json"]);
+  const out = await h.fire("tool.call", { tool: "todo", tool_use_id: "note-card", op: "init", items: ["Fresh task"] }, () => { throw new Error("no"); });
+  expect(out.isError, out.result).toBeUndefined();
+  expect(out.result).toMatch(/deleted/);
+  expect(ui.held.get("cards#note-card").notice).toMatch(/was deleted/);
+});
+
+test("the wait for a first list runs beside the plugins beneath, not after them", async () => {
+  await issue("Parallel board ticket");
+  const flag = join(scratch, "hang-list");
+  const hang = join(scratch, "hang-list-kata.sh");
+  writeFileSync(hang, `#!/bin/sh\nif [ -e "${flag}" ]; then case " $* " in *" --limit 1000 "*) sleep 30;; esac; fi\nexec "${binary}" "$@"\n`);
+  chmodSync(hang, 0o755);
+  const h = host({ options: { kataExecutable: hang } });
+  engineUi(h);
+  await h.start();
+  await h.todo({ op: "init", items: ["Bind the plan"] });
+  writeFileSync(flag, "");
+  // Beneath takes 600 ms and the first fill holds 400 ms: side by side the call lasts about 600 ms, one after the other 1000.
+  const slowBeneath = async () => { await Bun.sleep(600); return { suggestions: [{ text: "mine" }] }; };
+  const begun = Date.now();
+  const first = await h.fire("prompt.autocomplete", { text: "#par", cursor: 4, token: "#par", start: 0 }, slowBeneath);
+  expect(first.suggestions.map((r: any) => r.text)).toEqual(["mine"]);
+  expect(Date.now() - begun).toBeLessThan(900);
 });
