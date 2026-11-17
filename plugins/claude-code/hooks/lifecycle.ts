@@ -39,7 +39,8 @@ export const onEnd: Hook<"session.end"> = async ($, e, next) => {
 			const ctx = contextOf($, rt);
 			const remaining = next.budget.remainingMs;
 			await waitAtMost(rt.core.session.shutdown(ctx), Math.max(200, Math.min(remaining - 300, 1200)), () => undefined, ctx.timers!);
-			await writer.end(rt.core.session.owes(), await $.clock.now());
+			// The core's debts are the session it is bound to; a queued switch has not bound it to the latest session yet, whose own debts the saved record answers for.
+			await writer.end(writer === rt.writer && rt.core.session.owes(), await $.clock.now());
 		} catch {
 			/* Whatever was saved stays. */
 		}
