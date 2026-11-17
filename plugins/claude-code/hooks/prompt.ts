@@ -1,4 +1,5 @@
 import type { Hook } from 'claude-code'
+import { turnEnded } from './inbox'
 import { contextOf, enter, runtime, type Runtime } from './lead'
 
 // What each turn carries and how a turn ends.
@@ -36,6 +37,7 @@ export const onCompact: Hook<'session.compact'> = async ($, e, next) => {
 
 // The lead's turn ended: due closes are retried and exited delegates handed back.
 export const onTurnComplete: Hook<'turn.complete'> = async ($, e, next) => {
+  turnEnded(e)
   const done = await next(e)
   const rt = runtime()
   if (e.agentId === undefined && rt?.writer) {

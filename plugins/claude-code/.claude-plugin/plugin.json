@@ -4,5 +4,13 @@
   "description": "Kata work tracking for Claude Code: a Kata-backed todo tool that replaces the task tools.",
   "author": { "name": "Dangerboi" },
   "license": "MIT",
-  "types": "./types/index.d.ts"
+  "types": "./types/index.d.ts",
+  "userConfig": {
+    "liveInbox": {
+      "type": "boolean",
+      "title": "Live inbox",
+      "description": "Deliver requests sent to this session through kata notify as they arrive, without waiting for the next prompt. Off: the inbox is read once per prompt. KATA_CLAUDE_LIVE_INBOX=0 also turns it off.",
+      "default": true
+    }
+  }
 }
