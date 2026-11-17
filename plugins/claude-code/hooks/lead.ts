@@ -22,7 +22,6 @@ export interface Runtime {
 	state: { cwd: string; debugFile?: string };
 	// The session the core is bound to; changes at /clear, /resume and /branch, which fire no `session.start`.
 	id?: string;
-	header?: { parentSession: string };
 	// The saved record and delegate records of the session the core is bound to: they move with the core's bind (`switched`).
 	writer?: ReturnType<typeof sessionWriter>;
 	latest?: RunContext;
@@ -61,7 +60,7 @@ export function contextOf(
 		cwd: rt.state.cwd,
 		held,
 		...(delegate ? { agent: { kind: "sub", id: delegate } } : {}),
-		sessionManager: { getSessionId: () => held?.id ?? rt.id, getBranch: () => held?.writer.entries ?? [], getHeader: () => rt.header },
+		sessionManager: { getSessionId: () => held?.id ?? rt.id, getBranch: () => held?.writer.entries ?? [], getHeader: () => held?.header },
 		run: (argv, init) => $.process.run(argv, init),
 		ui: planUi($),
 		timers: { setTimer: (fire, ms) => $.clock.after(ms, fire), clearTimer: handle => (handle as { cancel(): void }).cancel() }
@@ -153,11 +152,10 @@ async function attach($: Engine, hint: { fork?: boolean }): Promise<Entered> {
 	if (left) await left.end(rt.core.session.owes(), await $.clock.now());
 	rt.id = id;
 	rt.previous = previous;
-	rt.header = hint.fork && previous ? { parentSession: previous } : undefined;
 	rt.sent = {};
 	// The previous session's delegates and cores stay with it (saved above, picked up when it resumes).
 	rt.callers.clear();
-	const held: Held = { id, writer: sessionWriter($, id, () => $.clock.now()), records: new Map() };
+	const held: Held = { id, header: hint.fork && previous ? { parentSession: previous } : undefined, writer: sessionWriter($, id, () => $.clock.now()), records: new Map() };
 	held.writer.start(await loadSession($, id), cwd, seed);
 	const ctx = (rt.latest = contextOf($, rt, undefined, held));
 	// The saved plan, pending closes and unfinished delegates of a resumed session are picked up by the core's bind.

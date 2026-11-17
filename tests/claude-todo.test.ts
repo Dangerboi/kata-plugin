@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { claudeKata, PROJECT } from "./claude-fixture";
-import { EVIDENCE, MESSAGE } from "./kata-fixture";
+import { EVIDENCE, eventually, MESSAGE } from "./kata-fixture";
 
 // The Claude mod's todo tool and session handling, against a real Kata: a hand-made `$` stands in for the engine.
 const { host, kata, show, closesOf, cwd, issue } = claudeKata("claude-todo");
@@ -221,8 +221,13 @@ test("a job of the old session still queued at a resume runs for that session an
 	const first = host({ store });
 	await first.start();
 	await first.todo({ op: "init", items: ["Plan of the resumed session"] });
+	// X has a delegate still running when its process ends: a resume of X settles it, which sends its issue back for review.
+	const spawned = await first.spawn({ prompt: "Plan of the resumed session", description: "Planner" }, "agent-of-x");
+	const issueRef = /Your Kata issue is (\S+?);/.exec(spawned.prompt)?.[1] ?? "";
+	expect(issueRef).not.toBe("");
+	await first.agentCall("agent-of-x", "Read");
 	const x = first.state.session;
-	await first.end("clear");
+	await first.end();
 
 	// Holds the first Kata call after `armed`: the plan write is then running in the core's queue, and a later call of the
 	// same session waits behind it.
@@ -260,7 +265,9 @@ test("a job of the old session still queued at a resume runs for that session an
 	expect(snapshotOf(x).sessionId).toBe(x);
 	expect(snapshotOf(x).plan.tasks.map((t: any) => t.content)).toEqual(["Plan of the resumed session"]);
 	expect(snapshotOf(a).sessionId).toBe(a);
-});
+	// X's delegate came back with X: it is settled, and A's queued job did not take its place.
+	await eventually(async () => ((await show(issueRef)).labels ?? []).some((label: any) => label.label === "needs-review"), true);
+}, 30_000);
 
 test("a write that lands after its session ended keeps the record ended, so it is pruned with the ended ones", async () => {
 	const store = new Map<string, unknown>();

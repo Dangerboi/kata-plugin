@@ -11,6 +11,8 @@ import type { sessionWriter } from "./saved";
 // the core moves the host onto them when it binds to that session (the host's `switched`).
 export interface Held {
 	id: string;
+	// Set for a fork: the session it was branched from.
+	header?: { parentSession: string };
 	writer: ReturnType<typeof sessionWriter>;
 	records: Map<string, DelegateRecord>;
 }
