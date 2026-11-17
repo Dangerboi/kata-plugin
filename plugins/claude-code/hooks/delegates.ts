@@ -7,7 +7,8 @@ import { delegateCommand, delegateRouted } from "../core/shell";
 import { tagged, todoText } from "../core/kata-core";
 import { timersOf, type Session } from "./host";
 import { contextOf, enter, runtime, waitFor, type Entered, type Runtime } from "./lead";
-import { EXECUTABLE_VARS } from "./settings";
+import { runRewritten } from "./shell";
+import { EXECUTABLE_VARS, NAMESPACE } from "./settings";
 
 // Subagents and Workflow agents as the core's delegates: `agent.spawn` assigns each one the plan item or ticket its text
 // names (or leaves it untracked, and its run becomes a mission), `turn.complete` hands in its report, and its kata commands
@@ -219,19 +220,18 @@ interface Routed {
 }
 
 // Where a kata command goes under the delegate's teammate: unchanged when it already carries it (and its workspace and
-// project, for a delegate with an issue), else the same command with the flags added. `--as` throws. Pure, so a refusal
-// can name the exact command to run.
-function shellRoute(command: string, executable: string, teammate: string, binding?: Binding): Routed {
-	if (delegateRouted(posixPath, command, executable, EXECUTABLE_VARS, teammate, binding)) return { command, same: true };
-	return { command: delegateCommand(posixPath, command, executable, EXECUTABLE_VARS, teammate, binding), same: false };
+// project, for a delegate with an issue, and a close's transcript pair), else the same command with what it lacks added.
+// A subagent has no session of its own: its transcript is a file inside the lead's, so its close records the lead's
+// session, as its `todo` closes do. `--as` throws. Pure, so a refusal can name the exact command to run.
+function shellRoute(rt: Runtime, session: Session, command: string, teammate: string, binding?: Binding): Routed {
+	const executable = rt.settings.executable;
+	const transcript = { env: rt.platform.env, agent: NAMESPACE, id: session.id };
+	if (delegateRouted(posixPath, command, executable, EXECUTABLE_VARS, teammate, binding, transcript)) return { command, same: true };
+	return { command: delegateCommand(posixPath, command, executable, EXECUTABLE_VARS, teammate, binding, transcript), same: false };
 }
 
-const mustRun = (fixed: string) => `Kata subagents run every kata command under their own teammate. Run it again exactly like this: ${fixed}`;
-
-// A subagent's tool calls: the first one tells the core the delegate did something, and its kata commands carry its teammate.
-// A rewrite of the Bash command is the first choice. Auto mode refuses a tool call a hook changed after the classifier read it
-// (the model is told so and its repeat of the exact call goes through with the change dropped), so there the call is refused
-// with the exact command to run instead: the model's next call already carries the flags and passes untouched.
+// A subagent's tool calls: the first one tells the core the delegate did something, and its kata commands carry its teammate
+// (see `runRewritten` for auto mode).
 export const onDelegateCall: Hook<"tool.call"> = async ($, e, next) => {
 	if (e.agentId === undefined) return next(e);
 	let found: Found | undefined;
@@ -242,21 +242,18 @@ export const onDelegateCall: Hook<"tool.call"> = async ($, e, next) => {
 		runtime()?.debug(error);
 	}
 	if (e.tool !== "Bash" || !("command" in e) || typeof e.command !== "string" || !found) return next(e);
-	const command = e.command;
-	const { rt, record } = found;
+	const { rt, record, session } = found;
 	// An agent the lead does not track (an engine fork, a Workflow Code Review agent) keeps the teammate a record would give it.
-	const teammate = record?.teammate ?? teammateFor(e.agentId, found.session.id);
+	const teammate = record?.teammate ?? teammateFor(e.agentId, session.id);
 	let routed: Routed;
 	try {
-		routed = shellRoute(command, rt.settings.executable, teammate, record?.binding);
+		routed = shellRoute(rt, session, e.command, teammate, record?.binding);
 	} catch (error) {
 		return { deny: error instanceof Error ? error.message : String(error) };
 	}
 	if (routed.same) return next(e);
-	if (record && found.session.autoMode.has(record.id)) return { deny: mustRun(routed.command) };
-	const done = await next({ ...e, command: routed.command });
-	if (done.deny !== undefined && /changed this call's input/i.test(done.deny)) return { deny: mustRun(routed.command) };
-	return done;
+	const why = "Kata subagents run every kata command under their own teammate, and a close records the session.";
+	return runRewritten(e, next, routed.command, why, record !== undefined && session.autoMode.has(record.id));
 };
 
 // A subagent's `todo` call: it works its own issue through a core of its own, the way a delegate does on the other hosts.

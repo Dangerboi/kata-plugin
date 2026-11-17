@@ -4,7 +4,7 @@ Plugin: `kata-cc` in the `kata-plugin` marketplace; entry: `plugins/claude-code`
 
 The plugin name shows wherever Claude Code names the source of a mod: a message the mod sends into the session (a live inbox request) is framed as "The kata-cc plugin sent a message", and its settings are listed under `kata-cc`.
 
-The mod replaces Claude Code's task tools with one Kata-backed `todo` tool, adds the plan to each prompt, gives each delegate (an `Agent` subagent, a Workflow agent or a teammate) its assignment from the plan ([Delegates](#delegates)), rewrites Kata commands a subagent runs in `Bash` ([Shell](#shell)), follows the session inbox live, and draws the plan in the terminal UI ([Display](#display)). It does not inject the Kata contract or session attention by default: `kata agent-hook install claude` supplies them (see [Use with Kata agent hooks](../how-to/use-with-kata-agent-hooks.md#claude-code)).
+The mod replaces Claude Code's task tools with one Kata-backed `todo` tool, adds the plan to each prompt, gives each delegate (an `Agent` subagent, a Workflow agent or a teammate) its assignment from the plan ([Delegates](#delegates)), rewrites Kata commands in `Bash` ([Shell](#shell)), follows the session inbox live, and draws the plan in the terminal UI ([Display](#display)). It does not inject the Kata contract or session attention by default: `kata agent-hook install claude` supplies them (see [Use with Kata agent hooks](../how-to/use-with-kata-agent-hooks.md#claude-code)).
 
 ## Settings
 
@@ -27,7 +27,7 @@ The mod removes `TaskCreate`, `TaskGet`, `TaskList`, `TaskUpdate` and `TodoWrite
 
 Each prompt carries the plan as hidden context after the user's text. A section the model already holds is not sent again until it changes or the conversation is compacted.
 
-A close the plugin makes runs `kata close` with `KATA_TRANSCRIPT_AGENT=claude` and a session id in that call's environment, plus `KATA_CLOSE_TRANSCRIPT_ENABLED=true` unless the environment sets it, so the close records the session ([Record agent sessions on closes](../how-to/record-session-transcripts.md)). The id is the lead's session id, also for a close a subagent's `todo` call makes. A `kata close` a subagent runs itself in `Bash` is only rewritten for its teammate ([Shell](#shell)) and carries no session pair of its own. `KATA_CLOSE_TRANSCRIPT_ENABLED=false` in Claude Code's environment stops it.
+Every close records the lead's session ([Record agent sessions on closes](../how-to/record-session-transcripts.md)): `KATA_TRANSCRIPT_AGENT=claude` and the lead's session id, plus `KATA_CLOSE_TRANSCRIPT_ENABLED=true` unless Claude Code's environment sets it. A close the plugin makes, a subagent's `todo` close included, carries them in that call's environment; a `kata close` the lead or a subagent runs in `Bash` carries them in an `env` prefix ([Shell](#shell)). A subagent has no session of its own: its transcript is part of the lead's, so its closes record the lead's session. `KATA_CLOSE_TRANSCRIPT_ENABLED=false` in Claude Code's environment stops it.
 
 ## Delegates
 
@@ -45,9 +45,13 @@ A fork no tool call starts (`/btw`, `/fork`) is no delegation and runs as it is.
 
 ## Shell
 
-A delegate assigned an issue, and any delegate the mod can name, runs `kata` commands in `Bash` under its own teammate: the command is rewritten to add `--teammate <teammate>` (an earlier one is replaced), and `--workspace` and `--project` of the assignment unless the command sets them. A delegate's `--as` is refused. Only commands in command position are touched, and rewriting is lexical, not a sandbox.
+A `kata close` in a `Bash` call, the lead's or a subagent's, is rewritten to start with `env KATA_TRANSCRIPT_AGENT='claude' KATA_TRANSCRIPT_SESSION_ID='<lead session id>' KATA_CLOSE_TRANSCRIPT_ENABLED='true'` (the switch as Claude Code's environment sets it), unless the command already sets that pair.
 
-Under auto permission mode Claude Code refuses a tool call a hook changed after the classifier read it. Then the mod denies the call instead, with the exact command to run (`Kata subagents run every kata command under their own teammate. Run it again exactly like this: …`), and the model's next call already carries the flags. The lead's `Bash` calls are not rewritten.
+A delegate assigned an issue, and any delegate the mod can name, also runs `kata` commands in `Bash` under its own teammate: the command is rewritten to add `--teammate <teammate>` (an earlier one is replaced), and `--workspace` and `--project` of the assignment unless the command sets them. A delegate's `--as` is refused. Only commands in command position are touched, and rewriting is lexical, not a sandbox.
+
+Claude Code matches no allow rule past the `env` prefix, so a rule such as `Bash(kata *)` would no longer cover a rewritten close. At the permission check (`tool.check`) a rewritten call that Claude Code would ask about is allowed when the command the model wrote is allowed outright; any other verdict, a deny or an ask rule's included, stands.
+
+Under auto permission mode Claude Code refuses a tool call a hook changed after the classifier read it. Then the mod denies the call instead, with the exact command to run (`… Run it again exactly like this: …`), and the model's next call already carries the change. A subagent spawned under auto mode is refused before the rewrite is tried; the lead's call is refused once Claude Code refuses the rewrite.
 
 ## Sessions, settling and restart
 

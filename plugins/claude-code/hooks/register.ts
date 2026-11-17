@@ -3,6 +3,7 @@ import { onEnd, onSessionSwitch, onStart } from "./lifecycle";
 import { onCompact, onPrompt, onStop, onTurnComplete } from "./prompt";
 import { onTodoCall, onToolCall, onToolList } from "./todo";
 import { onDelegateCall, onSpawn } from "./delegates";
+import { onLeadShell, onShellCheck } from "./shell";
 import { onTurnStart } from "./inbox";
 import { configure } from "./lead";
 import { onBand, onTickets, onTodoCard, onTodoCommand, onTodoUse } from "./ui";
@@ -19,6 +20,8 @@ export const register: Register = (on, options) => {
 	on("tool.call", { tool: /^todo$/ }, onTodoCall);
 	on("tool.call", { agentId: /./ }, onDelegateCall);
 	on("tool.call", onToolCall);
+	on("tool.call", { tool: "Bash" }, onLeadShell);
+	on("tool.check", { tool: "Bash" }, onShellCheck);
 	on("agent.spawn", onSpawn);
 	on("prompt.submit", onPrompt);
 	on("session.compact", onCompact);

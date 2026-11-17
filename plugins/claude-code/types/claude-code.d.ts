@@ -41,6 +41,11 @@ declare module "claude-code" {
 
 	// The call's tool arguments sit beside `tool` and `tool_use_id`; they are the tool's own JSON, whose names the engine does not fix.
 	export type ToolCallEvent = { tool: string; tool_use_id: string; agentId?: string; [argument: string]: any };
+	// `tool.check`: the engine's permission decision for a call. The tool and its input are the question and are pinned: a hook
+	// answers `{ decision }`, it does not change the call. `input` is the tool's arguments (`{ command }` for Bash).
+	export type ToolCheckDecision = "allow" | "ask" | "deny";
+	export type ToolCheckInput = { tool: string; input: unknown; tool_use_id?: string; agentId?: string; isReadOnly?: true };
+	export type ToolCheckResult = { decision: ToolCheckDecision; reason?: string; rule?: string };
 
 	// One entry per event the plugin hooks, or a test answers: [what `e` is, what the hook answers].
 	export interface EventTable {
@@ -52,6 +57,7 @@ declare module "claude-code" {
 		"session.cwd": [Record<string, never>, { value: string }];
 		"tool.list": [Record<string, never>, { value?: ToolInfo[] }];
 		"tool.call": [ToolCallEvent, ToolCallResult];
+		"tool.check": [ToolCheckInput, ToolCheckResult];
 		"agent.spawn": [
 			{
 				prompt: string;
@@ -141,6 +147,8 @@ declare module "claude-code" {
 	type StateAddress<P extends keyof PluginState, K extends keyof PluginState[P]> = { readonly plugin: P; readonly key: K; readonly id?: string };
 
 	export interface EngineInterface {
+		// `check` asks the engine's permission decision for a call now: the other hooks run, nothing runs, no dialog opens.
+		tool: { check(input: Pick<ToolCheckInput, "tool" | "input">): Promise<ToolCheckResult> };
 		env: { get(name: string): Promise<string | undefined> };
 		state: {
 			get<P extends keyof PluginState, K extends keyof PluginState[P]>(address: StateAddress<P, K>): Promise<{ value: StateValue<P, K>; version: number }>;

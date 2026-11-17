@@ -4,7 +4,7 @@ import { claudeKata, entering, pausedClock, type ClaudeHost } from "./claude-fix
 import { assignmentOf, EVIDENCE, eventually, holdKata, holdNext, MESSAGE, quote } from "./kata-fixture";
 
 // Subagents and Workflow agents on the Claude mod, against a real Kata: a hand-made `$` stands in for the engine.
-const { host, kata, show, commentsOf, env, cwd, sessionParents } = claudeKata("claude-delegates");
+const { host, kata, show, commentsOf, closesOf, sh, sessionParents } = claudeKata("claude-delegates");
 
 const itemsOf = async (h: ClaudeHost) => {
 	const [parent] = await sessionParents("claude", h.state.session, true);
@@ -16,13 +16,8 @@ const issueOf = async (h: ClaudeHost, title: string) => {
 	return (await show(found.short_id)).issue;
 };
 const labelsOf = async (ref: string) => ((await show(ref)).labels ?? []).map((label: any) => label.label);
-async function sh(command: string) {
-	const proc = Bun.spawn(["bash", "-c", command], { cwd, env: { ...env, PATH: process.env.PATH }, stdout: "pipe", stderr: "pipe" });
-	const [stdout, stderr] = await Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text()]);
-	return { code: await proc.exited, stdout, stderr };
-}
-async function started() {
-	const h = host();
+async function started(extra: Parameters<typeof host>[0] = {}) {
+	const h = host(extra);
 	await h.start();
 	await h.todo({ op: "init", items: ["Implement parser module", "Document the parser output"] });
 	return h;
@@ -198,6 +193,43 @@ test("under auto mode the engine refuses a changed call: the subagent is told th
 	expect(docsRan.code, docsRan.stderr).toBe(0);
 	expect((await lastCommentOf(docs.ref)).teammate).toBe(docs.teammate);
 	expect(teammate).not.toBe(docs.teammate);
+});
+
+test("a subagent's Bash kata close records the lead's session, also through the auto-mode refusal; the switch still turns it off", async () => {
+	const closeCommand = (ref: string) => `kata close ${ref} --done --message ${quote(MESSAGE)} --evidence ${quote(EVIDENCE[0])}`;
+	const h = await started();
+	const spawned = await h.spawn({ prompt: "Implement parser module", description: "Parser", permissionMode: "auto" }, "agent-closes");
+	const { ref } = assignmentOf(tagged(spawned.prompt));
+	const refused = await h.agentCall("agent-closes", "Bash", { command: closeCommand(ref) }, () => {
+		throw new Error("the engine ran a changed call");
+	});
+	const exact = refused.deny.split("exactly like this: ")[1];
+	expect((await h.agentCall("agent-closes", "Bash", { command: exact })).command).toBe(exact);
+	const ran = await sh(exact);
+	expect(ran.code, ran.stderr).toBe(0);
+	expect((await closesOf(ref))[0].payload.transcript).toMatchObject({ agent: "claude", session_id: h.state.session });
+
+	const off = await started({ env: { KATA_CLOSE_TRANSCRIPT_ENABLED: "false" } });
+	const quiet = assignmentOf(tagged((await off.spawn({ prompt: "Implement parser module", description: "Parser" }, "agent-quiet")).prompt));
+	const routed = await off.agentCall("agent-quiet", "Bash", { command: closeCommand(quiet.ref) });
+	const ranQuiet = await sh(routed.command);
+	expect(ranQuiet.code, ranQuiet.stderr).toBe(0);
+	expect((await closesOf(quiet.ref))[0].payload.transcript).toBeUndefined();
+});
+
+test("a rewritten Bash call keeps its own command's permission: allowed where the model's command is, else as the rules decide", async () => {
+	// A session whose only allow rule is `Bash(kata *)`: Claude Code matches no allow rule past an `env NAME=…` prefix.
+	const h = await started({ rules: e => ({ decision: /^kata /.test(e.input.command) ? "allow" : "ask" }) });
+	const lead = await h.fire("tool.call", { tool: "Bash", tool_use_id: "b-lead", command: "kata close ab12 --done" });
+	expect(lead.command).toStartWith("env KATA_TRANSCRIPT_AGENT=");
+	expect((await h.check(lead.command)).decision).toBe("allow");
+	const { ref } = assignmentOf(tagged((await h.spawn({ prompt: "Implement parser module", description: "Parser" }, "agent-rules")).prompt));
+	const sub = await h.agentCall("agent-rules", "Bash", { command: `kata close ${ref} --done` });
+	expect((await h.check(sub.command, "agent-rules")).decision).toBe("allow");
+
+	const chained = await h.fire("tool.call", { tool: "Bash", tool_use_id: "b-chained", command: "rm -rf build && kata close ab12 --done" });
+	expect((await h.check(chained.command)).decision).toBe("ask");
+	expect((await h.check("env KATA_TRANSCRIPT_AGENT=claude kata close ab12 --done")).decision).toBe("ask");
 });
 
 test("an agent the lead does not track still gets a teammate of its own on its kata commands", async () => {

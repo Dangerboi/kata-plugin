@@ -41,7 +41,8 @@ const model = option("--model") ?? "haiku";
 const PROJECT = "claude-smoke";
 const TIMEOUT_MS = 600_000;
 const WRITE = "Write notes",
-	VERIFY = "Verify notes";
+	VERIFY = "Verify notes",
+	SHELL = "Shell close";
 
 const login = spawnSync("claude", ["auth", "status"], { encoding: "utf8", timeout: 30_000 });
 if (login.status !== 0 || !/"loggedIn":\s*true/.test(login.stdout)) {
@@ -65,7 +66,8 @@ const prompt = [
 	`1. Make a plan of exactly two tasks, titled "${WRITE}" and "${VERIFY}".`,
 	`2. Start "${WRITE}", create notes.txt in this folder containing the line smoke-ok, then mark the task done with a message of at least 40 characters and the command \`cat notes.txt\` as its evidence.`,
 	`3. Hand "${VERIFY}" to a subagent: call the Agent tool (general-purpose) with a prompt that starts with the exact words "${VERIFY}" and asks it to check with \`grep smoke-ok notes.txt\` that notes.txt holds smoke-ok. It must follow the Kata assignment it is given: comment on its issue what it did and close that issue with the grep as evidence.`,
-	"4. When it reports back, answer DONE. Do nothing else."
+	`4. When it reports back, run \`kata create "${SHELL}" --body "Made by the smoke." --agent\` in the shell, then close that issue in the shell with \`kata close <its ref> --done --message "<at least 40 characters>" --test "cat notes.txt" --agent\`.`,
+	"5. Answer DONE. Do nothing else."
 ].join("\n");
 
 function checks(issues: Issue[], exit: { code: number | null; output: string }): Check[] {
@@ -73,7 +75,9 @@ function checks(issues: Issue[], exit: { code: number | null; output: string }):
 	const parent = parents[0];
 	const tasks = issues.filter(i => i !== parent && !i.metadata["claude.mission"]);
 	const write = tasks.find(i => i.title.includes(WRITE)),
-		verify = tasks.find(i => i.title.includes(VERIFY));
+		verify = tasks.find(i => i.title.includes(VERIFY)),
+		shell = tasks.find(i => i.title.includes(SHELL));
+	const bySession = (issue: Issue | undefined) => closeTranscript(issue)?.agent === "claude" && closeTranscript(issue)?.session_id === sessionId;
 	return [
 		{ name: "claude exited cleanly", ok: exit.code === 0, detail: `exit ${exit.code}\n${lastLines(exit.output)}` },
 		{
@@ -84,11 +88,7 @@ function checks(issues: Issue[], exit: { code: number | null; output: string }):
 		{ name: "the plan has its two tasks under the parent", ok: !!write && !!verify, detail: JSON.stringify(issues.map(i => [i.ref, i.title, i.status])) },
 		{
 			name: `"${WRITE}" is closed with evidence and the session's transcript`,
-			ok:
-				write?.status === "closed" &&
-				closeEvidence(write).length > 0 &&
-				closeTranscript(write)?.agent === "claude" &&
-				closeTranscript(write)?.session_id === sessionId,
+			ok: write?.status === "closed" && closeEvidence(write).length > 0 && bySession(write),
 			detail: JSON.stringify(closeEvent(write))
 		},
 		{
@@ -97,9 +97,19 @@ function checks(issues: Issue[], exit: { code: number | null; output: string }):
 			detail: JSON.stringify(verify?.metadata)
 		},
 		{
-			name: `the subagent closed "${VERIFY}" itself, once, with evidence and a comment of its own`,
-			ok: verify?.status === "closed" && closeCount(verify) === 1 && closeEvidence(verify).length > 0 && eventsOf(verify, "issue.commented").some(e => ownComment(e.payload, closingTeammate(verify))),
+			name: `the subagent closed "${VERIFY}" itself, once, with evidence, a comment of its own and the lead's transcript`,
+			ok:
+				verify?.status === "closed" &&
+				closeCount(verify) === 1 &&
+				closeEvidence(verify).length > 0 &&
+				eventsOf(verify, "issue.commented").some(e => ownComment(e.payload, closingTeammate(verify))) &&
+				bySession(verify),
 			detail: JSON.stringify(verify?.events)
+		},
+		{
+			name: `the lead closed "${SHELL}" in Bash with the session's transcript, past the \`Bash(kata *)\` allow rule`,
+			ok: shell?.status === "closed" && bySession(shell),
+			detail: JSON.stringify(closeEvent(shell))
 		},
 		{
 			name: `"${VERIFY}" was returned to the lead: no subagent id left on it`,
@@ -130,8 +140,21 @@ try {
 		path.join(root, "plugins/claude-code"),
 		"--session-id",
 		sessionId,
+		// A headless run refuses whatever would ask. Every Kata command the run makes is allowed by one rule, so a rewritten
+		// `kata close` (an `env` prefix no allow rule matches) must keep that rule's permission; the rest lets the agents check
+		// notes.txt however the model words it.
 		"--permission-mode",
-		"bypassPermissions",
+		"default",
+		"--allowedTools",
+		"Bash(kata *)",
+		"Bash(grep *)",
+		"Bash(cat *)",
+		"Bash(echo *)",
+		"Bash(cd *)",
+		"Bash(ls *)",
+		"Read",
+		"Write",
+		"Edit",
 		"--max-budget-usd",
 		"1"
 	];

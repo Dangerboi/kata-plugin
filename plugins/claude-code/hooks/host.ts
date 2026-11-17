@@ -17,7 +17,7 @@ export interface Session {
 	records: Map<string, DelegateRecord>;
 	// What earlier prompts carried, by section: a section is sent again only when it changed.
 	sent: Record<string, string>;
-	// Delegates whose spawn arrived under auto mode, which refuses a hook's rewrite of a tool call (see `shellRoute`).
+	// Delegates whose spawn arrived under auto mode, which refuses a hook's rewrite of a tool call (see `runRewritten`).
 	autoMode: Set<string>;
 }
 
