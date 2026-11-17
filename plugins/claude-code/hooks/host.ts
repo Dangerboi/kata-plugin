@@ -1,5 +1,6 @@
-import { closeEnv, type ExecResult, type Platform } from '../core/kata-cli'
+import { closeEnv, type ExecResult, type Platform, type Timers } from '../core/kata-cli'
 import * as path from '../core/posix-path'
+import { posixPath } from '../core/posix-path'
 import type { Engine } from './engine'
 
 // Everything the core takes from its machine, built from `$`: the one place that knows the mod runtime has no Node.
@@ -15,7 +16,7 @@ export interface RunContext {
     getHeader?(): { parentSession?: unknown } | null | undefined
   }
   run?: (argv: readonly string[], init: { cwd?: string; env?: Record<string, string>; timeoutMs?: number }) => Promise<{ exitCode: number; stdout: string; stderr: string }>
-  timers?: { setTimer(fire: () => void, ms: number): unknown; clearTimer(handle: unknown): void }
+  timers?: Timers
 }
 
 // The session cwd as `$.fs.stat` resolves it (symlinks and `..` gone), so a workspace recorded in Kata matches however the
@@ -41,11 +42,16 @@ export function platformOf($: Engine, env: Map<string, string>, state: { cwd: st
   return {
     env: { get: name => env.get(name), set(name, value) { if (value === undefined) env.delete(name); else env.set(name, value) } },
     cwd: () => state.cwd,
+    path: posixPath,
     pid: 0,
     setTimer: (fire, ms) => $.clock.after(ms, fire),
     clearTimer: handle => (handle as { cancel(): void }).cancel(),
-    // Paths are canonicalised once, where the session's cwd is read (canonicalPath).
-    realpath: file => file,
+    // `realPath` is absent when the path leads nowhere: reject, as realpath does for a missing path.
+    realpath: async file => {
+      const found = (await $.fs.stat(file, { resolve: true })).realPath
+      if (!found) throw new Error(`${file} does not exist`)
+      return found
+    },
     // `$.fs.write` replaces a file, so an append reads the old text first; one at a time.
     appendFile(file, text) {
       appended = appended.then(async () => {

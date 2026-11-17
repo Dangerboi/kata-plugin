@@ -1,5 +1,5 @@
 import { createKataCore, type KataCore } from '../core/kata-core'
-import { waitAtMost } from '../core/kata-cli'
+import { NO_JOB, waitAtMost } from '../core/kata-cli'
 import type { DelegateRecord, DelegateStore } from '../core/delegates'
 import type { Engine } from './engine'
 import { canonicalPath, execOf, platformOf, type RunContext } from './host'
@@ -105,7 +105,7 @@ async function attach($: Engine, hint: { fork?: boolean }): Promise<Entered> {
   const ctx = (rt.latest = contextOf($, rt))
   // The saved plan, pending closes and unfinished delegates of a resumed session are picked up by the core's bind.
   await rt.core.session.start(ctx)
-  rt.ready = rt.core.todo.apply(ctx, 'view', {}).catch(() => undefined)
+  rt.ready = rt.core.todo.apply(ctx, 'view', {}, NO_JOB).catch(() => undefined)
   await waitAtMost(rt.ready, READY_MS, () => undefined, ctx.timers!)
   void pruneSessions($, await $.clock.now(), id).catch(() => undefined)
   return { rt, ctx }
