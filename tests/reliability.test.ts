@@ -2,6 +2,7 @@ import { beforeAll, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { createKataCore } from "../core/kata-core";
+import { nodePlatform } from "../core/node-host";
 import { EVIDENCE, isolatedKata, later, memoryDelegateStore, MESSAGE as message, realKata } from "./kata-fixture";
 import { daemonUnavailable, notInitialized, notInitializedBound, notInitializedNoData, notInitializedProject, siblingThrottle } from "./kata-errors";
 const { binary, scratch: root, cwd, env, run, text, kata, show, issue, closesOf, deleteIssue, sessionParents } = realKata({ prefix: "reliability", author: "actor-a", project: "reliability-test" });
@@ -13,7 +14,7 @@ function app(options: any = {}) {
   const entries: any[] = options.entries || [], calls: string[][] = [];
   const id = options.sid || `reliability-${++seq}`;
   const ctx = { cwd: options.cwd || cwd, sessionManager: { getSessionId: () => id, getBranch: () => entries } };
-  const core = createKataCore({ appendEntry: (customType, data) => entries.push({ type: "custom", customType, data }),
+  const core = createKataCore({ platform: nodePlatform, contextTimers: ctx => ctx.setTimeout ? { setTimer: ctx.setTimeout, clearTimer: ctx.clearTimer } : undefined, appendEntry: (customType, data) => entries.push({ type: "custom", customType, data }),
     exec: async (_file, args, opts) => { calls.push(args); return await options.before?.(args) ?? run(args, opts.cwd); }, delegateStore: memoryDelegateStore(),
   }, { namespace: "omp", executable: binary, executableVars: ["KATA_OMP_EXECUTABLE"], explicitRef: () => options.ref });
   return { core, calls, entries, ctx, call: (p: any) => core.todo.apply(ctx, p.op, p) };
@@ -244,7 +245,7 @@ test("authenticated daemon actor can create and complete a plan despite local ac
     const setup = await authRun(["init", "--project", "authenticated-fixture"]); if (setup.code) throw new Error(setup.stderr);
     const ref = JSON.parse((await authRun(["create", "Token actor plan", "--json"])).stdout).issue.short_id;
     const status = JSON.parse((await authRun(["status", ref, "--json"])).stdout); expect(status.actor).toBe("token-actor");
-    const core = createKataCore({ appendEntry() {}, exec: (_file, args) => authRun(args), delegateStore: memoryDelegateStore() }, { namespace: "omp", executable: binary, executableVars: ["KATA_OMP_EXECUTABLE"], explicitRef: () => ref });
+    const core = createKataCore({ platform: nodePlatform, appendEntry() {}, exec: (_file, args) => authRun(args), delegateStore: memoryDelegateStore() }, { namespace: "omp", executable: binary, executableVars: ["KATA_OMP_EXECUTABLE"], explicitRef: () => ref });
     const ctx = { cwd: authCwd, sessionManager: { getSessionId: () => "auth-fixture", getBranch: () => [] } };
     const initialized = await core.todo.apply(ctx, "init", { items: ["Authenticated task"] });
     expect(initialized.isError, initialized.content[0].text).toBeUndefined();

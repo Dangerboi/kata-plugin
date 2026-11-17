@@ -1,5 +1,5 @@
 // Generated from core/autocomplete.ts; edit there.
-import { isKataCode, type Kata } from "./kata-cli";
+import { isKataCode, type Kata, type Platform } from "./kata-cli";
 
 // `#` ticket completion in the host's editor: the provider wrapper and the per-session ticket lists it reads.
 
@@ -29,12 +29,12 @@ const TICKET_LIMIT = 10;
  * Typing never waits on Kata: an abort, a timeout or a failing source leaves the
  * wrapped items.
  */
-export function ticketAutocomplete(current: TicketAutocompleteProvider, source: (project?: string) => Promise<Ticket[]>, options: { defaultProject?: string; timeout?: number; active?: () => boolean } = {}): TicketAutocompleteProvider {
+export function ticketAutocomplete(current: TicketAutocompleteProvider, source: (project?: string) => Promise<Ticket[]>, timers: Pick<Platform, "setTimer" | "clearTimer">, options: { defaultProject?: string; timeout?: number; active?: () => boolean } = {}): TicketAutocompleteProvider {
 	const ours = new Set<string>();
 	async function search(project: string | undefined, token: string, signal: AbortSignal | undefined): Promise<Ticket[]> {
 		let resolve!: (value: undefined) => void;
 		const gone = new Promise<undefined>(done => { resolve = done; });
-		const timer = setTimeout(resolve, options.timeout ?? 400);
+		const timer = timers.setTimer(() => resolve(undefined), options.timeout ?? 400);
 		const onAbort = () => resolve(undefined);
 		if (signal?.aborted) resolve(undefined); else signal?.addEventListener("abort", onAbort);
 		try {
@@ -44,7 +44,7 @@ export function ticketAutocomplete(current: TicketAutocompleteProvider, source: 
 			const titleMatches = (all ?? []).filter(t => !idMatches.includes(t) && t.title.toLowerCase().split(/[^\p{L}\p{N}]+/u).some(word => word.startsWith(wanted)));
 			return [...idMatches, ...titleMatches];
 		} finally {
-			clearTimeout(timer);
+			timers.clearTimer(timer);
 			signal?.removeEventListener("abort", onAbort);
 		}
 	}
@@ -93,7 +93,7 @@ const registry = globalThis as { [NEWEST_REGISTRATION]?: object };
 // Adds ticket completion to each editor once: omp rebuilds its stack from every registered factory, and a
 // session start runs again on every session switch.
 // `scope`: the session and cwd the tickets are listed for, and the project a bare `#` completes in (KATA_DEFAULT_PROJECT).
-export function createTicketCompletion(kata: Kata, scope: () => { session?: string; cwd: string; defaultProject?: string }, debug: (error: unknown) => void) {
+export function createTicketCompletion(kata: Kata, scope: () => { session?: string; cwd: string; defaultProject?: string }, debug: (error: unknown) => void, timers: Pick<Platform, "setTimer" | "clearTimer">) {
 	const ticketLists = new Map<string, { at: number; tickets: Ticket[]; pending?: Promise<void>; failedAt?: number; error?: unknown }>();
 	function tickets(project?: string): Promise<Ticket[]> {
 		const { session, cwd } = scope();
@@ -124,6 +124,6 @@ export function createTicketCompletion(kata: Kata, scope: () => { session?: stri
 		const registration = {};
 		registry[NEWEST_REGISTRATION] = registration;
 		const active = () => registry[NEWEST_REGISTRATION] === registration;
-		ui.addAutocompleteProvider(current => ticketAutocomplete(current, tickets, { defaultProject: scope().defaultProject?.trim() || undefined, active }));
+		ui.addAutocompleteProvider(current => ticketAutocomplete(current, tickets, timers, { defaultProject: scope().defaultProject?.trim() || undefined, active }));
 	};
 }

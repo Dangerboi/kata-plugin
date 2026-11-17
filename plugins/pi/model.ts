@@ -1,5 +1,5 @@
 // Generated from core/model.ts; edit there.
-import { createHash } from "node:crypto";
+import { sha256Hex } from "./sha256";
 
 // The plan vocabulary every core module shares: tasks, plan parents, Kata's issue shape and refs.
 
@@ -163,5 +163,5 @@ export function slug(text: string | undefined, keepCase = false): string | undef
 }
 
 export function digest(...parts: string[]): string {
-	return createHash("sha256").update(parts.join("\u0000")).digest("hex").slice(0, 24);
+	return sha256Hex(parts.join("\u0000")).slice(0, 24);
 }

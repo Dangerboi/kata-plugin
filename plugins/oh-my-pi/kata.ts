@@ -21,7 +21,7 @@ import { BroadcastChannel, isMainThread, threadId } from "node:worker_threads";
 import { closeSync, openSync, readSync } from "node:fs";
 import { createInterface } from "node:readline";
 import { createKataCore, DESCRIPTION, sessionKey, TODO_OPS, TODO_PARAMS } from "./kata-core";
-import { closeEnv, execKata, exportTranscriptSession } from "./kata-cli";
+import { closeEnvHere, execKata, exportTranscriptSession, nodePlatform } from "./node-host";
 import { delegateCommand, kataCommands as parseKataCommands } from "./shell";
 import { FINAL, isUntracked, teammateFor } from "./delegates";
 import { textOf } from "./model";
@@ -138,7 +138,7 @@ export default function ompKata(pi: any) {
 	// A delegate's correlation key: its session file, resolved against its cwd.
 	const sessionKeyOf = (ctx: { cwd: string; sessionManager?: { getSessionFile?(): string | undefined } } | undefined): string | undefined => {
 		const file = ctx?.sessionManager?.getSessionFile?.();
-		return file ? sessionKey(file, ctx!.cwd) : undefined;
+		return file ? sessionKey(file, ctx!.cwd, nodePlatform.realpath) : undefined;
 	};
 	// The context of the latest event: the lifecycle bus carries none. A sub identity that reaches a main-session handler (omp's advisor) never replaces the main one.
 	let seen: any;
@@ -155,12 +155,15 @@ export default function ompKata(pi: any) {
 		},
 	};
 	const core = createKataCore({
+		platform: nodePlatform,
+		// omp's timers, contained in the session and cleared at its shutdown.
+		contextTimers: ctx => typeof ctx?.setTimeout === "function" && typeof ctx.clearTimer === "function" ? { setTimer: (fire, ms) => ctx.setTimeout(fire, ms), clearTimer: handle => ctx.clearTimer(handle) } : undefined,
 		// omp's exec spawns with the environment it captured at startup and ignores an env option, so
 		// a close that must carry the transcript identity is spawned here, without a shell or an env program.
 		// A delegate runs in the lead's process: its closes carry its own session, never the lead's.
 		exec: (file, args, { ctx, ...options }) => {
 			const pair = transcriptPairOf(ctx);
-			const env = pair && closeEnv(args, pair.agent, pair.id);
+			const env = pair && closeEnvHere(args, pair.agent, pair.id);
 			return env ? execKata(file, args, { ...options, env }) : pi.exec(file, args, options);
 		},
 		appendEntry: (...args) => pi.appendEntry(...args),
@@ -297,7 +300,7 @@ export default function ompKata(pi: any) {
 			for (const [key, record] of recordsBySession) if (record.leadSessionId !== lead.id && record.exited && FINAL.has(record.state)) recordsBySession.delete(key);
 			const index = event.index ?? 0;
 			void lead.delegates.start({
-				id: event.id, sessionId: event.sessionFile ? sessionKey(event.sessionFile, ctx.cwd) : `${lead.id}:${event.id}`, leadSessionId: lead.id,
+				id: event.id, sessionId: event.sessionFile ? sessionKey(event.sessionFile, ctx.cwd, nodePlatform.realpath) : `${lead.id}:${event.id}`, leadSessionId: lead.id,
 				text: [taskCalls.get(event.parentToolCallId)?.texts[index], event.description].filter(Boolean).join("\n"),
 				agent: typeof event.agent === "string" && event.agent ? event.agent : undefined, parentAgentId: ctx.agent?.id, call: event.parentToolCallId, index,
 			});
@@ -349,12 +352,12 @@ export default function ompKata(pi: any) {
 	// The session a close made in `ctx` records. A delegate runs in the lead's process, so its closes carry its own session,
 	// never the lead's: its id is unknown until its session file has a header, and until then `id` is undefined (its closes
 	// record nothing). Undefined for the lead before session start exported its pair: its closes go as omp spawns them.
-	function transcriptPairOf(ctx: any): { agent: string; id: string | undefined } | undefined {
+	function transcriptPairOf(ctx: any): { agent: string; id: string | undefined; enabled?: string } | undefined {
 		if (!ctx || main(ctx)) {
 			const { KATA_TRANSCRIPT_AGENT: agent, KATA_TRANSCRIPT_SESSION_ID: id } = process.env;
-			return agent && id ? { agent, id } : undefined;
+			return agent && id ? { agent, id, enabled: process.env.KATA_CLOSE_TRANSCRIPT_ENABLED } : undefined;
 		}
-		return childSession(store.of(ctx)?.sessionId) ?? { agent: "omp", id: undefined };
+		return { enabled: process.env.KATA_CLOSE_TRANSCRIPT_ENABLED, ...(childSession(store.of(ctx)?.sessionId) ?? { agent: "omp", id: undefined }) };
 	}
 
 	// A delegate's session file starts with a header carrying its own session id, the one AgentsView lists it under.
