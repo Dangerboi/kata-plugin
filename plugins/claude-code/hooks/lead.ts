@@ -3,6 +3,7 @@ import { NO_JOB, waitAtMost } from '../core/kata-cli'
 import type { DelegateRecord, DelegateStore } from '../core/delegates'
 import type { Engine } from './engine'
 import { canonicalPath, execOf, platformOf, type RunContext } from './host'
+import { planUi } from './plan'
 import { loadSession, NAMESPACE, pruneSessions, sessionWriter } from './saved'
 import { EXECUTABLE_VARS, readEnv, resolveSettings, type Settings } from './settings'
 
@@ -42,6 +43,7 @@ export function contextOf($: Engine, rt: Runtime): RunContext {
     cwd: rt.cwd,
     sessionManager: { getSessionId: () => rt.id, getBranch: () => rt.writer?.entries ?? [], getHeader: () => rt.header },
     run: (argv, init) => $.process.run(argv, init),
+    ui: planUi($),
     timers: { setTimer: (fire, ms) => $.clock.after(ms, fire), clearTimer: handle => (handle as { cancel(): void }).cancel() },
   }
 }
@@ -69,7 +71,7 @@ async function create($: Engine): Promise<Runtime> {
     appendEntry: (type, data) => rt.writer?.append(type, data),
     isMain: ctx => ctx?.agent === undefined,
     delegateStore: delegateStore(),
-  }, { namespace: NAMESPACE, executable: settings.executable, executableVars: EXECUTABLE_VARS, debugFile: settings.debugFile })
+  }, { namespace: NAMESPACE, executable: settings.executable, executableVars: EXECUTABLE_VARS, debugFile: settings.debugFile, widget: (_line, view) => view })
   return rt
 }
 
