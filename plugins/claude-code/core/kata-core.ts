@@ -226,6 +226,8 @@ function untrackedDelegateContext(name: string): string {
 // Items that name no ticket become children of a parent issue; a plan of only named items needs none.
 const needsParent = (contents: string[]) => contents.some(content => !itemTicket(content));
 const hasRef = (task: Task, target: string) => task.ref === target || task.ref.split("#")[1] === target;
+// The plan view lists an item as '<content> (<ticket or ref>)'; a name copied from it names that item.
+const listed = (task: Task) => `${task.content} (${task.ticket ?? task.ref})`;
 // Why a task or item left the plan: the caller's words, else a reason Kata's wontfix accepts.
 const whyDropped = (change: Change) => change.message || change.reason || "no longer needed";
 // The comment a ticket gets when its item leaves the plan: a drop never closes a ticket.
@@ -250,7 +252,7 @@ function render(plan: Plan, wording: ToolWording = TODO_WORDING): string {
 	const lines = [`${plan.local ? "Session-local plan (Kata is unreachable; it replays into Kata when Kata returns)" : plan.parent ? `Kata parent ${plan.parent}` : "Kata tickets (no parent issue)"}: ${done}/${plan.tasks.length} done`];
 	for (const phase of phasesOf(plan.tasks)) {
 		lines.push(`${phase.name}:`);
-		for (const t of phase.tasks) lines.push(`  ${MARK[t.status]} ${t.content} (${t.ticket ?? t.ref})${t.blocker ? ` — blocked: ${t.blocker}` : ""}${t.holder ? ` — started by session ${t.holder}` : ""}`);
+		for (const t of phase.tasks) lines.push(`  ${MARK[t.status]} ${listed(t)}${t.blocker ? ` — blocked: ${t.blocker}` : ""}${t.holder ? ` — started by session ${t.holder}` : ""}`);
 	}
 	return lines.join("\n");
 }
@@ -1108,7 +1110,7 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 		}
 		if (!plan.local && !plan.tasks.some(t => t.content === target) && FULL_ID_REF.test(target)) target = await kata.pin(job, target, plan.workspace);
 		const name = target;
-		const exact = plan.tasks.filter(t => t.content === name || hasRef(t, name));
+		const exact = plan.tasks.filter(t => t.content === name || hasRef(t, name) || listed(t) === name);
 		if (exact.length === 1) return exact;
 		if (QUALIFIED_REF_ONLY.test(target) && !exact.length && !plan.local) {
 			// A short id is only unique per project: compare the ticket the ref names now, never its short id alone.
@@ -1122,6 +1124,15 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 		throw new Error(
 			`${fuzzy.length ? "Ambiguous" : "No"} task "${target}". Tasks: ${plan.tasks.map(t => `"${t.content}"`).join(", ") || "none"}`,
 		);
+	}
+
+	// A new item copied from the plan view keeps only its content: the suffix of a listed item, or of an item that
+	// repeats its own ticket after its action.
+	function unlisted(content: string): string {
+		const task = plan.tasks.find(t => listed(t) === content);
+		if (task) return task.content;
+		const ref = itemTicket(content)?.ref;
+		return ref && content.endsWith(` (${ref})`) ? content.slice(0, -` (${ref})`.length) : content;
 	}
 
 	const planParentSources = (params: any, ctx: HostContext) => ({
@@ -1325,8 +1336,8 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 		if (op === "init") {
 			if (params.takeover === true) throw new Error(`init does not take tasks over, so nothing changed. Take them over first (${wording.takeOverFirst}), then init.`);
 			const desired: { phase: string; content: string }[] = params.list?.length
-				? params.list.flatMap((p: any) => p.items.map((content: string) => ({ phase: p.phase, content })))
-				: (params.items ?? []).map((content: string) => ({ phase: params.phase || "Tasks", content }));
+				? params.list.flatMap((p: any) => p.items.map((content: string) => ({ phase: p.phase, content: unlisted(content) })))
+				: (params.items ?? []).map((content: string) => ({ phase: params.phase || "Tasks", content: unlisted(content) }));
 			if (desired.length === 0) throw new Error("init needs list (phases with items) or items.");
 			if (desired.some(d => !d.content.trim() || !d.phase.trim())) throw new Error("Task and phase names must not be blank.");
 			const wanted = new Set(desired.map(itemKey));
@@ -1379,7 +1390,7 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 		}
 		switch (op) {
 			case "append": {
-				const items: string[] = params.items?.length ? params.items : params.task ? [params.task] : [];
+				const items: string[] = (params.items?.length ? params.items : params.task ? [params.task] : []).map(unlisted);
 				if (items.length === 0) throw new Error("append needs items.");
 				if (items.some(content => !content.trim()) || (params.phase !== undefined && !params.phase.trim())) throw new Error("Task and phase names must not be blank.");
 				const phase = params.phase || plan.tasks[plan.tasks.length - 1]?.phase || "Tasks";

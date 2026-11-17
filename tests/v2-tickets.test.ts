@@ -116,6 +116,28 @@ test("appending an open ticket item again in a plan with a parent creates no chi
   expect((await show(ref)).children.map((c: any) => c.title)).toEqual(["update the docs"]);
 });
 
+test("a task named as the plan view lists it, with its ' (ref)' suffix, is that task; init and append keep only its content", async () => {
+  const app = host(); await app.event("session_start");
+  const [a, b] = [await issue("Ticket A"), await issue("Ticket B")];
+  const init = await app.call({ op: "init", items: ["update the docs", `v2test#${a}: write the script (v2test#${a})`] });
+  expect(init.isError).toBeUndefined();
+  const docs = /update the docs \(([^)]+)\)/.exec(init.content[0].text)![1];
+  const listedA = `v2test#${a}: write the script (v2test#${a})`, listedB = `v2test#${b}: fetch the inbox (v2test#${b})`;
+  const appended = await app.call({ op: "append", task: listedB });
+  expect(appended.isError).toBeUndefined();
+  for (const listed of [listedA, listedB]) expect(appended.content[0].text).toContain(listed);
+  expect(appended.content[0].text).not.toMatch(/\(v2test#\w+\) \(v2test#\w+\)/);
+  const again = await app.call({ op: "init", items: [`update the docs (${docs})`, listedA, listedB] });
+  expect(again.isError).toBeUndefined();
+  expect((await show(init.details.kata.parent)).children.map((c: any) => c.title)).toEqual(["update the docs"]);
+  const started = await app.call({ op: "start", task: listedA });
+  expect(started.isError).toBeUndefined();
+  expect(started.content[0].text).toContain(`[/] ${listedA}`);
+  const done = await app.call({ op: "done", task: `update the docs (${docs})`, message, evidence: ["test:listed name check"] });
+  expect(done.isError).toBeUndefined();
+  expect((await show(docs)).issue.status).toBe("closed");
+});
+
 test("an unresolvable or closed ref is an error that creates nothing; a bare id names no ticket", async () => {
   const app = host(); await app.event("session_start");
   const before = await total();
