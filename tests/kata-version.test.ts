@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import fc from "fast-check";
 import { daemonUnavailable } from "./kata-errors";
-import { createKata, type Exec } from "../core/kata-cli";
+import { createKata, NO_JOB, type Exec } from "../core/kata-cli";
 
 function client(exec: Exec) {
   return createKata({ exec, executable: "/fixture/kata", teammate: () => "lead", ctx: () => "event", session: () => "session", debug() {} });
@@ -11,9 +11,9 @@ const reply = (version: string) => ({ code: 0, stdout: JSON.stringify({ kata_api
 async function checkVersion(version: string, supported: boolean, guidance = "Upgrade Kata") {
   const calls: string[][] = [];
   const kata = client(async (_file, args) => { calls.push(args); return args[0] === "version" ? reply(version) : { code: 0, stdout: "ok" }; });
-  if (supported) expect(await kata.run(["create", "fixture"], "/fixture")).toBe("ok");
+  if (supported) expect(await kata.run(NO_JOB, ["create", "fixture"], "/fixture")).toBe("ok");
   else {
-    const error = await kata.run(["create", "must not write"], "/fixture").then(() => undefined, error => error);
+    const error = await kata.run(NO_JOB, ["create", "must not write"], "/fixture").then(() => undefined, error => error);
     expect(error).toBeInstanceOf(Error);
     expect(error.code).toBe("unsupported_version");
     expect(error.unusable).toBe(false);
@@ -58,24 +58,24 @@ for (const identity of [
 ]) test(`rejects unknown version schema ${JSON.stringify(identity)}`, async () => {
   const calls: string[][] = [];
   const kata = client(async (_file, args) => { calls.push(args); return { code: 0, stdout: JSON.stringify(identity) }; });
-  await expect(kata.run(["create", "must not write"], "/fixture")).rejects.toThrow("Install a versioned release");
+  await expect(kata.run(NO_JOB, ["create", "must not write"], "/fixture")).rejects.toThrow("Install a versioned release");
   expect(calls).toHaveLength(1);
 });
 
 test("checks once before concurrent calls and later ones, bounded and without workspace or teammate flags", async () => {
   const calls: { args: string[]; opts: Parameters<Exec>[2] }[] = [];
   const kata = client(async (_file, args, opts) => { calls.push({ args, opts }); return args[0] === "version" ? reply("0.23.0") : { code: 0, stdout: "ok" }; });
-  await Promise.all([kata.run(["list"], "/fixture"), kata.run(["show", "demo#abcd"], "/fixture")]);
-  await kata.run(["list"], "/fixture");
+  await Promise.all([kata.run(NO_JOB, ["list"], "/fixture"), kata.run(NO_JOB, ["show", "demo#abcd"], "/fixture")]);
+  await kata.run(NO_JOB, ["list"], "/fixture");
   expect(calls.filter(c => c.args[0] === "version")).toEqual([{ args: ["version", "--json"], opts: { cwd: "/fixture", timeout: 3000, ctx: "event" } }]);
 });
 
 test("an upgrade after a refused Kata takes effect on the next call", async () => {
   let version = "0.22.9", checks = 0;
   const kata = client(async (_file, args) => args[0] === "version" ? (checks++, reply(version)) : { code: 0, stdout: "upgraded" });
-  await expect(kata.run(["list"], "/fixture")).rejects.toMatchObject({ code: "unsupported_version" });
+  await expect(kata.run(NO_JOB, ["list"], "/fixture")).rejects.toMatchObject({ code: "unsupported_version" });
   version = "0.23.0";
-  expect(await kata.run(["list"], "/fixture")).toBe("upgraded");
+  expect(await kata.run(NO_JOB, ["list"], "/fixture")).toBe("upgraded");
   expect(checks).toBe(2);
 });
 
@@ -86,23 +86,23 @@ for (const [name, failure, code, message] of [
 ] as const) test(`unavailable version probe retries on recovery when ${name}`, async () => {
   let down = true;
   const kata = client(async (_file, args) => down ? failure() : args[0] === "version" ? reply("0.23.0") : { code: 0, stdout: "recovered" });
-  await expect(kata.run(["list"], "/fixture")).rejects.toMatchObject({ code, unusable: true, message: expect.stringContaining(message) });
+  await expect(kata.run(NO_JOB, ["list"], "/fixture")).rejects.toMatchObject({ code, unusable: true, message: expect.stringContaining(message) });
   down = false;
-  expect(await kata.run(["list"], "/fixture")).toBe("recovered");
+  expect(await kata.run(NO_JOB, ["list"], "/fixture")).toBe("recovered");
 });
 
 test("raw execution errors retain the executable diagnostic", async () => {
   const error = Object.assign(new Error("permission denied: /fixture/kata"), { code: "EACCES" });
   const kata = client(async () => { throw error; });
-  await expect(kata.run(["list"], "/fixture")).rejects.toBe(error);
+  await expect(kata.run(NO_JOB, ["list"], "/fixture")).rejects.toBe(error);
 });
 
 test("malformed version JSON remains unprovable", async () => {
   const kata = client(async () => ({ code: 0, stdout: "{" }));
-  await expect(kata.run(["list"], "/fixture")).rejects.toThrow("Install a versioned release");
+  await expect(kata.run(NO_JOB, ["list"], "/fixture")).rejects.toThrow("Install a versioned release");
 });
 
 test("a failed version call is unprovable, not an outage", async () => {
   const kata = client(async () => ({ code: 1, stdout: "", stderr: 'unknown command "version"' }));
-  await expect(kata.run(["list"], "/fixture")).rejects.toThrow("Install a versioned release");
+  await expect(kata.run(NO_JOB, ["list"], "/fixture")).rejects.toThrow("Install a versioned release");
 });

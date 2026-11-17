@@ -65,8 +65,8 @@ function coreOp(op: ListOp, init: { ref?: string } | undefined, takeover: boolea
 // One todowrite call, as one job of the session's core: reload the Kata plan, diff the list against it, apply the ops in order. A refusal changes nothing.
 async function write(seam: Seam, planner: Planner, input: unknown) {
 	const { todos, ref, takeover } = parseInput(input);
-	return planner.batch(async () => {
-		let result = await planner.todo("view");
+	return planner.batch(async job => {
+		let result = await planner.todo("view", {}, job);
 		if (result.isError) throw new Error(result.text);
 		const hasPlan = !!result.kata.parent || !!result.kata.local || planOf(result).length > 0;
 		const accepted = new Set(await seam.storage.accepted(planner.id));
@@ -77,7 +77,7 @@ async function write(seam: Seam, planner: Planner, input: unknown) {
 		for (const op of diff.ops) {
 			const [name, params] = coreOp(op, init, takeover);
 			init = undefined;
-			result = await planner.todo(name, params);
+			result = await planner.todo(name, params, job);
 			if (op.op === "append" && !result.isError) for (const item of op.items) accepted.add(item);
 			// An earlier op may have been applied: say what the plan is now, and remember the items this call already added.
 			if (result.isError) {

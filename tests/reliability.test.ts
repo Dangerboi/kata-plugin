@@ -1,7 +1,7 @@
 import { beforeAll, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import path from "node:path";
-import { createKataCore } from "../core/kata-core";
+import { createKataCore, type Job } from "../core/kata-core";
 import { EVIDENCE, isolatedKata, later, memoryDelegateStore, MESSAGE as message, realKata } from "./kata-fixture";
 import { daemonUnavailable, notInitialized, notInitializedBound, notInitializedNoData, notInitializedProject, siblingThrottle } from "./kata-errors";
 const { binary, scratch: root, cwd, env, run, text, kata, show, issue, closesOf, deleteIssue, sessionParents } = realKata({ prefix: "reliability", author: "actor-a", project: "reliability-test" });
@@ -10,13 +10,13 @@ mkdirSync(outside); mkdirSync(localProject);
 const issueOf = async (ref: string) => (await show(ref)).issue;
 let seq = 0;
 function app(options: any = {}) {
-  const entries: any[] = options.entries || [], calls: string[][] = [];
+  const entries: any[] = options.entries || [], calls: string[][] = [], contexts: any[] = [];
   const id = options.sid || `reliability-${++seq}`;
   const ctx = { cwd: options.cwd || cwd, sessionManager: { getSessionId: () => id, getBranch: () => entries } };
   const core = createKataCore({ appendEntry: (customType, data) => entries.push({ type: "custom", customType, data }),
-    exec: async (_file, args, opts) => { calls.push(args); return await options.before?.(args) ?? run(args, opts.cwd); }, delegateStore: memoryDelegateStore(),
+    exec: async (_file, args, opts) => { calls.push(args); contexts.push(opts.ctx); return await options.before?.(args) ?? run(args, opts.cwd); }, delegateStore: memoryDelegateStore(),
   }, { namespace: "omp", executable: binary, executableVars: ["KATA_OMP_EXECUTABLE"], explicitRef: () => options.ref });
-  return { core, calls, entries, ctx, call: (p: any) => core.todo.apply(ctx, p.op, p) };
+  return { core, calls, contexts, entries, ctx, call: (p: any, job?: Job) => core.todo.apply(ctx, p.op, p, job) };
 }
 // Kata unusable: the only case that selects a local plan.
 const down = daemonUnavailable;
@@ -632,16 +632,34 @@ test("a deleted automatic parent's pending task closes never run, also when the 
   expect((await issueOf(first)).status).toBe("open");
 });
 
+test("a todo call's Kata calls serve its own context while another event moves the latest one", async () => {
+  const mover: { ctx?: any; moved?: boolean } = {};
+  const a = app({ before: (args: string[]) => {
+    if (args[0] !== "meta" || mover.moved) return undefined;
+    mover.moved = true;
+    void a.core.tools.call(mover.ctx);
+    return undefined;
+  } });
+  await init(a);
+  mover.ctx = { ...a.ctx, sessionManager: { ...a.ctx.sessionManager, getSessionId: () => "other-event" } };
+  mover.moved = false;
+  a.contexts.length = 0;
+  expect((await a.call({ op: "start", task: "Second" })).isError).toBeUndefined();
+  expect(mover.moved).toBe(true);
+  expect(a.contexts.length).toBeGreaterThan(2);
+  expect(a.contexts.every(ctx => ctx === a.ctx)).toBe(true);
+});
+
 test("a batch is one job: its todo calls run inside it in order, and a call made meanwhile waits for the whole batch", async () => {
   const a = app(); await init(a);
   const order: string[] = [];
   const gate = Promise.withResolvers<void>();
-  const batch = a.core.todo.batch(a.ctx, async () => {
+  const batch = a.core.todo.batch(a.ctx, async job => {
     await gate.promise;
     order.push("batch: start");
-    expect((await a.call({ op: "start", task: "Second" })).isError).toBeUndefined();
+    expect((await a.call({ op: "start", task: "Second" }, job)).isError).toBeUndefined();
     order.push("batch: started Second");
-    expect((await a.call({ op: "start", task: "First" })).isError).toBeUndefined();
+    expect((await a.call({ op: "start", task: "First" }, job)).isError).toBeUndefined();
     order.push("batch: started First");
     return "done";
   });
@@ -652,3 +670,23 @@ test("a batch is one job: its todo calls run inside it in order, and a call made
   await outside;
   expect(order).toEqual(["batch: start", "batch: started Second", "batch: started First", "outside: in_progress,pending"]);
 });
+// Resolves after a wait no healthy call needs: a call that deadlocked behind its own batch shows as this.
+const stuck = () => new Promise<string>(resolve => setTimeout(resolve, 3000, "stuck"));
+test("a delegate check made with a batch's job runs inside the batch instead of queueing behind it", async () => {
+  const a = app(); await init(a);
+  const batch = a.core.todo.batch(a.ctx, async job => {
+    const reserved = await a.core.delegates.check(["Work nothing the plan names"], "batch-call", undefined, job);
+    expect((await a.call({ op: "view" }, job)).isError).toBeUndefined();
+    return reserved.length;
+  });
+  expect(await Promise.race([batch, stuck()])).toBe(1);
+  a.core.delegates.release("batch-call");
+});
+
+test("a job held after its batch ended queues like any other call", async () => {
+  const a = app(); await init(a);
+  let held!: Job;
+  await a.core.todo.batch(a.ctx, async job => { held = job; });
+  expect(await Promise.race([a.call({ op: "view" }, held).then(result => result.isError), stuck()])).toBeUndefined();
+});
+
