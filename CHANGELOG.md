@@ -46,7 +46,7 @@ All notable changes to kata-plugin are listed here. The format follows [Keep a C
 
 #### Delegates
 
-- omp and OpenCode: a `task` or `subagent` call that names a ticket goes ahead while Kata cannot be reached, and its delegate's assignment is retried on its next use, instead of the call being refused with Kata's error. Claude Code already worked this way.
+- omp and OpenCode: a `task` or `subagent` call that names a ticket goes ahead while Kata cannot be reached, and its delegate's assignment is retried on its next use, instead of the call being refused with Kata's error.
 
 #### Inbox and attention
 
