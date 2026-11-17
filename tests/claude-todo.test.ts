@@ -210,6 +210,28 @@ test("start prunes ended sessions past their keep time and keeps recent ones, ru
 	expect(["session/recent-ended", "session/other-running", owingKey].filter(key => !store.has(key))).toEqual([]);
 });
 
+test("over the store budget, start evicts ended sessions that owe nothing before older ones that owe work, counting bytes", async () => {
+	const store = new Map<string, unknown>();
+	const day = 86_400_000,
+		now = Date.now();
+	// 700,000 bytes of UTF-8 in 350,000 characters: three of them pass the 2 MiB budget only when bytes are counted.
+	const pad = { type: "custom", customType: "padding", data: "é".repeat(350_000) };
+	const owing = host({ store });
+	await owing.start();
+	await owing.todo({ op: "init", items: ["Owed after the end"] });
+	await owing.end("prompt_input_exit");
+	const owingKey = `session/${owing.state.session}`;
+	const owed = store.get(owingKey) as { entries: unknown[] };
+	store.set(owingKey, { ...owed, entries: [...owed.entries, pad], updatedAt: now - 3 * day, endedAt: now - 3 * day });
+	store.set("session/older-done", { entries: [pad], updatedAt: now - 2 * day, endedAt: now - 2 * day });
+	store.set("session/newer-done", { entries: [pad], updatedAt: now - day, endedAt: now - day });
+	store.set("session/running", { entries: [pad], updatedAt: now - day });
+	const h = host({ store });
+	await h.start();
+	await eventually(async () => ["session/older-done", "session/newer-done"].filter(key => store.has(key)), []);
+	expect([owingKey, "session/running"].filter(key => !store.has(key))).toEqual([]);
+});
+
 test("with no Kata the plan stays session-local and the call is not an error", async () => {
 	const h = host({ options: { kataExecutable: "/nonexistent/kata" } });
 	await h.start();

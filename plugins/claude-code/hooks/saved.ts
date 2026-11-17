@@ -72,10 +72,11 @@ export function sessionWriter($: EngineInterface, id: string, now: () => Promise
 	};
 }
 
-// Drops what no later start can use: records past their keep time, then ended ones, oldest first, while the store is over
-// budget: those that owe nothing first, then those that owe work. A session that owes work is otherwise kept until it is
-// stale, but a store over its limit fails the current session's saves, which costs more than an old session's debts.
-// The session `except` (the one starting) and sessions that have not ended stay.
+// Drops what no later start can use: records past their keep time, then, oldest first, while the store is over budget: ended
+// sessions that owe nothing, then ended ones that owe work, then ones that never ended (a killed process). A session that owes
+// work is otherwise kept until it is stale, but a store over its limit fails the current session's saves, which costs more
+// than an old session's debts; a session still running elsewhere writes its whole record again at its next change.
+// The session `except` (the one starting) stays.
 export async function pruneSessions($: EngineInterface, now: number, except?: string): Promise<number> {
 	const rows: { key: string; at: number; ended: boolean; owing: boolean; size: number }[] = [];
 	for (const key of (await $.store.keys()).filter(key => key.startsWith(PREFIX) && key !== keyOf(except ?? ""))) {
@@ -91,7 +92,8 @@ export async function pruneSessions($: EngineInterface, now: number, except?: st
 	}
 	const dropped = new Set(rows.filter(row => row.at === 0).map(row => row.key));
 	let total = rows.filter(row => !dropped.has(row.key)).reduce((sum, row) => sum + row.size, 0);
-	const evictable = rows.filter(row => row.ended && !dropped.has(row.key)).sort((a, b) => Number(a.owing) - Number(b.owing) || a.at - b.at);
+	const tier = (row: (typeof rows)[number]) => (!row.ended ? 2 : row.owing ? 1 : 0);
+	const evictable = rows.filter(row => !dropped.has(row.key)).sort((a, b) => tier(a) - tier(b) || a.at - b.at);
 	for (const row of evictable) {
 		if (total <= STORE_BUDGET) break;
 		dropped.add(row.key);

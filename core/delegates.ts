@@ -243,7 +243,7 @@ export interface Delegates {
 	// is decided at its start. `call`: the host's id of the call. What its spawns were matched to stays reserved under it,
 	// against every other spawn, until each spawn's `started` takes its own or the host releases the call.
 	check(texts: string[], call: string | undefined, scope: Scope | undefined, within: Job): Promise<Reservation[]>;
-	// The call is over: what its spawns reserved and no delegate took is free again.
+	// The call is over: what its spawns reserved and no delegate took is free again, and a check of it still running reserves nothing.
 	release(call: string): void;
 	// The issue the delegate running in `ctx` works, once assigned.
 	assignment(ctx: any): DelegateAssignment | undefined;
@@ -294,8 +294,8 @@ export function createDelegates(env: DelegatesEnv): Delegates {
 	// What check() matched each spawn of a call to, by the host's call id, until the spawn's delegate starts or the host
 	// releases the call.
 	const reservations = new Map<string, (Reservation | undefined)[]>();
-	// Calls the host released while their check was still running: that check must not reserve anything afterwards.
-	const checking = new Set<string>(), released = new Set<string>();
+	// The check of each call whose result still counts: a release, or a newer check of the same call, ends it.
+	const checks = new Map<string, symbol>();
 	function take(call: string, index: number): Reservation | undefined {
 		const spawns = reservations.get(call), reserved = spawns?.[index];
 		if (spawns) spawns[index] = undefined;
@@ -343,7 +343,8 @@ export function createDelegates(env: DelegatesEnv): Delegates {
 	}
 
 	async function check(texts: string[], call: string | undefined, scope: Scope = {}, within: Job): Promise<Reservation[]> {
-		if (call !== undefined) checking.add(call);
+		const token = Symbol(call);
+		if (call !== undefined) checks.set(call, token);
 		try {
 			return await env.serial(async job => {
 				const src = await source(job, scope);
@@ -359,11 +360,11 @@ export function createDelegates(env: DelegatesEnv): Delegates {
 					if (found.ref) held.add(found.ref);
 					reserved.push(found);
 				}
-				if (call !== undefined && !released.has(call)) reservations.set(call, [...reserved]);
+				if (call !== undefined && checks.get(call) === token) reservations.set(call, [...reserved]);
 				return reserved;
 			}, within);
 		} finally {
-			if (call !== undefined) { checking.delete(call); released.delete(call); }
+			if (call !== undefined && checks.get(call) === token) checks.delete(call);
 		}
 	}
 
@@ -700,7 +701,7 @@ export function createDelegates(env: DelegatesEnv): Delegates {
 		apply,
 		start: (host, within) => apply({ type: "started", leadTeammate: env.teammate(), teammate: teammateFor(host.id, host.leadSessionId), ...host }, within),
 		check,
-		release: call => { reservations.delete(call); if (checking.has(call)) released.add(call); },
+		release: call => { reservations.delete(call); checks.delete(call); },
 		assignment(ctx) {
 			const r = env.store.of(ctx);
 			if (r?.state === "assigned" && r.ref && r.binding) return { ref: r.ref, workspace: r.binding.workspace, teammate: r.teammate, binding: r.binding };

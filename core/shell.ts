@@ -68,8 +68,9 @@ export function shellOptions(words: ShellWord[]) {
 	return { options, occurrences, args, value };
 }
 
-// Whether every Kata invocation of `command` already carries what `delegateCommand` would add: exactly the teammate and, with a
-// binding, `--workspace` and `--project`. Kept beside `delegateCommand`: a flag it adds must be checked here too.
+// Whether every Kata invocation of `command` already carries what `delegateCommand` would add (exactly the teammate and, with a
+// binding, `--workspace` and `--project`) and none uses `--as`, which it refuses. Kept beside `delegateCommand`: a flag it adds
+// must be checked here too.
 export function delegateRouted(path: Pick<PathOps, "basename">, command: string, executable: string, executableVars: readonly string[], teammate: string, binding?: Binding): boolean {
 	return kataCommands(path, command, executable, executableVars).every(invocation => {
 		const parsed = shellOptions(invocation.words);

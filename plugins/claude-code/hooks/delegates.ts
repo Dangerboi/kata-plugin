@@ -154,11 +154,8 @@ async function spawned($: EngineInterface, { rt, ctx }: Entered, e: Spawn, next:
 			},
 			timersOf($)
 		);
-		if (failure) {
-			rt.core.delegates.release(id);
-			// The rules refuse a spawn that names an item another delegate holds, or a ticket it cannot take.
-			if (failure instanceof Refusal) return { deny: failure.message };
-		}
+		// The rules refuse a spawn that names an item another delegate holds, or a ticket it cannot take.
+		if (failure instanceof Refusal) return { deny: failure.message };
 	}
 	const host = {
 		id,
@@ -222,12 +219,11 @@ interface Routed {
 }
 
 // Where a kata command goes under the delegate's teammate: unchanged when it already carries it (and its workspace and
-// project, for a delegate with an issue), else the same command with the flags added. `--as` is refused. Pure, so a refusal
+// project, for a delegate with an issue), else the same command with the flags added. `--as` throws. Pure, so a refusal
 // can name the exact command to run.
 function shellRoute(command: string, executable: string, teammate: string, binding?: Binding): Routed {
-	const fixed = delegateCommand(posixPath, command, executable, EXECUTABLE_VARS, teammate, binding);
-	const same = delegateRouted(posixPath, command, executable, EXECUTABLE_VARS, teammate, binding);
-	return { command: same ? command : fixed, same };
+	if (delegateRouted(posixPath, command, executable, EXECUTABLE_VARS, teammate, binding)) return { command, same: true };
+	return { command: delegateCommand(posixPath, command, executable, EXECUTABLE_VARS, teammate, binding), same: false };
 }
 
 const mustRun = (fixed: string) => `Kata subagents run every kata command under their own teammate. Run it again exactly like this: ${fixed}`;
