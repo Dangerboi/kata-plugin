@@ -2,6 +2,7 @@ import type { Register } from 'claude-code'
 import { onEnd, onSessionSwitch, onStart } from './lifecycle'
 import { onCompact, onPrompt, onStop, onTurnComplete } from './prompt'
 import { onTodoCall, onToolCall, onToolList } from './todo'
+import { onTurnStart } from './inbox'
 import { configure } from './lead'
 
 // The hooks module: one line per event. Each feature is a module that exports its handlers; a later one
@@ -20,6 +21,8 @@ export const register: Register = (on, options) => {
   // Prompt context and the end of a turn
   on('prompt.submit', onPrompt)
   on('session.compact', onCompact)
+  // Live inbox: whether the lead's loop is working decides how a request is delivered (the end is noted in onTurnComplete).
+  on('turn.start', onTurnStart)
   on('turn.complete', onTurnComplete)
   on('classic.Stop', onStop)
 }

@@ -3,6 +3,7 @@ import { NO_JOB, waitAtMost } from '../core/kata-cli'
 import type { DelegateRecord, DelegateStore } from '../core/delegates'
 import type { Engine } from './engine'
 import { canonicalPath, execOf, platformOf, type RunContext } from './host'
+import { liveInboxOf, resetInbox } from './inbox'
 import { loadSession, NAMESPACE, pruneSessions, sessionWriter } from './saved'
 import { EXECUTABLE_VARS, readEnv, resolveSettings, type Settings } from './settings'
 
@@ -69,6 +70,7 @@ async function create($: Engine): Promise<Runtime> {
     appendEntry: (type, data) => rt.writer?.append(type, data),
     isMain: ctx => ctx?.agent === undefined,
     delegateStore: delegateStore(),
+    liveInbox: settings.liveInbox ? liveInboxOf($, settings.executable) : undefined,
   }, { namespace: NAMESPACE, executable: settings.executable, executableVars: EXECUTABLE_VARS, debugFile: settings.debugFile })
   return rt
 }
@@ -112,4 +114,4 @@ async function attach($: Engine, hint: { fork?: boolean }): Promise<Entered> {
 }
 
 // For tests: forget the module's runtime, as a reload does.
-export function reset() { current = undefined; chain = Promise.resolve() }
+export function reset() { current = undefined; chain = Promise.resolve(); resetInbox() }
