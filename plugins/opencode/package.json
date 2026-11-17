@@ -28,8 +28,8 @@
     "CHANGELOG.md"
   ],
   "scripts": {
-    "prepack": "cp ../../LICENSE ../../CHANGELOG.md .",
-    "postpack": "rm -f LICENSE CHANGELOG.md"
+    "prepack": "cp ../../LICENSE .",
+    "postpack": "rm -f LICENSE"
   },
   "publishConfig": {
     "access": "public"

@@ -1,7 +1,6 @@
 node_modules/
 .vscode/
 plugins/pi/LICENSE
-plugins/pi/CHANGELOG.md
 .kata.local.toml
 
 # The engine writes its own declaration here each time it loads the plugin; the committed one is plugins/claude-code/types/claude-code.d.ts.

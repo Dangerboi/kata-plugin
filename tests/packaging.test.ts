@@ -36,9 +36,9 @@ test("the OpenCode manifest resolves a local folder and an npm install to the pl
   expect(manifest.dependencies).toBeUndefined();
   // Trusted publishing names publish-pi.yml, so every package publishes from a job in that file.
   expect(existsSync(path.join(root, ".github/workflows/publish-opencode.yml"))).toBe(false);
-  expect(Object.keys(publishJobs)).toEqual(["verify", "publish", "publish-omp", "publish-opencode"]);
+  expect(Object.keys(publishJobs)).toEqual(["verify", "publish-pi", "publish-omp", "publish-opencode"]);
   // The job with publish rights runs pinned actions, and only after the verify job.
-  for (const name of ["publish", "publish-omp", "publish-opencode"]) expect(publishJobs[name]).toContain("needs: verify");
+  for (const name of ["publish-pi", "publish-omp", "publish-opencode"]) expect(publishJobs[name]).toContain("needs: verify");
   expect([...flow.matchAll(/uses: (\S+)/g)].map(match => match[1]).filter(use => !use.startsWith("./") && !/@[0-9a-f]{40}$/.test(use))).toEqual([]);
   expect(publishJobs["publish-opencode"]).toContain("working-directory: plugins/opencode");
   expect(flow).toContain("id-token: write");
@@ -55,11 +55,16 @@ test("the omp package is listed as an omp plugin and has a publish job of its ow
   expect(publishJobs["publish-omp"]).toContain("working-directory: plugins/oh-my-pi");
 });
 
-test("pi reads the newest changelog entry as the published version", () => {
-  // pi's package changelog parser: a "## " heading that starts with a version, else the section is skipped.
-  const versions = readFileSync(path.join(root, "CHANGELOG.md"), "utf8").split("\n")
-    .filter(line => line.startsWith("## ")).map(line => line.match(/##\s+\[?(\d+\.\d+\.\d+)\]?/)?.[1]).filter(Boolean);
-  expect(versions[0]).toBe(json("plugins/pi/package.json").version);
+test("each plugin's newest changelog release is the version its manifest ships", () => {
+  const manifests = { pi: "package.json", "oh-my-pi": "package.json", opencode: "package.json", "claude-code": ".claude-plugin/plugin.json" };
+  for (const [plugin, manifest] of Object.entries(manifests)) {
+    // pi's package changelog parser: a "## " heading that starts with a version, else the section is skipped.
+    const versions = readFileSync(path.join(root, "plugins", plugin, "CHANGELOG.md"), "utf8").split("\n")
+      .filter(line => line.startsWith("## ")).map(line => line.match(/##\s+\[?(\d+\.\d+\.\d+)\]?/)?.[1]).filter(Boolean);
+    // Claude Code has no release yet.
+    if (versions.length) expect({ plugin, version: versions[0] }).toEqual({ plugin, version: json(`plugins/${plugin}/${manifest}`).version });
+  }
+  // `pi install git:…` installs the root manifest, so it carries pi's version.
   expect(json("package.json").version).toBe(json("plugins/pi/package.json").version);
 });
 
@@ -73,7 +78,7 @@ for (const plugin of ["pi", "oh-my-pi", "opencode"]) {
     expect(files).toEqual(expect.arrayContaining(["LICENSE", "CHANGELOG.md", "README.md", "package.json"]));
     // Every module the entry reaches ships: the tarball holds each .ts file the folder has.
     for (const file of readdirSync(dir).filter(name => name.endsWith(".ts"))) expect(files).toContain(file);
-    expect(existsSync(path.join(dir, "LICENSE")) || existsSync(path.join(dir, "CHANGELOG.md"))).toBe(false);
+    expect(existsSync(path.join(dir, "LICENSE"))).toBe(false);
   });
 }
 
