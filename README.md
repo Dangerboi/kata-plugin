@@ -51,7 +51,7 @@ Claude Code 2.1.326 (the mod API is early access):
 /plugin install kata-cc --marketplace Dangerboi/kata-plugin
 ```
 
-Or `claude plugin marketplace add Dangerboi/kata-plugin` and `claude plugin install kata-cc@kata-plugin` from a shell. There is no npm package and no restart. Run `kata agent-hook install claude --attention` for Kata's contract, inbox and attention. See the [install guide](docs/how-to/install.md#claude-code) and the [limits](docs/explanation/limits.md#claude-code).
+Or `claude plugin marketplace add Dangerboi/kata-plugin` and `claude plugin install kata-cc@kata-plugin` from a shell. There is no npm package and no restart. Run `kata agent-hook install claude --attention` for Kata's contract, inbox and attention; the plugin adds only the plan unless its `contract` option is on. Options (`liveInbox`, `contract`, `kataExecutable`, `debugFile`) are in the [reference](docs/reference/claude-code.md#settings), and the live inbox turns off with `KATA_CLAUDE_LIVE_INBOX=0`. A session resumed with `claude --resume` takes up its saved plan; `/branch` forks share their source's plan, while `claude --resume <id> --fork-session` starts a plan of its own. See the [install guide](docs/how-to/install.md#claude-code) and the [limits](docs/explanation/limits.md#claude-code).
 
 Requires Kata 0.23.0, plus the selected harness. Plan tools report incompatible installations; see [runtime compatibility](docs/how-to/install.md#runtime-compatibility). The omp plugin delegates session attention to `kata agent-hook attention-native`. Tested host versions are oh-my-pi 18.20.2, pi 1.5.0, OpenCode 2.2.7 and Claude Code 2.1.326. Bun and Node are needed for development.
 

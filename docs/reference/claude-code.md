@@ -23,7 +23,7 @@ Where the plan lives follows the [oh-my-pi rules](oh-my-pi.md#where-the-plan-liv
 
 ## The `todo` tool
 
-The mod removes `TaskCreate`, `TaskGet`, `TaskList`, `TaskUpdate` and `TodoWrite` from the tool list and adds `todo`; `TaskStop` stays, because it stops background tasks. The tool is the one the [oh-my-pi reference](oh-my-pi.md) describes: `init`, `start`, `done`, `rm`, `drop`, `block`, `unblock`, `append` and `view`, with the same phases, ticket items (`<project>#<short_id>: <action>`), refusals and [closing rules](closing-rules.md). A `todo` call needs no permission prompt: the mod answers it. A subagent's call works its own assigned issue ([Delegates](#delegates)).
+The mod removes `TaskCreate`, `TaskGet`, `TaskList`, `TaskUpdate` and `TodoWrite` from the tool list and adds `todo`; `TaskStop` stays, because it stops background tasks. The tool is the one the [oh-my-pi reference](oh-my-pi.md) describes: `init`, `start`, `done`, `rm`, `drop`, `block`, `unblock`, `append` and `view`, with the same phases, ticket items (`<project>#<short_id>: <action>`), refusals and [closing rules](closing-rules.md). A `todo` call needs no permission prompt: the mod answers it. A delegate's call works its own assigned issue ([Delegates](#delegates)).
 
 Each prompt carries the plan as hidden context after the user's text. A section the model already holds is not sent again until it changes or the conversation is compacted.
 
@@ -36,16 +36,16 @@ A delegate is an agent the lead starts: an `Agent` call, a Workflow agent or a t
 | Step | What the mod does |
 | --- | --- |
 | Spawn (`agent.spawn`) | Matches the agent's prompt, description and name against the plan. An item or ticket already delegated, two tickets in one prompt, or a ticket that cannot be delegated refuses the spawn with the core's error; nothing is written. A spawn that matches nothing runs as an untracked delegate, whose run becomes a mission when it ends with a report. The assignment is appended to the agent's prompt: its issue, its teammate, and the commands to comment and to close it, or to leave it open when its task text says not to close issues. |
-| Slow assignment | The spawn waits for the assignment up to 7 s in all: its waits share the hook's 10 s, less 3 s kept for Claude Code's own spawn and the hook's return. A slower Kata starts the agent without it; the agent still gets its issue, and learns of it from its first `todo` call. |
+| Slow assignment | The spawn's waits for the assignment (one before Claude Code's own spawn, one after it) are 7 s at most each and share the hook's 10 s: the wait before keeps 3 s for the engine's spawn, the wait after keeps 0.5 s for the hook's return, so together they take up to about 9.5 s. A slower Kata starts the agent without it; the agent still gets its issue, and learns of it from its first `todo` call. |
 | A tool call of the delegate | Marks the delegate as having acted, so its assignment is no longer rolled back at exit. Its `todo` calls plan under its own issue and never touch the lead's. A call from an agent the lead does not track is refused with an error telling it to report in its reply. |
 | The agent's turn ends | Its answer is its report: the delegate exits `completed`, `failed` or `aborted`. |
 | A follow-up (resume) | The agent goes on with the record it has: its issue while that is open, else its mission. |
 
-A fork no tool call starts (`/btw`, `/fork`) is no delegation and runs as it is. A subagent's own subagents are never matched against the lead's plan. At exit the core settles each delegate as for omp: a delegate that closed its issue returns it to the lead; one that exited without running any tool is rolled back; one that ran a tool and left the issue open flags it with `needs-review` and hands it back. See the [limits](../explanation/limits.md#claude-code) for the delegates the mod cannot see.
+A fork no tool call starts (`/btw`, `/fork`) is no delegation and runs as it is. A delegate's own subagents are never matched against the lead's plan. At exit the core settles each delegate as for omp: a delegate that closed its issue returns it to the lead; one that exited without running any tool is rolled back; one that ran a tool and left the issue open flags it with `needs-review` and hands it back. See the [limits](../explanation/limits.md#claude-code) for the delegates the mod cannot see.
 
 ## Shell
 
-A subagent bound to an issue, and any subagent the mod can name, runs `kata` commands in `Bash` under its own teammate: the command is rewritten to add `--teammate <teammate>` (an earlier one is replaced), and `--workspace` and `--project` of the assignment unless the command sets them. A subagent's `--as` is refused. Only commands in command position are touched, and rewriting is lexical, not a sandbox.
+A delegate assigned an issue, and any delegate the mod can name, runs `kata` commands in `Bash` under its own teammate: the command is rewritten to add `--teammate <teammate>` (an earlier one is replaced), and `--workspace` and `--project` of the assignment unless the command sets them. A delegate's `--as` is refused. Only commands in command position are touched, and rewriting is lexical, not a sandbox.
 
 Under auto permission mode Claude Code refuses a tool call a hook changed after the classifier read it. Then the mod denies the call instead, with the exact command to run (`Kata subagents run every kata command under their own teammate. Run it again exactly like this: …`), and the model's next call already carries the flags. The lead's `Bash` calls are not rewritten.
 
@@ -54,7 +54,7 @@ Under auto permission mode Claude Code refuses a tool call a hook changed after 
 | Moment | What the mod does |
 | --- | --- |
 | Session start | Takes up the plan: a resumed session's saved plan, pending closes and unfinished delegates resume with it. Registers the `/todo` command. A slow or unreachable Kata never holds the session. |
-| `/clear`, `/resume`, `/branch` | These fire no session start, so the next hook finds the new session id and switches the core to it, releasing the tasks the old session held. A fork made in the session (`/branch`, `/fork`) shares the source's plan: the fork starts from what its source saved. `claude --resume <id> --fork-session` starts a new session that names no source to the mod, so it starts from a plan of its own ([limits](../explanation/limits.md#claude-code)). |
+| `/clear`, `/resume`, `/branch` | These fire no session start, so the next hook finds the new session id and switches the core to it, releasing the tasks the old session held. A fork made in the session (`/branch`) shares the source's plan: the fork starts from what its source saved. `claude --resume <id> --fork-session` starts a new session that names no source to the mod, so it starts from a plan of its own ([limits](../explanation/limits.md#claude-code)). |
 | End of each lead turn | Retries due closes and hands back exited delegates. When a task is still open, the end-of-turn Stop hook returns the core's reminder so the model keeps working. |
 | Compaction | The plan is sent again with the next prompt. |
 | Session end | Closes the automatic parent when its children are closed, within the 1.5 s Claude Code gives the whole end chain (the mod takes at most 1.2 s). What does not fit stays in the saved record for the session's resume. `/clear` and `/resume` end nothing. |
@@ -68,7 +68,7 @@ Closing the terminal or killing Claude Code runs no hooks: work left open is fin
 The mod draws in the terminal UI, and in the desktop Code tab and the VS Code chat panel where Claude Code draws mods. `claude -p` and the Agent SDK run the hooks and draw nothing.
 
 - **Plan band** above the prompt: `Kata plan 2/5 · 1 blocked · ▶ active task`, with a progress bar.
-- **Checklist card** under each of the lead's `todo` calls, with the result's notice (a deleted parent, a close Kata deferred) above the checklist. A subagent's `todo` call keeps the engine's own row. A session-local plan (kept while Kata is unreachable) draws no band and no card, as in omp.
+- **Checklist card** under each of the lead's `todo` calls, with the result's notice (a deleted parent, a close Kata deferred) above the checklist. A delegate's `todo` call keeps the engine's own row. A session-local plan (kept while Kata is unreachable) draws no band and no card, as in omp.
 - **`#` ticket completion** in the prompt, with the same tokens as the [omp ticket references](oh-my-pi.md#ticket-references-in-the-prompt). A loaded list answers at once, whatever Kata is doing; only the first fill of a session's list waits, for 400 ms at most, beside the rows of other plugins.
 - **`/todo`** shows the plan; the subcommands `start`, `done`, `drop`, `rm`, `append`, `block`, `unblock` and `takeover` change it, as in omp.
 
