@@ -16,6 +16,7 @@ export async function readEnv($: Engine): Promise<Map<string, string>> {
   note('USER', await $.env.get('USER'))
   note('KATA_CLAUDE_EXECUTABLE', await $.env.get('KATA_CLAUDE_EXECUTABLE'))
   note('KATA_CLAUDE_DEBUG', await $.env.get('KATA_CLAUDE_DEBUG'))
+  note('KATA_CLAUDE_LIVE_INBOX', await $.env.get('KATA_CLAUDE_LIVE_INBOX'))
   return found
 }
 
@@ -24,6 +25,8 @@ export interface Settings {
   debugFile?: string
   // Add the contract and inbox sections to prompts. Off by default: `kata agent-hook install claude` owns them.
   contract: boolean
+  // Follow the session inbox live. Off: the inbox is read once per prompt, as for a subagent.
+  liveInbox: boolean
 }
 
 export const EXECUTABLE_VARS = ['KATA_CLAUDE_EXECUTABLE']
@@ -34,5 +37,6 @@ export function resolveSettings(options: Record<string, unknown> | undefined, en
     executable: text(options?.kataExecutable) ?? env.get('KATA_CLAUDE_EXECUTABLE') ?? 'kata',
     debugFile: text(options?.debugFile) ?? env.get('KATA_CLAUDE_DEBUG'),
     contract: options?.contract === true,
+    liveInbox: options?.liveInbox !== false && env.get('KATA_CLAUDE_LIVE_INBOX') !== '0',
   }
 }

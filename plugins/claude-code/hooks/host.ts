@@ -17,6 +17,7 @@ export interface RunContext {
   }
   run?: (argv: readonly string[], init: { cwd?: string; env?: Record<string, string>; timeoutMs?: number }) => Promise<{ exitCode: number; stdout: string; stderr: string }>
   timers?: Timers
+  ui?: { setWidget?(key: string, content: unknown): void; notify?(message: string, level?: string): void }
 }
 
 // The session cwd as `$.fs.stat` resolves it (symlinks and `..` gone), so a workspace recorded in Kata matches however the

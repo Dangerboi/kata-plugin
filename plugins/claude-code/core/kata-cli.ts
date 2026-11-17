@@ -21,8 +21,6 @@ export class KataError extends Error {
 export const isUnusable = (error: unknown) => error instanceof KataError && error.unusable;
 export const isKataCode = (error: unknown, code: string) => error instanceof KataError && error.code === code;
 
-// What the core needs from the machine it runs on, so that it imports nothing from Node. A Node host passes node-host.ts's
-// `nodePlatform`; a host without a process environment, timers or a synchronous filesystem supplies what it has.
 // The path operations the core uses. A Node host passes node:path (`nodePlatform.path`), so a Windows host keeps its separators
 // and drive letters; a host without Node passes `posixPath` (core/posix-path.ts).
 export interface PathOps {
@@ -35,6 +33,8 @@ export interface PathOps {
 // The timer half of `Platform`: what the work that must not outlive its host needs.
 export type Timers = Pick<Platform, "setTimer" | "clearTimer">;
 
+// What the core needs from the machine it runs on, so that it imports nothing from Node. A Node host passes node-host.ts's
+// `nodePlatform`; a host without a process environment, timers or a synchronous filesystem supplies what it has.
 export interface Platform {
 	// The environment Kata calls and the shell commands the host runs inherit. `set` exports a value to them (undefined
 	// removes it). A host with no process environment keeps the values itself and puts them on each call it makes.
@@ -46,8 +46,7 @@ export interface Platform {
 	// Timers for work that must not outlive the host; a Node host unrefs them. `clearTimer` takes what `setTimer` returned.
 	setTimer(fire: () => void, ms: number): unknown;
 	clearTimer(handle: unknown): void;
-	// Resolves symlinks and rejects when the path does not exist (a Node host wraps fs.realpathSync; Claude Code's is
-	// `$.fs.stat(path, { resolve: true })`'s `realPath`). Required: the core compares workspaces by what they resolve to.
+	// The canonical path (symlinks resolved), rejecting when nothing exists there (a Node host wraps fs.realpathSync). Required: the core compares workspaces by what they resolve to.
 	realpath(path: string): Promise<string>;
 	// Appends to the debug file. Absent: debugging writes nothing.
 	appendFile?(file: string, text: string): void;

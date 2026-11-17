@@ -100,6 +100,7 @@ export const onSpawn: Hook<'agent.spawn'> = async ($, e, next) => {
   try { return await run } finally { entered.rt.spawning.delete(run) }
 }
 
+type TurnEnd = Parameters<Hook<'turn.complete'>>[1]
 type Spawn = Parameters<Hook<'agent.spawn'>>[1]
 
 // A resumed run (a follow-up message to a finished agent, a woken teammate) goes on with the record it has: its issue while
@@ -146,12 +147,11 @@ async function spawned($: Engine, { rt, ctx }: Entered, e: Spawn, next: Next<'ag
 
 // The agent's run ended: its answer is its report (posted when it left no comment of its own), and a later run of the same
 // agent (a follow-up, a woken teammate) goes on with the record.
-export const onDelegateTurn: Hook<'turn.complete'> = async ($, e, next) => {
-  const done = await next(e)
-  if (e.agentId === undefined) return done
+export async function delegateTurn($: Engine, e: TurnEnd) {
+  if (e.agentId === undefined) return
   try {
     const found = await find($, e.agentId)
-    if (!found?.record) return done
+    if (!found?.record) return
     const { rt, record } = found
     const outcome: DelegateOutcome = e.isAborted || e.reason === 'aborted' ? 'aborted' : e.reason === 'answer' ? 'completed' : 'failed'
     const answer = e.answer.trim()
@@ -163,7 +163,6 @@ export const onDelegateTurn: Hook<'turn.complete'> = async ($, e, next) => {
     })()
     await waitAtMost(work, EVENT_MS, () => undefined, contextOf($, rt).timers!)
   } catch { /* A report that was not posted is settled with the lead's turn end or kept for its resume. */ }
-  return done
 }
 
 export interface Routed { command: string; same: boolean }

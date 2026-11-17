@@ -1,12 +1,14 @@
 import { waitAtMost } from '../core/kata-cli'
 import type { Hook } from 'claude-code'
 import { contextOf, enter, runtime } from './lead'
+import { registerTodoCommand } from './ui'
 
 // Session start, the switches that fire no start, and the end.
 
 // Awaited before the first prompt: binds the session's plan (a resumed session's saved work resumes with it) and prunes.
 export const onStart: Hook<'session.start'> = async ($, e, next) => {
   try { await enter($) } catch { /* A slow or unreachable Kata never holds the session. */ }
+  await registerTodoCommand($)
   return next(e)
 }
 

@@ -1,4 +1,4 @@
-import { execFile } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { realpathSync, readFileSync, writeFileSync } from "node:fs";
 import { afterEach } from "bun:test";
 import { realKata, unique } from "./kata-fixture";
@@ -28,11 +28,20 @@ export function claudeHost(options: { cwd: string; binary: string; session?: str
   const hooks: Hook[] = [];
   const calls: { argv: readonly string[]; init: any }[] = [];
   const timers = new Set<ReturnType<typeof setTimeout>>();
+  // Set when the test is over: nothing may start after it (a stream that ends schedules its own restart).
+  let over = false;
+  const children = new Set<{ kill(signal?: string): unknown }>();
+  const spawned: any[] = [], submitted: any[] = [], appended: any[] = [];
   const env = { ...options.env };
   const $: any = {
     plugin: { name: "kata-cc", root: "/plugin" },
     env: { get: async (name: string) => env[name] ?? process.env[name], set: async () => ({}) },
-    session: { id: async () => state.session, cwd: async () => state.cwd },
+    session: {
+      id: async () => state.session, cwd: async () => state.cwd,
+      // The engine's own answer for a row it accepts.
+      append: async (args: any) => { appended.push(args); return { message: args.message, uuid: crypto.randomUUID() }; },
+    },
+    prompt: { submit: async (args: any) => { submitted.push(args); return { text: args.text, origin: { kind: "plugin", name: "kata-cc" } }; } },
     fs: {
       stat: async (p: string, o?: any) => { const real = realpathSync(p); return { kind: "dir", size: 0, mtimeMs: 0, isLink: false, ...(o?.resolve ? { realPath: real } : {}) }; },
       read: async (p: string) => readFileSync(p, "utf8"),
@@ -46,9 +55,37 @@ export function claudeHost(options: { cwd: string; binary: string; session?: str
     },
     clock: {
       now: async () => Date.now(),
-      after: (ms: number, fn: () => void) => { const t = setTimeout(fn, ms); timers.add(t); return { cancel: () => { clearTimeout(t); timers.delete(t); } }; },
+      after: (ms: number, fn: () => void) => { const t = setTimeout(() => { if (!over) fn(); }, ms); timers.add(t); return { cancel: () => { clearTimeout(t); timers.delete(t); } }; },
     },
     process: {
+      // Like the engine: a child by argv with no shell; pieces as they come, then `{ code, signal }` as the return value.
+      // `return()` kills the child, also while a `next()` is pending: the loop is the child's life.
+      spawn: (request: any) => {
+        if (over) throw new Error("the test is over");
+        spawned.push(request);
+        const child = spawn(request.argv[0], request.argv.slice(1), { cwd: request.cwd ?? state.cwd, env: { ...process.env, ...request.env }, stdio: ["ignore", "pipe", "ignore"] });
+        children.add(child);
+        const queue: any[] = [];
+        let outcome: any, wake: (() => void) | undefined, failure: unknown;
+        const ring = () => { const w = wake; wake = undefined; w?.(); };
+        child.stdout!.setEncoding("utf8");
+        child.stdout!.on("data", (text: string) => { queue.push({ stream: "stdout", text }); ring(); });
+        child.on("error", error => { failure = error; ring(); });
+        child.on("close", (code, signal) => { outcome ??= { code, signal }; ring(); });
+        const it: any = {
+          async next() {
+            for (;;) {
+              if (queue.length) return { done: false, value: queue.shift() };
+              if (failure) throw failure;
+              if (outcome) return { done: true, value: outcome };
+              await new Promise<void>(resolve => { wake = resolve; });
+            }
+          },
+          async return() { child.kill("SIGKILL"); outcome ??= { code: null, signal: "SIGKILL" }; ring(); return { done: true, value: outcome }; },
+          [Symbol.asyncIterator]() { return it; },
+        };
+        return it;
+      },
       // Like the engine: no shell, env merged over the process's, a timeout kills the child and rejects, any exit code resolves.
       run: (argv: readonly string[], init: any = {}) => new Promise((resolve, reject) => {
         calls.push({ argv, init });
@@ -80,14 +117,13 @@ export function claudeHost(options: { cwd: string; binary: string; session?: str
   const base = [{ name: "Bash" }, { name: "TaskCreate" }, { name: "TaskGet" }, { name: "TaskList" }, { name: "TaskUpdate" }, { name: "TodoWrite" }, { name: "TaskStop" }]
     .map(t => ({ ...t, description: "", mcp: false }));
   const api = {
-    $, state, store, calls, hooks,
+    $, state, store, calls, hooks, spawned, submitted, appended,
     fire,
     start: () => fire("session.start", { cwd: state.cwd, surface: null, isInteractive: false }),
     toolList: () => fire("tool.list", {}, () => ({ value: base })),
     /** A `todo` call; `agentId` makes it a subagent's. */
     todo: (params: Record<string, unknown>, agentId?: string) => fire("tool.call", { tool: "todo", tool_use_id: `t-${unique()}`, ...(agentId ? { agentId } : {}), ...params }, () => { throw new Error("the engine ran todo"); }),
     prompt: (text = "hello", origin = "composer") => fire("prompt.submit", { text, wait: true, origin: { kind: origin } }),
-    turnComplete: () => fire("turn.complete", { answer: "ok", durationMs: 1, isAborted: false, turnId: "t", reason: "answer" }),
     /** An `agent.spawn`; the engine's own answer starts the agent as `agentId` and keeps the prompt it was given. */
     spawn: (input: Record<string, unknown>, agentId: string | undefined = `agent-${unique()}`, answer: (e: any) => any = e => ({ model: "haiku", ...(agentId ? { agentId } : {}), prompt: e.prompt })) =>
       fire("agent.spawn", { tool_use_id: `toolu_${unique()}`, prompt: "", description: "", subagentType: "general-purpose", provider: { plugin: "engine", tier: "core" }, parentModel: "sonnet", background: true, fork: false, ...input }, answer),
@@ -97,9 +133,11 @@ export function claudeHost(options: { cwd: string; binary: string; session?: str
     /** The end of a subagent's run. */
     agentTurn: (agentId: string, answer: string, extra: Record<string, unknown> = {}) =>
       fire("turn.complete", { answer, durationMs: 1, isAborted: false, turnId: `turn-${unique()}`, reason: "answer", agentId, ...extra }),
+    turnStart: (agentId?: string) => fire("turn.start", { text: "", turnId: "t", ...(agentId ? { agentId } : {}) }),
+    turnComplete: (agentId?: string) => fire("turn.complete", { answer: "ok", durationMs: 1, isAborted: false, turnId: "t", reason: "answer", ...(agentId ? { agentId } : {}) }),
     stop: (last = "Done for now.") => fire("classic.Stop", { stop_hook_active: false, last_assistant_message: last }),
     end: (reason = "other") => fire("session.end", { reason, sessionId: state.session, resume: { id: state.session } }),
-    cancelTimers: () => { for (const t of timers) clearTimeout(t); timers.clear(); },
+    cancelTimers: () => { over = true; for (const t of timers) clearTimeout(t); timers.clear(); for (const c of children) c.kill("SIGKILL"); children.clear(); },
   };
   return api;
 }
@@ -116,5 +154,5 @@ export function claudeKata(prefix: string) {
     hosts.push(h);
     return h;
   };
-  return { ...store, host };
+  return { ...store, author: AUTHOR, host };
 }
