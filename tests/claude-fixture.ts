@@ -81,6 +81,8 @@ export function claudeHost(options: {
 	options?: Record<string, unknown>;
 	/** Runs before a Kata call (`holdKata(…).before`): the call waits for it, and an answer it returns stands in for Kata's. */
 	before?: (argv: string[], init: any) => Promise<unknown> | undefined;
+	/** The engine's own permission decision at `tool.check` (a query has no `tool_use_id`): rules, mode and PreToolUse hooks; default: ask. */
+	rules?: (e: { tool: string; input: any; tool_use_id?: string }) => { decision: "allow" | "ask" | "deny"; reason?: string; hook?: string };
 }) {
 	reset();
 	const state = { session: options.session ?? crypto.randomUUID(), cwd: options.cwd };
@@ -95,9 +97,12 @@ export function claudeHost(options: {
 		submitted: any[] = [],
 		appended: any[] = [];
 	const env = { ...options.env };
+	const rules = options.rules ?? (() => ({ decision: "ask" as const }));
 	const $: any = {
 		plugin: { name: "kata-cc", root: "/plugin" },
 		env: { get: async (name: string) => env[name] ?? process.env[name], set: async () => ({}) },
+		// A query runs the tool.check chain as the engine does (the asking hook finds no rewrite for the command it asks about).
+		tool: { check: (input: { tool: string; input: unknown }) => fire("tool.check", input, rules) },
 		session: {
 			id: async () => state.session,
 			cwd: async () => state.cwd,
@@ -297,6 +302,9 @@ export function claudeHost(options: {
 		/** A tool call of a subagent; the engine's own answer is the call as it would run. */
 		agentCall: (agentId: string, tool: string, input: Record<string, unknown> = {}, terminal: (e: any) => any = e => e) =>
 			fire("tool.call", { tool, tool_use_id: `toolu_${unique()}`, agentId, ...input }, terminal),
+		/** The permission decision for a Bash call: the `tool.check` chain over `rules`. */
+		check: (command: string, agentId?: string) =>
+			fire("tool.check", { tool: "Bash", input: { command }, tool_use_id: `toolu_${unique()}`, ...(agentId ? { agentId } : {}) }, rules),
 		agentTurn: (agentId: string, answer: string, extra: Record<string, unknown> = {}) =>
 			fire("turn.complete", { answer, durationMs: 1, isAborted: false, turnId: `turn-${unique()}`, reason: "answer", agentId, ...extra }),
 		turnStart: (agentId?: string) => fire("turn.start", { text: "", turnId: "t", ...(agentId ? { agentId } : {}) }),
@@ -315,7 +323,7 @@ export function claudeHost(options: {
 
 export type ClaudeHost = ReturnType<typeof claudeHost>;
 
-/** A real Kata for Claude adapter tests; hosts a test starts have their timers cleared after it. */
+/** A real Kata for Claude adapter tests; hosts a test starts have their timers cleared after it. `sh` runs a Bash call's command in the store's workspace, as the engine's Bash would. */
 export function claudeKata(prefix: string) {
 	const store = realKata({ prefix, author: AUTHOR, project: PROJECT, adopt: true });
 	const hosts: ClaudeHost[] = [];
@@ -327,5 +335,10 @@ export function claudeKata(prefix: string) {
 		hosts.push(h);
 		return h;
 	};
-	return { ...store, author: AUTHOR, host };
+	async function sh(command: string) {
+		const proc = Bun.spawn(["bash", "-c", command], { cwd: store.cwd, env: { ...store.env, PATH: process.env.PATH }, stdout: "pipe", stderr: "pipe" });
+		const [stdout, stderr] = await Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text()]);
+		return { code: await proc.exited, stdout, stderr };
+	}
+	return { ...store, author: AUTHOR, host, sh };
 }

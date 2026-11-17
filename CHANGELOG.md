@@ -17,7 +17,8 @@ All notable changes to kata-plugin are listed here. The format follows [Keep a C
 
 #### Plans
 
-- Claude Code: a Kata-backed `todo` tool replaces `TaskCreate`, `TaskGet`, `TaskList`, `TaskUpdate` and `TodoWrite`, with the same ops, ticket items and closing rules as omp. Each prompt carries the plan, and every close records the Claude Code session.
+- Claude Code: a Kata-backed `todo` tool replaces `TaskCreate`, `TaskGet`, `TaskList`, `TaskUpdate` and `TodoWrite`, with the same ops, ticket items and closing rules as omp. Each prompt carries the plan, and every close records the lead's session.
+  - A `kata close` the lead or a delegate runs in `Bash` records it too, and keeps the permission an allow rule such as `Bash(kata *)` gives the command the model wrote.
   - A session's plan survives `/resume`, `/clear` and `/branch`, and what a session left owing is finished when it is resumed. The session end has 1.5 s, so work that does not fit waits for the resume.
   - A session that ends with a task still open keeps its saved plan for `claude --resume`, whether its parent is automatic or explicit, its items are tickets or the plan is session-local. A fork made in the session starts with its source's plan; `claude --resume <id> --fork-session` names no source to the plugin and starts from a plan of its own.
   - Kata's contract, inbox and session attention come from `kata agent-hook install claude`; the plugin adds the contract only with `contract` on.

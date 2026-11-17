@@ -1,10 +1,10 @@
 import { expect, test } from "bun:test";
 import { savedSnapshot } from "../core/kata-core";
-import { claudeKata, entering, PROJECT } from "./claude-fixture";
-import { EVIDENCE, eventually, holdKata, holdNext, MESSAGE } from "./kata-fixture";
+import { claudeKata, entering, PROJECT, type ClaudeHost } from "./claude-fixture";
+import { EVIDENCE, eventually, holdKata, holdNext, MESSAGE, quote } from "./kata-fixture";
 
 // The Claude mod's todo tool and session handling, against a real Kata: a hand-made `$` stands in for the engine.
-const { host, show, closesOf, cwd, issue, binary, sessionParents } = claudeKata("claude-todo");
+const { host, show, closesOf, cwd, issue, binary, sessionParents, sh } = claudeKata("claude-todo");
 
 const parentOf = async (id: string) => (await sessionParents("claude", id, true))[0];
 const childrenOf = async (parent: any) => (await show(parent.short_id)).children as any[];
@@ -66,6 +66,29 @@ test("todo init, start, done and view run against Kata; done closes from evidenc
 	const close = (await closesOf(closed.short_id))[0];
 	expect(close.payload.transcript).toMatchObject({ agent: "claude", session_id: h.state.session });
 	expect((await h.todo({ op: "view" })).result).toContain("[/] Test the parser");
+});
+
+test("a Bash kata close of the lead records its session, also through the auto-mode refusal; the switch still turns it off", async () => {
+	const closeCommand = (ref: string) => `kata close ${ref} --done --message ${quote(MESSAGE)} --evidence ${quote(EVIDENCE[0])} && ls`;
+	const bash = (h: ClaudeHost, command: string, engine: (e: any) => any = e => e) => h.fire("tool.call", { tool: "Bash", tool_use_id: `b-${crypto.randomUUID()}`, command }, engine);
+	const h = host();
+	await h.start();
+	const ref = await issue("Closed from the lead's shell");
+	expect((await bash(h, `kata show ${ref}`)).command).toBe(`kata show ${ref}`);
+	const refused = await bash(h, closeCommand(ref), () => ({ deny: "a hook changed this call's input after auto mode reviewed it" }));
+	const exact = refused.deny.split("exactly like this: ")[1];
+	expect(exact.endsWith("&& ls")).toBe(true);
+	expect((await bash(h, exact)).command).toBe(exact);
+	const ran = await sh(exact);
+	expect(ran.code, ran.stderr).toBe(0);
+	expect((await closesOf(ref))[0].payload.transcript).toMatchObject({ agent: "claude", session_id: h.state.session });
+
+	const off = host({ env: { KATA_CLOSE_TRANSCRIPT_ENABLED: "false" } });
+	await off.start();
+	const quiet = await issue("Closed with recording off");
+	const ranQuiet = await sh((await bash(off, closeCommand(quiet))).command);
+	expect(ranQuiet.code, ranQuiet.stderr).toBe(0);
+	expect((await closesOf(quiet))[0].payload.transcript).toBeUndefined();
 });
 
 test("a failed call is an error result carrying the plan, and a bad op is refused before Kata", async () => {
