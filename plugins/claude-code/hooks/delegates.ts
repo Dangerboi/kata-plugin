@@ -51,7 +51,6 @@ interface Found {
 	record?: DelegateRecord;
 }
 
-// Waits for the spawn hooks that may still be recording the agent id before it concludes there is no record.
 async function find($: EngineInterface, agentId: string): Promise<Found | undefined> {
 	const rt = runtime();
 	const session = rt?.bound;
@@ -197,7 +196,6 @@ async function spawned($: EngineInterface, { rt, ctx }: Entered, e: Spawn, next:
 	return result;
 }
 
-// The agent's run ended: its answer is its report, posted when it left no comment of its own.
 export async function delegateTurn($: EngineInterface, e: TurnEnd) {
 	if (e.agentId === undefined) return;
 	try {

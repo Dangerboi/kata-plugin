@@ -39,7 +39,7 @@ export const CORE_ENV = ["KATA_REF", "KATA_TEAMMATE", "KATA_AUTHOR", "USER", "KA
 // `nodePlatform`; a host without a process environment, timers or a synchronous filesystem supplies what it has.
 export interface Platform {
 	// The environment Kata calls and the shell commands the host runs inherit. `set` exports a value to them (undefined
-	// removes it). A host with no process environment keeps the values itself and puts them on each call it makes.
+	// removes it). A host with no process environment keeps the values and need not pass them on.
 	env: { get(name: (typeof CORE_ENV)[number]): string | undefined; set(name: (typeof CORE_ENV)[number], value: string | undefined): void };
 	cwd(): string;
 	path: PathOps;

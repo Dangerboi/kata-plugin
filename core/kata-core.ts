@@ -269,9 +269,8 @@ export type KataCore = ReturnType<typeof buildCore> & {
 
 export function createKataCore(host: CoreHost, options: CoreOptions): KataCore {
 	const delegateCores = new Map<string, KataCore>();
-	const lead: CoreHost = { ...host, switched(ctx) { host.switched?.(ctx); delegateCores.clear(); } };
 	return {
-		...buildCore(lead, options),
+		...buildCore(host, options, () => delegateCores.clear()),
 		delegate(id) {
 			let known = delegateCores.get(id);
 			if (!known) delegateCores.set(id, known = createKataCore(delegateHost(host, id), options));
@@ -280,7 +279,8 @@ export function createKataCore(host: CoreHost, options: CoreOptions): KataCore {
 	};
 }
 
-function buildCore(host: CoreHost, options: CoreOptions) {
+// `newSession` runs after the host's `switched`, when a bind makes a different session the core's.
+function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void) {
 	const namespace = options.namespace;
 	const wording = options.wording ?? TODO_WORDING;
 	const platform = host.platform, path = platform.path;
@@ -715,9 +715,9 @@ function buildCore(host: CoreHost, options: CoreOptions) {
 		requestedRef = requested;
 		const id = sid(ctx);
 		// Only a bind that starts a session this core did not already hold restores delegates: /tree and a branch switch keep the same one.
-		const newSession = currentId !== id;
+		const isNew = currentId !== id;
 		currentId = id;
-		if (newSession && main(ctx)) host.switched?.(ctx);
+		if (isNew && main(ctx)) { host.switched?.(ctx); newSession(); }
 		lastSnapshot = undefined;
 		currentCtx = ctx;
 		plan = { tasks: [], workspace: path.resolve(ctx.cwd) }; named = []; aliases.clear(); deletedParent = undefined;
@@ -742,7 +742,7 @@ function buildCore(host: CoreHost, options: CoreOptions) {
 		ownSessions = id && main(ctx) ? [...new Set([id, ...(source ? [source] : []), ...lineage])] : [];
 		settlement.restore(snapshot && !source ? snapshot : undefined);
 		// Delegate records are in memory only: a resumed lead takes back the ones its snapshot kept. A fork leaves them to the source.
-		if (newSession && !source && main(ctx) && Array.isArray(snapshot?.delegates)) delegates.restore(snapshot.delegates, job);
+		if (isNew && !source && main(ctx) && Array.isArray(snapshot?.delegates)) delegates.restore(snapshot.delegates, job);
 		if (snapshot) {
 			if (!source && snapshot.plan?.local && !requested) plan = { ...structuredClone(snapshot.plan), workspace: plan.workspace };
 			named = structuredClone(snapshot.named ?? []);
@@ -1315,7 +1315,7 @@ function buildCore(host: CoreHost, options: CoreOptions) {
 		}
 		let cwd = plan.workspace;
 		const change: Change = { message: params.message?.trim() || undefined, evidence: params.evidence?.filter((e: string) => e.trim()), reason: params.reason?.trim() || undefined };
-		const op = params.op as string;
+		const op = params.op as (typeof TODO_OPS)[number];
 		if (op === "view") {
 			await load(job, cwd);
 			await drain(job);
@@ -1449,6 +1449,10 @@ function buildCore(host: CoreHost, options: CoreOptions) {
 			case "unblock":
 				for (const task of await resolve(job, params.task, undefined, "none")) if (task.status === "blocked") await transition(job, task, "pending", change, cwd);
 				break;
+			default: {
+				const unknown: never = op;
+				throw new Error(`Unknown op ${unknown}.`);
+			}
 		}
 		await advance(job, cwd);
 		await drain(job);
@@ -1523,7 +1527,7 @@ function buildCore(host: CoreHost, options: CoreOptions) {
 		const sub = match?.[1] ?? "";
 		const arg = match?.[2]?.trim() || undefined;
 		const user = setting("USER") || "user";
-		const supported: Record<string, any> = {
+		const supported: Record<"" | (typeof TODO_COMMANDS)[number], any> = {
 			"": { op: "view" },
 			start: { op: "start", task: arg },
 			done: { op: "done", task: arg, message: `Marked done by ${user} through /todo in ${namespace}; the user attests the work is complete.`, evidence: [`external:${user}`] },
@@ -1535,8 +1539,8 @@ function buildCore(host: CoreHost, options: CoreOptions) {
 			// The user takes a task over from a session that crashed, and continues it here.
 			takeover: { op: "start", task: arg, takeover: true },
 		};
-		const params = supported[sub];
-		if (!params) return `/todo ${sub} is not available with Kata. Use /todo [${TODO_COMMANDS.join("|")}], or kata tui.`;
+		if (sub !== "" && !(TODO_COMMANDS as readonly string[]).includes(sub)) return `/todo ${sub} is not available with Kata. Use /todo [${TODO_COMMANDS.join("|")}], or kata tui.`;
+		const params = supported[sub as keyof typeof supported];
 		// The widget shows the plan, so a failed command reports its message alone.
 		const { text, notice, failed } = await todoCall(params, ctx, NO_JOB);
 		return failed ? notice : text;

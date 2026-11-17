@@ -41,7 +41,6 @@ export const onCompact: Hook<"session.compact"> = async ($, e, next) => {
 	return next(e);
 };
 
-// The lead's turn ended: due closes are retried and exited delegates handed back.
 export const onTurnComplete: Hook<"turn.complete"> = async ($, e, next) => {
 	turnEnded(e);
 	const done = await next(e);

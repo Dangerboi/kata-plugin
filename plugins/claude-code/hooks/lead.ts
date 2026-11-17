@@ -18,9 +18,7 @@ export interface Runtime {
 	core: KataCore;
 	settings: Settings;
 	platform: Platform;
-	// Where what the adapter survives is logged (the debug file, when there is one).
 	debug: (error: unknown) => void;
-	// The session's folder, which the core's Platform reads.
 	state: { cwd: string };
 	// The context of the latest event. Its session changes at /clear, /resume and /branch, which fire no `session.start`.
 	latest?: RunContext;
@@ -80,12 +78,13 @@ async function create($: EngineInterface): Promise<Runtime> {
 				contextTimers: ctx => ctx?.timers,
 				exec,
 				appendEntry: (type, data) => rt.bound?.writer.append(type, data),
-				// Runs inside the core's bind, before the new session's snapshot is restored: the core's debts are still the
-				// previous session's own.
+				// Runs inside the core's bind, before the new session's snapshot is restored. The leaving session's debts are read
+				// first: its delegates' records are looked up through `rt.bound`.
 				switched: (ctx: RunContext) => {
+					const owed = rt.core.session.owes();
 					const before = rt.bound;
 					rt.bound = ctx.held;
-					if (before) void before.writer.end(rt.core.session.owes()).catch(rt.debug);
+					if (before) void before.writer.end(owed).catch(rt.debug);
 				},
 				isMain: ctx => ctx?.agent === undefined,
 				// Before the core's first switch the records are those of the session the events belong to.

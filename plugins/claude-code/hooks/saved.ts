@@ -19,8 +19,9 @@ const keyOf = (id: string) => `${PREFIX}${id}`;
 // An ended session is kept this long (a resume finishes what it owed); any session untouched this long is dropped.
 const ENDED_KEEP_MS = 7 * 86_400_000;
 const STALE_MS = 30 * 86_400_000;
-// Pruning also keeps the saved sessions together under this many bytes of JSON, well inside the store's 4 MiB.
+// Pruning also keeps the saved sessions together under this many bytes of JSON (counted as UTF-8, as the store holds them), well inside the store's 4 MiB.
 const STORE_BUDGET = 2 * 1024 * 1024;
+const encoder = new TextEncoder();
 
 export async function loadSession($: EngineInterface, id: string): Promise<SavedSession | undefined> {
 	const value = (await $.store.get(keyOf(id))) as Partial<SavedSession> | undefined;
@@ -71,8 +72,10 @@ export function sessionWriter($: EngineInterface, id: string, now: () => Promise
 	};
 }
 
-// Drops what no later start can use: records past their keep time, then the oldest ended ones while the store is over budget.
-// The session `except` (the one starting) stays. A session that owes closes or has open tasks is kept until it is stale, not just ended.
+// Drops what no later start can use: records past their keep time, then ended ones, oldest first, while the store is over
+// budget: those that owe nothing first, then those that owe work. A session that owes work is otherwise kept until it is
+// stale, but a store over its limit fails the current session's saves, which costs more than an old session's debts.
+// The session `except` (the one starting) and sessions that have not ended stay.
 export async function pruneSessions($: EngineInterface, now: number, except?: string): Promise<number> {
 	const rows: { key: string; at: number; ended: boolean; owing: boolean; size: number }[] = [];
 	for (const key of (await $.store.keys()).filter(key => key.startsWith(PREFIX) && key !== keyOf(except ?? ""))) {
@@ -84,11 +87,12 @@ export async function pruneSessions($: EngineInterface, now: number, except?: st
 		const owing = holdsWork(savedSnapshot((record as SavedSession).entries, NAMESPACE));
 		const at = record.endedAt ?? record.updatedAt ?? 0;
 		const expired = record.endedAt !== undefined ? now - at > (owing ? STALE_MS : ENDED_KEEP_MS) : now - at > STALE_MS;
-		rows.push({ key, at: expired ? 0 : at, ended: record.endedAt !== undefined, owing, size: JSON.stringify(record).length });
+		rows.push({ key, at: expired ? 0 : at, ended: record.endedAt !== undefined, owing, size: encoder.encode(JSON.stringify(record)).length });
 	}
 	const dropped = new Set(rows.filter(row => row.at === 0).map(row => row.key));
 	let total = rows.filter(row => !dropped.has(row.key)).reduce((sum, row) => sum + row.size, 0);
-	for (const row of rows.filter(row => row.ended && !row.owing && !dropped.has(row.key)).sort((a, b) => a.at - b.at)) {
+	const evictable = rows.filter(row => row.ended && !dropped.has(row.key)).sort((a, b) => Number(a.owing) - Number(b.owing) || a.at - b.at);
+	for (const row of evictable) {
 		if (total <= STORE_BUDGET) break;
 		dropped.add(row.key);
 		total -= row.size;

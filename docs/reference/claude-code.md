@@ -15,7 +15,7 @@ Plugin options are set with `claude plugin install kata-cc@kata-plugin --config 
 | `liveInbox` | `KATA_CLAUDE_LIVE_INBOX` | Default on. Delivers inbox requests to the main session as they arrive. Off, by the option or `KATA_CLAUDE_LIVE_INBOX=0`: no live follower runs, and the inbox reaches the model only through the per-prompt inbox section of Kata's hook (or the mod's, with `contract` on). |
 | `contract` | | Default off. On, the mod adds the Kata contract and the inbox to the prompt itself. Leave it off when `kata agent-hook install claude` is set up, which owns both: with both on the model reads the contract twice. |
 | `kataExecutable` | `KATA_CLAUDE_EXECUTABLE` | The Kata executable the mod runs; defaults to `kata`. The `Bash` tool is not rewritten to use it. |
-| `debugFile` | `KATA_CLAUDE_DEBUG` | Optional diagnostic log: the mod rewrites the file with its last 1,000,000 characters plus each new line, and writes the errors its hooks swallow there. |
+| `debugFile` | `KATA_CLAUDE_DEBUG` | Optional diagnostic log: the mod rewrites the file with its last 1,000,000 characters plus each new line, and writes the errors its hooks swallow there, except those of the plan band's state and toast writes and of stopping the live inbox's stream. |
 
 These variables, shared with the other hosts, are read from Claude Code's environment when the mod starts (changing one needs a new session): `KATA_REF`, `KATA_DEFAULT_PROJECT`, `KATA_AUTHOR`, `KATA_TEAMMATE`, `KATA_INBOX_USER`, `KATA_HOME`, `KATA_ATTENTION_HOST` (which the mod never sets itself), `KATA_CLOSE_TRANSCRIPT_ENABLED` and `USER`. A variable the mod does not name is invisible to it. After an install Claude Code 2.1.326 prints `4 userConfig options not yet set`, also for the two options that have a default: nothing has to be set. `liveInbox` and `contract` apply their defaults, and `kataExecutable` and `debugFile` fall back to their variable, then to `kata` and no log.
 
@@ -27,7 +27,7 @@ The mod removes `TaskCreate`, `TaskGet`, `TaskList`, `TaskUpdate` and `TodoWrite
 
 Each prompt carries the plan as hidden context after the user's text. A section the model already holds is not sent again until it changes or the conversation is compacted.
 
-Every close runs `kata close` with `KATA_TRANSCRIPT_AGENT=claude` and the session id in that call's environment, plus `KATA_CLOSE_TRANSCRIPT_ENABLED=true` unless the environment sets it, so a close records the session ([Record agent sessions on closes](../how-to/record-session-transcripts.md)). `KATA_CLOSE_TRANSCRIPT_ENABLED=false` in Claude Code's environment stops it.
+A close the plugin makes runs `kata close` with `KATA_TRANSCRIPT_AGENT=claude` and a session id in that call's environment, plus `KATA_CLOSE_TRANSCRIPT_ENABLED=true` unless the environment sets it, so the close records the session ([Record agent sessions on closes](../how-to/record-session-transcripts.md)). The id is the lead's session id, also for a close a subagent's `todo` call makes. A `kata close` a subagent runs itself in `Bash` is only rewritten for its teammate ([Shell](#shell)) and carries no session pair of its own. `KATA_CLOSE_TRANSCRIPT_ENABLED=false` in Claude Code's environment stops it.
 
 ## Delegates
 
@@ -59,7 +59,7 @@ Under auto permission mode Claude Code refuses a tool call a hook changed after 
 | Compaction | The plan is sent again with the next prompt. |
 | Session end | Closes the automatic parent when its children are closed, within the 1.5 s Claude Code gives the whole end chain (the core's shutdown gets at most 1.2 s of it, then the mod saves the record). What does not fit stays in the saved record for the session's resume. `/clear` and `/resume` end nothing. |
 
-A session's saved state lives in Claude Code's plugin store under the key `session/<session id>`. The store is one file for every session on the machine, shared by every mod and limited to 4 MiB, so the mod keeps its records small: an ended session's record is dropped after 7 days, any record untouched for 30 days is dropped, and the oldest ended sessions go first when the records pass 2 MiB. A session that ends with a task still open, whatever holds the plan (an automatic or explicit parent, ticket items or a session-local plan), or with closes it still owes keeps its record for `claude --resume`, for 30 days instead of 7; a session with neither saves nothing.
+A session's saved state lives in Claude Code's plugin store under the key `session/<session id>`. The store is one file for every session on the machine, shared by every mod and limited to 4 MiB, so the mod keeps its records small: an ended session's record is dropped after 7 days, any record untouched for 30 days is dropped, and when the records pass 2 MiB the oldest ended sessions that owe nothing go first, then the oldest ended sessions that owe work (a full store would fail the saves of the running session). A session that ends with a task still open, whatever holds the plan (an automatic or explicit parent, ticket items or a session-local plan), or with closes it still owes keeps its record for `claude --resume`, for 30 days instead of 7; a session with neither saves nothing.
 
 Closing the terminal or killing Claude Code runs no hooks: work left open is finished when the session is resumed with `claude --resume`, not before.
 

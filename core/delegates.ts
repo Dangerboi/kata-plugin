@@ -294,6 +294,8 @@ export function createDelegates(env: DelegatesEnv): Delegates {
 	// What check() matched each spawn of a call to, by the host's call id, until the spawn's delegate starts or the host
 	// releases the call.
 	const reservations = new Map<string, (Reservation | undefined)[]>();
+	// Calls the host released while their check was still running: that check must not reserve anything afterwards.
+	const checking = new Set<string>(), released = new Set<string>();
 	function take(call: string, index: number): Reservation | undefined {
 		const spawns = reservations.get(call), reserved = spawns?.[index];
 		if (spawns) spawns[index] = undefined;
@@ -341,23 +343,28 @@ export function createDelegates(env: DelegatesEnv): Delegates {
 	}
 
 	async function check(texts: string[], call: string | undefined, scope: Scope = {}, within: Job): Promise<Reservation[]> {
-		return env.serial(async job => {
-			const src = await source(job, scope);
-			// A local plan's own tasks have no issue to reserve: a spawn naming one is decided when its delegate starts.
-			const plan = src.local ? { ...src, tasks: src.tasks.filter(t => t.ticket) } : src;
-			const held = taken(undefined, call);
-			const projects = await env.kata.projectNames(job, src.workspace);
-			const reserved: Reservation[] = [];
-			for (const [index, text] of texts.entries()) {
-				const which = `Task ${index + 1}`;
-				const found: Reservation = resolve(text, plan, held, projects, which, env.wording);
-				await reserve(job, found, which, src.workspace, scope.leadTeammate);
-				if (found.ref) held.add(found.ref);
-				reserved.push(found);
-			}
-			if (call !== undefined) reservations.set(call, [...reserved]);
-			return reserved;
-		}, within);
+		if (call !== undefined) checking.add(call);
+		try {
+			return await env.serial(async job => {
+				const src = await source(job, scope);
+				// A local plan's own tasks have no issue to reserve: a spawn naming one is decided when its delegate starts.
+				const plan = src.local ? { ...src, tasks: src.tasks.filter(t => t.ticket) } : src;
+				const held = taken(undefined, call);
+				const projects = await env.kata.projectNames(job, src.workspace);
+				const reserved: Reservation[] = [];
+				for (const [index, text] of texts.entries()) {
+					const which = `Task ${index + 1}`;
+					const found: Reservation = resolve(text, plan, held, projects, which, env.wording);
+					await reserve(job, found, which, src.workspace, scope.leadTeammate);
+					if (found.ref) held.add(found.ref);
+					reserved.push(found);
+				}
+				if (call !== undefined && !released.has(call)) reservations.set(call, [...reserved]);
+				return reserved;
+			}, within);
+		} finally {
+			if (call !== undefined) { checking.delete(call); released.delete(call); }
+		}
 	}
 
 	const ompKeys = ns === "omp" ? ["omp.parent_agent_id", "omp.status"] : [];
@@ -693,7 +700,7 @@ export function createDelegates(env: DelegatesEnv): Delegates {
 		apply,
 		start: (host, within) => apply({ type: "started", leadTeammate: env.teammate(), teammate: teammateFor(host.id, host.leadSessionId), ...host }, within),
 		check,
-		release: call => { reservations.delete(call); },
+		release: call => { reservations.delete(call); if (checking.has(call)) released.add(call); },
 		assignment(ctx) {
 			const r = env.store.of(ctx);
 			if (r?.state === "assigned" && r.ref && r.binding) return { ref: r.ref, workspace: r.binding.workspace, teammate: r.teammate, binding: r.binding };

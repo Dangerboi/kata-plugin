@@ -76,7 +76,6 @@ export async function onTodoCall($: EngineInterface, e: Record<string, unknown> 
 	}
 }
 
-// Every other tool call: once it has run, the core learns of it (progress for the stop reminder, a `kata claim` that adopts its issue).
 export const onToolCall: Hook<"tool.call"> = async ($, e, next) => {
 	const done = await next(e);
 	const rt = runtime();

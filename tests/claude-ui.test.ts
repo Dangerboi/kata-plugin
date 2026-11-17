@@ -164,6 +164,9 @@ test("/todo is registered at the session start and answers the omp subcommands f
 	expect(shown(await band(h))).toMatch(/Kata plan 1\/2/);
 	expect((await run("drop First item")).text).toContain("First item");
 	expect((await run("explode")).text).toContain("/todo explode is not available with Kata");
+	const before = (await run("")).text;
+	for (const inherited of ["toString", "constructor", "__proto__"]) expect((await run(inherited)).text, inherited).toContain(`/todo ${inherited} is not available with Kata`);
+	expect((await run("")).text).toBe(before);
 });
 
 test("/todo takeover starts a ticket item of the plan", async () => {

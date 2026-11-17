@@ -924,6 +924,21 @@ test("a check that finishes after its spawn's delegate started still gives the d
   expect((await show(ref)).issue.metadata["omp.subagent_id"]).toBe("sigma");
 });
 
+test("a call released while its check is still running leaves no reservation once the check finishes", async () => {
+  const a = lead(); const parent = await a.plan(["Build the upsilon widget", "Lead step"]);
+  const ref = await refOf(parent, "Build the upsilon widget");
+  const held = holdNext();
+  holding = held.before;
+  held.arm();
+  const checking = a.delegates.check(["Build the upsilon widget"], "upsilon-call", undefined, NO_JOB);
+  await held.entered;
+  a.delegates.release("upsilon-call");
+  held.release();
+  await checking;
+  const [again] = await a.delegates.check(["Build the upsilon widget"], "upsilon-next", undefined, NO_JOB);
+  expect(again).toMatchObject({ ref });
+});
+
 test("a delegate's core restores nothing from the saved entries of the session it shares with its lead", async () => {
   const a = lead(); await a.plan(["Build the tau widget", "Lead step"]);
   throttled = args => args[0] === "close";

@@ -12,11 +12,8 @@ import { NAMESPACE } from "./settings";
 // binds to that session (the host's `switched`).
 export interface Session {
 	id: string;
-	// Set for a fork: the session it was branched from.
 	header?: { parentSession: string };
-	// The saved record.
 	writer: ReturnType<typeof sessionWriter>;
-	// The lead's delegates by record id (delegates.ts).
 	records: Map<string, DelegateRecord>;
 	// What earlier prompts carried, by section: a section is sent again only when it changed.
 	sent: Record<string, string>;

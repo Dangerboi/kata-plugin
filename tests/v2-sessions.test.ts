@@ -365,8 +365,7 @@ test("a throttled close is retried by the host timer", async () => {
   expect((await app.call({ op: "done", message, evidence })).content[0].text).toContain("retry");
   expect(timers.size).toBe(1);
   lift();
-  setSystemTime(new Date(Date.now() + 120_000));
-  try { for (const timer of [...timers]) timer.run(); await closing; } finally { setSystemTime(); }
+  await later(async () => { for (const timer of [...timers]) timer.run(); await closing; });
   await app.call({ op: "view" });
   expect((await show(parent)).issue.status).toBe("closed");
 });

@@ -6,7 +6,6 @@ import { cardOf, planOf } from "./plan";
 // What the lead sees of its Kata plan, as omp shows it: the progress band above the prompt, the checklist card under each
 // `todo` call, `#` ticket completion and the /todo command. Render hooks draw from `$.state` (plan.ts) and never run Kata.
 
-// A `ui.render` hook for one component, as `on('ui.render', { component }, hook)` types it.
 type Render<C extends string> = MatchedHook<"ui.render", { readonly component: C }>;
 
 type Task = PlanView["phases"][number]["tasks"][number];
