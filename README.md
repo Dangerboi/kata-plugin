@@ -47,6 +47,8 @@ Add that to `opencode.json`, then run `kata agent-hook install opencode` for Kat
 
 Claude Code 2.1.326 (the mod API is early access):
 
+https://github.com/user-attachments/assets/c7537d00-ac42-4a6a-b735-ec671681aca9
+
 ```
 /plugin install kata-cc --marketplace Dangerboi/kata-plugin
 ```
