@@ -1,5 +1,4 @@
-import { owes, snapshotEntry, type Snapshot } from "../core/kata-core";
-import { OPEN } from "../core/model";
+import { holdsWork, savedSnapshot, withEntry, type SavedEntry } from "../core/kata-core";
 import type { Engine } from "./engine";
 
 // `$.store` is one JSON file for every Claude session on the machine, 4 MiB in all, and reading then writing a key is not
@@ -7,7 +6,6 @@ import type { Engine } from "./engine";
 // writes, and ended sessions are pruned at the next start.
 
 export const NAMESPACE = "claude";
-export type SavedEntry = { type: "custom"; customType: string; data: unknown };
 export type SavedSession = {
 	directory: string;
 	// The core's latest entry of each type (its snapshot and its parent binding).
@@ -24,14 +22,6 @@ export const ENDED_KEEP_MS = 7 * 86_400_000;
 export const STALE_MS = 30 * 86_400_000;
 // Pruning also keeps the saved sessions together under this many bytes of JSON, well inside the store's 4 MiB.
 export const STORE_BUDGET = 2 * 1024 * 1024;
-
-export const coreState = (saved: SavedSession | undefined): Partial<Snapshot> | undefined =>
-	saved?.entries.find(entry => entry.customType === snapshotEntry(NAMESPACE))?.data as Partial<Snapshot> | undefined;
-
-// Whether a saved session has work a resume would take up: what the core owes (closes, delegates) or a plan that still has
-// open tasks, whatever holds it (an automatic parent, an explicit one, named tickets or a session-local plan).
-export const hasWork = (snapshot: Partial<Snapshot> | undefined): boolean =>
-	owes(snapshot) || [...(snapshot?.plan?.tasks ?? []), ...(snapshot?.named ?? [])].some(task => OPEN.has(task.status));
 
 export async function loadSession($: Engine, id: string): Promise<SavedSession | undefined> {
 	const value = (await $.store.get(keyOf(id))) as Partial<SavedSession> | undefined;
@@ -66,7 +56,7 @@ export function sessionWriter($: Engine, id: string, now: () => Promise<number>)
 		},
 		append(customType: string, data: unknown) {
 			if (!record) return;
-			record.entries = [...record.entries.filter(entry => entry.customType !== customType), { type: "custom", customType, data: structuredClone(data) }];
+			record.entries = withEntry(record.entries, customType, data);
 			if (endedAt === undefined) delete record.endedAt;
 			else record.endedAt = endedAt;
 			void flush();
@@ -76,7 +66,7 @@ export function sessionWriter($: Engine, id: string, now: () => Promise<number>)
 		async end(owed: boolean, at: number) {
 			if (!record) return;
 			endedAt = at;
-			if (owed || hasWork(coreState(record))) {
+			if (owed || holdsWork(savedSnapshot(record.entries, NAMESPACE))) {
 				record.endedAt = at;
 				await flush();
 				await writing;
@@ -99,7 +89,7 @@ export async function pruneSessions($: Engine, now: number, except?: string): Pr
 			rows.push({ key, at: 0, ended: true, size: 0 });
 			continue;
 		}
-		const owing = hasWork(coreState(record as SavedSession));
+		const owing = holdsWork(savedSnapshot((record as SavedSession).entries, NAMESPACE));
 		const at = record.endedAt ?? record.updatedAt ?? 0;
 		const expired = record.endedAt !== undefined ? now - at > (owing ? STALE_MS : ENDED_KEEP_MS) : now - at > STALE_MS;
 		rows.push({ key, at: expired ? 0 : at, ended: record.endedAt !== undefined, size: JSON.stringify(record).length });

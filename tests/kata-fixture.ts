@@ -4,12 +4,11 @@ import path from "node:path";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { assertIsolated, SCRUBBED_ENV } from "./isolation";
-import type { DelegateRecord, DelegateStore } from "../core/delegates";
+import { recordStore, type DelegateRecord, type DelegateStore } from "../core/delegates";
 
 export function memoryDelegateStore(): DelegateStore & { drop(id: string): void } {
   const records = new Map<string, DelegateRecord>();
-  return { records: () => [...records.values()], get: key => records.get(key), put: record => { records.set(record.id, record); },
-    of: ctx => [...records.values()].find(record => record.sessionId === ctx.sessionManager.getSessionId()),
+  return { ...recordStore(() => records, ctx => [...records.values()].find(record => record.sessionId === ctx.sessionManager.getSessionId())),
     // Forgets a record, as a process whose memory never held it.
     drop: id => { records.delete(id); } };
 }

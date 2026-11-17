@@ -69,9 +69,10 @@ test("a call carries the context of its job, kept by an operation started from i
   expect(contexts).toEqual(["call", "other", "latest"]);
 });
 
+const env = { get: () => undefined };
 test("only a close carries the transcript environment; a close with no known session switches recording off", () => {
-  expect(closeEnv(["show", "ab12"], "omp", "child")).toBeUndefined();
-  expect(closeEnv(["close", "ab12"], "omp", "child")).toMatchObject({ KATA_TRANSCRIPT_AGENT: "omp", KATA_TRANSCRIPT_SESSION_ID: "child" });
-  expect(closeEnv(["close", "ab12"], "omp", undefined)).toEqual({ KATA_CLOSE_TRANSCRIPT_ENABLED: "false" });
-  expect(closeEnv(["comment", "ab12"], "omp", undefined)).toBeUndefined();
+  expect(closeEnv(env, ["show", "ab12"], "omp", "child")).toBeUndefined();
+  expect(closeEnv(env, ["close", "ab12"], "omp", "child")).toMatchObject({ KATA_TRANSCRIPT_AGENT: "omp", KATA_TRANSCRIPT_SESSION_ID: "child" });
+  expect(closeEnv(env, ["close", "ab12"], "omp", undefined)).toEqual({ KATA_CLOSE_TRANSCRIPT_ENABLED: "false" });
+  expect(closeEnv(env, ["comment", "ab12"], "omp", undefined)).toBeUndefined();
 });

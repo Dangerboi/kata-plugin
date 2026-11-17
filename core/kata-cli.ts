@@ -29,15 +29,17 @@ export interface PathOps {
 	dirname(path: string): string;
 }
 
-// The timer half of `Platform`: what the work that must not outlive its host needs.
 export type Timers = Pick<Platform, "setTimer" | "clearTimer">;
+
+// Every environment variable the core reads or sets (see `setting` in kata-core.ts); a host asks its own environment for exactly these.
+export const CORE_ENV = ["KATA_REF", "KATA_TEAMMATE", "KATA_AUTHOR", "USER", "KATA_DEFAULT_PROJECT", "KATA_INBOX_USER", "KATA_HOME", "KATA_ATTENTION_HOST", "KATA_CLOSE_TRANSCRIPT_ENABLED"] as const;
 
 // What the core needs from the machine it runs on, so that it imports nothing from Node. A Node host passes node-host.ts's
 // `nodePlatform`; a host without a process environment, timers or a synchronous filesystem supplies what it has.
 export interface Platform {
 	// The environment Kata calls and the shell commands the host runs inherit. `set` exports a value to them (undefined
 	// removes it). A host with no process environment keeps the values itself and puts them on each call it makes.
-	env: { get(name: string): string | undefined; set(name: string, value: string | undefined): void };
+	env: { get(name: (typeof CORE_ENV)[number]): string | undefined; set(name: (typeof CORE_ENV)[number], value: string | undefined): void };
 	cwd(): string;
 	path: PathOps;
 	// The host process Kata's attention hook is told about.
@@ -47,13 +49,13 @@ export interface Platform {
 	clearTimer(handle: unknown): void;
 	// The canonical path (symlinks resolved), rejecting when nothing exists there (a Node host wraps fs.realpathSync). Required: the core compares workspaces by what they resolve to.
 	realpath(path: string): Promise<string>;
-	// Appends to the debug file. Absent: debugging writes nothing.
-	appendFile?(file: string, text: string): void;
+	// Appends to the debug file.
+	appendFile(file: string, text: string): void;
 }
 
 // The sink for errors the plugin survives: a line in `file`, nothing without one. Debugging must never interrupt work.
 export const debugTo = (file: string | undefined, append: Platform["appendFile"]) => (error: unknown) => {
-	if (!file || !append) return;
+	if (!file) return;
 	try { append(file, `${new Date().toISOString()} ${String(error)}\n`); } catch { /* Ignored: see above. */ }
 };
 
@@ -65,7 +67,6 @@ export async function waitAtMost<T>(promise: Promise<T>, ms: number, onError: (e
 	finally { timers.clearTimer(timer); }
 }
 
-// The oldest Kata whose commands and flags these plugins use.
 const MINIMUM = [0, 23, 0];
 
 // Whether a reported Kata version is at least MINIMUM; undefined when it names no release (`dev`, a commit hash).
@@ -82,17 +83,17 @@ function meetsMinimum(version: string): boolean | undefined {
 // What a `kata close` reads to record the session that made it: the session pair and the switch that turns recording on.
 export const TRANSCRIPT_ENV = ["KATA_TRANSCRIPT_AGENT", "KATA_TRANSCRIPT_SESSION_ID", "KATA_CLOSE_TRANSCRIPT_ENABLED"] as const;
 const [AGENT, SESSION, ENABLED] = TRANSCRIPT_ENV;
-// The environment that makes a close record `sessionId`. The switch stays as the launching environment set it (`enabled`,
-// read from the host's environment), so `KATA_CLOSE_TRANSCRIPT_ENABLED=false` opts out.
-export function transcriptEnv(agent: string, sessionId: string, enabled?: string): Record<(typeof TRANSCRIPT_ENV)[number], string> {
-	return { [AGENT]: agent, [SESSION]: sessionId, [ENABLED]: enabled ?? "true" };
+// The environment that makes a close record `sessionId`. The switch stays as the launching environment set it (read from
+// `env`), so `KATA_CLOSE_TRANSCRIPT_ENABLED=false` opts out.
+export function transcriptEnv(env: Pick<Platform["env"], "get">, agent: string, sessionId: string): Record<(typeof TRANSCRIPT_ENV)[number], string> {
+	return { [AGENT]: agent, [SESSION]: sessionId, [ENABLED]: env.get(ENABLED) ?? "true" };
 }
 // The environment a Kata call carries for a close to record the session that made it; undefined for any other call. With
 // no session id (a delegate whose own session is not known yet) recording is switched off: the process carries the lead's
 // pair, which that close must not record.
-export function closeEnv(args: readonly string[], agent: string, sessionId: string | undefined, enabled?: string): Record<string, string> | undefined {
+export function closeEnv(env: Pick<Platform["env"], "get">, args: readonly string[], agent: string, sessionId: string | undefined): Record<string, string> | undefined {
 	if (args[0] !== "close") return undefined;
-	return sessionId ? transcriptEnv(agent, sessionId, enabled) : { [ENABLED]: "false" };
+	return sessionId ? transcriptEnv(env, agent, sessionId) : { [ENABLED]: "false" };
 }
 
 export type ExecResult = { code: number; stdout: string; stderr?: string; killed?: boolean };
@@ -101,7 +102,6 @@ export type Exec = (file: string, args: string[], options: { cwd: string; timeou
 type Project = { id: number; name: string };
 
 const READS = new Set(["show", "list", "status", "version", "agent-contract-hook", "inbox", "events", "audit"]);
-// Whether a Kata call only reads: a read never ends an operation's reuse of earlier reads.
 export const isRead = (args: string[]) => READS.has(args[0]) || (args[0] === "projects" && args[1] === "list");
 // Writes any runner on this thread made (the lead's core, a delegate's, another plugin copy's): each one ends every
 // operation's reuse of earlier reads. A Kata command an agent runs in its shell is another process, and an omp subagent on
@@ -146,7 +146,6 @@ export interface Kata {
 	// runner on this thread writes. An operation is one tool call; Kata changes made elsewhere meanwhile (an agent's own
 	// shell command, another process or thread) show in the next one. Inside an open operation `fn` gets `from` as it is.
 	operation<T>(from: Job, fn: (job: Job) => Promise<T>): Promise<T>;
-	// The job with every read going to Kata, for a check that a read is still current.
 	fresh(job: Job): Job;
 }
 
@@ -154,11 +153,8 @@ export function createKata(env: {
 	exec: Exec;
 	path: Pick<PathOps, "resolve">;
 	executable: string;
-	// Added to every call as `--teammate` when set.
 	teammate(): string | undefined;
-	// Handed to `exec` for a call whose job carries no context: the latest event's.
 	ctx(): any;
-	// The project list is read once per session.
 	session(): string | undefined;
 	debug(error: unknown): void;
 }): Kata {

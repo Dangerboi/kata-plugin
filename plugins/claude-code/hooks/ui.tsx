@@ -123,32 +123,8 @@ export const onTodoRan: Hook<"tool.call"> = async ($, e, next) => {
 
 // ------------------------------------------------------------------------------------------------------------ `#` tickets
 
-// The core's ticket completion offers itself to an editor's provider chain; here the chain is empty, so what it returns is the
-// tickets alone, and the typeahead's rows are those. Its cache, its 400 ms wait and its rules for tokens (a digits-only `#1234`
-// is GitHub's, `#<project>#<token>` names a project) are the core's, shared with omp.
-type Provider = {
-	getSuggestions(lines: string[], line: number, col: number, signal?: AbortSignal): Promise<{ items: { value: string; description?: string }[] } | null>;
-};
-const providers = new WeakMap<Runtime, Provider>();
-
-function providerOf(rt: Runtime): Provider {
-	let provider = providers.get(rt);
-	if (!provider) {
-		let wrap: ((current: unknown) => Provider) | undefined;
-		rt.core.offerTickets({
-			addAutocompleteProvider: factory => {
-				wrap = factory as typeof wrap;
-			}
-		});
-		provider = wrap!({
-			getSuggestions: async () => null,
-			applyCompletion: (lines: string[], cursorLine: number, cursorCol: number) => ({ lines, cursorLine, cursorCol })
-		});
-		providers.set(rt, provider);
-	}
-	return provider;
-}
-
+// The rows are the core's ticket completion (`suggestTickets`), shared with omp: its cache, its 400 ms wait and its rules for tokens
+// (a digits-only `#1234` is GitHub's, `#<project>#<token>` names a project).
 // Typing is never held by Kata: a loaded list answers from the core's cache whatever Kata is doing (it refreshes in the
 // background), and only the first fill of a session's list waits, for the core's 400 ms at most. The wait runs beside the
 // plugins beneath, not after them, and an unreachable or failing Kata adds no rows.
@@ -160,7 +136,7 @@ async function ticketRows(
 	if (!rt.writer || rt.id === undefined) return [];
 	try {
 		const line = e.text.slice(0, e.cursor).split("\n").pop() ?? "";
-		const found = await providerOf(rt).getSuggestions([line], 0, line.length, signal);
+		const found = await rt.core.suggestTickets(line, signal);
 		return (found?.items ?? []).map(item => ({ text: `${item.value} `, label: item.value, ...(item.description ? { description: item.description } : {}) }));
 	} catch {
 		return [];

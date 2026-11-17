@@ -1,18 +1,19 @@
 import type { Hook } from "claude-code";
 import { turnEnded } from "./inbox";
+import { tagged, type PromptSections } from "../core/kata-core";
 import { delegateTurn } from "./delegates";
 import { contextOf, enter, runtime, type Runtime } from "./lead";
 
 // What each turn carries and how a turn ends.
 
 // A section goes out when it differs from what the last prompt carried.
-function fresh(rt: Runtime, sections: Record<string, string | undefined>): string[] {
+function fresh(rt: Runtime, sections: PromptSections): string[] {
 	const out: string[] = [];
-	for (const name of ["contract", "inbox", "todo"]) {
+	for (const name of ["contract", "inbox", "todo"] as const) {
 		const text = sections[name];
 		if (!text || rt.sent[name] === text) continue;
 		rt.sent[name] = text;
-		out.push(`<kata_${name}>\n${text}\n</kata_${name}>`);
+		out.push(tagged(name, text));
 	}
 	return out;
 }

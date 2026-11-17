@@ -8,12 +8,12 @@ import type { PathOps } from "./kata-cli";
 export type SavedParent = { parent: string; workspace?: string; sessionId?: string; auto?: boolean; label?: string };
 
 export type ParentSources = {
-	path: Pick<PathOps, "resolve">; // the host's
-	cwd: string; // the session's cwd at bind time
-	assigned?: { ref?: string; workspace?: string }; // an omp delegate's assignment
-	explicit?: string; // the `explicitRef` option, else KATA_REF
-	initRef?: string; // the `ref` of an init
-	stored?: SavedParent; // the session's own snapshot, else the fork source's
+	path: Pick<PathOps, "resolve">;
+	cwd: string;
+	assigned?: { ref?: string; workspace?: string };
+	explicit?: string;
+	initRef?: string;
+	stored?: SavedParent;
 	session?: () => Promise<SavedParent | undefined>; // asked only when nothing earlier decides
 };
 

@@ -181,13 +181,19 @@ export type DelegateAssignment = { ref: string; workspace: string; teammate: str
 
 // Where delegate records live: in the host's memory for a lead, in the session branch for a pi child.
 export interface DelegateStore {
-	// The records of the lead session this store serves.
 	records(): DelegateRecord[];
 	get(id: string): DelegateRecord | undefined;
 	put(record: DelegateRecord): void;
 	// The record of the delegate running in this extension context.
 	of(ctx: any): DelegateRecord | undefined;
 }
+// A store over records a host keeps in memory, by id; `of` finds the record of the delegate running in a context.
+export const recordStore = (records: () => Map<string, DelegateRecord>, of: (ctx: any) => DelegateRecord | undefined): DelegateStore => ({
+	records: () => [...records().values()],
+	get: id => records().get(id),
+	put: record => { records().set(record.id, record); },
+	of,
+});
 
 // Who an ownership check runs for. `teammate` absent: the session's own. `takeover`: the caller takes a plan task over from the
 // session holding it. `ticket`: the issue is a ticket item's ticket, which keeps the actor and teammate rule alone.
@@ -242,15 +248,12 @@ export interface Delegates {
 	assignment(ctx: any): DelegateAssignment | undefined;
 	// Why `ctx` has no assignment, as the message its todo call reports.
 	unassigned(ctx: any): string;
-	// Whether a delegate that has not been handed back or settled holds the issue.
 	holds(ref: string): boolean;
 	// Returns a closed issue a delegate still marks to the lead: its teammate, the delegate's outcome and the item's final status,
 	// then the delegate keys last. Each write is skipped when already in place and guarded by the chained revision. `exit` is the
 	// exiting delegate's own return; without it the lead recovers an item no unfinished delegate holds.
 	returnClosed(job: Job, ref: string, cwd: string, issue: KataIssue, lead: string, exit?: { teammate: string; outcome?: DelegateOutcome }): Promise<void>;
-	// Started and not exited, tracked or not.
 	running(): boolean;
-	// Exited and not yet handed back or settled.
 	cleanupPending(): boolean;
 	// The ids of those delegates: a turn end that waits for them stops once a pass leaves the same ones.
 	pendingIds(): string[];
@@ -263,7 +266,6 @@ export interface Delegates {
 	// later run to resume. An unfinished one comes back as exited and settles in the background, on the lead's queue, so the
 	// caller does not wait for Kata.
 	restore(records: SavedDelegate[], within: Job): void;
-	// Settles every exited delegate not yet settled. Runs inside the serial queue.
 	settle(job: Job): Promise<void>;
 }
 
@@ -530,10 +532,10 @@ export function createDelegates(env: DelegatesEnv): Delegates {
 	// acted is rolled back; otherwise the open issue is commented, flagged and handed back. Every step can run again after a failure.
 	async function settleOne(job: Job, r: DelegateRecord) {
 		// A delegate that exits before anything decided its target (no plan yet, or Kata could not be read) ran as an untracked one.
-		if (r.state === "untracked" || !refOf(r)) return settleUntracked(job, r);
 		const ref = refOf(r);
+		if (r.state === "untracked" || !ref) return settleUntracked(job, r);
 		const settled = () => { r.state = "settled"; save(job, r); };
-		if (!ref || !r.binding) return settled();
+		if (!r.binding) return settled();
 		const cwd = r.binding.workspace;
 		let shown: KataShow;
 		try { shown = await env.kata.show(job, ref, cwd); }

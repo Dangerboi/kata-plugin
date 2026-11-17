@@ -20,11 +20,11 @@ import { spawn } from "node:child_process";
 import { BroadcastChannel, isMainThread, threadId } from "node:worker_threads";
 import { closeSync, openSync, readSync } from "node:fs";
 import { createInterface } from "node:readline";
-import { createKataCore, DESCRIPTION, TODO_OPS, TODO_PARAMS } from "./kata-core";
-import { closeEnvHere, execKata, exportTranscriptSession, nodePlatform, sessionKey } from "./node-host";
-import { NO_JOB } from "./kata-cli";
+import { createKataCore, DESCRIPTION, PROMPT_TAGS, tagged, TODO_OPS, TODO_PARAMS } from "./kata-core";
+import { execKata, exportTranscriptSession, nodePlatform, sessionKey } from "./node-host";
+import { closeEnv, debugTo, NO_JOB } from "./kata-cli";
 import { delegateCommand, kataCommands as parseKataCommands } from "./shell";
-import { FINAL, isUntracked, teammateFor } from "./delegates";
+import { FINAL, isUntracked, Refusal, teammateFor } from "./delegates";
 import { textOf } from "./model";
 import type { DelegateOutcome, DelegateRecord, Delegates, DelegateStore } from "./delegates";
 import type { InboxStream } from "./inbox";
@@ -121,9 +121,8 @@ delegateChannel.onmessage = (event: { data: unknown }) => {
 
 // ------------------------------------------------------------- live inbox stream feed
 
-/** `kata events --tail` as a child of this process: no shell, the process environment, no stdin. */
-function spawnEvents(cwd: string, cursor: number | undefined): InboxStream {
-	const args = ["events", "--tail", "--json", "--workspace", cwd, ...(cursor ? ["--last-event-id", String(cursor)] : [])];
+/** Kata as a child of this process: no shell, the process environment, no stdin. */
+function spawnEvents(args: string[], cwd: string): InboxStream {
 	const proc = spawn(EXECUTABLE, args, { cwd, env: { ...process.env }, stdio: ["ignore", "pipe", "ignore"] });
 	const exited = new Promise<void>(resolve => { proc.on("error", () => resolve()); proc.on("close", () => resolve()); });
 	// Never keep omp alive for the stream.
@@ -133,6 +132,7 @@ function spawnEvents(cwd: string, cursor: number | undefined): InboxStream {
 }
 
 export default function ompKata(pi: any) {
+	const debug = debugTo(process.env.KATA_OMP_DEBUG, nodePlatform.appendFile);
 	const z = pi.zod;
 	const main = (ctx: any) => ctx?.agent?.kind === "main";
 	const sessionId = (ctx: any): string | undefined => ctx?.sessionManager?.getSessionId?.();
@@ -164,7 +164,7 @@ export default function ompKata(pi: any) {
 		// A delegate runs in the lead's process: its closes carry its own session, never the lead's.
 		exec: (file, args, { ctx, ...options }) => {
 			const pair = transcriptPairOf(ctx);
-			const env = pair && closeEnvHere(args, pair.agent, pair.id);
+			const env = pair && closeEnv(nodePlatform.env, args, pair.agent, pair.id);
 			return env ? execKata(file, args, { ...options, env }) : pi.exec(file, args, options);
 		},
 		appendEntry: (...args) => pi.appendEntry(...args),
@@ -183,7 +183,6 @@ export default function ompKata(pi: any) {
 	const taskCalls = new Map<string, TaskCall>();
 	let callsLead: string | undefined;
 	const over = (call: string) => { taskCalls.delete(call); core.delegates.release(call); };
-	// A previous session's calls are over.
 	const forLead = (id: string | undefined) => {
 		if (callsLead === id) return;
 		for (const call of [...taskCalls.keys()]) over(call);
@@ -256,7 +255,6 @@ export default function ompKata(pi: any) {
 		ctx.ui?.notify?.(await core.todo.command(ctx, match[1] || ""), "info");
 		return { handled: true };
 	});
-	// --------------------------------------------------------------- delegates
 
 	// The Delegates that owns a delegate's record is the lead's, on the main thread; a worker's copy reaches it over the channel.
 	const nextUseOf = (ctx: any): Promise<void> | undefined => {
@@ -339,26 +337,32 @@ export default function ompKata(pi: any) {
 			const texts = items.map(item => [item?.task, item?.description, item?.name].filter(value => typeof value === "string").join("\n"));
 			forLead(leadSession());
 			taskCalls.set(event.toolCallId, { texts });
+			// A spawn Kata could not be asked about runs unreserved: its delegate decides from its text when it starts.
 			return core.delegates.check(texts, event.toolCallId, undefined, NO_JOB)
-				.then(() => undefined, error => { over(event.toolCallId); return { block: true, reason: String(error) }; });
+				.then(() => undefined, error => {
+					if (!(error instanceof Refusal)) { debug(error); return; }
+					over(event.toolCallId);
+					return { block: true, reason: String(error) };
+				});
 		}
 		if (ctx.agent?.kind !== "sub" || event.toolName !== "bash" || typeof event.input?.command !== "string") return;
 		const commands = kataCommands(event.input.command);
 		if (!commands.length) return;
 		const teammate = record?.teammate || teammateFor(ctx.agent.id, leadSession());
-		try { return { input: { ...event.input, command: delegateCommand(nodePlatform.path, event.input.command, EXECUTABLE, EXECUTABLE_VARS, teammate, record?.binding, transcriptPairOf(ctx)) } }; }
+		const pair = transcriptPairOf(ctx);
+		try { return { input: { ...event.input, command: delegateCommand(nodePlatform.path, event.input.command, EXECUTABLE, EXECUTABLE_VARS, teammate, record?.binding, pair && { env: nodePlatform.env, ...pair }) } }; }
 		catch (error) { return { block: true, reason: String(error) }; }
 	});
 
 	// The session a close made in `ctx` records. A delegate runs in the lead's process, so its closes carry its own session,
 	// never the lead's: its id is unknown until its session file has a header, and until then `id` is undefined (its closes
 	// record nothing). Undefined for the lead before session start exported its pair: its closes go as omp spawns them.
-	function transcriptPairOf(ctx: any): { agent: string; id: string | undefined; enabled?: string } | undefined {
+	function transcriptPairOf(ctx: any): { agent: string; id: string | undefined } | undefined {
 		if (!ctx || main(ctx)) {
 			const { KATA_TRANSCRIPT_AGENT: agent, KATA_TRANSCRIPT_SESSION_ID: id } = process.env;
-			return agent && id ? { agent, id, enabled: process.env.KATA_CLOSE_TRANSCRIPT_ENABLED } : undefined;
+			return agent && id ? { agent, id } : undefined;
 		}
-		return { enabled: process.env.KATA_CLOSE_TRANSCRIPT_ENABLED, ...(childSession(store.of(ctx)?.sessionId) ?? { agent: "omp", id: undefined }) };
+		return childSession(store.of(ctx)?.sessionId) ?? { agent: "omp", id: undefined };
 	}
 
 	// A delegate's session file starts with a header carrying its own session id, the one AgentsView lists it under.
@@ -404,14 +408,14 @@ export default function ompKata(pi: any) {
 		if (event.reason === "revive") return;
 		await enter(ctx);
 		const { sections } = await core.session.beforePrompt(ctx, { after: !main(ctx) ? nextUseOf(ctx) : undefined });
-		const base = (Array.isArray(event.systemPrompt) ? event.systemPrompt : [event.systemPrompt || ""]).filter((s: string) => !/^<kata_(contract|todo|inbox|binding)>/.test(s));
+		const ours = new RegExp(`^<(${Object.values(PROMPT_TAGS).join("|")})>`);
+		const base = (Array.isArray(event.systemPrompt) ? event.systemPrompt : [event.systemPrompt || ""]).filter((s: string) => !ours.test(s));
 		const out: string[] = [];
-		const tag = (name: string, text: string) => out.push(`<kata_${name}>\n${text}\n</kata_${name}>`);
 		// Something else (an earlier injection, another installer) may already carry the contract.
-		if (sections.contract && !base.some((s: string) => s.includes(sections.contract!.slice(0, 80)))) tag("contract", sections.contract);
-		if (sections.assignment) tag("binding", sections.assignment);
-		if (sections.inbox) tag("inbox", sections.inbox);
-		if (main(ctx) && sections.todo) tag("todo", sections.todo);
+		if (sections.contract && !base.some((s: string) => s.includes(sections.contract!.slice(0, 80)))) out.push(tagged("contract", sections.contract));
+		if (sections.assignment) out.push(tagged("assignment", sections.assignment));
+		if (sections.inbox) out.push(tagged("inbox", sections.inbox));
+		if (main(ctx) && sections.todo) out.push(tagged("todo", sections.todo));
 		if (!out.length) return;
 		return { systemPrompt: [...base, out.join("\n\n")] };
 	});

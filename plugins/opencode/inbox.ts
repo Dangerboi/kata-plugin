@@ -4,7 +4,6 @@
 // through one trust rule and one render, and a live follower owns the retry and backoff policy for the
 // reads and the stream. The host supplies Kata and the process: reads, spawning the stream, timers, the clock.
 
-/** The most bytes of one request message the agent is shown. */
 const INBOX_MESSAGE_LIMIT = 1024;
 type Capped = { text: string; truncated: boolean };
 const encoder = new TextEncoder();
@@ -84,8 +83,8 @@ type Slot = { from: string; message: string; re?: string; kind?: string; broadca
 export type InboxStream = { lines: AsyncIterable<string>; exited: Promise<unknown>; kill(): void };
 /** What a host gives the core to follow a session inbox live: the event stream child, and where a delivered request goes. */
 export type LiveInbox = {
-	/** `kata events --tail` for the workspace from `cursor`. */
-	spawn(cwd: string, cursor: number | undefined): InboxStream;
+	/** Runs Kata with `args` (`events --tail --json …`, which the follower parses) in `cwd`: its output lines, a promise of its exit, a way to stop it. */
+	spawn(args: string[], cwd: string): InboxStream;
 	/** Hands one request to the session as an aside. */
 	deliver(text: string): void | Promise<unknown>;
 };
@@ -104,7 +103,6 @@ export type InboxFollowerDeps = {
 	publish(text: string): void;
 	/** The id of the newest event of the project: the stream is tailed from there, so history never replays. */
 	head(): Promise<number>;
-	/** Milliseconds on a monotonic clock. */
 	now(): number;
 	setTimer(fn: () => void, ms: number): unknown;
 	clearTimer(handle: unknown): void;

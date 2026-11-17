@@ -2,7 +2,7 @@ import { decidePlanParent, explicitParent, isExplicitParent, namesPlanParent } f
 import { createInboxFollower, knownProjectHead, trustedInbox, type InboxFollower, type LiveInbox } from "./inbox";
 import { createDelegates, FINAL, heldByDelegate as heldBy, isUntracked, nameOf, Refusal, teammateFor, type DelegateAssignment, type DelegateStore, type Refused, type Reservation, type SavedDelegate, type Who } from "./delegates";
 import { createSettlement, MAX_FAILURES, openChildren, type PendingClose, type SettlementSnapshot } from "./settlement";
-import { createKata, debugTo, isKataCode, isUnusable, KataError, NO_JOB, waitAtMost, type Batch, type Exec, type Job, type PathOps, type Platform, type Timers } from "./kata-cli";
+import { createKata, debugTo, type CORE_ENV, isKataCode, isUnusable, KataError, NO_JOB, waitAtMost, type Batch, type Exec, type Job, type PathOps, type Platform, type Timers } from "./kata-cli";
 import { createTicketCompletion } from "./autocomplete";
 import { kataCommands, quote, shellOptions } from "./shell";
 import { closedTaskStatus, digest, FULL_ID_REF, heldBySession, heldMessage, itemTicket, OPEN, PROOF_MIN, projectOf, proofProblem, QUALIFIED_REF_ONLY, qualifiedRef, SESSION_KEY, sessionParentKeys, slug, tasksOf, textOf, TITLE_MAX, TODO_WORDING, WORKING, type Binding, type Change, type KataIssue, type KataShow, type Plan, type Status, type Task, type ToolWording } from "./model";
@@ -79,7 +79,10 @@ export type PlanView = {
 	phases: { name: string; tasks: { content: string; status: Status; ref: string; blocker?: string }[] }[];
 };
 // What a prompt gets from the core, as text: the host formats each section for its prompt.
-type PromptSections = { contract?: string; inbox?: string; todo?: string; assignment?: string };
+export type PromptSections = { contract?: string; inbox?: string; todo?: string; assignment?: string };
+// The tag each section is wrapped in where a host's prompt has no structure of its own.
+export const PROMPT_TAGS = { contract: "kata_contract", inbox: "kata_inbox", assignment: "kata_binding", todo: "kata_todo" } as const satisfies Record<keyof PromptSections, string>;
+export const tagged = (name: keyof PromptSections, text: string) => `<${PROMPT_TAGS[name]}>\n${text}\n</${PROMPT_TAGS[name]}>`;
 // The session entry the core saves its state in: appended after each change, and the session's latest is read at the next bind.
 export const snapshotEntry = (namespace: string) => `io.kata.${namespace}.state`;
 export type Snapshot = SettlementSnapshot & { version: number; sessionId: string; ownSessions?: string[]; plan: Plan; delegates?: SavedDelegate[]; named?: Task[]; deletedParent?: string };
@@ -88,6 +91,20 @@ export type Snapshot = SettlementSnapshot & { version: number; sessionId: string
 export function owes(snapshot: Partial<Snapshot> | undefined): boolean {
 	return !!(snapshot?.retries?.length || snapshot?.pendingCloses?.length || snapshot?.delegates?.some(d => !FINAL.has(d.state)));
 }
+// An entry a host saves for the core (`appendEntry`) and gives back at the next bind (`getBranch`).
+export type SavedEntry = { type: "custom"; customType: string; data: unknown };
+// `entries` with `data` as the latest of its type: the core reads only the latest of each type.
+export const withEntry = (entries: readonly SavedEntry[], customType: string, data: unknown): SavedEntry[] =>
+	[...entries.filter(entry => entry.customType !== customType), { type: "custom", customType, data: structuredClone(data) }];
+// What the core saved for the session: its latest snapshot.
+export const savedSnapshot = (entries: readonly SavedEntry[] | undefined, namespace: string): Partial<Snapshot> | undefined =>
+	entries?.find(entry => entry.customType === snapshotEntry(namespace))?.data as Partial<Snapshot> | undefined;
+// Whether a saved session has work a resume would take up: what the core owes, or a plan that still has open tasks, whatever
+// holds it (an automatic parent, an explicit one, named tickets or a session-local plan).
+export const holdsWork = (snapshot: Partial<Snapshot> | undefined): boolean =>
+	owes(snapshot) || [...(snapshot?.plan?.tasks ?? []), ...(snapshot?.named ?? [])].some(task => OPEN.has(task.status));
+// A todo result's text.
+export const todoText = (result: { content: readonly { text: string }[] }): string => result.content.map(part => part.text).join("\n");
 // A pi child's view of the session that started it.
 export type ChildParent = { sessionId: string; ref?: string; workspace: string; label?: string; teammate: string;
 	// The teammate of the child that re-exported the lead's marker.
@@ -206,7 +223,6 @@ function untrackedDelegateContext(name: string): string {
 
 // Items that name no ticket become children of a parent issue; a plan of only named items needs none.
 const needsParent = (contents: string[]) => contents.some(content => !itemTicket(content));
-// Whether `target` names the task's issue: its qualified ref, or its short id alone.
 const hasRef = (task: Task, target: string) => task.ref === target || task.ref.split("#")[1] === target;
 // Why a task or item left the plan: the caller's words, else a reason Kata's wontfix accepts.
 const whyDropped = (change: Change) => change.message || change.reason || "no longer needed";
@@ -237,7 +253,33 @@ function render(plan: Plan, wording: ToolWording = TODO_WORDING): string {
 	return lines.join("\n");
 }
 
-export function createKataCore(host: CoreHost, options: CoreOptions) {
+// A delegate's core: the same host and options, but never main, saving nothing and without a switch hook or live inbox. Its store
+// sees only its own record, which it writes through the lead's.
+function delegateHost(host: CoreHost, id: string): CoreHost {
+	const lead = host.delegateStore;
+	return { ...host, isMain: () => false, appendEntry: () => {}, switched: undefined, liveInbox: undefined,
+		delegateStore: { records: () => [], get: key => key === id ? lead.get(key) : undefined, put: record => lead.put(record), of: () => lead.get(id) } };
+}
+
+export type KataCore = ReturnType<typeof buildCore> & {
+	// The core of the delegate whose record id is `id`; kept until this core binds another session.
+	delegate(id: string): KataCore;
+};
+
+export function createKataCore(host: CoreHost, options: CoreOptions): KataCore {
+	const delegateCores = new Map<string, KataCore>();
+	return {
+		...buildCore(host, options, () => delegateCores.clear()),
+		delegate(id) {
+			let known = delegateCores.get(id);
+			if (!known) delegateCores.set(id, known = createKataCore(delegateHost(host, id), options));
+			return known;
+		},
+	};
+}
+
+// `onNewSession`: called when a bind makes this core's main session a different one.
+function buildCore(host: CoreHost, options: CoreOptions, onNewSession: () => void) {
 	const namespace = options.namespace;
 	const wording = options.wording ?? TODO_WORDING;
 	const platform = host.platform, path = platform.path;
@@ -250,7 +292,7 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 	const WIDGET = `${namespace}-kata`;
 	const MAX_REMINDERS = 3;
 	const main = (ctx: HostContext | undefined) => host.isMain?.(ctx) ?? true;
-	const setting = (name: string) => options.env?.(name) ?? platform.env.get(name);
+	const setting = (name: (typeof CORE_ENV)[number]) => options.env?.(name) ?? platform.env.get(name);
 	const sid = (ctx: HostContext | undefined): string | undefined => ctx?.sessionManager?.getSessionId?.();
 	const uiOf = (ctx: HostContext | undefined) => main(ctx) && host.allowUI?.(ctx) !== false ? ctx?.ui : undefined;
 	let plan: Plan = { tasks: [], workspace: path.resolve(platform.cwd()) };
@@ -266,7 +308,6 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 	const markingSession = (job: Job) => isLeadCall(job) && currentId ? currentId : undefined;
 	let bound = false;
 	let assignedRef: string | undefined;
-	// The one place the configured explicit ref is read: the host option, else KATA_REF.
 	const configuredRef = () => options.explicitRef?.() ?? setting("KATA_REF");
 	const aliases = new Set<string>(); // refs the plan's parent was rehomed from: they still name it
 	let requestedRef: string | undefined;
@@ -676,6 +717,7 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 		const newSession = currentId !== id;
 		currentId = id;
 		if (main(ctx)) host.switched?.(ctx);
+		if (newSession && main(ctx)) onNewSession();
 		lastSnapshot = undefined;
 		currentCtx = ctx;
 		plan = { tasks: [], workspace: path.resolve(ctx.cwd) }; named = []; aliases.clear(); deletedParent = undefined;
@@ -957,7 +999,6 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 
 	// Resolve and check every ticket the new items name before anything is created:
 	// an unresolvable, closed, or foreign-owned ticket fails the whole call.
-	// Maps `phase\0content` to the ticket's canonical ref.
 	async function resolveNamed(job: Job, items: { phase: string; content: string }[], cwd: string, isNew: (item: { phase: string; content: string }) => boolean): Promise<Map<string, string>> {
 		const tickets = new Map<string, string>(), checked = new Map<string, string>();
 		for (const item of items) {
@@ -1465,6 +1506,10 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 	}
 
 	async function execute(params: any, ctx: HostContext, within: Job) {
+		if (!(TODO_OPS as readonly string[]).includes(params.op)) {
+			const text = `todo needs op: one of ${TODO_OPS.join(", ")}.`;
+			return { content: [{ type: "text" as const, text }], details: { op: String(params.op), kata: { notice: text } }, isError: true as const };
+		}
 		const { text, notice, failed } = await todoCall(params, ctx, within);
 		return {
 			content: [{ type: "text" as const, text }],
@@ -1632,7 +1677,7 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 			address,
 			actor: () => actor(job, cwd),
 			read: async () => JSON.parse(await kata.run(job, ["inbox", "--for", address], cwd)),
-			spawn: cursor => live.spawn(cwd, cursor),
+			spawn: cursor => live.spawn(["events", "--tail", "--json", "--workspace", cwd, ...(cursor ? ["--last-event-id", String(cursor)] : [])], cwd),
 			deliver: text => { try { Promise.resolve(live.deliver(text)).catch(debug); } catch (error) { debug(error); } },
 			publish: text => { liveInbox = text; },
 			head: () => knownProjectHead(cwd, args => kata.run(job, args, cwd), platform.env.get("KATA_HOME")),
@@ -1774,13 +1819,16 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 		})(), closing.delegate ? DELEGATE_SHUTDOWN_MS : SHUTDOWN_BOUND_MS);
 	}
 
+	const completion = createTicketCompletion(kata, () => ({ session: currentId, cwd: path.resolve(currentCtx?.cwd ?? platform.cwd()), defaultProject: setting("KATA_DEFAULT_PROJECT") }), debug, platform);
+
 	return {
 		session: {
 			// The session began or switched: bind the plan, follow the inbox live when the host can, start attention.
 			// `after` is host work (a delegate's assignment retry) the first context read waits for.
 			// `child`: the workspace of a pi child still to join its parent; when Kata does not answer there, nothing starts and the result is undefined: the host runs the session as a main session and starts it again.
 			// `forked`: this session is a fork that replaces its source in this process (pi's /fork); it inherits the source's tasks.
-			async start(ctx: HostContext, begin: { after?: Promise<unknown>; child?: string; forked?: boolean } = {}): Promise<Lead | undefined> {
+			// `wait`: how long the start waits for the bind (default 250 ms).
+			async start(ctx: HostContext, begin: { after?: Promise<unknown>; child?: string; forked?: boolean; wait?: number } = {}): Promise<Lead | undefined> {
 				if (!main(ctx)) {
 					if (begin.child !== undefined && !await probe(NO_JOB, begin.child)) return undefined;
 					see(ctx);
@@ -1822,7 +1870,7 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 					if (ending || source) { await load(job, plan.workspace).catch(debug); refresh(ctx); }
 				});
 				// OMP snapshots the bash environment after this handler returns.
-				await bounded(switching, explicit && options.attentionHarness && id ? ATTENTION_START_MS : undefined);
+				await bounded(switching, explicit && options.attentionHarness && id ? ATTENTION_START_MS : begin.wait);
 				return lead();
 			},
 			branch: rebind,
@@ -1903,11 +1951,12 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 			release: delegates.release,
 			join,
 		},
-		// Adds `#` ticket completion to the editor of the current session, once per editor.
-		offerTickets: createTicketCompletion(kata, () => ({ session: currentId, cwd: path.resolve(currentCtx?.cwd ?? platform.cwd()), defaultProject: setting("KATA_DEFAULT_PROJECT") }), debug, platform),
+		// `offerTickets` adds `#` ticket completion to the editor of the current session, once per editor; `suggestTickets` is the
+		// completion for a line a host draws the menu of itself.
+		offerTickets: completion.offer,
+		suggestTickets: completion.suggest,
 	};
 }
 
-export type KataCore = ReturnType<typeof createKataCore>;
 // What a batch's function is given: pass it to the todo calls and delegate checks that are to run in the batch.
 export type { Job };

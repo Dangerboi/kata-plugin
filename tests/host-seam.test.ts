@@ -10,7 +10,8 @@ import { nodePlatform } from "../core/node-host";
 import { kataCommands } from "../core/shell";
 import { explicitParent } from "../core/plan-parent";
 import { slotKey } from "../core/inbox";
-import { closeEnv, debugTo, waitAtMost, type Timers } from "../core/kata-cli";
+import { closeEnv, CORE_ENV, debugTo, waitAtMost, type Timers } from "../core/kata-cli";
+import { readEnv } from "../plugins/claude-code/hooks/settings";
 
 test("the pure SHA-256 matches the published vectors", () => {
   expect(sha256Hex("")).toBe("e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855");
@@ -63,8 +64,9 @@ test("slotKey is unpadded base64url of the address bytes", () => {
 });
 
 test("the transcript switch comes from the host's environment, not the process", () => {
-  expect(closeEnv(["close", "x"], "claude", "s1", "false")).toMatchObject({ KATA_CLOSE_TRANSCRIPT_ENABLED: "false", KATA_TRANSCRIPT_SESSION_ID: "s1" });
-  expect(closeEnv(["close", "x"], "claude", "s1")).toMatchObject({ KATA_CLOSE_TRANSCRIPT_ENABLED: "true" });
+  const host = (value?: string) => ({ get: (name: string) => name === "KATA_CLOSE_TRANSCRIPT_ENABLED" ? value : undefined });
+  expect(closeEnv(host("false"), ["close", "x"], "claude", "s1")).toMatchObject({ KATA_CLOSE_TRANSCRIPT_ENABLED: "false", KATA_TRANSCRIPT_SESSION_ID: "s1" });
+  expect(closeEnv(host(), ["close", "x"], "claude", "s1")).toMatchObject({ KATA_CLOSE_TRANSCRIPT_ENABLED: "true" });
 });
 
 test("waitAtMost and debugTo take their timer and file sink from the host", async () => {
@@ -92,4 +94,10 @@ test("core/ imports nothing from Node, except the Node host module", () => {
     });
   }
   expect(offenders).toEqual([]);
+});
+
+test("the Claude Code adapter asks its host for every variable the core reads", async () => {
+  const asked: string[] = [];
+  await readEnv({ env: { get: async (name: string) => { asked.push(name); return undefined; } } } as any);
+  for (const name of CORE_ENV) expect(asked).toContain(name);
 });

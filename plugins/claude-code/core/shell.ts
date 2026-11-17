@@ -1,5 +1,5 @@
 // Generated from core/shell.ts; edit there.
-import { closeEnv, type PathOps } from "./kata-cli";
+import { closeEnv, type PathOps, type Platform } from "./kata-cli";
 import { projectOf, type Binding } from "./model";
 
 // Kata invocations inside a bash command, and the rewrite that pins a delegate's to its teammate.
@@ -69,7 +69,7 @@ export function shellOptions(words: ShellWord[]) {
 	return { options, occurrences, args, value };
 }
 
-export function delegateCommand(path: Pick<PathOps, "basename">, command: string, executable: string, executableVars: readonly string[], teammate: string, binding?: Binding, transcriptSession?: { agent: string; id: string | undefined; enabled?: string }, extraEnv: Record<string, string> = {}): string {
+export function delegateCommand(path: Pick<PathOps, "basename">, command: string, executable: string, executableVars: readonly string[], teammate: string, binding?: Binding, transcript?: { env: Pick<Platform["env"], "get">; agent: string; id: string | undefined }, extraEnv: Record<string, string> = {}): string {
 	const edits: { start: number; end: number; value: string }[] = [];
 	for (const invocation of kataCommands(path, command, executable, executableVars)) {
 		const parsed = shellOptions(invocation.words);
@@ -82,7 +82,7 @@ export function delegateCommand(path: Pick<PathOps, "basename">, command: string
 		}
 		edits.push({ start: invocation.executable.end, end: invocation.executable.end, value: flags });
 		// An in-process delegate has its own session; without this its close would record the lead's.
-		const prefix = envPrefix({ ...(transcriptSession ? closeEnv(parsed.args, transcriptSession.agent, transcriptSession.id, transcriptSession.enabled) : undefined), ...extraEnv });
+		const prefix = envPrefix({ ...(transcript ? closeEnv(transcript.env, parsed.args, transcript.agent, transcript.id) : undefined), ...extraEnv });
 		if (prefix) edits.push({ start: invocation.executable.start, end: invocation.executable.start, value: prefix });
 	}
 	for (const edit of edits.sort((a, b) => b.start - a.start)) command = command.slice(0, edit.start) + edit.value + command.slice(edit.end);

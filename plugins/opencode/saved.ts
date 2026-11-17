@@ -1,16 +1,12 @@
-import { snapshotEntry, type Snapshot } from "./kata-core";
+import type { SavedEntry } from "./kata-core";
 
 // `ctx.storage` is one key-value store per plugin id, shared by every location and kept across server restarts, so every
 // key is `session/<sessionID>/<part>`. This file names the parts and is the only one that reads or writes them.
 
 // The namespace of this adapter's cores: it names their saved entries and their Kata metadata keys.
 export const NAMESPACE = "opencode";
-export type SavedEntry = { type: "custom"; customType: string; data: unknown };
 // The `entries` part: a lead's saved entries, and the folder of the location they belong to.
 type SavedLead = { directory: string; entries: SavedEntry[] };
-
-// What the core saved for the session: its latest snapshot, with the pending closes and the unfinished delegates.
-export const coreState = (entries: SavedEntry[]): Partial<Snapshot> | undefined => entries.find(entry => entry.customType === snapshotEntry(NAMESPACE))?.data as Partial<Snapshot> | undefined;
 
 export interface SessionStorage {
 	// `entries`: what the core of a lead of this location saved. A lead resumes from it, never from scratch, and only in its own folder.

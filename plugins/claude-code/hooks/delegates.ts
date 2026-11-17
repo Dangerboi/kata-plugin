@@ -1,10 +1,10 @@
 import type { AgentSpawnResult, Hook } from "claude-code";
 import { NO_JOB, waitAtMost } from "../core/kata-cli";
 import { posixPath } from "../core/posix-path";
-import { Refusal, teammateFor, type DelegateOutcome, type DelegateRecord, type DelegateStore } from "../core/delegates";
+import { Refusal, teammateFor, type DelegateOutcome, type DelegateRecord } from "../core/delegates";
 import type { Binding } from "../core/model";
 import { delegateCommand, kataCommands, shellOptions } from "../core/shell";
-import type { KataCore } from "../core/kata-core";
+import { tagged, todoText } from "../core/kata-core";
 import type { Engine } from "./engine";
 import type { Held } from "./host";
 import { contextOf, enter, runtime, type Entered, type Runtime } from "./lead";
@@ -51,23 +51,6 @@ function recordOf(rt: Runtime, agentId: string): DelegateRecord | undefined {
 	for (const record of rt.records.values()) if (record.sessionId === agentId) return record;
 }
 
-// A delegate's core: it shares the lead's records, finds its own by its id, and never settles or saves.
-function coreOf(rt: Runtime, id: string): KataCore {
-	let core = rt.callers.get(id);
-	if (!core) {
-		const store: DelegateStore = {
-			records: () => [],
-			get: key => (key === id ? rt.records.get(key) : undefined),
-			put: record => {
-				rt.records.set(record.id, record);
-			},
-			of: () => rt.records.get(id)
-		};
-		rt.callers.set(id, (core = rt.coreFor(store)));
-	}
-	return core;
-}
-
 // The record of an agent id, once the spawn hooks that may still be recording it have finished.
 interface Found {
 	rt: Runtime;
@@ -101,15 +84,14 @@ const textOf = (e: { prompt: string; description: string; name?: string }) => [e
 // contract, the contract.
 async function assignmentNote($: Engine, rt: Runtime, held: Held | undefined, id: string, ms: number): Promise<string | undefined> {
 	const asked = await waitAtMost(
-		coreOf(rt, id).session.beforePrompt(contextOf($, rt, id, held), { context: rt.settings.contract }),
+		rt.core.delegate(id).session.beforePrompt(contextOf($, rt, id, held), { context: rt.settings.contract }),
 		ms,
 		() => undefined,
 		contextOf($, rt).timers!
 	);
 	if (!asked) return undefined;
 	const { sections } = asked;
-	const tagged = (name: string, text: string | undefined) => (text ? `<kata_${name}>\n${text}\n</kata_${name}>` : undefined);
-	return [tagged("contract", sections.contract), tagged("binding", sections.assignment)].filter(Boolean).join("\n\n") || undefined;
+	return [sections.contract && tagged("contract", sections.contract), sections.assignment && tagged("assignment", sections.assignment)].filter(Boolean).join("\n\n") || undefined;
 }
 
 // The record of an agent that never ran, or whose run failed, gives back what its assignment wrote.
@@ -315,8 +297,8 @@ export async function delegateTodo($: Engine, agentId: string, op: string, param
 	if (!record) return { text: "This subagent has no Kata assignment: it is not one the lead tracks, so report your work in your reply.", isError: true };
 	try {
 		await used($, rt, record);
-		const out = await coreOf(rt, record.id).todo.apply(contextOf($, rt, record.id), op, params, NO_JOB);
-		return { text: out.content.map(part => part.text).join("\n"), isError: out.isError === true };
+		const out = await rt.core.delegate(record.id).todo.apply(contextOf($, rt, record.id), op, params, NO_JOB);
+		return { text: todoText(out), isError: out.isError === true };
 	} catch (error) {
 		return { text: error instanceof Error ? error.message : String(error), isError: true };
 	}

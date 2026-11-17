@@ -1,6 +1,5 @@
 import { createKataCore, type KataCore } from "../core/kata-core";
-import { NO_JOB, waitAtMost } from "../core/kata-cli";
-import type { DelegateRecord, DelegateStore } from "../core/delegates";
+import { recordStore, type DelegateRecord } from "../core/delegates";
 import type { Engine } from "./engine";
 import { canonicalPath, execOf, platformOf, type Held, type RunContext } from "./host";
 import { planUi } from "./plan";
@@ -28,14 +27,10 @@ export interface Runtime {
 	latest?: RunContext;
 	// What earlier prompts of this session carried, by section: a section is sent again only when it changed.
 	sent: Record<string, string>;
-	ready: Promise<unknown>;
 	// Whether an earlier session of this process was left behind (a fork's source, or what a switch ends).
 	previous?: string;
-	// The lead's delegates by record id (delegates.ts), and a core for each: the core holds one session's plan, so a delegate
-	// reaches its issue through a core of its own that shares these records and never settles or saves.
+	// The lead's delegates by record id (delegates.ts); a delegate reaches its issue through `core.delegate(id)`.
 	records: Map<string, DelegateRecord>;
-	coreFor(store: DelegateStore): KataCore;
-	callers: Map<string, KataCore>;
 	// Spawn hooks still running: a subagent's first call can arrive before its spawn hook has recorded its agent id.
 	spawning: Set<Promise<unknown>>;
 }
@@ -63,59 +58,40 @@ export function contextOf($: Engine, rt: Runtime, delegate?: string, held: Held 
 	};
 }
 
-// Delegates are recorded in memory by record id (the delegate module names it); assigning them to plan items is its job too.
-function delegateStore(records: () => Map<string, DelegateRecord>): DelegateStore {
-	return {
-		records: () => [...records().values()],
-		get: key => records().get(key),
-		put: record => {
-			records().set(record.id, record);
-		},
-		of: ctx => (ctx?.agent?.id ? records().get(ctx.agent.id) : undefined)
-	};
-}
-
 async function create($: Engine): Promise<Runtime> {
 	const env = await readEnv($);
 	const settings = resolveSettings(options, env);
 	const state = { cwd: "", debugFile: settings.debugFile };
 	const platform = platformOf($, env, state);
 	const exec = execOf($, env, () => rt.latest);
-	const build = (store: DelegateStore, main: boolean) =>
-		createKataCore(
-			{
-				platform,
-				contextTimers: ctx => ctx?.timers,
-				exec,
-				appendEntry: (type, data) => {
-					if (main) rt.writer?.append(type, data);
-				},
-				switched: ctx => {
-					if (!main || !ctx.held) return;
-					rt.writer = ctx.held.writer;
-					rt.records = ctx.held.records;
-				},
-				isMain: ctx => ctx?.agent === undefined,
-				delegateStore: store,
-				liveInbox: main && settings.liveInbox ? liveInboxOf($, settings.executable) : undefined
-			},
-			{ namespace: NAMESPACE, executable: settings.executable, executableVars: EXECUTABLE_VARS, debugFile: settings.debugFile, widget: (_line, view) => view }
-		);
-	// The cores only call back into `rt` once an event runs, after this literal is built.
+	// The core only calls back into `rt` once an event runs, after this literal is built.
 	const rt: Runtime = {
 		settings,
 		env,
 		state,
 		sent: {},
-		ready: Promise.resolve(),
 		records: new Map(),
-		callers: new Map(),
 		spawning: new Set(),
-		core: build(
-			delegateStore(() => rt.records),
-			true
-		),
-		coreFor: store => build(store, false)
+		core: createKataCore(
+			{
+				platform,
+				contextTimers: ctx => ctx?.timers,
+				exec,
+				appendEntry: (type, data) => rt.writer?.append(type, data),
+				switched: ctx => {
+					if (!ctx.held) return;
+					rt.writer = ctx.held.writer;
+					rt.records = ctx.held.records;
+				},
+				isMain: ctx => ctx?.agent === undefined,
+				delegateStore: recordStore(
+					() => rt.records,
+					ctx => (ctx?.agent?.id ? rt.records.get(ctx.agent.id) : undefined)
+				),
+				liveInbox: settings.liveInbox ? liveInboxOf($, settings.executable) : undefined
+			},
+			{ namespace: NAMESPACE, executable: settings.executable, executableVars: EXECUTABLE_VARS, debugFile: settings.debugFile, widget: (_line, view) => view }
+		)
 	};
 	return rt;
 }
@@ -149,8 +125,7 @@ async function attach($: Engine, hint: { fork?: boolean }): Promise<Entered> {
 	rt.id = id;
 	rt.previous = previous;
 	rt.sent = {};
-	// The previous session's delegates and cores stay with it (saved above, picked up when it resumes).
-	rt.callers.clear();
+	// The previous session's delegates stay with it (saved above, picked up when it resumes).
 	const held: Held = {
 		id,
 		header: hint.fork && previous ? { parentSession: previous } : undefined,
@@ -160,9 +135,7 @@ async function attach($: Engine, hint: { fork?: boolean }): Promise<Entered> {
 	held.writer.start(await loadSession($, id), cwd, seed);
 	const ctx = (rt.latest = contextOf($, rt, undefined, held));
 	// The saved plan, pending closes and unfinished delegates of a resumed session are picked up by the core's bind.
-	await rt.core.session.start(ctx);
-	rt.ready = rt.core.todo.apply(ctx, "view", {}, NO_JOB).catch(() => undefined);
-	await waitAtMost(rt.ready, READY_MS, () => undefined, ctx.timers!);
+	await rt.core.session.start(ctx, { wait: READY_MS });
 	void pruneSessions($, await $.clock.now(), id).catch(() => undefined);
 	return { rt, ctx };
 }

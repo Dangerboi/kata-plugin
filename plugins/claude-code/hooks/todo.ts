@@ -1,4 +1,4 @@
-import { DESCRIPTION, TODO_OPS, TODO_PARAMS } from "../core/kata-core";
+import { DESCRIPTION, TODO_OPS, TODO_PARAMS, todoText } from "../core/kata-core";
 import { NO_JOB } from "../core/kata-cli";
 import type { Hook } from "claude-code";
 import type { Engine } from "./engine";
@@ -58,8 +58,7 @@ export async function onTodoCall($: Engine, e: Record<string, unknown> & { agent
 		requestMeta: _meta,
 		...params
 	} = e as Record<string, unknown> & { agentId?: string; tool_use_id?: string };
-	const op = params.op;
-	if (typeof op !== "string" || !(TODO_OPS as readonly string[]).includes(op)) return failure(`todo needs op: one of ${TODO_OPS.join(", ")}.`);
+	const op = String(params.op);
 	// A subagent shares the tool pool but not the lead's plan: its call reaches the core of its own issue.
 	if (agentId !== undefined) {
 		const out = await delegateTodo($, agentId, op, params);
@@ -69,7 +68,7 @@ export async function onTodoCall($: Engine, e: Record<string, unknown> & { agent
 		const { rt, ctx } = await enter($);
 		const out = await rt.core.todo.apply(ctx, op, params, NO_JOB);
 		await rt.core.tools.result(ctx, { toolName: "todo", isError: out.isError === true });
-		const text = out.content.map(part => part.text).join("\n");
+		const text = todoText(out);
 		leaveNotice(String(callId), (out.details as { kata?: { notice?: string } } | undefined)?.kata?.notice);
 		return out.isError === true ? failure(text) : { result: text };
 	} catch (error) {

@@ -25,15 +25,12 @@ export const resetInbox = () => {
 	busy = false;
 };
 
-// `kata events --tail --json` as a child of the host: no shell. The child lives while the loop below reads it; `kill` ends
+// Kata as a child of the host (`events --tail --json`): no shell. The child lives while the loop below reads it; `kill` ends
 // the loop, which ends the child. Pieces are text as it came, so a line can span two of them. stderr is dropped.
 // The stream is the child's only handle: `$.process.spawn` documents `return()` on it as the kill, with a pull pending (the
 // loop always has one), and `next.signal` or the module unloading as the other ends. The mod has no process id to signal.
-function spawnEvents($: Engine, executable: string, cwd: string, cursor: number | undefined): InboxStream {
-	const stream = $.process.spawn({
-		argv: [executable, "events", "--tail", "--json", "--workspace", cwd, ...(cursor ? ["--last-event-id", String(cursor)] : [])],
-		cwd
-	});
+function spawnEvents($: Engine, executable: string, args: string[], cwd: string): InboxStream {
+	const stream = $.process.spawn({ argv: [executable, ...args], cwd });
 	const pieces = stream[Symbol.asyncIterator]();
 	let ended!: () => void;
 	const exited = new Promise<void>(resolve => {
@@ -44,7 +41,10 @@ function spawnEvents($: Engine, executable: string, cwd: string, cursor: number 
 		try {
 			for (;;) {
 				const step = await pieces.next();
-				if (step.done) return;
+				if (step.done) {
+					if (pending.trim()) yield pending;
+					return;
+				}
 				const piece = step.value;
 				if (piece.stream !== "stdout") continue;
 				const parts = (pending + piece.text).split("\n");
@@ -79,5 +79,5 @@ async function deliverTo($: Engine, text: string): Promise<void> {
 
 // What the core takes as `host.liveInbox`.
 export function liveInboxOf($: Engine, executable: string): LiveInbox {
-	return { spawn: (cwd, cursor) => spawnEvents($, executable, cwd, cursor), deliver: text => deliverTo($, text) };
+	return { spawn: (args, cwd) => spawnEvents($, executable, args, cwd), deliver: text => deliverTo($, text) };
 }

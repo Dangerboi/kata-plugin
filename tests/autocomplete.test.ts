@@ -115,13 +115,23 @@ test("a session switch registers again, yet each ticket is offered once", async 
 	const ui = () => ({ addAutocompleteProvider: (factory: (current: any) => any) => { factories.push(factory); } });
 	const kata = { run: async () => JSON.stringify({ issues: bound }) } as any;
 	const scope = () => ({ cwd: "/fixture" });
-	createTicketCompletion(kata, scope, () => {}, nodePlatform)(ui());
+	createTicketCompletion(kata, scope, () => {}, nodePlatform).offer(ui());
 	// Another extension's provider between the two registrations.
 	factories.push(current => ({ getSuggestions: (...args: any[]) => current.getSuggestions(...args), applyCompletion: (...args: any[]) => current.applyCompletion(...args) }));
 	// The next session: a new UI context, and a reloaded module.
-	createTicketCompletion(kata, scope, () => {}, nodePlatform)(ui());
+	createTicketCompletion(kata, scope, () => {}, nodePlatform).offer(ui());
 	const editor = factories.reduce((provider, factory) => factory(provider), wrapped());
 	const result = await ask(editor, "see #bc");
 	expect(result.items.map((i: any) => i.value)).toEqual(["demo#bc7q"]);
 	expect(editor.applyCompletion(["see #bc"], 0, 7, result.items[0], result.prefix).lines).toEqual(["see demo#bc7q "]);
+});
+
+test("suggest answers a line directly: tickets only, the same rules, no editor", async () => {
+	const kata = { run: async () => JSON.stringify({ issues: bound }) } as any;
+	const { suggest } = createTicketCompletion(kata, () => ({ cwd: "/fixture" }), () => {}, nodePlatform);
+	const found = await suggest("see #bc");
+	expect(found?.prefix).toBe("#bc");
+	expect(found?.items).toEqual([{ value: "demo#bc7q", label: "demo#bc7q", description: "Tidy the sample board" }]);
+	expect(await suggest("#1234")).toBeNull();
+	expect(await suggest("no token")).toBeNull();
 });

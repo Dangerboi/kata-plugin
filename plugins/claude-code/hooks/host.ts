@@ -3,7 +3,7 @@ import * as path from "../core/posix-path";
 import { posixPath } from "../core/posix-path";
 import type { DelegateRecord } from "../core/delegates";
 import type { Engine } from "./engine";
-import type { sessionWriter } from "./saved";
+import { NAMESPACE, type sessionWriter } from "./saved";
 
 // Everything the core takes from its machine, built from `$`: the one place that knows the mod runtime has no Node.
 
@@ -97,7 +97,7 @@ export function platformOf($: Engine, env: Map<string, string>, state: { cwd: st
 export function execOf($: Engine, env: Map<string, string>, latest: () => RunContext | undefined) {
 	return async (file: string, args: string[], options: { cwd: string; timeout: number; ctx?: RunContext }): Promise<ExecResult> => {
 		const ctx = options.ctx ?? latest();
-		const pair = closeEnv(args, "claude", ctx?.sessionManager?.getSessionId?.(), env.get("KATA_CLOSE_TRANSCRIPT_ENABLED"));
+		const pair = closeEnv({ get: name => env.get(name) }, args, NAMESPACE, ctx?.sessionManager?.getSessionId?.());
 		const begun = await $.clock.now();
 		try {
 			const run = ctx?.run ?? ((argv, init) => $.process.run(argv, init));

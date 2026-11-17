@@ -1,4 +1,4 @@
-import type { DelegateOutcome } from "./delegates";
+import { Refusal, type DelegateOutcome } from "./delegates";
 import { lastText, textOf } from "./model";
 import type { Lead } from "./lead";
 import { CallRefused, EXECUTION_ENDED, SESSION_ENDED, type Seam } from "./seam";
@@ -91,7 +91,11 @@ export function install(seam: Seam): void {
 		if (typeof input.sessionID === "string" && input.sessionID) call.followUp = input.sessionID;
 		else {
 			try { await lead.checkSpawn(call.id, textFor(call)); }
-			catch (error) { throw new CallRefused(error instanceof Error ? error.message : String(error)); }
+			catch (error) {
+				if (error instanceof Refusal) throw new CallRefused(error.message);
+				// A spawn Kata could not be asked about runs unreserved: its child decides from the call's text when it starts.
+				seam.debug(error);
+			}
 		}
 		callsOf(lead.id).push(call);
 	});

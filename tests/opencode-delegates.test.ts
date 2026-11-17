@@ -7,7 +7,7 @@ import { SUBAGENT_PREFIX } from "../plugins/opencode/subagents";
 
 const {
 	show, startLead, restart, parentOf, ticketRef, itemsOf, labelsOf, commentsOf, closeAs, savedOf, forgotten,
-	kataCalls, holdCalls, releaseCalls,
+	kataCalls, holdCalls, releaseCalls, kataDown,
 } = openCodeKata("opencode-delegates");
 
 async function item(id: string, title: string): Promise<any> {
@@ -167,6 +167,18 @@ test("a spawn the rules refuse never runs and leaves Kata unchanged", async () =
 	expect(result.text).toContain("names more than one ticket or plan item");
 	expect(child).toBeUndefined();
 	expect(JSON.stringify((await itemsOf(id)).map(c => [c.title, c.revision]))).toBe(before);
+});
+
+test("a spawn that names a ticket while Kata is unusable is not refused", async () => {
+	const ticket = await ticketRef("Ticket named while Kata is down", "Named by a spawn.");
+	const { host, id } = await startLead();
+	await write(host, id, todos(["Implement parser module", "pending"]));
+	kataDown();
+	try {
+		const { result, child } = await spawn(host, id, { prompt: `Work on ${ticket}.` }, async () => "Done.");
+		expect(result.executed).not.toBe(false);
+		expect(child).toBeDefined();
+	} finally { kataDown(false); }
 });
 
 test("a spawn naming an item another lead session holds is refused in todowrite's words", async () => {

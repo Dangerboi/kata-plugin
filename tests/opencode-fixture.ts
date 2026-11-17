@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, expect } from "bun:test";
 import { chmodSync, existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
-import { siblingThrottle } from "./kata-errors";
+import { daemonUnavailable, siblingThrottle } from "./kata-errors";
 import { EVIDENCE, MESSAGE, realKata, unique } from "./kata-fixture";
 import { openCodeHost, type FakeSession, type OpenCodePlugin, type OpenCodeInstance } from "./opencode-host";
 import opencode from "../plugins/opencode/kata";
@@ -37,7 +37,8 @@ export function assignmentOf(system: string) {
 /**
  * A real Kata for OpenCode adapter tests (`realKata`, adopted, one project) and the pieces they share. The adapter's
  * executable is a wrapper that records every call, and the files below switch its behaviour (all removed before each test):
- * `throttleCloses` makes `kata close` fail with the sibling throttle, as Kata does after a burst of closes; `holdCalls`
+ * `throttleCloses` makes `kata close` fail with the sibling throttle, as Kata does after a burst of closes; `kataDown`
+ * makes every call fail as when Kata's daemon is unavailable; `holdCalls`
  * makes the calls of one verb (or all) wait until `releaseCalls`. Everything else goes to the real binary. Hosts a test
  * starts are shut down after it.
  */
@@ -46,10 +47,14 @@ export function openCodeKata(prefix: string) {
 	const { binary, scratch, cwd, env, show } = store;
 
 	const wrapper = path.join(scratch, "kata-wrapper.sh");
-	const calls = path.join(scratch, "calls.log"), throttle = path.join(scratch, "throttle"), hold = path.join(scratch, "hold");
+	const calls = path.join(scratch, "calls.log"), throttle = path.join(scratch, "throttle"), hold = path.join(scratch, "hold"), down = path.join(scratch, "down");
 	writeFileSync(wrapper, `#!/bin/sh
 echo "$@" >> "${calls}"
 while [ -e "${hold}" ] && { [ "$(cat "${hold}")" = "*" ] || [ "$(cat "${hold}")" = "$1" ]; }; do sleep 0.05; done
+if [ -e "${down}" ]; then
+	printf '%s\\n' '${daemonUnavailable().stderr.trim()}' >&2
+	exit ${daemonUnavailable().code}
+fi
 if [ "$1" = close ] && [ -e "${throttle}" ]; then
 	printf '%s\\n' '${siblingThrottle().stderr.trim()}' >&2
 	exit 1
@@ -60,11 +65,12 @@ exec "${binary}" "$@"
 	const kataCalls = () => (existsSync(calls) ? readFileSync(calls, "utf8").split("\n").filter(Boolean) : []);
 	const forgetCalls = () => rmSync(calls, { force: true });
 	const throttleCloses = (on = true) => (on ? writeFileSync(throttle, "") : rmSync(throttle, { force: true }));
+	const kataDown = (on = true) => (on ? writeFileSync(down, "") : rmSync(down, { force: true }));
 	const holdCalls = (verb = "*") => writeFileSync(hold, verb);
 	const releaseCalls = () => rmSync(hold, { force: true });
 
 	const hosts: OpenCodeInstance[] = [];
-	beforeEach(() => { forgetCalls(); throttleCloses(false); releaseCalls(); });
+	beforeEach(() => { forgetCalls(); throttleCloses(false); kataDown(false); releaseCalls(); });
 	afterEach(async () => {
 		// A shutdown waits for what a held call blocks.
 		releaseCalls();
@@ -131,7 +137,7 @@ exec "${binary}" "$@"
 	const forgotten = (host: OpenCodeInstance, id: string) => !savedOf(host, id).any;
 
 	return {
-		...store, wrapper, kataCalls, forgetCalls, throttleCloses, holdCalls, releaseCalls,
+		...store, wrapper, kataCalls, forgetCalls, throttleCloses, kataDown, holdCalls, releaseCalls,
 		startHost, startLead, newSession, restart,
 		parentOf, ticketRef, childrenOf, itemsOf, closeEvents, labelsOf, sh, closeAs, savedOf, forgotten,
 	};
