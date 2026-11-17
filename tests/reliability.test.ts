@@ -4,7 +4,7 @@ import path from "node:path";
 import { createKataCore, type Job } from "../core/kata-core";
 import { NO_JOB } from "../core/kata-cli";
 import { nodePlatform } from "../core/node-host";
-import { EVIDENCE, isolatedKata, later, memoryDelegateStore, MESSAGE as message, realKata } from "./kata-fixture";
+import { EVIDENCE, isolatedKata, later, memoryDelegateStore, MESSAGE as message, realKata, until } from "./kata-fixture";
 import { daemonUnavailable, notInitialized, notInitializedBound, notInitializedNoData, notInitializedProject, siblingThrottle } from "./kata-errors";
 const { binary, scratch: root, cwd, env, run, text, kata, show, issue, closesOf, deleteIssue, sessionParents } = realKata({ prefix: "reliability", author: "actor-a", project: "reliability-test" });
 const outside = path.join(root, "outside"), localProject = path.join(root, "local-project");
@@ -16,7 +16,7 @@ function app(options: any = {}) {
   const id = options.sid || `reliability-${++seq}`;
   const ctx = { cwd: options.cwd || cwd, sessionManager: { getSessionId: () => id, getBranch: () => entries } };
   const core = createKataCore({ platform: nodePlatform, contextTimers: ctx => ctx.setTimeout ? { setTimer: ctx.setTimeout, clearTimer: ctx.clearTimer } : undefined, appendEntry: (customType, data) => entries.push({ type: "custom", customType, data }),
-    exec: async (_file, args, opts) => { calls.push(args); contexts.push(opts.ctx); return await options.before?.(args) ?? run(args, opts.cwd); }, delegateStore: memoryDelegateStore(),
+    exec: async (_file, args, opts) => { calls.push(args); contexts.push(opts.ctx); return await options.before?.(args) ?? run(args, opts.cwd); }, delegateStore: memoryDelegateStore(), isMain: options.isMain,
   }, { namespace: "omp", executable: binary, executableVars: ["KATA_OMP_EXECUTABLE"], explicitRef: () => options.ref });
   return { core, calls, contexts, entries, ctx, call: (p: any, job: Job = NO_JOB) => core.todo.apply(ctx, p.op, p, job) };
 }
@@ -692,3 +692,28 @@ test("a job held after its batch ended queues like any other call", async () => 
   expect(await Promise.race([a.call({ op: "view" }, held).then(result => result.isError), stuck()])).toBeUndefined();
 });
 
+test("a turn's inbox section shows a request sent while an earlier inbox read was still answering", async () => {
+  // A delegate's prompt waits up to 3 s for the inbox, so the held read below decides the result, not the machine's speed.
+  const address = `actor-a/inflight-${++seq}`, note = `inflight-note-${seq}`;
+  process.env.KATA_INBOX_USER = address;
+  let holding = true, answered = false;
+  const { promise: released, resolve: release } = Promise.withResolvers<void>();
+  const a = app({ isMain: () => false, before: async (args: string[]) => {
+    if (args[0] !== "inbox" || !holding) return undefined;
+    // The first read answers from before the notify, but only once the second turn has started.
+    holding = false;
+    const out = await run(args, cwd);
+    answered = true;
+    await released;
+    return out;
+  } });
+  const ref = await issue("In-flight inbox read");
+  const first = a.core.session.beforePrompt(a.ctx);
+  expect(await until(() => answered)).toBe(true);
+  await kata(["notify", ref, "--to", address, "--message", note, "--json"]);
+  const second = a.core.session.beforePrompt(a.ctx);
+  release();
+  expect((await first).sections.inbox ?? "").not.toContain(note);
+  expect((await second).sections.inbox).toContain(note);
+  await kata(["notify", ref, "--to", address, "--clear", "--json"]);
+});
