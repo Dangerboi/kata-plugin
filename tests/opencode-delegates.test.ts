@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
-import { EVIDENCE as evidence, MESSAGE as message, until } from "./kata-fixture";
+import { assignmentOf, EVIDENCE as evidence, MESSAGE as message, until } from "./kata-fixture";
 import { userMessage, type FakeSession, type OpenCodeInstance } from "./opencode-host";
-import { assignmentOf, openCodeKata, qref, statusOf, todos, write } from "./opencode-fixture";
+import { openCodeKata, qref, statusOf, todos, write } from "./opencode-fixture";
 import opencode from "../plugins/opencode/kata";
 import { SUBAGENT_PREFIX } from "../plugins/opencode/subagents";
 

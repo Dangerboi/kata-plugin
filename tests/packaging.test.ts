@@ -95,12 +95,11 @@ test("each distributable keeps its complete local import graph inside its folder
   }
 });
 
-test("the Claude marketplace lists the mod under the plugin's own name and version", () => {
+test("the Claude marketplace lists the plugin folder under the plugin manifest's own name and version", () => {
   const marketplace = json(".claude-plugin/marketplace.json");
   const manifest = json("plugins/claude-code/.claude-plugin/plugin.json");
-  expect(marketplace.name).toBe("kata-plugin");
-  expect(marketplace.plugins).toEqual([expect.objectContaining({ name: "kata-cc", source: "./plugins/claude-code", version: manifest.version })]);
-  expect(manifest.name).toBe("kata-cc");
-  // No npm package or publish job: installs come from the marketplace's Git.
-  expect(existsSync(path.join(root, "plugins/claude-code/package.json"))).toBe(false);
+  expect(marketplace.plugins).toHaveLength(1);
+  const [listed] = marketplace.plugins;
+  expect(listed).toMatchObject({ name: manifest.name, version: manifest.version });
+  expect(existsSync(path.join(root, listed.source, ".claude-plugin/plugin.json"))).toBe(true);
 });

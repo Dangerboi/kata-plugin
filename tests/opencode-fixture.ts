@@ -2,7 +2,7 @@ import { afterEach, beforeEach, expect } from "bun:test";
 import { chmodSync, existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { daemonUnavailable, siblingThrottle } from "./kata-errors";
-import { EVIDENCE, MESSAGE, realKata, unique } from "./kata-fixture";
+import { assignmentOf, EVIDENCE, MESSAGE, quote, realKata, unique } from "./kata-fixture";
 import { openCodeHost, type FakeSession, type OpenCodePlugin, type OpenCodeInstance } from "./opencode-host";
 import opencode from "../plugins/opencode/kata";
 import { eventsHandled } from "../plugins/opencode/seam";
@@ -10,7 +10,6 @@ import { eventsHandled } from "../plugins/opencode/seam";
 export const PROJECT = "pi-port-opencode";
 const AUTHOR = "opencode-builder";
 
-const quote = (value: string) => `'${value.replace(/'/g, "'\\''")}'`;
 /** The end of the storage keys a session's saved parts live under, named once for `savedOf` and for tests that gate a read of one. */
 export const SAVED = { entries: "/entries", ended: "/ended" };
 
@@ -22,17 +21,6 @@ export const qref = (issue: any): string => issue.qualified_id ?? `${PROJECT}#${
 export const statusOf = (child: any) => (child.status === "closed" ? `closed:${child.closed_reason}` : child.metadata?.["todo.status"]);
 /** The list a refused todowrite ends with, to send back. */
 export const currentList = (text: string) => JSON.parse(text.slice(text.lastIndexOf('{"todos"'))).todos;
-
-/**
- * What the delegate's prompt holds for it: its issue, its teammate and the close command it is told to run, with the two
- * placeholders (the message and the evidence) still to fill. `close` is undefined when the prompt has no such command.
- */
-export function assignmentOf(system: string) {
-	const ref = /Your Kata issue is (\S+?);/.exec(system)?.[1] ?? "";
-	const teammate = /your teammate is ([a-z0-9._-]+?)\. Keep/.exec(system)?.[1] ?? "";
-	const close = /YOU must then run: (.+?) --message '<[^']*>' --evidence '<[^']*>'/.exec(system)?.[1];
-	return { ref, teammate, close };
-}
 
 /**
  * A real Kata for OpenCode adapter tests (`realKata`, adopted, one project) and the pieces they share. The adapter's

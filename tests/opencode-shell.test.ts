@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 import { userMessage, type FakeSession, type OpenCodeInstance } from "./opencode-host";
-import { assignmentOf, openCodeKata, todos } from "./opencode-fixture";
+import { assignmentOf } from "./kata-fixture";
+import { openCodeKata, todos } from "./opencode-fixture";
 import { SUBAGENT_PREFIX } from "../plugins/opencode/subagents";
 import { teammateFor } from "../core/delegates";
 

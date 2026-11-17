@@ -5,6 +5,7 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { assertIsolated, SCRUBBED_ENV } from "./isolation";
 import { recordStore, type DelegateRecord, type DelegateStore } from "../core/delegates";
+import { RETRY_MS } from "../core/settlement";
 
 export function memoryDelegateStore(): DelegateStore & { drop(id: string): void } {
   const records = new Map<string, DelegateRecord>();
@@ -214,9 +215,12 @@ export function adoptIsolatedKata(binary: string, home: string): () => void {
   };
 }
 
+/** What a deferred close tells the model about its retry, as the core words it. */
+export const retryNote = `retry after ${RETRY_MS / 1000} seconds`;
+
 /** A retry deadline passes while `fn` runs, without sleeping: a throttled close is due again. */
 export async function later<T>(fn: () => Promise<T>): Promise<T> {
-	setSystemTime(new Date(Date.now() + 120_000));
+	setSystemTime(new Date(Date.now() + 2 * RETRY_MS));
 	try { return await fn(); } finally { setSystemTime(); }
 }
 
@@ -279,4 +283,18 @@ export function holdKata(applies: (args: string[], opts: any) => boolean = () =>
     release: () => gate.resolve(),
     get held() { return held; },
   };
+}
+
+/** A value as one word of a POSIX shell command. */
+export const quote = (value: string) => `'${value.replace(/'/g, "'\\''")}'`;
+
+/**
+ * What the delegate's prompt holds for it: its issue, its teammate and the close command it is told to run, with the two
+ * placeholders (the message and the evidence) still to fill. `close` is undefined when the prompt has no such command.
+ */
+export function assignmentOf(system: string) {
+	const ref = /Your Kata issue is (\S+?);/.exec(system)?.[1] ?? "";
+	const teammate = /your teammate is ([a-z0-9._-]+?)\. Keep/.exec(system)?.[1] ?? "";
+	const close = /YOU must then run: (.+?) --message '<[^']*>' --evidence '<[^']*>'/.exec(system)?.[1];
+	return { ref, teammate, close };
 }
