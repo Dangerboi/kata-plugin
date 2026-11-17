@@ -213,3 +213,84 @@ test("a session-local plan survives the end of the process and a resume", async 
 	await resumed.start();
 	expect((await resumed.todo({ op: "view" })).result).toContain("Local and open");
 });
+
+test("a job of the old session still queued at a resume runs for that session and leaves the resumed one's snapshot alone", async () => {
+	const store = new Map<string, unknown>();
+	const entriesOf = (id: string) => ((store.get(`session/${id}`) as any)?.entries ?? []) as any[];
+	const snapshotOf = (id: string) => entriesOf(id).find(entry => entry.customType.endsWith(".state"))?.data;
+	const first = host({ store });
+	await first.start();
+	await first.todo({ op: "init", items: ["Plan of the resumed session"] });
+	const x = first.state.session;
+	await first.end("clear");
+
+	// Holds the first Kata call after `armed`: the plan write is then running in the core's queue, and a later call of the
+	// same session waits behind it.
+	let armed = false;
+	let reached!: () => void;
+	const running = new Promise<void>(resolve => (reached = resolve));
+	let release!: () => void;
+	const gate = new Promise<void>(resolve => (release = resolve));
+	const h = host({
+		store,
+		hold: () => {
+			if (!armed) return undefined;
+			armed = false;
+			reached();
+			return gate;
+		}
+	});
+	await h.start();
+	const a = h.state.session;
+	armed = true;
+	const writing = h.todo({ op: "init", items: ["Plan of the old session"] });
+	await running;
+	const queued = h.todo({ op: "view" });
+	await Bun.sleep(100);
+	// /resume X while both still run.
+	h.state.session = x;
+	const resumed = h.todo({ op: "view" });
+	await Bun.sleep(150);
+	release();
+	await writing;
+	await queued;
+	const view = await resumed;
+	await Bun.sleep(300);
+	expect(view.result).toContain("Plan of the resumed session");
+	expect(snapshotOf(x).sessionId).toBe(x);
+	expect(snapshotOf(x).plan.tasks.map((t: any) => t.content)).toEqual(["Plan of the resumed session"]);
+	expect(snapshotOf(a).sessionId).toBe(a);
+});
+
+test("a write that lands after its session ended keeps the record ended, so it is pruned with the ended ones", async () => {
+	const store = new Map<string, unknown>();
+	let armed = false;
+	let reached!: () => void;
+	const running = new Promise<void>(resolve => (reached = resolve));
+	let release!: () => void;
+	const gate = new Promise<void>(resolve => (release = resolve));
+	const h = host({
+		store,
+		hold: () => {
+			if (!armed) return undefined;
+			armed = false;
+			reached();
+			return gate;
+		}
+	});
+	await h.start();
+	const a = h.state.session;
+	armed = true;
+	const writing = h.todo({ op: "init", items: ["Plan the late write touches"] });
+	await running;
+	const queued = h.todo({ op: "view" });
+	await Bun.sleep(100);
+	// A new session replaces A while A's plan write still runs.
+	h.state.session = crypto.randomUUID();
+	const switching = h.todo({ op: "view" });
+	await Bun.sleep(150);
+	release();
+	await Promise.all([writing, queued, switching]);
+	await Bun.sleep(300);
+	expect((store.get(`session/${a}`) as any)?.endedAt).toBeGreaterThan(0);
+});

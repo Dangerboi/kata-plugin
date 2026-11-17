@@ -42,6 +42,8 @@ export async function loadSession($: Engine, id: string): Promise<SavedSession |
 export function sessionWriter($: Engine, id: string, now: () => Promise<number>) {
 	let record: SavedSession | undefined;
 	let writing: Promise<unknown> = Promise.resolve();
+	// Set by `end`: a write that lands later (a job of the session still queued) leaves the record ended.
+	let endedAt: number | undefined;
 	const flush = () => {
 		const body = structuredClone(record!);
 		writing = writing
@@ -57,6 +59,7 @@ export function sessionWriter($: Engine, id: string, now: () => Promise<number>)
 		start(saved: SavedSession | undefined, directory: string, seed?: readonly SavedEntry[]) {
 			record = saved ? structuredClone(saved) : { directory, entries: seed ? structuredClone([...seed]) : [], updatedAt: 0 };
 			record.directory = directory;
+			endedAt = undefined;
 		},
 		get entries() {
 			return record?.entries ?? [];
@@ -64,13 +67,15 @@ export function sessionWriter($: Engine, id: string, now: () => Promise<number>)
 		append(customType: string, data: unknown) {
 			if (!record) return;
 			record.entries = [...record.entries.filter(entry => entry.customType !== customType), { type: "custom", customType, data: structuredClone(data) }];
-			delete record.endedAt;
+			if (endedAt === undefined) delete record.endedAt;
+			else record.endedAt = endedAt;
 			void flush();
 		},
 		// The session ended. `owed`: the core still owes closes; a plan with open tasks keeps the record too, for a resume.
 		// Else its record goes.
 		async end(owed: boolean, at: number) {
 			if (!record) return;
+			endedAt = at;
 			if (owed || hasWork(coreState(record))) {
 				record.endedAt = at;
 				await flush();
