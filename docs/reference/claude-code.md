@@ -4,11 +4,11 @@ Plugin: `kata-cc` in the `kata-plugin` marketplace; entry: `plugins/claude-code`
 
 The plugin name shows wherever Claude Code names the source of a mod: a message the mod sends into the session (a live inbox request) is framed as "The kata-cc plugin sent a message", and its settings are listed under `kata-cc`.
 
-The mod replaces Claude Code's task tools with one Kata-backed `todo` tool, adds the plan to each prompt, binds the lead's subagents and workflow agents to Kata issues ([Delegates](#delegates)), rewrites Kata commands a subagent runs in `Bash` ([Shell](#shell)), follows the session inbox live, and draws the plan in the terminal UI ([Display](#display)). It does not inject the Kata contract or session attention by default: `kata agent-hook install claude` supplies them (see [Use with Kata agent hooks](../how-to/use-with-kata-agent-hooks.md#claude-code)).
+The mod replaces Claude Code's task tools with one Kata-backed `todo` tool, adds the plan to each prompt, gives each delegate (an `Agent` subagent, a Workflow agent or a teammate) its assignment from the plan ([Delegates](#delegates)), rewrites Kata commands a subagent runs in `Bash` ([Shell](#shell)), follows the session inbox live, and draws the plan in the terminal UI ([Display](#display)). It does not inject the Kata contract or session attention by default: `kata agent-hook install claude` supplies them (see [Use with Kata agent hooks](../how-to/use-with-kata-agent-hooks.md#claude-code)).
 
 ## Settings
 
-Plugin options are set with `claude plugin install kata-cc@kata-plugin --config KEY=VALUE` or `/plugin configure kata-cc@kata-plugin`; each falls back to a variable in the environment Claude Code runs in, where there is one. The option wins when both are set; a text value counts only when it is non-blank, and it is trimmed.
+Plugin options are set with `claude plugin install kata-cc@kata-plugin --config KEY=VALUE` or `/plugin configure kata-cc@kata-plugin`; each falls back to a variable in the environment Claude Code runs in, where there is one. For the text options the option wins when both are set, and a text value counts only when it is non-blank (it is trimmed). `liveInbox` is a switch, not a value: live delivery runs unless the option is off or `KATA_CLAUDE_LIVE_INBOX=0`, so either one turns it off, and the variable still turns it off while the option is on, which is its default.
 
 | Option | Variable | Meaning |
 | --- | --- | --- |
@@ -17,7 +17,7 @@ Plugin options are set with `claude plugin install kata-cc@kata-plugin --config 
 | `kataExecutable` | `KATA_CLAUDE_EXECUTABLE` | The Kata executable the mod runs; defaults to `kata`. The `Bash` tool is not rewritten to use it. |
 | `debugFile` | `KATA_CLAUDE_DEBUG` | Optional append-only diagnostic log. |
 
-These variables, shared with the other hosts, are read from Claude Code's environment when the mod starts (changing one needs a new session): `KATA_REF`, `KATA_DEFAULT_PROJECT`, `KATA_AUTHOR`, `KATA_TEAMMATE`, `KATA_INBOX_USER`, `KATA_HOME` and `KATA_CLOSE_TRANSCRIPT_ENABLED`. A variable the mod does not name is invisible to it. `/plugin configure` may show `1 userConfig option not yet set` after an install: every option has a default.
+These variables, shared with the other hosts, are read from Claude Code's environment when the mod starts (changing one needs a new session): `KATA_REF`, `KATA_DEFAULT_PROJECT`, `KATA_AUTHOR`, `KATA_TEAMMATE`, `KATA_INBOX_USER`, `KATA_HOME` and `KATA_CLOSE_TRANSCRIPT_ENABLED`. A variable the mod does not name is invisible to it. After an install Claude Code 2.1.326 prints `4 userConfig options not yet set`, also for the two options that have a default: nothing has to be set. `liveInbox` and `contract` apply their defaults, and `kataExecutable` and `debugFile` fall back to their variable, then to `kata` and no log.
 
 Where the plan lives follows the [oh-my-pi rules](oh-my-pi.md#where-the-plan-lives): `KATA_REF`, then the plan parent saved for the session, then the folder's Kata project, then `KATA_DEFAULT_PROJECT`, then the inferred project. Nothing is created until the first plan change.
 
@@ -35,8 +35,8 @@ A delegate is an agent the lead starts: an `Agent` call, a Workflow agent or a t
 
 | Step | What the mod does |
 | --- | --- |
-| Spawn (`agent.spawn`) | Matches the agent's prompt, description and name against the plan. An item or ticket already delegated, two tickets in one prompt, or a ticket that cannot be delegated refuses the spawn with the core's error; nothing is written. A spawn that matches nothing runs as an untracked delegate, whose run becomes a mission when it ends with a report. The binding is appended to the agent's prompt: its issue, its teammate, and the commands to comment and to close it, or to leave it open when its task text says not to close issues. |
-| Slow binding | The spawn waits up to 7 s for the binding. A slower Kata starts the agent without it; the agent still gets its issue, and learns of it from its first `todo` call. |
+| Spawn (`agent.spawn`) | Matches the agent's prompt, description and name against the plan. An item or ticket already delegated, two tickets in one prompt, or a ticket that cannot be delegated refuses the spawn with the core's error; nothing is written. A spawn that matches nothing runs as an untracked delegate, whose run becomes a mission when it ends with a report. The assignment is appended to the agent's prompt: its issue, its teammate, and the commands to comment and to close it, or to leave it open when its task text says not to close issues. |
+| Slow assignment | The spawn waits for the assignment up to 7 s in all: its waits share the hook's 10 s, less 3 s kept for Claude Code's own spawn and the hook's return. A slower Kata starts the agent without it; the agent still gets its issue, and learns of it from its first `todo` call. |
 | A tool call of the delegate | Marks the delegate as having acted, so its assignment is no longer rolled back at exit. Its `todo` calls plan under its own issue and never touch the lead's. A call from an agent the lead does not track is refused with an error telling it to report in its reply. |
 | The agent's turn ends | Its answer is its report: the delegate exits `completed`, `failed` or `aborted`. |
 | A follow-up (resume) | The agent goes on with the record it has: its issue while that is open, else its mission. |
@@ -53,13 +53,13 @@ Under auto permission mode Claude Code refuses a tool call a hook changed after 
 
 | Moment | What the mod does |
 | --- | --- |
-| Session start | Binds the plan: a resumed session's saved plan, pending closes and unfinished delegates resume with it. Registers the `/todo` command. A slow or unreachable Kata never holds the session. |
-| `/clear`, `/resume`, `/branch` | These fire no session start, so the next hook finds the new session id and switches the core to it, releasing the tasks the old session held. A fork shares the source's plan, where Claude Code lets the mod see the fork ([limits](../explanation/limits.md#claude-code)). |
+| Session start | Takes up the plan: a resumed session's saved plan, pending closes and unfinished delegates resume with it. Registers the `/todo` command. A slow or unreachable Kata never holds the session. |
+| `/clear`, `/resume`, `/branch` | These fire no session start, so the next hook finds the new session id and switches the core to it, releasing the tasks the old session held. A fork made in the session (`/branch`, `/fork`) shares the source's plan: the fork starts from what its source saved. `claude --resume <id> --fork-session` starts a new session that names no source to the mod, so it starts from a plan of its own ([limits](../explanation/limits.md#claude-code)). |
 | End of each lead turn | Retries due closes and hands back exited delegates. When a task is still open, the end-of-turn Stop hook returns the core's reminder so the model keeps working. |
 | Compaction | The plan is sent again with the next prompt. |
 | Session end | Closes the automatic parent when its children are closed, within the 1.5 s Claude Code gives the whole end chain (the mod takes at most 1.2 s). What does not fit stays in the saved record for the session's resume. `/clear` and `/resume` end nothing. |
 
-A session's saved state lives in Claude Code's plugin store under the key `session/<session id>`. The store is one file for every session on the machine, shared by every mod and limited to 4 MiB, so the mod keeps its records small: an ended session's record is dropped after 7 days, any record untouched for 30 days is dropped, and the oldest ended sessions go first when the records pass 2 MiB. A session with no work left saves nothing.
+A session's saved state lives in Claude Code's plugin store under the key `session/<session id>`. The store is one file for every session on the machine, shared by every mod and limited to 4 MiB, so the mod keeps its records small: an ended session's record is dropped after 7 days, any record untouched for 30 days is dropped, and the oldest ended sessions go first when the records pass 2 MiB. A session that ends with a task still open, whatever holds the plan (an automatic or explicit parent, ticket items or a session-local plan), or with closes it still owes keeps its record for `claude --resume`, for 30 days instead of 7; a session with neither saves nothing.
 
 Closing the terminal or killing Claude Code runs no hooks: work left open is finished when the session is resumed with `claude --resume`, not before.
 
@@ -68,8 +68,8 @@ Closing the terminal or killing Claude Code runs no hooks: work left open is fin
 The mod draws in the terminal UI, and in the desktop Code tab and the VS Code chat panel where Claude Code draws mods. `claude -p` and the Agent SDK run the hooks and draw nothing.
 
 - **Plan band** above the prompt: `Kata plan 2/5 · 1 blocked · ▶ active task`, with a progress bar.
-- **Checklist card** under each `todo` call.
-- **`#` ticket completion** in the prompt, with the same tokens as the [omp ticket references](oh-my-pi.md#ticket-references-in-the-prompt).
+- **Checklist card** under each of the lead's `todo` calls, with the result's notice (a deleted parent, a close Kata deferred) above the checklist. A subagent's `todo` call keeps the engine's own row. A session-local plan (kept while Kata is unreachable) draws no band and no card, as in omp.
+- **`#` ticket completion** in the prompt, with the same tokens as the [omp ticket references](oh-my-pi.md#ticket-references-in-the-prompt). A loaded list answers at once, whatever Kata is doing; only the first fill of a session's list waits, for 400 ms at most, beside the rows of other plugins.
 - **`/todo`** shows the plan; the subcommands `start`, `done`, `drop`, `rm`, `append`, `block`, `unblock` and `takeover` change it, as in omp.
 
 ## Live inbox

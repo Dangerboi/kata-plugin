@@ -13,26 +13,30 @@ All notable changes to kata-plugin are listed here. The format follows [Keep a C
 #### Install and update
 
 - Claude Code: the `kata-cc` plugin installs from the repository's marketplace with `/plugin install kata-cc --marketplace Dangerboi/kata-plugin`, or `claude plugin install kata-cc@kata-plugin` from a shell. It has no npm package: updates come from `claude plugin marketplace update kata-plugin` and `claude plugin update kata-cc@kata-plugin`, and reach an installed copy when the plugin's version moves.
-- Claude Code: the options `liveInbox`, `contract`, `kataExecutable` and `debugFile` are set with `/plugin configure`, each with an environment variable where there is one (`KATA_CLAUDE_LIVE_INBOX`, `KATA_CLAUDE_EXECUTABLE`, `KATA_CLAUDE_DEBUG`).
+- Claude Code: the options `liveInbox`, `contract`, `kataExecutable` and `debugFile` are declared by the plugin and set with `/plugin configure` or `--config KEY=VALUE`, each with an environment variable where there is one (`KATA_CLAUDE_LIVE_INBOX`, `KATA_CLAUDE_EXECUTABLE`, `KATA_CLAUDE_DEBUG`). Claude Code prints `4 userConfig options not yet set` after an install; nothing has to be set.
 
 #### Plans
 
 - Claude Code: a Kata-backed `todo` tool replaces `TaskCreate`, `TaskGet`, `TaskList`, `TaskUpdate` and `TodoWrite`, with the same ops, ticket items and closing rules as omp. Each prompt carries the plan, and every close records the Claude Code session.
   - A session's plan survives `/resume`, `/clear` and `/branch`, and what a session left owing is finished when it is resumed. The session end has 1.5 s, so work that does not fit waits for the resume.
+  - A session that ends with a task still open keeps its saved plan for `claude --resume`, whether its parent is automatic or explicit, its items are tickets or the plan is session-local. A fork made in the session starts with its source's plan; `claude --resume <id> --fork-session` names no source to the plugin and starts from a plan of its own.
   - Kata's contract, inbox and session attention come from `kata agent-hook install claude`; the plugin adds the contract only with `contract` on.
 
 #### Delegates
 
-- Claude Code: `Agent` subagents, Workflow agents and teammates bind to the plan item or ticket their task names, and their `kata` commands in `Bash` run under their own teammate. Under auto permission mode the plugin denies such a command with the exact command to run, because Claude Code refuses a rewrite there.
+- Claude Code: `Agent` subagents, Workflow agents and teammates take the plan item or ticket their task names as their assignment, and their `kata` commands in `Bash` run under their own teammate. Under auto permission mode the plugin denies such a command with the exact command to run, because Claude Code refuses a rewrite there.
   - Code Review workflows and a Workflow agent's stall retries are untracked.
+  - The waits for an assignment share the spawn hook's 10 s, so a slow Kata starts the agent without its assignment instead of overrunning the hook.
 
 #### Inbox and attention
 
-- Claude Code: the main session follows the session inbox live and delivers each request without waiting for a prompt; one that arrives in a turn's final step rides the next turn. `liveInbox` or `KATA_CLAUDE_LIVE_INBOX=0` turns it off.
+- Claude Code: the main session follows the session inbox live and delivers each request without waiting for a prompt; one that arrives in a turn's final step rides the next turn. Either `liveInbox` off or `KATA_CLAUDE_LIVE_INBOX=0` turns it off.
 
 #### Display
 
-- Claude Code: the plan band above the prompt, a checklist card under each `todo` call, `#` ticket completion and `/todo` show the plan in the terminal UI.
+- Claude Code: the plan band above the prompt, a checklist card under each of the lead's `todo` calls, `#` ticket completion and `/todo` show the plan in the terminal UI.
+  - The card shows the result's notice (a deleted parent, a close Kata deferred). A session-local plan draws no band and no card.
+  - A loaded ticket list answers `#` completion at once; only the first fill waits, 400 ms at most.
 
 #### Development
 
