@@ -1,7 +1,7 @@
 import { chmodSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { expect, test } from "bun:test";
-import { claudeKata } from "./claude-fixture";
+import { afterEntry, claudeKata, latestEvent } from "./claude-fixture";
 import { EVIDENCE, eventually, MESSAGE } from "./kata-fixture";
 
 // Subagents and Workflow agents on the Claude mod, against a real Kata: a hand-made `$` stands in for the engine.
@@ -307,8 +307,9 @@ test("a delegate's exit still running at a session switch saves to its own sessi
 	await running;
 	// The session switches to X while the exit still runs; the switch queues behind it.
 	h.state.session = x;
+	const latest = latestEvent();
 	const viewing = h.todo({ op: "view" });
-	await Bun.sleep(150);
+	await afterEntry(latest);
 	release();
 	await exiting;
 	const view = await viewing;

@@ -1,11 +1,25 @@
 import { execFile, spawn } from "node:child_process";
 import { realpathSync, readFileSync, writeFileSync } from "node:fs";
 import { afterEach } from "bun:test";
-import { realKata, unique } from "./kata-fixture";
+import { eventually, realKata, unique } from "./kata-fixture";
 import { register } from "../plugins/claude-code/hooks/register";
-import { reset } from "../plugins/claude-code/hooks/lead";
+import { reset, runtime } from "../plugins/claude-code/hooks/lead";
 
 export const PROJECT = "pi-port-claude";
+
+/** The context of the latest event, to hand to `afterEntry` before a hook is started. */
+export const latestEvent = () => runtime()?.latest;
+
+/**
+ * Resolves once the hook started since `before` was taken has had its turn in the session chain: the context of the latest
+ * event is replaced, and a switch has queued its job in the core by then. What the hook goes on to run is queued in the core
+ * ahead of anything started after this returns.
+ */
+export async function afterEntry(before: ReturnType<typeof latestEvent>) {
+	await eventually(async () => runtime()?.latest !== before, true);
+	// The queuing that follows the context swap runs in microtasks: one timer turn lets it finish.
+	await new Promise(resolve => setTimeout(resolve, 0));
+}
 const AUTHOR = "claude-builder";
 
 type Hook = { event: string; matcher?: any; fn: (...args: any[]) => any };

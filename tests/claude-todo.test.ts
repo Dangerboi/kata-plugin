@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { claudeKata, PROJECT } from "./claude-fixture";
+import { afterEntry, claudeKata, latestEvent, PROJECT } from "./claude-fixture";
 import { EVIDENCE, eventually, MESSAGE } from "./kata-fixture";
 
 // The Claude mod's todo tool and session handling, against a real Kata: a hand-made `$` stands in for the engine.
@@ -250,17 +250,19 @@ test("a job of the old session still queued at a resume runs for that session an
 	armed = true;
 	const writing = h.todo({ op: "init", items: ["Plan of the old session"] });
 	await running;
+	let before = latestEvent();
 	const queued = h.todo({ op: "view" });
-	await Bun.sleep(100);
+	await afterEntry(before);
 	// /resume X while both still run.
 	h.state.session = x;
+	before = latestEvent();
 	const resumed = h.todo({ op: "view" });
-	await Bun.sleep(150);
+	await afterEntry(before);
 	release();
 	await writing;
 	await queued;
 	const view = await resumed;
-	await Bun.sleep(300);
+	await eventually(async () => snapshotOf(a)?.sessionId === a && snapshotOf(x)?.sessionId === x, true);
 	expect(view.result).toContain("Plan of the resumed session");
 	expect(snapshotOf(x).sessionId).toBe(x);
 	expect(snapshotOf(x).plan.tasks.map((t: any) => t.content)).toEqual(["Plan of the resumed session"]);
@@ -269,7 +271,7 @@ test("a job of the old session still queued at a resume runs for that session an
 	await eventually(async () => ((await show(issueRef)).labels ?? []).some((label: any) => label.label === "needs-review"), true);
 }, 30_000);
 
-test("a write that lands after its session ended keeps the record ended, so it is pruned with the ended ones", async () => {
+test("a write that lands after its session ended keeps the record ended", async () => {
 	const store = new Map<string, unknown>();
 	let armed = false;
 	let reached!: () => void;
@@ -290,14 +292,19 @@ test("a write that lands after its session ended keeps the record ended, so it i
 	armed = true;
 	const writing = h.todo({ op: "init", items: ["Plan the late write touches"] });
 	await running;
+	let before = latestEvent();
 	const queued = h.todo({ op: "view" });
-	await Bun.sleep(100);
+	await afterEntry(before);
 	// A new session replaces A while A's plan write still runs.
 	h.state.session = crypto.randomUUID();
+	before = latestEvent();
 	const switching = h.todo({ op: "view" });
-	await Bun.sleep(150);
+	await afterEntry(before);
 	release();
 	await Promise.all([writing, queued, switching]);
-	await Bun.sleep(300);
-	expect((store.get(`session/${a}`) as any)?.endedAt).toBeGreaterThan(0);
+	// The late write is in the record, and the record is still ended.
+	await eventually(async () => {
+		const record = store.get(`session/${a}`) as any;
+		return JSON.stringify(record?.entries ?? []).includes("Plan the late write touches") && (record?.endedAt ?? 0) > 0;
+	}, true);
 });
