@@ -173,7 +173,7 @@ test("# offers open tickets from the bound project, in a project named after a s
 	expect(found).toHaveLength(1);
 	expect(found[0]).toEqual({ text: `${PROJECT}#${sampleId} `, label: `${PROJECT}#${sampleId}`, description: "Tidy the sample board" });
 	// A title word or a short id prefix finds it; another project's name needs its own `#`. A prefix of digits only is GitHub's, so it runs up to the id's first letter.
-	expect((await rows(h, `#${sampleId.match(/^\d*\D/)?.[0] ?? sampleId}`)).map(r => r.label)).toContain(`${PROJECT}#${sampleId}`);
+	expect((await rows(h, /^\d+$/.test(sampleId) ? `#${PROJECT}#${sampleId.slice(0, 2)}` : `#${sampleId.match(/^\d*\D/)![0]}`)).map(r => r.label)).toContain(`${PROJECT}#${sampleId}`);
 	expect((await warmRows(h, `#${PROJECT}#cac`)).map(r => r.description)).toEqual(["Rework the ticket cache"]);
 	expect(await rows(h, "build #3164")).toEqual([]);
 	expect(await rows(h, "#")).toEqual([]);
