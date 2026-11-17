@@ -2,6 +2,7 @@ import type { Register } from 'claude-code'
 import { onEnd, onSessionSwitch, onStart } from './lifecycle'
 import { onCompact, onPrompt, onStop, onTurnComplete } from './prompt'
 import { onTodoCall, onToolCall, onToolList } from './todo'
+import { onDelegateCall, onDelegateTurn, onSpawn } from './delegates'
 import { configure } from './lead'
 
 // The hooks module: one line per event. Each feature is a module that exports its handlers; a later one
@@ -16,7 +17,11 @@ export const register: Register = (on, options) => {
   // without `next`, so the observer below never sees it.
   on('tool.list', onToolList)
   on('tool.call', { tool: /^todo$/ }, onTodoCall)
+  on('tool.call', { agentId: /./ }, onDelegateCall)
   on('tool.call', onToolCall)
+  // Delegates: spawns bind (Agent, Workflow, teammates), a subagent's answer is its report
+  on('agent.spawn', onSpawn)
+  on('turn.complete', { agentId: /./ }, onDelegateTurn)
   // Prompt context and the end of a turn
   on('prompt.submit', onPrompt)
   on('session.compact', onCompact)

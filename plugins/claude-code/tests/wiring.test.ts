@@ -22,5 +22,5 @@ test('a todo call is refused before Kata for a bad op, and for a subagent', asyn
   expect(bad.isError).toBe(true)
   expect(String(bad.result)).toContain('todo needs op')
   const sub = await $.tool.call({ tool: 'todo', op: 'view', agentId: 'a1' } as any)
-  expect(String(sub.result)).toContain('lead session')
+  expect(String(sub.result)).toContain('Kata')
 })

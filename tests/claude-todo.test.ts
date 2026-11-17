@@ -57,13 +57,13 @@ test("a failed call is an error result carrying the plan, and a bad op is refuse
   expect(h.calls.length).toBe(before);
 });
 
-test("a subagent's todo call is refused and never reaches the lead's plan", async () => {
+test("a call of a subagent the lead does not track is refused and never reaches the lead's plan", async () => {
   const h = host();
   await h.start();
   await h.todo({ op: "init", items: ["Lead task"] });
   const sub = await h.todo({ op: "done", task: "Lead task", message: MESSAGE, evidence: EVIDENCE }, "agent-7");
   expect(sub.isError).toBe(true);
-  expect(sub.result).toContain("lead session");
+  expect(sub.result).toContain("no Kata assignment");
   expect((await h.todo({ op: "view" })).result).toContain("[/] Lead task");
 });
 

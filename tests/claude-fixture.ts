@@ -88,6 +88,15 @@ export function claudeHost(options: { cwd: string; binary: string; session?: str
     todo: (params: Record<string, unknown>, agentId?: string) => fire("tool.call", { tool: "todo", tool_use_id: `t-${unique()}`, ...(agentId ? { agentId } : {}), ...params }, () => { throw new Error("the engine ran todo"); }),
     prompt: (text = "hello", origin = "composer") => fire("prompt.submit", { text, wait: true, origin: { kind: origin } }),
     turnComplete: () => fire("turn.complete", { answer: "ok", durationMs: 1, isAborted: false, turnId: "t", reason: "answer" }),
+    /** An `agent.spawn`; the engine's own answer starts the agent as `agentId` and keeps the prompt it was given. */
+    spawn: (input: Record<string, unknown>, agentId: string | undefined = `agent-${unique()}`, answer: (e: any) => any = e => ({ model: "haiku", ...(agentId ? { agentId } : {}), prompt: e.prompt })) =>
+      fire("agent.spawn", { tool_use_id: `toolu_${unique()}`, prompt: "", description: "", subagentType: "general-purpose", provider: { plugin: "engine", tier: "core" }, parentModel: "sonnet", background: true, fork: false, ...input }, answer),
+    /** A tool call of a subagent; the engine's own answer is the call as it would run. */
+    agentCall: (agentId: string, tool: string, input: Record<string, unknown> = {}, terminal: (e: any) => any = e => e) =>
+      fire("tool.call", { tool, tool_use_id: `toolu_${unique()}`, agentId, ...input }, terminal),
+    /** The end of a subagent's run. */
+    agentTurn: (agentId: string, answer: string, extra: Record<string, unknown> = {}) =>
+      fire("turn.complete", { answer, durationMs: 1, isAborted: false, turnId: `turn-${unique()}`, reason: "answer", agentId, ...extra }),
     stop: (last = "Done for now.") => fire("classic.Stop", { stop_hook_active: false, last_assistant_message: last }),
     end: (reason = "other") => fire("session.end", { reason, sessionId: state.session, resume: { id: state.session } }),
     cancelTimers: () => { for (const t of timers) clearTimeout(t); timers.clear(); },

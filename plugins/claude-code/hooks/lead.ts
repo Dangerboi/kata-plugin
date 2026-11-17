@@ -28,6 +28,13 @@ export interface Runtime {
   ready: Promise<unknown>
   // Whether an earlier session of this process was left behind (a fork's source, or what a switch ends).
   previous?: string
+  // The lead's delegates by record id (delegates.ts), and a core for each: the core holds one session's plan, so a delegate
+  // reaches its issue through a core of its own that shares these records and never settles or saves.
+  records: Map<string, DelegateRecord>
+  coreFor(store: DelegateStore): KataCore
+  callers: Map<string, KataCore>
+  // Spawn hooks still running: a subagent's first call can arrive before its spawn hook has recorded its agent id.
+  spawning: Set<Promise<unknown>>
 }
 
 let options: Record<string, unknown> | undefined
@@ -37,18 +44,18 @@ let chain: Promise<unknown> = Promise.resolve()
 export const configure = (given: Record<string, unknown> | undefined) => { options = given }
 export const runtime = () => current
 
-export function contextOf($: Engine, rt: Runtime): RunContext {
+export function contextOf($: Engine, rt: Runtime, delegate?: string): RunContext {
   return {
     cwd: rt.cwd,
+    ...(delegate ? { agent: { kind: 'sub', id: delegate } } : {}),
     sessionManager: { getSessionId: () => rt.id, getBranch: () => rt.writer?.entries ?? [], getHeader: () => rt.header },
     run: (argv, init) => $.process.run(argv, init),
     timers: { setTimer: (fire, ms) => $.clock.after(ms, fire), clearTimer: handle => (handle as { cancel(): void }).cancel() },
   }
 }
 
-// Delegates are recorded in memory by the agent's id; binding them to plan items is the delegate module's job.
-function delegateStore(): DelegateStore {
-  const records = new Map<string, DelegateRecord>()
+// Delegates are recorded in memory by record id (the delegate module names it); binding them to plan items is its job too.
+function delegateStore(records: Map<string, DelegateRecord>): DelegateStore {
   return {
     records: () => [...records.values()],
     get: key => records.get(key),
@@ -61,15 +68,20 @@ async function create($: Engine): Promise<Runtime> {
   const env = await readEnv($)
   const settings = resolveSettings(options, env)
   const state = { cwd: '', debugFile: settings.debugFile }
-  const rt = { settings, env, state, cwd: '', sent: {}, ready: Promise.resolve() } as Runtime
-  rt.core = createKataCore({
-    platform: platformOf($, env, state),
+  const records = new Map<string, DelegateRecord>()
+  const rt = { settings, env, state, cwd: '', sent: {}, ready: Promise.resolve(), records, callers: new Map(), spawning: new Set() } as Runtime
+  const platform = platformOf($, env, state)
+  const exec = execOf($, env, () => rt.latest)
+  const build = (store: DelegateStore, main: boolean) => createKataCore({
+    platform,
     contextTimers: ctx => ctx?.timers,
-    exec: execOf($, env, () => rt.latest),
-    appendEntry: (type, data) => rt.writer?.append(type, data),
+    exec,
+    appendEntry: (type, data) => { if (main) rt.writer?.append(type, data) },
     isMain: ctx => ctx?.agent === undefined,
-    delegateStore: delegateStore(),
+    delegateStore: store,
   }, { namespace: NAMESPACE, executable: settings.executable, executableVars: EXECUTABLE_VARS, debugFile: settings.debugFile })
+  rt.core = build(delegateStore(records), true)
+  rt.coreFor = store => build(store, false)
   return rt
 }
 
@@ -100,6 +112,9 @@ async function attach($: Engine, hint: { fork?: boolean }): Promise<Entered> {
   rt.previous = previous
   rt.header = hint.fork && previous ? { parentSession: previous } : undefined
   rt.sent = {}
+  // The previous session's delegates and cores stay with it (saved above, picked up when it resumes).
+  rt.records.clear()
+  rt.callers.clear()
   rt.writer = sessionWriter($, id, () => $.clock.now())
   rt.writer.start(await loadSession($, id), cwd)
   const ctx = (rt.latest = contextOf($, rt))
