@@ -138,6 +138,20 @@ test("a task named as the plan view lists it, with its ' (ref)' suffix, is that 
   expect((await show(docs)).issue.status).toBe("closed");
 });
 
+test("a ticket item saved with its own ref after its action keeps that content when init names it", async () => {
+  const first = host(); await first.event("session_start");
+  const a = await issue("Ticket A");
+  await first.call({ op: "init", items: [`v2test#${a}: write the script`] });
+  // A plan saved before suffixes were dropped holds the item with its ticket repeated after the action.
+  const saved = `v2test#${a}: write the script (v2test#${a})`;
+  const entries = JSON.parse(JSON.stringify(first.entries).replaceAll(`v2test#${a}: write the script`, saved));
+  const resumed = host({ sid: first.sid, entries }); await resumed.event("session_start");
+  const again = await resumed.call({ op: "init", items: [saved] });
+  expect(again.isError).toBeUndefined();
+  expect(again.content[0].text).toContain(`${saved} (v2test#${a})`);
+  expect(await commentsOf(a)).toHaveLength(0);
+});
+
 test("an unresolvable or closed ref is an error that creates nothing; a bare id names no ticket", async () => {
   const app = host(); await app.event("session_start");
   const before = await total();
