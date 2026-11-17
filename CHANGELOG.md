@@ -1,6 +1,6 @@
 # Changelog
 
-All notable changes to kata-plugin are listed here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project uses [semantic versioning](https://semver.org/spec/v2.0.0.html). A release carries the root version, which the pi package shares, and names the oh-my-pi, pi and kata-cc versions on its first line.
+All notable changes to kata-plugin are listed here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project uses [semantic versioning](https://semver.org/spec/v2.0.0.html). A release carries the root version, which the pi package shares, and names both plugin versions on its first line.
 
 ## [Unreleased]
 

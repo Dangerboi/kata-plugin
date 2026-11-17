@@ -147,6 +147,7 @@ export interface Kata {
 	// runner on this thread writes. An operation is one tool call; Kata changes made elsewhere meanwhile (an agent's own
 	// shell command, another process or thread) show in the next one. Inside an open operation `fn` gets `from` as it is.
 	operation<T>(from: Job, fn: (job: Job) => Promise<T>): Promise<T>;
+	// The job with every read going to Kata, for a check that must see changes made elsewhere since the operation began.
 	fresh(job: Job): Job;
 }
 
@@ -155,7 +156,9 @@ export function createKata(env: {
 	path: Pick<PathOps, "resolve">;
 	executable: string;
 	teammate(): string | undefined;
+	// The context `exec` gets for a call whose job carries none: the latest event's.
 	ctx(): any;
+	// The session the registered-project list was read for: a new one reads it again.
 	session(): string | undefined;
 	debug(error: unknown): void;
 }): Kata {

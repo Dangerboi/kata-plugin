@@ -102,6 +102,7 @@ export type InboxFollowerDeps = {
 	publish(text: string): void;
 	/** The id of the newest event of the project: the stream is tailed from there, so history never replays. */
 	head(): Promise<number>;
+	/** Milliseconds on a monotonic clock. */
 	now(): number;
 	setTimer(fn: () => void, ms: number): unknown;
 	clearTimer(handle: unknown): void;

@@ -249,12 +249,15 @@ export interface Delegates {
 	assignment(ctx: any): DelegateAssignment | undefined;
 	// Why `ctx` has no assignment, as the message its todo call reports.
 	unassigned(ctx: any): string;
+	// Whether a delegate that has not been handed back or settled holds the issue.
 	holds(ref: string): boolean;
 	// Returns a closed issue a delegate still marks to the lead: its teammate, the delegate's outcome and the item's final status,
 	// then the delegate keys last. Each write is skipped when already in place and guarded by the chained revision. `exit` is the
 	// exiting delegate's own return; without it the lead recovers an item no unfinished delegate holds.
 	returnClosed(job: Job, ref: string, cwd: string, issue: KataIssue, lead: string, exit?: { teammate: string; outcome?: DelegateOutcome }): Promise<void>;
+	// Started and not exited, tracked or not.
 	running(): boolean;
+	// Exited and not yet handed back or settled.
 	cleanupPending(): boolean;
 	// The ids of those delegates: a turn end that waits for them stops once a pass leaves the same ones.
 	pendingIds(): string[];

@@ -232,6 +232,38 @@ test("over the store budget, start evicts ended sessions that owe nothing before
 	expect([owingKey, "session/running"].filter(key => !store.has(key))).toEqual([]);
 });
 
+test("an unknown op is refused with the ops there are and changes nothing", async () => {
+	const h = host();
+	await h.start();
+	await h.todo({ op: "init", items: ["Only task"] });
+	const before = (await h.todo({ op: "view" })).result;
+	const bad = await h.todo({ op: "bogus" });
+	expect(bad.isError).toBe(true);
+	expect(bad.result).toContain("todo needs op: one of init");
+	expect((await h.todo({ op: "view" })).result).toBe(before);
+});
+
+test("a switch whose saved record fails to load is retried at the next hook instead of staying on the previous session", async () => {
+	let failing: string | undefined;
+	const store = new (class extends Map<string, unknown> {
+		has(key: string) {
+			if (key !== failing) return super.has(key);
+			failing = undefined;
+			throw new Error("store unreadable");
+		}
+	})();
+	const h = host({ store });
+	await h.start();
+	await h.todo({ op: "init", items: ["Old session's task"] });
+	const old = h.state.session;
+	h.state.session = crypto.randomUUID();
+	failing = `session/${h.state.session}`;
+	expect((await h.todo({ op: "view" })).isError).toBe(true);
+	await h.todo({ op: "init", items: ["New session's task"] });
+	await eventually(async () => JSON.stringify(entriesOf(store, h.state.session)).includes("New session's task"), true);
+	expect(JSON.stringify(entriesOf(store, old))).not.toContain("New session's task");
+});
+
 test("with no Kata the plan stays session-local and the call is not an error", async () => {
 	const h = host({ options: { kataExecutable: "/nonexistent/kata" } });
 	await h.start();
