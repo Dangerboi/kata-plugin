@@ -5,9 +5,12 @@ import { expect, test } from "bun:test";
 import { digest } from "../core/model";
 import { sha256Hex } from "../core/sha256";
 import * as posix from "../core/posix-path";
-import { sessionKey } from "../core/kata-core";
+import { canonicalPath } from "../core/kata-core";
+import { nodePlatform } from "../core/node-host";
+import { kataCommands } from "../core/shell";
+import { explicitParent } from "../core/plan-parent";
 import { slotKey } from "../core/inbox";
-import { closeEnv, debugTo, waitAtMost, type Platform } from "../core/kata-cli";
+import { closeEnv, debugTo, waitAtMost, type Timers } from "../core/kata-cli";
 
 test("the pure SHA-256 matches the published vectors", () => {
   expect(sha256Hex("")).toBe("e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855");
@@ -35,15 +38,27 @@ test("posix-path agrees with node:path on the inputs the core uses", () => {
   expect(posix.join("/a/b/..", "c")).toBe("/a/c");
 });
 
-test("sessionKey resolves symlinks through the host's realpath, and a missing file through its folder", () => {
-  const real = (p: string) => { if (p === "/link/dir") return "/real/dir"; if (p === "/link/dir/s.jsonl") throw new Error("ENOENT"); throw new Error("ENOENT"); };
-  expect(sessionKey("s.jsonl", "/link/dir", real)).toBe("/real/dir/s.jsonl");
-  expect(sessionKey("/nowhere/s.jsonl", "/link/dir", real)).toBe("/nowhere/s.jsonl");
-  expect(sessionKey("s.jsonl", "/link/dir")).toBe("/link/dir/s.jsonl");
+test("canonicalPath resolves symlinks through the host's realpath, and a missing file through its folder", async () => {
+  const real = async (p: string) => { if (p === "/link/dir") return "/real/dir"; throw new Error("ENOENT"); };
+  const host = { path: posix.posixPath, realpath: real };
+  expect(await canonicalPath(host, "s.jsonl", "/link/dir")).toBe("/real/dir/s.jsonl");
+  expect(await canonicalPath(host, "/nowhere/s.jsonl", "/link/dir")).toBe("/nowhere/s.jsonl");
+});
+
+test("a Node host keeps node:path's results, Windows included", async () => {
+  expect(nodePlatform.path).toBe(path);
+  const win = { path: path.win32, realpath: async (p: string) => { if (p === "C:\\work\\link") return "D:\\real"; throw new Error("ENOENT"); } };
+  expect(await canonicalPath(win, "s.jsonl", "C:\\work\\link")).toBe(path.win32.join("D:\\real", "s.jsonl"));
+  expect(await canonicalPath(win, "..\\other\\s.jsonl", "C:\\work\\link")).toBe(path.win32.resolve("C:\\work\\link", "..\\other\\s.jsonl"));
+  expect(kataCommands(path.win32, "'C:\\tools\\kata' list").map(c => c.words.map(w => w.value))).toEqual([["list"]]);
+  expect(kataCommands(posix.posixPath, "'C:\\tools\\kata' list")).toEqual([]);
+  expect(explicitParent({ path: path.win32, cwd: "C:\\work\\..\\app", explicit: "p#1" })?.workspace).toBe("C:\\app");
 });
 
 test("slotKey is unpadded base64url of the address bytes", () => {
   expect(slotKey("lead/worker")).toBe("notify." + Buffer.from("lead/worker").toString("base64url"));
+  expect(slotKey("x".repeat(300_000))).toBe("notify." + Buffer.from("x".repeat(300_000)).toString("base64url"));
+  for (const n of [0, 1, 2, 3, 4, 5]) expect(slotKey("a".repeat(n))).toBe("notify." + Buffer.from("a".repeat(n)).toString("base64url"));
   expect(slotKey("ü/日?>")).toBe("notify." + Buffer.from("ü/日?>").toString("base64url"));
 });
 
@@ -54,7 +69,7 @@ test("the transcript switch comes from the host's environment, not the process",
 
 test("waitAtMost and debugTo take their timer and file sink from the host", async () => {
   const armed: { fire: () => void; ms: number }[] = [], cleared: unknown[] = [];
-  const timers: Pick<Platform, "setTimer" | "clearTimer"> = { setTimer: (fire, ms) => { armed.push({ fire, ms }); return armed.length; }, clearTimer: handle => cleared.push(handle) };
+  const timers: Timers = { setTimer: (fire, ms) => { armed.push({ fire, ms }); return armed.length; }, clearTimer: handle => cleared.push(handle) };
   const never = new Promise<string>(() => {});
   const waiting = waitAtMost(never, 250, () => {}, timers);
   armed[0].fire();

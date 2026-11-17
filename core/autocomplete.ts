@@ -1,4 +1,4 @@
-import { isKataCode, NO_JOB, type Kata, type Platform } from "./kata-cli";
+import { isKataCode, NO_JOB, type Kata, type Timers } from "./kata-cli";
 
 // `#` ticket completion in the host's editor: the provider wrapper and the per-session ticket lists it reads.
 
@@ -28,7 +28,7 @@ const TICKET_LIMIT = 10;
  * Typing never waits on Kata: an abort, a timeout or a failing source leaves the
  * wrapped items.
  */
-export function ticketAutocomplete(current: TicketAutocompleteProvider, source: (project?: string) => Promise<Ticket[]>, timers: Pick<Platform, "setTimer" | "clearTimer">, options: { defaultProject?: string; timeout?: number; active?: () => boolean } = {}): TicketAutocompleteProvider {
+export function ticketAutocomplete(current: TicketAutocompleteProvider, source: (project?: string) => Promise<Ticket[]>, timers: Timers, options: { defaultProject?: string; timeout?: number; active?: () => boolean } = {}): TicketAutocompleteProvider {
 	const ours = new Set<string>();
 	async function search(project: string | undefined, token: string, signal: AbortSignal | undefined): Promise<Ticket[]> {
 		let resolve!: (value: undefined) => void;
@@ -92,7 +92,7 @@ const registry = globalThis as { [NEWEST_REGISTRATION]?: object };
 // Adds ticket completion to each editor once: omp rebuilds its stack from every registered factory, and a
 // session start runs again on every session switch.
 // `scope`: the session and cwd the tickets are listed for, and the project a bare `#` completes in (KATA_DEFAULT_PROJECT).
-export function createTicketCompletion(kata: Kata, scope: () => { session?: string; cwd: string; defaultProject?: string }, debug: (error: unknown) => void, timers: Pick<Platform, "setTimer" | "clearTimer">) {
+export function createTicketCompletion(kata: Kata, scope: () => { session?: string; cwd: string; defaultProject?: string }, debug: (error: unknown) => void, timers: Timers) {
 	const ticketLists = new Map<string, { at: number; tickets: Ticket[]; pending?: Promise<void>; failedAt?: number; error?: unknown }>();
 	function tickets(project?: string): Promise<Ticket[]> {
 		const { session, cwd } = scope();

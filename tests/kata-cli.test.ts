@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
 import { closeEnv, createKata, NO_JOB, type Exec } from "../core/kata-cli";
+import { nodePlatform } from "../core/node-host";
 
 // Counts the `kata show` calls that reach Kata, and keeps the context each call was handed; every other call succeeds with an empty issue.
 function client() {
@@ -10,7 +11,7 @@ function client() {
     if (args[0] === "show") shows.push(args[1]);
     return { code: 0, stdout: JSON.stringify({ issue: { short_id: args[1], revision: shows.length } }) };
   };
-  const kata = createKata({ exec, executable: "/fixture/kata", teammate: () => undefined, ctx: () => "latest", session: () => "session", debug() {} });
+  const kata = createKata({ path: nodePlatform.path, exec, executable: "/fixture/kata", teammate: () => undefined, ctx: () => "latest", session: () => "session", debug() {} });
   return { kata, shows, contexts };
 }
 

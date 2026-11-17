@@ -1,5 +1,5 @@
 import { closedTaskStatus, digest, heldBySession, heldMessage, itemTicket, missionCloseArgs, missionKey, OPEN, projectOf, qualifiedRefs, tasksOf, TITLE_MAX, TODO_WORDING, type Binding, type KataIssue, type KataShow, type Plan, type Task, type ToolWording } from "./model";
-import { isKataCode, isUnusable, NO_JOB, type Job, type Kata } from "./kata-cli";
+import { isKataCode, isUnusable, type Job, type Kata } from "./kata-cli";
 
 // The delegate lifecycle, shared by every host: an omp or OpenCode lead and the pi child (see GLOSSARY.md: Delegate,
 // Assignment, Untracked delegate, Mission, Hand back, Report). Adapters translate host events into DelegateEvents;
@@ -204,7 +204,7 @@ export interface DelegatesEnv {
 	owned(job: Job, ref: string, cwd: string, mayClaim?: boolean | "check", allowClosed?: boolean, revision?: number, who?: Who): Promise<KataIssue>;
 	work(job: Job, ref: string, key: string, value: string | boolean | undefined, cwd: string, expected: KataIssue): Promise<KataIssue>;
 	// Queues `fn` as one job of the core. Called with the job of the code that queues it, a job queued inside a batch joins it.
-	serial<T>(fn: (job: Job) => Promise<T>, within?: Job): Promise<T>;
+	serial<T>(fn: (job: Job) => Promise<T>, within: Job): Promise<T>;
 	plan(): Plan;
 	load(job: Job, cwd: string): Promise<unknown>;
 	drain(job: Job): Promise<void>;
@@ -228,14 +228,14 @@ type Scope = { parent?: string; workspace?: string; label?: string; leadTeammate
 export interface Delegates {
 	// The one write entry. Runs in the core's serial queue and never throws to the host. `within`: the job of the code that
 	// reports the event, when it runs in one (a batch it queues into).
-	apply(event: DelegateEvent, within?: Job): Promise<void>;
+	apply(event: DelegateEvent, within: Job): Promise<void>;
 	// A delegate began (see DelegateEvent `started`): the event with the lead's teammate and the delegate's own, which a host
 	// would otherwise spell for itself. The delegate's teammate is salted by the lead's session (see teammateFor).
-	start(host: DelegateStart, within?: Job): Promise<void>;
+	start(host: DelegateStart, within: Job): Promise<void>;
 	// Says what each spawn of a call works (see resolve), or throws the Refusal of the first that cannot be delegated; a ticket
 	// must also be the lead's to delegate. `call`: the host's id of the call. What its spawns were matched to stays reserved
 	// under it, against every other spawn, until each spawn's `started` takes its own or the host releases the call.
-	check(texts: string[], call?: string, scope?: Scope, within?: Job): Promise<Reservation[]>;
+	check(texts: string[], call: string | undefined, scope: Scope | undefined, within: Job): Promise<Reservation[]>;
 	// The call is over: what its spawns reserved and no delegate took is free again.
 	release(call: string): void;
 	// The issue the delegate running in `ctx` works, once assigned.
@@ -262,7 +262,7 @@ export interface Delegates {
 	// Takes back the records a past run of this lead saved, those not already in memory. An ended one is back at once, for a
 	// later run to resume. An unfinished one comes back as exited and settles in the background, on the lead's queue, so the
 	// caller does not wait for Kata.
-	restore(records: SavedDelegate[], within?: Job): void;
+	restore(records: SavedDelegate[], within: Job): void;
 	// Settles every exited delegate not yet settled. Runs inside the serial queue.
 	settle(job: Job): Promise<void>;
 }
@@ -335,7 +335,7 @@ export function createDelegates(env: DelegatesEnv): Delegates {
 		found.title ??= ticket.title;
 	}
 
-	async function check(texts: string[], call?: string, scope: Scope = {}, within: Job = NO_JOB): Promise<Reservation[]> {
+	async function check(texts: string[], call: string | undefined, scope: Scope = {}, within: Job): Promise<Reservation[]> {
 		return env.serial(async job => {
 			const src = await source(job, scope);
 			// A local plan's own tasks have no issue to reserve: a spawn naming one is decided when its delegate starts.
@@ -659,7 +659,7 @@ export function createDelegates(env: DelegatesEnv): Delegates {
 		}
 	}
 
-	function apply(event: DelegateEvent, job: Job = NO_JOB): Promise<void> {
+	function apply(event: DelegateEvent, job: Job): Promise<void> {
 		const woken = waking.get(event.id);
 		if (woken) return woken.then(() => apply(event, job));
 		if (event.type === "started") return open(job, event);
@@ -704,7 +704,7 @@ export function createDelegates(env: DelegatesEnv): Delegates {
 			const { report: _report, restore: _restore, error: _error, ...ended } = r;
 			return resumable(r) ? [ended] : [];
 		}),
-		restore(records, within = NO_JOB) {
+		restore(records, within) {
 			const back = (r: SavedDelegate): DelegateRecord => ({ ...r, text: "", exited: r.exited ?? "aborted" });
 			const lost = records.filter(r => !env.store.get(r.id));
 			// Not saved again: the snapshot they come from holds them.

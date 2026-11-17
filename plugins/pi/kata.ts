@@ -1,6 +1,7 @@
 import path from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { createKataCore, DESCRIPTION, TODO_OPS, TODO_PARAMS, type Lead, type ChildParent } from "./kata-core";
+import { NO_JOB } from "./kata-cli";
 import { exportTranscriptSession, nodePlatform } from "./node-host";
 import { delegateCommand, kataCommands, quote } from "./shell";
 import type { DelegateRecord, DelegateStore } from "./delegates";
@@ -117,8 +118,8 @@ export default async function piKata(pi: ExtensionAPI) {
 			evidence: Type.Optional(Type.Array(Type.String(), { description: TODO_PARAMS.evidence })),
 		}),
 		async execute(_id, params, _signal, _onUpdate, ctx) {
-			if (inherited && current) await core.delegates.apply({ type: "nextUse", id: current.id });
-			const result = await core.todo.apply(ctx, params.op, params);
+			if (inherited && current) await core.delegates.apply({ type: "nextUse", id: current.id }, NO_JOB);
+			const result = await core.todo.apply(ctx, params.op, params, NO_JOB);
 			if (!inherited) {
 				const plan = result.details.kata as Partial<Lead>;
 				if (plan.workspace) lead = { parent: plan.parent, workspace: plan.workspace, label: plan.label };
@@ -141,7 +142,7 @@ export default async function piKata(pi: ExtensionAPI) {
 	});
 
 	pi.on("tool_call", async (event, ctx) => {
-		if (inherited && current) void core.delegates.apply({ type: "ranTool", id: current.id });
+		if (inherited && current) void core.delegates.apply({ type: "ranTool", id: current.id }, NO_JOB);
 		const bash = event.toolName === "bash" && typeof event.input.command === "string";
 		// A bash command that launches pi may start a child that needs the lead's parent.
 		const next = await core.tools.call(ctx, { startsChild: !inherited && bash && launchesPi(event.input.command as string) });
@@ -150,10 +151,10 @@ export default async function piKata(pi: ExtensionAPI) {
 		let command = event.input.command as string;
 		if (inherited) {
 			if (!current) return { block: true, reason: "Kata child binding is unavailable; retry after parent startup." };
-			try { command = delegateCommand(command, executable, EXECUTABLE_VARS, current.teammate, current.binding); }
+			try { command = delegateCommand(nodePlatform.path, command, executable, EXECUTABLE_VARS, current.teammate, current.binding); }
 			catch (error) { return { block: true, reason: String(error) }; }
 		}
-		for (const invocation of kataCommands(command, executable, EXECUTABLE_VARS).reverse()) {
+		for (const invocation of kataCommands(nodePlatform.path, command, executable, EXECUTABLE_VARS).reverse()) {
 			if (invocation.executable.value !== "kata" || executable === "kata") continue;
 			command = command.slice(0, invocation.executable.start) + quote(executable) + command.slice(invocation.executable.end);
 		}

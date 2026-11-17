@@ -1,5 +1,7 @@
 // Generated from core/posix-path.ts; edit there.
-// The slash-separated path operations the core needs, without node:path (a host may have no Node). They follow
+import type { PathOps } from "./kata-cli";
+
+// The slash-separated path operations for a host without Node (the `path` of its Platform). They follow
 // path.posix; a relative path with no absolute base stays relative, since the core has no process cwd to anchor it.
 
 function normalize(parts: string[], absolute: boolean): string[] {
@@ -38,3 +40,5 @@ export function dirname(path: string): string {
 	if (!trimmed && path) return "/";
 	return at < 0 ? "." : at === 0 ? "/" : trimmed.slice(0, at).replace(/\/+$/, "") || "/";
 }
+
+export const posixPath: PathOps = { resolve, join, basename, dirname };

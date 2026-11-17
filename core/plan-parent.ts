@@ -1,13 +1,14 @@
 // Which plan parent, and which workspace, a plan serves. A pure decision over
 // the sources the core gathers; it never reads the environment or calls Kata.
 // Reachability of Kata (the core's `scope`) and the local plan stay outside.
-import { resolve } from "./posix-path";
+import type { PathOps } from "./kata-cli";
 
 // A plan parent remembered from an earlier bind: the session's saved state, the
 // fork source's, or an automatic parent found in Kata by session id.
 export type SavedParent = { parent: string; workspace?: string; sessionId?: string; auto?: boolean; label?: string };
 
 export type ParentSources = {
+	path: Pick<PathOps, "resolve">; // the host's
 	cwd: string; // the session's cwd at bind time
 	assigned?: { ref?: string; workspace?: string }; // an omp delegate's assignment
 	explicit?: string; // the `explicitRef` option, else KATA_REF
@@ -31,8 +32,8 @@ export type PlanParent = {
 export const isExplicitParent = (choice: PlanParent) => choice.provenance === "assigned" || choice.provenance === "explicit" || choice.provenance === "init";
 
 // The explicit sources alone: an assignment, then `explicit`, then init's `ref`.
-export function explicitParent({ cwd, assigned, explicit, initRef }: ParentSources): PlanParent | undefined {
-	const here = resolve(cwd);
+export function explicitParent({ path, cwd, assigned, explicit, initRef }: ParentSources): PlanParent | undefined {
+	const here = path.resolve(cwd);
 	if (assigned?.ref) return { parent: assigned.ref, provenance: "assigned", workspace: assigned.workspace || here, overridden: initRef };
 	if (explicit) return { parent: explicit, provenance: "explicit", workspace: here, overridden: initRef };
 	if (initRef) return { parent: initRef, provenance: "init", workspace: here };
@@ -41,7 +42,7 @@ export function explicitParent({ cwd, assigned, explicit, initRef }: ParentSourc
 export async function decidePlanParent(sources: ParentSources): Promise<PlanParent> {
 	const explicit = explicitParent(sources);
 	if (explicit) return explicit;
-	const here = resolve(sources.cwd);
+	const here = sources.path.resolve(sources.cwd);
 	if (sources.stored?.parent) return { parent: sources.stored.parent, provenance: "stored", workspace: sources.stored.workspace || here, saved: sources.stored };
 	const found = await sources.session?.();
 	if (found) return { parent: found.parent, provenance: "session", workspace: found.workspace || here, saved: found };

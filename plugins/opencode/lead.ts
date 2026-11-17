@@ -1,4 +1,4 @@
-import { waitAtMost } from "./kata-cli";
+import { NO_JOB, waitAtMost } from "./kata-cli";
 import { nodePlatform } from "./node-host";
 import { createKataCore, type HostContext, type Job, type KataCore, type PlanView } from "./kata-core";
 import { teammateFor, type DelegateAssignment, type DelegateEvent, type DelegateRecord, type DelegateStore } from "./delegates";
@@ -26,7 +26,7 @@ export interface Planner {
 	batch<T>(fn: (job: Job) => Promise<T>): Promise<T>;
 	// One todo op through the core (`view` binds and reloads the plan first). Never throws: the result says `isError`.
 	// `job`: the batch the op runs in; without one it queues as a job of its own.
-	todo(op: string, params?: Record<string, unknown>, job?: Job): Promise<TodoResult>;
+	todo(op: string, params: Record<string, unknown>, job: Job): Promise<TodoResult>;
 }
 
 // What a lead knows of one of its child sessions. `record`: the lead tracks it as a delegate. `assignment` (ref, workspace,
@@ -149,7 +149,7 @@ export function createLead(deps: LeadDeps): Lead {
 		const planner: Planner = {
 			id: sessionID,
 			batch: fn => core.todo.batch(ctx, fn),
-			async todo(op, params = {}, job) {
+			async todo(op, params, job) {
 				const result = await core.todo.apply(ctx, op, params, job);
 				return { text: result.content.map(part => part.text).join("\n"), kata: result.details.kata, isError: result.isError === true };
 			},
@@ -158,7 +158,7 @@ export function createLead(deps: LeadDeps): Lead {
 	}
 	const { core, ctx, planner } = callerOf(id, entries, delegates);
 
-	const ready = planner.todo("view").then(() => undefined, debug);
+	const ready = planner.todo("view", {}, NO_JOB).then(() => undefined, debug);
 
 	const delegateCallers = new Map<string, Caller>();
 	function delegateCaller(sessionID: string): Caller {
@@ -234,8 +234,8 @@ export function createLead(deps: LeadDeps): Lead {
 		delegatePlan: sessionID => delegateCaller(sessionID).planner,
 		checkSpawn: (call, text) => core.todo.batch(ctx, async job => { await core.delegates.check([text], call, undefined, job); }),
 		releaseSpawn: call => core.delegates.release(call),
-		began: (sessionID, spawn) => core.delegates.start({ id: sessionID, sessionId: sessionID, leadSessionId: id, ...spawn }),
-		delegateEvent: event => core.delegates.apply(event),
+		began: (sessionID, spawn) => core.delegates.start({ id: sessionID, sessionId: sessionID, leadSessionId: id, ...spawn }, NO_JOB),
+		delegateEvent: event => core.delegates.apply(event, NO_JOB),
 		async assignmentSection(sessionID, after) {
 			const own = delegateCaller(sessionID);
 			return (await own.core.session.beforePrompt(own.ctx, { context: false, after })).sections.assignment;

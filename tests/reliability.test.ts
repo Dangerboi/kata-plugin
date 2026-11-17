@@ -2,6 +2,7 @@ import { beforeAll, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { createKataCore, type Job } from "../core/kata-core";
+import { NO_JOB } from "../core/kata-cli";
 import { nodePlatform } from "../core/node-host";
 import { EVIDENCE, isolatedKata, later, memoryDelegateStore, MESSAGE as message, realKata } from "./kata-fixture";
 import { daemonUnavailable, notInitialized, notInitializedBound, notInitializedNoData, notInitializedProject, siblingThrottle } from "./kata-errors";
@@ -17,7 +18,7 @@ function app(options: any = {}) {
   const core = createKataCore({ platform: nodePlatform, contextTimers: ctx => ctx.setTimeout ? { setTimer: ctx.setTimeout, clearTimer: ctx.clearTimer } : undefined, appendEntry: (customType, data) => entries.push({ type: "custom", customType, data }),
     exec: async (_file, args, opts) => { calls.push(args); contexts.push(opts.ctx); return await options.before?.(args) ?? run(args, opts.cwd); }, delegateStore: memoryDelegateStore(),
   }, { namespace: "omp", executable: binary, executableVars: ["KATA_OMP_EXECUTABLE"], explicitRef: () => options.ref });
-  return { core, calls, contexts, entries, ctx, call: (p: any, job?: Job) => core.todo.apply(ctx, p.op, p, job) };
+  return { core, calls, contexts, entries, ctx, call: (p: any, job: Job = NO_JOB) => core.todo.apply(ctx, p.op, p, job) };
 }
 // Kata unusable: the only case that selects a local plan.
 const down = daemonUnavailable;
@@ -247,9 +248,9 @@ test("authenticated daemon actor can create and complete a plan despite local ac
     const status = JSON.parse((await authRun(["status", ref, "--json"])).stdout); expect(status.actor).toBe("token-actor");
     const core = createKataCore({ platform: nodePlatform, appendEntry() {}, exec: (_file, args) => authRun(args), delegateStore: memoryDelegateStore() }, { namespace: "omp", executable: binary, executableVars: ["KATA_OMP_EXECUTABLE"], explicitRef: () => ref });
     const ctx = { cwd: authCwd, sessionManager: { getSessionId: () => "auth-fixture", getBranch: () => [] } };
-    const initialized = await core.todo.apply(ctx, "init", { items: ["Authenticated task"] });
+    const initialized = await core.todo.apply(ctx, "init", { items: ["Authenticated task"] }, NO_JOB);
     expect(initialized.isError, initialized.content[0].text).toBeUndefined();
-    expect((await core.todo.apply(ctx, "done", { ...done, task: "Authenticated task" })).isError).toBeUndefined();
+    expect((await core.todo.apply(ctx, "done", { ...done, task: "Authenticated task" }, NO_JOB)).isError).toBeUndefined();
     const parent = initialized.details.kata.parent as string;
     const taskId = JSON.parse((await authRun(["show", parent, "--json"])).stdout).children[0].short_id;
     const child = JSON.parse((await authRun(["show", `${parent.split("#")[0]}#${taskId}`, "--json"])).stdout).issue;

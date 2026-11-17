@@ -7,7 +7,7 @@ const stored: SavedParent = { parent: "p#stored", workspace: "/work/stored", ses
 const found: SavedParent = { parent: "p#found", workspace: "/work/found", sessionId: "s1", auto: true };
 
 // Every source set the core can gather, in decreasing precedence of what decides.
-const table: [string, Omit<ParentSources, "cwd">, { parent?: string; provenance: string; workspace: string; overridden?: string }][] = [
+const table: [string, Omit<ParentSources, "cwd" | "path">, { parent?: string; provenance: string; workspace: string; overridden?: string }][] = [
 	["a delegate's assignment beats everything", { assigned: { ref: "p#assigned", workspace: "/work/delegate" }, explicit: "p#env", initRef: "p#init", stored, session: async () => found }, { parent: "p#assigned", provenance: "assigned", workspace: "/work/delegate", overridden: "p#init" }],
 	["an assignment without a workspace works in the session cwd", { assigned: { ref: "p#assigned" } }, { parent: "p#assigned", provenance: "assigned", workspace: cwd }],
 	["an assignment with no ref is no assignment", { assigned: {}, explicit: "p#env" }, { parent: "p#env", provenance: "explicit", workspace: cwd }],
@@ -22,24 +22,24 @@ const table: [string, Omit<ParentSources, "cwd">, { parent?: string; provenance:
 
 for (const [name, sources, expected] of table) {
 	test(`plan parent: ${name}`, async () => {
-		const choice = await decidePlanParent({ cwd, ...sources });
+		const choice = await decidePlanParent({ path, cwd, ...sources });
 		expect(choice).toMatchObject(expected);
 		expect(isExplicitParent(choice)).toBe(["assigned", "explicit", "init"].includes(expected.provenance));
 	});
 }
 
 test("plan parent: stored state and the session lookup carry what they remembered", async () => {
-	expect((await decidePlanParent({ cwd, stored })).saved).toBe(stored);
-	expect((await decidePlanParent({ cwd, session: async () => found })).saved).toBe(found);
-	expect((await decidePlanParent({ cwd, explicit: "p#env", stored })).saved).toBeUndefined();
+	expect((await decidePlanParent({ path, cwd, stored })).saved).toBe(stored);
+	expect((await decidePlanParent({ path, cwd, session: async () => found })).saved).toBe(found);
+	expect((await decidePlanParent({ path, cwd, explicit: "p#env", stored })).saved).toBeUndefined();
 });
 
 test("plan parent: the session lookup runs only when nothing earlier decides", async () => {
 	let asked = 0;
 	const session = async () => { asked++; return found; };
-	for (const sources of [{ assigned: { ref: "p#a" } }, { explicit: "p#e" }, { initRef: "p#i" }, { stored }]) await decidePlanParent({ cwd, ...sources, session });
+	for (const sources of [{ assigned: { ref: "p#a" } }, { explicit: "p#e" }, { initRef: "p#i" }, { stored }]) await decidePlanParent({ path, cwd, ...sources, session });
 	expect(asked).toBe(0);
-	await decidePlanParent({ cwd, session });
+	await decidePlanParent({ path, cwd, session });
 	expect(asked).toBe(1);
 });
 
