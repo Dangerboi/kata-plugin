@@ -78,6 +78,22 @@ bun run smoke:opencode --verbose             # also print OpenCode's JSON event 
 
 Scenarios are data in `scripts/smoke-opencode.ts`: scripted turns per agent (keyed by a marker in the agent's first user message; the longest marker it contains wins) plus assertions over the store. Add one by appending an entry to `SCENARIOS`; the driver changes only for a scenario that restarts OpenCode. `shared-server` is the exception: it is not a `SCENARIOS` entry but has its own driver (`runShared`, which starts `opencode serve` and two `opencode run --server` leads), and `--scenario shared-server` (and the default run) is special-cased in the script's main block.
 
+## Smoke test against a real Claude Code
+
+`bun run smoke:claude` loads `plugins/claude-code` into a real, headless `claude -p --model haiku --plugin-dir plugins/claude-code` and checks the result in a real Kata daemon. **It is paid and needs a login**: Claude Code has no scripted model provider, so a real model does the work, and the run spends a few cents of subscription usage or API credit (`--model <name>` picks another model; the script stops at a spend of 1 USD). It runs locally only and is not part of CI, which does not install Claude Code. Run it before a Claude release and after each Claude Code release, and move the tested version in the README, the install guide and the reference once it passes. It needs `claude` (logged in) and `kata` on `PATH`. Each run uses a fresh Git folder and a throwaway `KATA_HOME`; Claude Code itself uses your own config directory and its login, so it may update that directory as in any run.
+
+The prompt has the model plan two tasks with the `todo` tool, do and close the first itself, and hand the second to an `Agent` subagent. The run passes when the store holds the session's automatic parent with both tasks under it, the first closed with evidence and a transcript naming agent `claude` and the session id, the second bound to the subagent (its issue carries the lead's session) and closed by it with evidence and a comment of its own, no task handed back for review, and the parent closed at session end. A model can fail the run without the plugin being at fault; a failed run prints the store and Claude Code's last output to tell the two apart.
+
+```sh
+bun run smoke:claude                 # paid: one headless run on haiku
+bun run smoke:claude --model sonnet  # another model
+bun run smoke:claude --verbose       # also print Claude Code's output
+bun run validate:claude              # claude plugin validate, free
+bun run test:claude                  # claude plugin test, free
+```
+
+`validate:claude` and `test:claude` need no login and call no model, but need Claude Code on `PATH`, so CI does not run them either. Run both before a Claude release.
+
 ## Changelog
 
 `CHANGELOG.md` follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and its release sections are the release notes.
@@ -91,7 +107,7 @@ Scenarios are data in `scripts/smoke-opencode.ts`: scripted turns per agent (key
 
 ## Releases
 
-Installs come from the marketplace (`kata@kata-plugin`), Git, and npm: `@dangerboi/kata-pi`, listed in the [Pi package gallery](https://pi.dev/packages) through its `pi-package` keyword, and `@dangerboi/kata-omp`, listed on [omp packages](https://omppackages.com) through its `omp-plugin` keyword (the catalog reads npm and takes up to about six hours to show a new version). npm refuses the unscoped name `kata-pi` as too close to an existing package. The OpenCode package is `@dangerboi/kata-opencode`. The marketplace registers the omp plugin under its package name too, so a marketplace install and an npm install share one slot in omp.
+Installs come from the marketplaces (`kata@kata-plugin` in omp, `kata-cc@kata-plugin` in Claude Code), Git, and npm: `@dangerboi/kata-pi`, listed in the [Pi package gallery](https://pi.dev/packages) through its `pi-package` keyword, and `@dangerboi/kata-omp`, listed on [omp packages](https://omppackages.com) through its `omp-plugin` keyword (the catalog reads npm and takes up to about six hours to show a new version). npm refuses the unscoped name `kata-pi` as too close to an existing package. The OpenCode package is `@dangerboi/kata-opencode`. The marketplace registers the omp plugin under its package name too, so a marketplace install and an npm install share one slot in omp.
 
 1. Bump `version` by hand in each changed plugin's `plugins/*/package.json`. Keep the root `package.json` version equal to pi's: the root manifest is what `pi install git:…` installs.
 2. In `CHANGELOG.md`, rename `## [Unreleased]` to `## [<root version>] - YYYY-MM-DD`, start the section with a line naming the plugin versions a root release publishes (`@dangerboi/kata-omp 2.7.0 and @dangerboi/kata-pi 1.7.1.`), and put a new empty `## [Unreleased]` above it. At the end of the file, point `[Unreleased]` at `compare/v<root version>...HEAD` and add a link for the new version comparing the previous tag. OpenCode-only entries do not belong in a root release; they go in an OpenCode release (below). Pi shows a package's new changelog entries after an update and reads only `##` headings that start with a version, brackets allowed; it compares that version with the installed package's.
@@ -104,3 +120,8 @@ Installs come from the marketplace (`kata@kata-plugin`), Git, and npm: `@dangerb
    4. Pushing the tag runs the `publish-opencode` job of the same workflow, which runs `npm publish` in `plugins/opencode` through the same trusted publishing. It fails when the tag is not `opencode-v<OpenCode version>` and skips a version already on npm. The `publish` job runs only for tags that start with `v`, and `publish-opencode` only for tags that start with `opencode-v`. GitHub's `v*` tag filter does not match `opencode-v*`, so the workflow lists both patterns. `gh workflow run publish-pi.yml -f tag=<tag>` runs the job that matches the tag again.
    5. The trusted publisher for this package names `Dangerboi/kata-plugin` and `publish-pi.yml`, the same file as pi's. A trusted publisher is a package setting, so the package must exist on npm first: publish `1.0.0` once by hand from `plugins/opencode` (`npm publish --access public`, signed in as the maintainer), then add the trusted publisher on npmjs.com. Afterwards tag `opencode-v1.0.0` so later compare links have a base; the job skips it as already on npm.
    6. OpenCode loads the package through `exports["."]` (`./kata.ts`), and a folder with the same manifest loads the same way, so `tests/packaging.test.ts` checks the manifest, the tarball and the local import graph.
+6. Claude Code's `kata-cc` has no npm package and no publish job: `/plugin install kata-cc --marketplace Dangerboi/kata-plugin` reads `.claude-plugin/marketplace.json` and the plugin folder from the repository's Git, and a local-folder marketplace reads `plugins/claude-code` in place. Claude Code pins an install to the plugin's `version`, so a change reaches an installed copy only when the version moves. To release it:
+   1. Bump `version` in `plugins/claude-code/.claude-plugin/plugin.json` and the same `version` of the `kata-cc` entry in `.claude-plugin/marketplace.json`; `tests/packaging.test.ts` fails when they differ. The version follows the plugin's own changes, like the other plugins', and is independent of the root version.
+   2. Run `bun run validate:claude`, `bun run test:claude` and `bun run smoke:claude` (paid), and move the tested Claude Code version in the README, the install guide and the reference when the host moved.
+   3. Entries for the plugin carry the `Claude Code:` prefix in `CHANGELOG.md` and stay under `## [Unreleased]` until the next root release moves them with the rest; there is no tag, section or GitHub release of its own, and that root release names the plugin's version on the line under its heading with the others (`kata-cc 1.1.0.`).
+   4. After the change merges to `main`, users pick it up with `claude plugin marketplace update kata-plugin` and `claude plugin update kata-cc@kata-plugin`, then `/reload-plugins`. Nothing is published.

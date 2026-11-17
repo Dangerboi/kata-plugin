@@ -1,6 +1,6 @@
 {
   "name": "kata-cc",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "description": "Kata work tracking for Claude Code: a Kata-backed todo tool that replaces the task tools.",
   "author": { "name": "Dangerboi" },
   "license": "MIT",

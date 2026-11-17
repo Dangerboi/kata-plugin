@@ -1,0 +1,83 @@
+# Claude Code reference
+
+Plugin: `kata-cc` in the `kata-plugin` marketplace; entry: `plugins/claude-code`, a Claude Code mod (a hooks module, not a settings hook). Requires Claude Code 2.1.326 (the tested version) and Kata 0.23.0 or later, checked before CLI use; see [runtime compatibility](../how-to/install.md#runtime-compatibility). The mod API is early access: Claude Code may change it between releases without notice, so a new Claude Code release can break the mod until the plugin follows. There is no npm package; installs come from the marketplace's Git repository.
+
+The plugin name shows wherever Claude Code names the source of a mod: a message the mod sends into the session (a live inbox request) is framed as "The kata-cc plugin sent a message", and its settings are listed under `kata-cc`.
+
+The mod replaces Claude Code's task tools with one Kata-backed `todo` tool, adds the plan to each prompt, binds the lead's subagents and workflow agents to Kata issues ([Delegates](#delegates)), rewrites Kata commands a subagent runs in `Bash` ([Shell](#shell)), follows the session inbox live, and draws the plan in the terminal UI ([Display](#display)). It does not inject the Kata contract or session attention by default: `kata agent-hook install claude` supplies them (see [Use with Kata agent hooks](../how-to/use-with-kata-agent-hooks.md#claude-code)).
+
+## Settings
+
+Plugin options are set with `claude plugin install kata-cc@kata-plugin --config KEY=VALUE` or `/plugin configure kata-cc@kata-plugin`; each falls back to a variable in the environment Claude Code runs in, where there is one. The option wins when both are set; a text value counts only when it is non-blank, and it is trimmed.
+
+| Option | Variable | Meaning |
+| --- | --- | --- |
+| `liveInbox` | `KATA_CLAUDE_LIVE_INBOX` | Default on. Delivers inbox requests to the main session as they arrive. Off, by the option or `KATA_CLAUDE_LIVE_INBOX=0`: no live follower runs, and the inbox reaches the model only through the per-prompt inbox section of Kata's hook (or the mod's, with `contract` on). |
+| `contract` | | Default off. On, the mod adds the Kata contract and the inbox to the prompt itself. Leave it off when `kata agent-hook install claude` is set up, which owns both: with both on the model reads the contract twice. |
+| `kataExecutable` | `KATA_CLAUDE_EXECUTABLE` | The Kata executable the mod runs; defaults to `kata`. The `Bash` tool is not rewritten to use it. |
+| `debugFile` | `KATA_CLAUDE_DEBUG` | Optional append-only diagnostic log. |
+
+These variables, shared with the other hosts, are read from Claude Code's environment when the mod starts (changing one needs a new session): `KATA_REF`, `KATA_DEFAULT_PROJECT`, `KATA_AUTHOR`, `KATA_TEAMMATE`, `KATA_INBOX_USER`, `KATA_HOME` and `KATA_CLOSE_TRANSCRIPT_ENABLED`. A variable the mod does not name is invisible to it. `/plugin configure` may show `1 userConfig option not yet set` after an install: every option has a default.
+
+Where the plan lives follows the [oh-my-pi rules](oh-my-pi.md#where-the-plan-lives): `KATA_REF`, then the plan parent saved for the session, then the folder's Kata project, then `KATA_DEFAULT_PROJECT`, then the inferred project. Nothing is created until the first plan change.
+
+## The `todo` tool
+
+The mod removes `TaskCreate`, `TaskGet`, `TaskList`, `TaskUpdate` and `TodoWrite` from the tool list and adds `todo`; `TaskStop` stays, because it stops background tasks. The tool is the one the [oh-my-pi reference](oh-my-pi.md) describes: `init`, `start`, `done`, `rm`, `drop`, `block`, `unblock`, `append` and `view`, with the same phases, ticket items (`<project>#<short_id>: <action>`), refusals and [closing rules](closing-rules.md). A `todo` call needs no permission prompt: the mod answers it. A subagent's call works its own assigned issue ([Delegates](#delegates)).
+
+Each prompt carries the plan as hidden context after the user's text. A section the model already holds is not sent again until it changes or the conversation is compacted.
+
+Every close runs `kata close` with `KATA_TRANSCRIPT_AGENT=claude` and the session id in that call's environment, plus `KATA_CLOSE_TRANSCRIPT_ENABLED=true` unless the environment sets it, so a close records the session ([Record agent sessions on closes](../how-to/record-session-transcripts.md)). `KATA_CLOSE_TRANSCRIPT_ENABLED=false` in Claude Code's environment stops it.
+
+## Delegates
+
+A delegate is an agent the lead starts: an `Agent` call, a Workflow agent or a teammate. The mod matches it to a plan item or a named ticket with the rules of the [oh-my-pi reference](oh-my-pi.md): the same naming rules, the same refusals, the same hand back. What differs is how Claude Code lets the mod see each step.
+
+| Step | What the mod does |
+| --- | --- |
+| Spawn (`agent.spawn`) | Matches the agent's prompt, description and name against the plan. An item or ticket already delegated, two tickets in one prompt, or a ticket that cannot be delegated refuses the spawn with the core's error; nothing is written. A spawn that matches nothing runs as an untracked delegate, whose run becomes a mission when it ends with a report. The binding is appended to the agent's prompt: its issue, its teammate, and the commands to comment and to close it, or to leave it open when its task text says not to close issues. |
+| Slow binding | The spawn waits up to 7 s for the binding. A slower Kata starts the agent without it; the agent still gets its issue, and learns of it from its first `todo` call. |
+| A tool call of the delegate | Marks the delegate as having acted, so its assignment is no longer rolled back at exit. Its `todo` calls plan under its own issue and never touch the lead's. A call from an agent the lead does not track is refused with an error telling it to report in its reply. |
+| The agent's turn ends | Its answer is its report: the delegate exits `completed`, `failed` or `aborted`. |
+| A follow-up (resume) | The agent goes on with the record it has: its issue while that is open, else its mission. |
+
+A fork no tool call starts (`/btw`, `/fork`) is no delegation and runs as it is. A subagent's own subagents are never matched against the lead's plan. At exit the core settles each delegate as for omp: a delegate that closed its issue returns it to the lead; one that exited without running any tool is rolled back; one that ran a tool and left the issue open flags it with `needs-review` and hands it back. See the [limits](../explanation/limits.md#claude-code) for the delegates the mod cannot see.
+
+## Shell
+
+A subagent bound to an issue, and any subagent the mod can name, runs `kata` commands in `Bash` under its own teammate: the command is rewritten to add `--teammate <teammate>` (an earlier one is replaced), and `--workspace` and `--project` of the assignment unless the command sets them. A subagent's `--as` is refused. Only commands in command position are touched, and rewriting is lexical, not a sandbox.
+
+Under auto permission mode Claude Code refuses a tool call a hook changed after the classifier read it. Then the mod denies the call instead, with the exact command to run (`Kata subagents run every kata command under their own teammate. Run it again exactly like this: …`), and the model's next call already carries the flags. The lead's `Bash` calls are not rewritten.
+
+## Sessions, settling and restart
+
+| Moment | What the mod does |
+| --- | --- |
+| Session start | Binds the plan: a resumed session's saved plan, pending closes and unfinished delegates resume with it. Registers the `/todo` command. A slow or unreachable Kata never holds the session. |
+| `/clear`, `/resume`, `/branch` | These fire no session start, so the next hook finds the new session id and switches the core to it, releasing the tasks the old session held. A fork shares the source's plan, where Claude Code lets the mod see the fork ([limits](../explanation/limits.md#claude-code)). |
+| End of each lead turn | Retries due closes and hands back exited delegates. When a task is still open, the end-of-turn Stop hook returns the core's reminder so the model keeps working. |
+| Compaction | The plan is sent again with the next prompt. |
+| Session end | Closes the automatic parent when its children are closed, within the 1.5 s Claude Code gives the whole end chain (the mod takes at most 1.2 s). What does not fit stays in the saved record for the session's resume. `/clear` and `/resume` end nothing. |
+
+A session's saved state lives in Claude Code's plugin store under the key `session/<session id>`. The store is one file for every session on the machine, shared by every mod and limited to 4 MiB, so the mod keeps its records small: an ended session's record is dropped after 7 days, any record untouched for 30 days is dropped, and the oldest ended sessions go first when the records pass 2 MiB. A session with no work left saves nothing.
+
+Closing the terminal or killing Claude Code runs no hooks: work left open is finished when the session is resumed with `claude --resume`, not before.
+
+## Display
+
+The mod draws in the terminal UI, and in the desktop Code tab and the VS Code chat panel where Claude Code draws mods. `claude -p` and the Agent SDK run the hooks and draw nothing.
+
+- **Plan band** above the prompt: `Kata plan 2/5 · 1 blocked · ▶ active task`, with a progress bar.
+- **Checklist card** under each `todo` call.
+- **`#` ticket completion** in the prompt, with the same tokens as the [omp ticket references](oh-my-pi.md#ticket-references-in-the-prompt).
+- **`/todo`** shows the plan; the subcommands `start`, `done`, `drop`, `rm`, `append`, `block`, `unblock` and `takeover` change it, as in omp.
+
+## Live inbox
+
+With `KATA_INBOX_USER` set to a session address, `<actor>/<name>`, the main session follows `kata events --tail` and delivers each new request from its own actor. An idle session starts a turn on the request. A working session takes it with its next request, in the same turn: Claude Code appends the row at the end of the conversation, so a row added in a turn's final step rides the next turn. After the person presses Stop, delivery is refused until they type again. Subagents never follow the inbox, and the follower never delivers a request addressed to someone else's actor. `liveInbox: false` or `KATA_CLAUDE_LIVE_INBOX=0` turns the follower off; the inbox is then read once per prompt, by Kata's hook or by the mod with `contract` on. In `claude -p` each delivery uses one of `--max-turns`.
+
+## Testing the mod
+
+`bun run validate:claude` runs `claude plugin validate` on the marketplace and on the mod, and `bun run test:claude` runs `claude plugin test`. Both need Claude Code on `PATH`, so they run locally and not in CI. `bun run smoke:claude` runs a real headless `claude -p`; it needs a login and is paid ([development](../development.md#smoke-test-against-a-real-claude-code)).
+
+See [limits](../explanation/limits.md#claude-code).

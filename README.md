@@ -1,12 +1,13 @@
 # Kata Plugin
 
-Kata work tracking for oh-my-pi, pi and OpenCode. Todo plans, and the delegations that name their items or a ticket, become Kata issues with attributed ownership and evidence for completion. Kata validates each close; automatic session parents close after their children finish.
+Kata work tracking for oh-my-pi, pi, OpenCode and Claude Code. Todo plans, and the delegations that name their items or a ticket, become Kata issues with attributed ownership and evidence for completion. Kata validates each close; automatic session parents close after their children finish.
 
 | Plugin | Tracks |
 | --- | --- |
 | [oh-my-pi](docs/reference/oh-my-pi.md) | Todo plans and the task subagents that work them |
 | [pi](docs/reference/pi.md) | Todo plans and child Pi processes |
 | [OpenCode](docs/reference/opencode.md) | Todo plans, as one whole-list `todowrite` tool checked against Kata |
+| [Claude Code](docs/reference/claude-code.md) | Todo plans, as one `todo` tool in place of the task tools, and the `Agent` subagents that work them |
 
 Oh-my-pi:
 
@@ -44,10 +45,16 @@ https://github.com/user-attachments/assets/740ec27e-1edb-479b-bd41-f00073ff748d
 
 Add that to `opencode.json`, then run `kata agent-hook install opencode` for Kata's contract, inbox and attention. To load a checkout, put the absolute path of `plugins/opencode` in `plugins` instead. The TUI sidebar needs nothing more; set `experimental.todo: true` only for the desktop composer pill. See the [install guide](docs/how-to/install.md#opencode) for plugin options.
 
-Requires Kata 0.23.0, plus the selected harness. Plan tools report incompatible installations; see [runtime compatibility](docs/how-to/install.md#runtime-compatibility). The omp plugin delegates session attention to `kata agent-hook attention-native`. Tested host versions are oh-my-pi 18.20.2, pi 1.5.0 and OpenCode 2.2.7. Bun and Node are needed for development.
+Claude Code 2.1.326 (the mod API is early access):
+
+```
+/plugin install kata-cc --marketplace Dangerboi/kata-plugin
+```
+
+Or `claude plugin marketplace add Dangerboi/kata-plugin` and `claude plugin install kata-cc@kata-plugin` from a shell. There is no npm package and no restart. Run `kata agent-hook install claude --attention` for Kata's contract, inbox and attention. See the [install guide](docs/how-to/install.md#claude-code) and the [limits](docs/explanation/limits.md#claude-code).
+
+Requires Kata 0.23.0, plus the selected harness. Plan tools report incompatible installations; see [runtime compatibility](docs/how-to/install.md#runtime-compatibility). The omp plugin delegates session attention to `kata agent-hook attention-native`. Tested host versions are oh-my-pi 18.20.2, pi 1.5.0, OpenCode 2.2.7 and Claude Code 2.1.326. Bun and Node are needed for development.
 
 Start with the [first session tutorial](docs/tutorials/first-session.md), [installation guide](docs/how-to/install.md), or [development guide](docs/development.md). See [completion rules](docs/reference/closing-rules.md) and [limits](docs/explanation/limits.md) before adopting automatic closure.
-
-Claude Code is no longer supported here. Use Kata's own hook instead: `kata agent-hook install claude --attention`. Existing Claude installs of this plugin stay on adapter 0.2.0.
 
 Originally created by [salmonumbrella](https://github.com/salmonumbrella).

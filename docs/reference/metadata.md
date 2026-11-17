@@ -4,20 +4,20 @@ These keys describe observed execution and plan state. `work.*` belongs to the c
 
 | Keys | Purpose |
 | --- | --- |
-| `omp.auto_parent`, `pi.auto_parent`, `opencode.auto_parent` | Typed boolean granting automatic-parent authority. Explicit bindings revoke that authority locally. |
-| `omp.session_id`, `pi.session_id`, `opencode.session_id` | Session identity for recovery and idempotency. On a delegated issue it holds the lead session, not the delegate's. |
-| `omp.workspace`, `pi.workspace`, `opencode.workspace` | Pinned original workspace. |
-| `pi.subagent_id`, `opencode.subagent_id` | Child session identity and task reservation. |
+| `omp.auto_parent`, `pi.auto_parent`, `opencode.auto_parent`, `claude.auto_parent` | Typed boolean granting automatic-parent authority. Explicit bindings revoke that authority locally. |
+| `omp.session_id`, `pi.session_id`, `opencode.session_id`, `claude.session_id` | Session identity for recovery and idempotency. On a delegated issue it holds the lead session, not the delegate's. |
+| `omp.workspace`, `pi.workspace`, `opencode.workspace`, `claude.workspace` | Pinned original workspace. |
+| `pi.subagent_id`, `opencode.subagent_id`, `claude.subagent_id` | Child session identity and task reservation. |
 | `omp.subagent_id`, `omp.parent_agent_id`, `omp.status` | OMP delegation identity and outcome. |
 | `teammate` | The teammate that holds the issue, written on every claim and every delegate assignment. With the actor it is the ownership rule: another teammate's issue is refused, and a delegate's is handed back to the lead's teammate. |
-| `omp.mission`, `pi.mission`, `opencode.mission` | The string `"true"` on a mission, the closed issue that records an untracked delegate's run; the automatic parent's audit takes no evidence from it. |
-| `omp.mission_subagent_id`, `pi.mission_subagent_id`, `opencode.mission_subagent_id` | The id of the delegate whose run the mission records (a pi child's session id). |
-| `omp.mission_agent`, `opencode.mission_agent` | The agent the host started the delegate as (`scout`, `general`), when the host says. |
+| `omp.mission`, `pi.mission`, `opencode.mission`, `claude.mission` | The string `"true"` on a mission, the closed issue that records an untracked delegate's run; the automatic parent's audit takes no evidence from it. |
+| `omp.mission_subagent_id`, `pi.mission_subagent_id`, `opencode.mission_subagent_id`, `claude.mission_subagent_id` | The id of the delegate whose run the mission records (a pi child's session id). |
+| `omp.mission_agent`, `opencode.mission_agent`, `claude.mission_agent` | The agent the host started the delegate as (`scout`, `general`), when the host says. |
 | `todo.phase`, `todo.status`, `todo.removed` | Phase and plan state: pending, in_progress, blocked, completed, or abandoned. `todo.removed` is a separate boolean. |
 | `todo.session` | The lead session that created the plan task, then the one that last started or blocked it (its holder). While the task is open and in progress or blocked, only that session (or a fork of it) may change it, until it releases the task, a fork that replaces it in the same process inherits it, or another lead takes it over. |
 | (none) | An item naming a ticket (`<project>#<short_id>: <action>`) writes only `todo.status`, `work.attention` and `work.attention_msg` on that ticket, never `todo.phase`. The item-to-ticket record is kept in the session snapshot, not in Kata. |
 | `work.attention`, `work.attention_msg`, `work.attention_session` | Guarded attention state where the adapter owns that transition. |
 
-Labels `omp-session`, `pi-session` and `opencode-session` identify session parents. `needs-review` marks unverified work or rejected automatic closure. The automatic marker must be boolean `true`, not the string `"true"`. The mission marker is the string `"true"`, which `kata create --meta` writes with the issue in one call.
+Labels `omp-session`, `pi-session`, `opencode-session` and `claude-session` identify session parents. `needs-review` marks unverified work or rejected automatic closure. The automatic marker must be boolean `true`, not the string `"true"`. The mission marker is the string `"true"`, which `kata create --meta` writes with the issue in one call.
 
 A status report is not a close. Kata issue status and accepted close-event evidence determine completion. Qualified refs and original project/workspace routing are retained separately from display text.
