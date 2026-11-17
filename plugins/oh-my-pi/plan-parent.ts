@@ -2,7 +2,7 @@
 // Which plan parent, and which workspace, a plan serves. A pure decision over
 // the sources the core gathers; it never reads the environment or calls Kata.
 // Reachability of Kata (the core's `scope`) and the local plan stay outside.
-import path from "node:path";
+import { resolve } from "./posix-path";
 
 // A plan parent remembered from an earlier bind: the session's saved state, the
 // fork source's, or an automatic parent found in Kata by session id.
@@ -33,7 +33,7 @@ export const isExplicitParent = (choice: PlanParent) => choice.provenance === "a
 
 // The explicit sources alone: an assignment, then `explicit`, then init's `ref`.
 export function explicitParent({ cwd, assigned, explicit, initRef }: ParentSources): PlanParent | undefined {
-	const here = path.resolve(cwd);
+	const here = resolve(cwd);
 	if (assigned?.ref) return { parent: assigned.ref, provenance: "assigned", workspace: assigned.workspace || here, overridden: initRef };
 	if (explicit) return { parent: explicit, provenance: "explicit", workspace: here, overridden: initRef };
 	if (initRef) return { parent: initRef, provenance: "init", workspace: here };
@@ -42,7 +42,7 @@ export function explicitParent({ cwd, assigned, explicit, initRef }: ParentSourc
 export async function decidePlanParent(sources: ParentSources): Promise<PlanParent> {
 	const explicit = explicitParent(sources);
 	if (explicit) return explicit;
-	const here = path.resolve(sources.cwd);
+	const here = resolve(sources.cwd);
 	if (sources.stored?.parent) return { parent: sources.stored.parent, provenance: "stored", workspace: sources.stored.workspace || here, saved: sources.stored };
 	const found = await sources.session?.();
 	if (found) return { parent: found.parent, provenance: "session", workspace: found.workspace || here, saved: found };

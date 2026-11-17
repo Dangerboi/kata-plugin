@@ -1,5 +1,6 @@
 import { beforeEach, expect, test } from "bun:test";
 import { createKataCore } from "../core/kata-core";
+import { nodePlatform } from "../core/node-host";
 import { teammateFor, type DelegateEvent } from "../core/delegates";
 import { TODO_WORDING, type ToolWording } from "../core/model";
 import { eventually, EVIDENCE, holdKata, MESSAGE, memoryDelegateStore, realKata, unique } from "./kata-fixture";
@@ -18,6 +19,8 @@ function lead(from?: { entries: any[]; id: string; fork?: boolean }, wording?: T
   const header = from?.fork ? { parentSession: from.id } : {};
   const store = memoryDelegateStore();
   const agent = () => createKataCore({
+    platform: nodePlatform,
+    contextTimers: ctx => ctx.setTimeout ? { setTimer: ctx.setTimeout, clearTimer: ctx.clearTimer } : undefined,
     appendEntry: (customType, data) => entries.push({ type: "custom", customType, data }),
     exec: async (_file, args, opts) => { await holding?.(args, opts); if (throttled?.(args)) return siblingThrottle(); if (unreachable?.(args)) return daemonUnavailable(); return failing?.(args) ? { code: 1, stdout: "", stderr: "delegation service permission denied" } : run(args, opts.cwd); },
     isMain: ctx => ctx.agent?.kind === "main",

@@ -1,6 +1,4 @@
-import { execFile } from "node:child_process";
-import { appendFileSync } from "node:fs";
-import path from "node:path";
+import { resolve } from "./posix-path";
 import { projectOf, type KataIssue, type KataShow } from "./model";
 
 // Running the Kata CLI: every call, its error envelope, and the registered projects it reads refs against.
@@ -23,18 +21,36 @@ export class KataError extends Error {
 export const isUnusable = (error: unknown) => error instanceof KataError && error.unusable;
 export const isKataCode = (error: unknown, code: string) => error instanceof KataError && error.code === code;
 
+// What the core needs from the machine it runs on, so that it imports nothing from Node. A Node host passes node-host.ts's
+// `nodePlatform`; a host without a process environment, timers or a synchronous filesystem supplies what it has.
+export interface Platform {
+	// The environment Kata calls and the shell commands the host runs inherit. `set` exports a value to them (undefined
+	// removes it). A host with no process environment keeps the values itself and puts them on each call it makes.
+	env: { get(name: string): string | undefined; set(name: string, value: string | undefined): void };
+	cwd(): string;
+	// The host process Kata's attention hook is told about.
+	pid: number;
+	// Timers for work that must not outlive the host; a Node host unrefs them. `clearTimer` takes what `setTimer` returned.
+	setTimer(fire: () => void, ms: number): unknown;
+	clearTimer(handle: unknown): void;
+	// Resolves symlinks like fs.realpathSync (throws when the path does not exist). Absent: paths are compared as written.
+	realpath?(path: string): string;
+	// Appends to the debug file. Absent: debugging writes nothing.
+	appendFile?(file: string, text: string): void;
+}
+
 // The sink for errors the plugin survives: a line in `file`, nothing without one. Debugging must never interrupt work.
-export const debugTo = (file?: string) => (error: unknown) => {
-	if (!file) return;
-	try { appendFileSync(file, `${new Date().toISOString()} ${String(error)}\n`); } catch { /* Ignored: see above. */ }
+export const debugTo = (file: string | undefined, append: Platform["appendFile"]) => (error: unknown) => {
+	if (!file || !append) return;
+	try { append(file, `${new Date().toISOString()} ${String(error)}\n`); } catch { /* Ignored: see above. */ }
 };
 
 // Waits for `promise` at most `ms`: undefined when the time runs out or the promise rejects (the error goes to `onError`).
 // The promise itself is never cancelled.
-export async function waitAtMost<T>(promise: Promise<T>, ms: number, onError: (error: unknown) => void): Promise<T | undefined> {
-	let timer: ReturnType<typeof setTimeout>;
-	try { return await Promise.race([promise.catch(error => { onError(error); return undefined; }), new Promise<undefined>(resolve => { timer = setTimeout(() => resolve(undefined), ms); })]); }
-	finally { clearTimeout(timer!); }
+export async function waitAtMost<T>(promise: Promise<T>, ms: number, onError: (error: unknown) => void, timers: Pick<Platform, "setTimer" | "clearTimer">): Promise<T | undefined> {
+	let timer: unknown;
+	try { return await Promise.race([promise.catch(error => { onError(error); return undefined; }), new Promise<undefined>(resolve => { timer = timers.setTimer(() => resolve(undefined), ms); })]); }
+	finally { timers.clearTimer(timer); }
 }
 
 // The oldest Kata whose commands and flags these plugins use.
@@ -54,39 +70,22 @@ function meetsMinimum(version: string): boolean | undefined {
 // What a `kata close` reads to record the session that made it: the session pair and the switch that turns recording on.
 export const TRANSCRIPT_ENV = ["KATA_TRANSCRIPT_AGENT", "KATA_TRANSCRIPT_SESSION_ID", "KATA_CLOSE_TRANSCRIPT_ENABLED"] as const;
 const [AGENT, SESSION, ENABLED] = TRANSCRIPT_ENV;
-// The environment that makes a close record `sessionId`. The switch stays as the launching environment set it, so
-// `KATA_CLOSE_TRANSCRIPT_ENABLED=false` opts out.
-export function transcriptEnv(agent: string, sessionId: string): Record<(typeof TRANSCRIPT_ENV)[number], string> {
-	return { [AGENT]: agent, [SESSION]: sessionId, [ENABLED]: process.env[ENABLED] ?? "true" };
+// The environment that makes a close record `sessionId`. The switch stays as the launching environment set it (`enabled`,
+// read from the host's environment), so `KATA_CLOSE_TRANSCRIPT_ENABLED=false` opts out.
+export function transcriptEnv(agent: string, sessionId: string, enabled?: string): Record<(typeof TRANSCRIPT_ENV)[number], string> {
+	return { [AGENT]: agent, [SESSION]: sessionId, [ENABLED]: enabled ?? "true" };
 }
 // The environment a Kata call carries for a close to record the session that made it; undefined for any other call. With
 // no session id (a delegate whose own session is not known yet) recording is switched off: the process carries the lead's
 // pair, which that close must not record.
-export function closeEnv(args: readonly string[], agent: string, sessionId: string | undefined): Record<string, string> | undefined {
+export function closeEnv(args: readonly string[], agent: string, sessionId: string | undefined, enabled?: string): Record<string, string> | undefined {
 	if (args[0] !== "close") return undefined;
-	return sessionId ? transcriptEnv(agent, sessionId) : { [ENABLED]: "false" };
-}
-// Every later close from this process and what it spawns (the bash tool, delegates, harnesses launched from bash) then records this session.
-export function exportTranscriptSession(agent: string, sessionId: string | undefined): void {
-	if (sessionId) Object.assign(process.env, transcriptEnv(agent, sessionId));
+	return sessionId ? transcriptEnv(agent, sessionId, enabled) : { [ENABLED]: "false" };
 }
 
 export type ExecResult = { code: number; stdout: string; stderr?: string; killed?: boolean };
 export type Exec = (file: string, args: string[], options: { cwd: string; timeout: number; ctx?: any }) => Promise<ExecResult>;
 
-// Runs Kata without a shell, for an adapter whose host cannot put an environment on the call. Like pi.exec, a non-zero exit
-// or any spawn failure other than a missing executable is a result, a timeout or abort reports `killed`, and ENOENT rejects.
-export function execKata(file: string, args: string[], options: { cwd: string; timeout: number; signal?: AbortSignal; env?: Record<string, string> }): Promise<Required<ExecResult>> {
-	return new Promise((resolve, reject) => {
-		execFile(file, args, { cwd: options.cwd, timeout: options.timeout, signal: options.signal, killSignal: "SIGKILL", maxBuffer: 64 * 1024 * 1024, env: { ...process.env, ...options.env } },
-			(error, stdout, stderr) => {
-				if (!error) return resolve({ code: 0, stdout, stderr, killed: false });
-				const failure = error as NodeJS.ErrnoException & { killed?: boolean };
-				if (failure.code === "ENOENT") return reject(error);
-				resolve({ code: typeof failure.code === "number" ? failure.code : 1, stdout, stderr, killed: failure.name === "AbortError" || !!failure.killed });
-			});
-	});
-}
 type Project = { id: number; name: string };
 
 const READS = new Set(["show", "list", "status", "version", "agent-contract-hook", "inbox", "events", "audit"]);
@@ -163,7 +162,7 @@ export function createKata(env: {
 		const teammate = env.teammate();
 		// Options end at `--`: what follows (a title, an item) is data, even when it reads `--json`.
 		const at = args.indexOf("--"), end = at < 0 ? args.length : at;
-		const flags = [...(plain || args.slice(0, end).includes("--json") ? [] : ["--json"]), ...(teammate !== undefined && !plain ? ["--teammate", teammate] : []), ...(workspace ? ["--workspace", path.resolve(cwd)] : [])];
+		const flags = [...(plain || args.slice(0, end).includes("--json") ? [] : ["--json"]), ...(teammate !== undefined && !plain ? ["--teammate", teammate] : []), ...(workspace ? ["--workspace", resolve(cwd)] : [])];
 		args = [...args.slice(0, end), ...flags, ...args.slice(end)];
 		if (!isRead(args)) {
 			// Counted when it starts and when it ends, so a read that overlapped it is not reused either.

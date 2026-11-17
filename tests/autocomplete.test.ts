@@ -1,5 +1,7 @@
 import { expect, test } from "bun:test";
-import { createTicketCompletion, ticketAutocomplete, type Ticket } from "../core/autocomplete";
+import { createTicketCompletion, ticketAutocomplete as autocompleteWith, type Ticket } from "../core/autocomplete";
+import { nodePlatform } from "../core/node-host";
+const ticketAutocomplete = (current: Parameters<typeof autocompleteWith>[0], source: Parameters<typeof autocompleteWith>[1], options?: Parameters<typeof autocompleteWith>[3]) => autocompleteWith(current, source, nodePlatform, options);
 
 // Fixture project and ids; none of these exist in any Kata store.
 const issue = (short_id: string, title: string, project = "demo"): Ticket => ({ short_id, title, qualified_id: `${project}#${short_id}` });
@@ -113,11 +115,11 @@ test("a session switch registers again, yet each ticket is offered once", async 
 	const ui = () => ({ addAutocompleteProvider: (factory: (current: any) => any) => { factories.push(factory); } });
 	const kata = { run: async () => JSON.stringify({ issues: bound }) } as any;
 	const scope = () => ({ cwd: "/fixture" });
-	createTicketCompletion(kata, scope, () => {})(ui());
+	createTicketCompletion(kata, scope, () => {}, nodePlatform)(ui());
 	// Another extension's provider between the two registrations.
 	factories.push(current => ({ getSuggestions: (...args: any[]) => current.getSuggestions(...args), applyCompletion: (...args: any[]) => current.applyCompletion(...args) }));
 	// The next session: a new UI context, and a reloaded module.
-	createTicketCompletion(kata, scope, () => {})(ui());
+	createTicketCompletion(kata, scope, () => {}, nodePlatform)(ui());
 	const editor = factories.reduce((provider, factory) => factory(provider), wrapped());
 	const result = await ask(editor, "see #bc");
 	expect(result.items.map((i: any) => i.value)).toEqual(["demo#bc7q"]);

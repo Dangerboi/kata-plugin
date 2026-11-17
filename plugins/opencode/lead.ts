@@ -1,4 +1,5 @@
 import { waitAtMost } from "./kata-cli";
+import { nodePlatform } from "./node-host";
 import { createKataCore, type HostContext, type Job, type KataCore, type PlanView } from "./kata-core";
 import { teammateFor, type DelegateAssignment, type DelegateEvent, type DelegateRecord, type DelegateStore } from "./delegates";
 import { NAMESPACE, type SavedEntry, type SessionStorage } from "./saved";
@@ -128,6 +129,7 @@ export function createLead(deps: LeadDeps): Lead {
 	function callerOf(sessionID: string, saved: SavedEntry[], delegateStore: DelegateStore): Caller {
 		const main = sessionID === id;
 		const core = createKataCore({
+			platform: nodePlatform,
 			exec: (file, args, { ctx, ...options }) => deps.exec(ctx?.sessionManager?.getSessionId?.() ?? id, file, args, options),
 			appendEntry: main ? appendEntry : () => {},
 			isMain: () => main,
@@ -220,9 +222,9 @@ export function createLead(deps: LeadDeps): Lead {
 
 	return {
 		...planner,
-		get ready() { return waitAtMost(ready, READY_MS, debug).then(() => undefined); },
+		get ready() { return waitAtMost(ready, READY_MS, debug, nodePlatform).then(() => undefined); },
 		async planSection() {
-			await waitAtMost(ready, READY_MS, debug);
+			await waitAtMost(ready, READY_MS, debug, nodePlatform);
 			return (await core.session.beforePrompt(ctx, { context: false })).sections.todo;
 		},
 		child(sessionID) {

@@ -332,12 +332,12 @@ test("a later session start pages forward from the head already known for its pr
 		const first = Number(after) === 0;
 		return JSON.stringify({ events: first && heads[uid] > 10_000 ? full(uid) : [{ event_id: heads[uid], project_uid: uid }], next_after_id: first && heads[uid] > 10_000 ? 10_000 : heads[uid] });
 	};
-	const first = await knownProjectHead("workspace-a", runIn("workspace-a", "uid-a"));
+	const first = await knownProjectHead("workspace-a", runIn("workspace-a", "uid-a"), process.env.KATA_HOME);
 	heads["uid-a"] = 25_040;
-	const again = await knownProjectHead("workspace-a", runIn("workspace-a", "uid-a"));
+	const again = await knownProjectHead("workspace-a", runIn("workspace-a", "uid-a"), process.env.KATA_HOME);
 	calls.length = 0;
-	const sibling = await knownProjectHead("workspace-a2", runIn("workspace-a2", "uid-a"));
-	const other = await knownProjectHead("workspace-b", runIn("workspace-b", "uid-b"));
+	const sibling = await knownProjectHead("workspace-a2", runIn("workspace-a2", "uid-a"), process.env.KATA_HOME);
+	const other = await knownProjectHead("workspace-b", runIn("workspace-b", "uid-b"), process.env.KATA_HOME);
 	expect([first, again, sibling, other]).toEqual([25_000, 25_040, 25_040, 7]);
 	// The sibling workspace reads one page from 0, learns the project and continues from its head; another project starts from 0.
 	expect(calls).toEqual([

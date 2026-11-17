@@ -1,11 +1,10 @@
 // Generated from core/kata-core.ts; edit there.
-import path from "node:path";
-import { realpathSync } from "node:fs";
+import * as path from "./posix-path";
 import { decidePlanParent, explicitParent, isExplicitParent, namesPlanParent } from "./plan-parent";
 import { createInboxFollower, knownProjectHead, trustedInbox, type InboxFollower, type LiveInbox } from "./inbox";
 import { createDelegates, FINAL, heldByDelegate as heldBy, isUntracked, nameOf, Refusal, teammateFor, type DelegateAssignment, type DelegateStore, type Refused, type Reservation, type SavedDelegate, type Who } from "./delegates";
 import { createSettlement, MAX_FAILURES, openChildren, type PendingClose, type SettlementSnapshot } from "./settlement";
-import { createKata, debugTo, isKataCode, isUnusable, KataError, NO_JOB, waitAtMost, type Batch, type Exec, type Job } from "./kata-cli";
+import { createKata, debugTo, isKataCode, isUnusable, KataError, NO_JOB, waitAtMost, type Batch, type Exec, type Job, type Platform } from "./kata-cli";
 import { createTicketCompletion } from "./autocomplete";
 import { kataCommands, quote, shellOptions } from "./shell";
 import { closedTaskStatus, digest, FULL_ID_REF, heldBySession, heldMessage, itemTicket, OPEN, PROOF_MIN, projectOf, proofProblem, QUALIFIED_REF_ONLY, qualifiedRef, SESSION_KEY, sessionParentKeys, slug, tasksOf, textOf, TITLE_MAX, TODO_WORDING, WORKING, type Binding, type Change, type KataIssue, type KataShow, type Plan, type Status, type Task, type ToolWording } from "./model";
@@ -27,13 +26,14 @@ export interface HostContext {
 	};
 	// The main session's UI: the plan widget and warnings.
 	ui?: { setWidget?(key: string, content: unknown): void; notify?(message: string, level?: string): void };
-	// omp's timers, contained in the session and cleared at its shutdown.
-	setTimeout?(fire: () => void, ms: number): unknown;
-	clearTimer?(handle: unknown): void;
 }
 
 // The host's callbacks get the context back as the host passed it, so they see their own type.
 interface CoreHost {
+	// What the core takes from the machine it runs on (environment, cwd, timers, filesystem): node-host.ts's `nodePlatform` on Node.
+	platform: Platform;
+	// Timers the event's context owns, preferred over the platform's: omp's are contained in the session and cleared at its shutdown.
+	contextTimers?(ctx: any): Pick<Platform, "setTimer" | "clearTimer"> | undefined;
 	// `ctx` is the context of the event the call serves, for a host that spawns differently per agent (omp's transcript identity).
 	exec: Exec;
 	appendEntry(type: string, data: unknown): void;
@@ -61,7 +61,7 @@ interface CoreOptions {
 	widget?(line: string, view: PlanView, ctx: any): unknown;
 	// false: the core never starts a pending task on its own after a change (OpenCode's todowrite list says what is in progress).
 	autoStart?: boolean;
-	// Where the settings a host keeps per session live (KATA_REF, KATA_TEAMMATE, KATA_AUTHOR, KATA_DEFAULT_PROJECT, KATA_INBOX_USER, USER): asked first, then process.env.
+	// Where the settings a host keeps per session live (KATA_REF, KATA_TEAMMATE, KATA_AUTHOR, KATA_DEFAULT_PROJECT, KATA_INBOX_USER, USER): asked first, then the platform environment.
 	// A host that serves several sessions from one process cannot hold them in the process environment.
 	env?(name: string): string | undefined;
 	// "shutdown": the automatic parent closes only when the lead's session ends (shutdown without `continues`/`forking`), never in a turn's settle or a drain. Default "drain".
@@ -101,10 +101,12 @@ function childName(sessionName: string | undefined, reserved: Reservation | unde
 	return short(sessionName?.trim()) ?? short(slug(reserved?.title)) ?? `pi-${id.replace(/[^a-z0-9]/gi, "").slice(-6).toLowerCase()}`;
 }
 
-export function sessionKey(file: string, cwd: string): string {
+// `realpath` is the host's (Platform.realpath, which throws for a missing path); without one the path is compared as written.
+export function sessionKey(file: string, cwd: string, realpath?: Platform["realpath"]): string {
 	const absolute = path.resolve(cwd, file);
-	try { return realpathSync(absolute); }
-	catch { try { return path.join(realpathSync(path.dirname(absolute)), path.basename(absolute)); } catch { return absolute; } }
+	if (!realpath) return absolute;
+	try { return realpath(absolute); }
+	catch { try { return path.join(realpath(path.dirname(absolute)), path.basename(absolute)); } catch { return absolute; } }
 }
 
 // The workspace name Kata would infer, read from the project_not_initialized
@@ -236,8 +238,9 @@ function render(plan: Plan, wording: ToolWording = TODO_WORDING): string {
 export function createKataCore(host: CoreHost, options: CoreOptions) {
 	const namespace = options.namespace;
 	const wording = options.wording ?? TODO_WORDING;
-	const debug = debugTo(options.debugFile);
-	const bounded = <T>(promise: Promise<T>, ms = 250) => waitAtMost(promise, ms, debug);
+	const platform = host.platform;
+	const debug = debugTo(options.debugFile, platform.appendFile);
+	const bounded = <T>(promise: Promise<T>, ms = 250) => waitAtMost(promise, ms, debug, platform);
 	const heldByDelegate = (metadata: Record<string, unknown> | undefined) => heldBy(namespace, metadata);
 	const PARENT_ENTRY = `io.kata.${namespace}.parent`;
 	const SNAPSHOT_ENTRY = snapshotEntry(namespace);
@@ -245,10 +248,10 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 	const WIDGET = `${namespace}-kata`;
 	const MAX_REMINDERS = 3;
 	const main = (ctx: HostContext | undefined) => host.isMain?.(ctx) ?? true;
-	const setting = (name: string) => options.env?.(name) ?? process.env[name];
+	const setting = (name: string) => options.env?.(name) ?? platform.env.get(name);
 	const sid = (ctx: HostContext | undefined): string | undefined => ctx?.sessionManager?.getSessionId?.();
 	const uiOf = (ctx: HostContext | undefined) => main(ctx) && host.allowUI?.(ctx) !== false ? ctx?.ui : undefined;
-	let plan: Plan = { tasks: [], workspace: path.resolve(process.cwd()) };
+	let plan: Plan = { tasks: [], workspace: path.resolve(platform.cwd()) };
 	let queue: Promise<unknown> = Promise.resolve();
 	// unknown: not probed; workspace: the cwd has its own project; unbound: Kata is
 	// up but the cwd is unregistered; bound: a parent is set; down: Kata unusable.
@@ -287,11 +290,9 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 		namespace, kata, owned,
 		clock: () => Date.now(),
 		timer(fire, ms) {
-			const ctx = currentCtx;
-			if (typeof ctx?.setTimeout === "function" && typeof ctx.clearTimer === "function") { const handle = ctx.setTimeout(fire, ms); return () => ctx.clearTimer?.(handle); }
-			const handle = setTimeout(fire, ms);
-			handle.unref?.();
-			return () => clearTimeout(handle);
+			const timers = host.contextTimers?.(currentCtx) ?? platform;
+			const handle = timers.setTimer(fire, ms);
+			return () => timers.clearTimer(handle);
 		},
 		due: () => { void serial(drain).catch(debug); },
 		delegatesRunning: () => delegates.running(),
@@ -311,7 +312,7 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 	const delegates = createDelegates({
 		namespace, wording, store: host.delegateStore, persist, kata,
 		actor, owned, work, serial, plan: () => plan,
-		load, drain, cwd: () => path.resolve(currentCtx?.cwd ?? process.cwd()), teammate: ownTeammate,
+		load, drain, cwd: () => path.resolve(currentCtx?.cwd ?? platform.cwd()), teammate: ownTeammate,
 		async missionParent(job) {
 			// A local plan replays into its own parent first; a parent made now would orphan its tasks.
 			if (plan.local || !currentCtx || !main(currentCtx)) return undefined;
@@ -639,7 +640,7 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 		const where = candidate(cwd);
 		const list = await sessionParents(job, id, where.project, cwd);
 		// Creation records session identity before the guarded claim can finish.
-		const candidates = list.filter((issue: any) => (issue.metadata?.[keys.auto] === true || issue.metadata?.[keys.auto] === undefined) && issue.metadata?.[keys.session] === id && sessionKey(issue.metadata?.[keys.workspace] || ".", cwd) === sessionKey(cwd, cwd));
+		const candidates = list.filter((issue: any) => (issue.metadata?.[keys.auto] === true || issue.metadata?.[keys.auto] === undefined) && issue.metadata?.[keys.session] === id && sessionKey(issue.metadata?.[keys.workspace] || ".", cwd, platform.realpath) === sessionKey(cwd, cwd, platform.realpath));
 		if (candidates.length === 1) return { parent: candidates[0].qualified_id, workspace: candidates[0].metadata[keys.workspace], sessionId: id, auto: true, label: where.label };
 	}
 	async function sessionBinding(job: Job, ctx: HostContext): Promise<Binding | undefined> {
@@ -1621,10 +1622,10 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 			spawn: cursor => live.spawn(cwd, cursor),
 			deliver: text => { try { Promise.resolve(live.deliver(text)).catch(debug); } catch (error) { debug(error); } },
 			publish: text => { liveInbox = text; },
-			head: () => knownProjectHead(cwd, args => kata.run(job, args, cwd)),
+			head: () => knownProjectHead(cwd, args => kata.run(job, args, cwd), platform.env.get("KATA_HOME")),
 			now: () => performance.now(),
-			setTimer: (fn, ms) => { const handle = setTimeout(fn, ms); handle.unref(); return handle; },
-			clearTimer: handle => clearTimeout(handle as ReturnType<typeof setTimeout>),
+			setTimer: (fn, ms) => platform.setTimer(fn, ms),
+			clearTimer: handle => platform.clearTimer(handle),
 			debug,
 		});
 		follower.start();
@@ -1640,19 +1641,19 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 		try {
 			// The native hook guards revisions, not the actor or teammate.
 			await owned(job, ref, session.cwd);
-			await kata.run(job, ["agent-hook", "attention-native", options.attentionHarness, mode, "--session", session.id, "--host-pid", String(process.pid), "--ref", ref], session.cwd, { timeout: mode === "start" ? 3000 : 1500 });
+			await kata.run(job, ["agent-hook", "attention-native", options.attentionHarness, mode, "--session", session.id, "--host-pid", String(platform.pid), "--ref", ref], session.cwd, { timeout: mode === "start" ? 3000 : 1500 });
 			if (mode === "start" && session.hostRef) {
 				const route = JSON.parse(await kata.run(job, ["daemon", "locate"], session.hostCwd, { timeout: 1500 }));
 				const daemon = route.request_base_url || route.address;
 				if (typeof daemon === "string" && daemon) {
 					const identity = JSON.stringify({ ref: session.hostRef.trim(), daemon, cwd: session.hostCwd });
-					process.env.KATA_ATTENTION_HOST = session.marker = JSON.stringify({ pid: process.pid, identity });
+					platform.env.set("KATA_ATTENTION_HOST", session.marker = JSON.stringify({ pid: platform.pid, identity }));
 				}
 			}
 		} catch (err) {
 			debug(`Kata attention skipped: ${(err as Error).message}`);
 		} finally {
-			if (mode === "end" && session.marker && process.env.KATA_ATTENTION_HOST === session.marker) delete process.env.KATA_ATTENTION_HOST;
+			if (mode === "end" && session.marker && platform.env.get("KATA_ATTENTION_HOST") === session.marker) platform.env.set("KATA_ATTENTION_HOST", undefined);
 		}
 	}
 
@@ -1690,8 +1691,8 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 		const job = NO_JOB;
 		const known = host.delegateStore.of(ctx);
 		if (known) {
-			process.env.KATA_TEAMMATE = known.teammate;
-			process.env.KATA_INBOX_USER = `${await actor(job, known.binding?.workspace ?? parent.workspace, known.ref ?? parent.ref)}/${known.teammate}`;
+			platform.env.set("KATA_TEAMMATE", known.teammate);
+			platform.env.set("KATA_INBOX_USER", `${await actor(job, known.binding?.workspace ?? parent.workspace, known.ref ?? parent.ref)}/${known.teammate}`);
 			// The child runs again as the delegate its session saved: on what that record holds, or anew when it holds nothing.
 			await delegates.apply({ type: "started", id: known.id, sessionId: known.sessionId, leadSessionId: known.leadSessionId, leadTeammate: known.leadTeammate, teammate: known.teammate, text: prompt,
 				name: known.name, parent: known.parent, workspace: known.workspace, parentLabel: known.parentLabel, refused: known.refused });
@@ -1718,8 +1719,8 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 		catch (error) { debug(error); if (error instanceof Refusal) refused = { targets: error.targets }; else if (!isUnusable(error)) untracked = true; }
 		const name = childName(host.getSessionName?.(), reserved, id);
 		const teammate = kept ?? teammateFor(name, salt);
-		process.env.KATA_TEAMMATE = teammate;
-		process.env.KATA_INBOX_USER = `${await actor(job, binding.workspace, binding.parent)}/${teammate}`;
+		platform.env.set("KATA_TEAMMATE", teammate);
+		platform.env.set("KATA_INBOX_USER", `${await actor(job, binding.workspace, binding.parent)}/${teammate}`);
 		await delegates.apply({ type: "started", id, sessionId: id, leadSessionId: parent.sessionId, leadTeammate: parent.teammate, teammate, text: prompt,
 			name, parent: binding.parent, workspace: binding.workspace, parentLabel: binding.label, call: id, untracked, refused });
 		if (currentId !== sid(ctx)) await bounded(serial(job => bind(job, ctx)), DELEGATE_BIND_MS);
@@ -1890,7 +1891,7 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 			join,
 		},
 		// Adds `#` ticket completion to the editor of the current session, once per editor.
-		offerTickets: createTicketCompletion(kata, () => ({ session: currentId, cwd: path.resolve(currentCtx?.cwd ?? process.cwd()), defaultProject: setting("KATA_DEFAULT_PROJECT") }), debug),
+		offerTickets: createTicketCompletion(kata, () => ({ session: currentId, cwd: path.resolve(currentCtx?.cwd ?? platform.cwd()), defaultProject: setting("KATA_DEFAULT_PROJECT") }), debug, platform),
 	};
 }
 

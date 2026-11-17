@@ -1,7 +1,7 @@
 import path from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { createKataCore, DESCRIPTION, TODO_OPS, TODO_PARAMS, type Lead, type ChildParent } from "./kata-core";
-import { exportTranscriptSession } from "./kata-cli";
+import { exportTranscriptSession, nodePlatform } from "./node-host";
 import { delegateCommand, kataCommands, quote } from "./shell";
 import type { DelegateRecord, DelegateStore } from "./delegates";
 import { lastText } from "./model";
@@ -72,6 +72,7 @@ export default async function piKata(pi: ExtensionAPI) {
 	const EXECUTABLE_VARS = ["KATA_PI_EXECUTABLE", "KATA_OMP_EXECUTABLE"];
 	const executable = process.env.KATA_PI_EXECUTABLE || process.env.KATA_OMP_EXECUTABLE || "kata";
 	const core = createKataCore({
+		platform: nodePlatform,
 		exec: (file, args, { ctx: _ctx, ...options }) => pi.exec(file, args, options),
 		appendEntry: (...args) => pi.appendEntry(...args),
 		getSessionName: () => pi.getSessionName(),
