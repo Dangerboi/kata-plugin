@@ -284,7 +284,7 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 	const isLeadCall = (job: Job) => main(job.ctx ?? currentCtx);
 	let reminders = 0;
 	let progressed = true;
-	let cache: { id?: string; contract?: string; inbox?: string; pending?: Promise<void>; inboxPending?: Promise<void>; personInbox?: boolean } = {};
+	let cache: { id?: string; contract?: string; inbox?: string; pending?: Promise<void>; inboxPending?: Promise<void>; inboxNext?: Promise<void>; personInbox?: boolean } = {};
 	const kata = createKata({ path, exec: (...args) => host.exec(...args), executable: options.executable, teammate: () => sessionTeammate, ctx: () => currentCtx, session: () => currentId, debug });
 	// Throttled closes, ticket closes waiting on children and the automatic parent's close (see settlement.ts).
 	// The timer is omp's ctx timer (contained, cleared on session_shutdown) when the host has one; pi has none.
@@ -1570,9 +1570,9 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 	}
 
 	// The contract is fetched until one arrives non-empty: Kata 0.23.0 sends an empty one outside a `.kata.toml`
-	// folder, so a mid-session `kata init` takes effect on the next turn. The inbox is read on every call, so a request
-	// sent mid-session reaches a later turn. A read slower than the caller's budget
-	// keeps running and lands in the cache for the next turn. `inbox: false` leaves the
+	// folder, so a mid-session `kata init` takes effect on the next turn. The inbox is read on every call, and a call
+	// waits for a read that began after it was made, so a request sent before a turn reaches that turn. A read slower
+	// than the caller's budget keeps running and lands in the cache for the next turn. `inbox: false` leaves the
 	// inbox to a caller that keeps it current another way.
 	function warm(ctx: HostContext, cwd = ctx.cwd, inbox = true) {
 		const job = NO_JOB;
@@ -1588,6 +1588,7 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 			})().catch(debug).finally(() => { entry.pending = undefined; });
 		}
 		const user = setting("KATA_INBOX_USER");
+		let inboxRead: Promise<void> | undefined;
 		// A bare actor is a person's own inbox (requests written for them, read by kata inbox and tern-kata's
 		// Attention Page), never instructions for this session. Only <actor>/<teammate> is a session inbox.
 		if (user && !isSessionAddress(user)) {
@@ -1595,16 +1596,22 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 				entry.personInbox = true;
 				uiOf(ctx)?.notify?.(`KATA_INBOX_USER=${user} is a personal inbox, so this session reads none. Use ${user}/<name> for a session inbox.`, "warning");
 			}
-		} else if (inbox && user && !entry.inboxPending) {
+		} else if (inbox && user) {
 			// Only requests from the session's own actor reach the prompt. A failed read (or actor
 			// lookup) keeps the last inbox; no trusted request removes the section.
-			entry.inboxPending = (async () => {
-				const mine = await actor(job, cwd);
-				const out = JSON.parse(await kata.run(job, ["inbox", "--for", user], cwd));
-				entry.inbox = trustedInbox(out?.requests, mine, user);
-			})().catch(debug).finally(() => { entry.inboxPending = undefined; });
+			const read = (): Promise<void> => {
+				const running: Promise<void> = (async () => {
+					const mine = await actor(job, cwd);
+					const out = JSON.parse(await kata.run(job, ["inbox", "--for", user], cwd));
+					entry.inbox = trustedInbox(out?.requests, mine, user);
+				})().catch(debug).finally(() => { if (entry.inboxPending === running) entry.inboxPending = undefined; });
+				return entry.inboxPending = running;
+			};
+			// A read already running may have begun before a request this call must show, so one more read follows it,
+			// shared by every call made meanwhile.
+			inboxRead = !entry.inboxPending ? read() : entry.inboxNext ??= entry.inboxPending.then(() => { entry.inboxNext = undefined; return read(); });
 		}
-		return Promise.all([entry.pending, entry.inboxPending]).then(() => undefined);
+		return Promise.all([entry.pending, inboxRead]).then(() => undefined);
 	}
 
 	// ------------------------------------------------------------ live inbox

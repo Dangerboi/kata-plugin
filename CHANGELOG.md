@@ -42,6 +42,12 @@ All notable changes to kata-plugin are listed here. The format follows [Keep a C
 
 - `bun run validate:claude` and `bun run test:claude` run `claude plugin validate` and `claude plugin test`, and `bun run smoke:claude` runs a real headless `claude -p` on haiku against a throwaway Kata store. The smoke run needs a Claude Code login and is paid; none of them runs in CI.
 
+### Fixed
+
+#### Inbox and attention
+
+- A request sent while an earlier inbox read was still answering shows in that turn's `<kata_inbox>` section, not only on the next turn.
+
 ## [1.12.0] - 2026-11-16
 
 @dangerboi/kata-omp 2.12.0 and @dangerboi/kata-pi 1.12.0.
