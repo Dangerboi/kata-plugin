@@ -6,8 +6,8 @@ Kata work tracking for oh-my-pi, pi, OpenCode and Claude Code. Todo plans, and t
 | --- | --- |
 | [oh-my-pi](docs/reference/oh-my-pi.md) | Todo plans and the task subagents that work them |
 | [pi](docs/reference/pi.md) | Todo plans and child Pi processes |
-| [OpenCode](docs/reference/opencode.md) | Todo plans, as one whole-list `todowrite` tool checked against Kata |
-| [Claude Code](docs/reference/claude-code.md) | Todo plans, as one `todo` tool in place of the task tools, and the `Agent` subagents that work them |
+| [OpenCode](docs/reference/opencode.md) | Todo plans, as one whole-list `todowrite` tool checked against Kata, and the `subagent` delegates that work them |
+| [Claude Code](docs/reference/claude-code.md) | Todo plans, as one `todo` tool in place of the task tools, and the agents that work them: `Agent` subagents, Workflow agents and teammates |
 
 Oh-my-pi:
 
