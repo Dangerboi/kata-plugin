@@ -32,12 +32,14 @@ export const onSessionSwitch: Hook<"classic.SessionStart"> = async ($, e, next) 
 // in the saved record, and the session's resume finishes it.
 export const onEnd: Hook<"session.end"> = async ($, e, next) => {
 	const rt = runtime();
-	if (rt?.id && rt.writer && e.reason !== "clear" && e.reason !== "resume") {
+	// The latest event's session: its writer is the one to end, whatever the core's queued switch has not yet moved.
+	const writer = rt?.latest?.held?.writer;
+	if (rt?.id && writer && e.reason !== "clear" && e.reason !== "resume") {
 		try {
 			const ctx = contextOf($, rt);
 			const remaining = next.budget.remainingMs;
 			await waitAtMost(rt.core.session.shutdown(ctx), Math.max(200, Math.min(remaining - 300, 1200)), () => undefined, ctx.timers!);
-			await rt.writer.end(rt.core.session.owes(), await $.clock.now());
+			await writer.end(rt.core.session.owes(), await $.clock.now());
 		} catch {
 			/* Whatever was saved stays. */
 		}

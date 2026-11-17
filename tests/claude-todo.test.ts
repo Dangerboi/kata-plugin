@@ -308,3 +308,44 @@ test("a write that lands after its session ended keeps the record ended", async 
 		return JSON.stringify(record?.entries ?? []).includes("Plan the late write touches") && (record?.endedAt ?? 0) > 0;
 	}, true);
 });
+
+test("a process that exits before a queued switch has run ends the record of the session it switched to", async () => {
+	const store = new Map<string, unknown>();
+	const recordOf = (id: string) => store.get(`session/${id}`) as any;
+	// X has an open plan and a record that was never ended (its process was killed).
+	const first = host({ store });
+	await first.start();
+	await first.todo({ op: "init", items: ["Plan of the resumed session"] });
+	const x = first.state.session;
+	await eventually(async () => recordOf(x) !== undefined, true);
+	expect(recordOf(x).endedAt).toBeUndefined();
+
+	let armed = false;
+	let reached!: () => void;
+	const running = new Promise<void>(resolve => (reached = resolve));
+	let release!: () => void;
+	const gate = new Promise<void>(resolve => (release = resolve));
+	const h = host({
+		store,
+		hold: () => {
+			if (!armed) return undefined;
+			armed = false;
+			reached();
+			return gate;
+		}
+	});
+	await h.start();
+	armed = true;
+	const writing = h.todo({ op: "init", items: ["Plan of the old session"] });
+	await running;
+	// /resume X while A's plan write holds the core's queue: the switch job is queued behind it.
+	h.state.session = x;
+	const before = latestEvent();
+	const switching = h.todo({ op: "view" });
+	await afterEntry(before);
+	// The process exits now; the switch has not run.
+	await h.end("prompt_input_exit");
+	expect(recordOf(x).endedAt).toBeGreaterThan(0);
+	release();
+	await Promise.all([writing, switching]);
+});
