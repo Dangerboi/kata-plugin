@@ -1,5 +1,6 @@
 import { execFile } from "node:child_process";
 import { appendFileSync, realpathSync } from "node:fs";
+import path from "node:path";
 import { closeEnv, transcriptEnv, type ExecResult, type Platform } from "./kata-cli";
 
 // The Node implementations of what the core takes from its host. Only adapters that run on Node import this module:
@@ -8,12 +9,21 @@ import { closeEnv, transcriptEnv, type ExecResult, type Platform } from "./kata-
 export const nodePlatform: Platform = {
 	env: { get: name => process.env[name], set(name, value) { if (value === undefined) delete process.env[name]; else process.env[name] = value; } },
 	cwd: () => process.cwd(),
+	path,
 	pid: process.pid,
 	setTimer(fire, ms) { const handle = setTimeout(fire, ms); handle.unref?.(); return handle; },
 	clearTimer: handle => clearTimeout(handle as ReturnType<typeof setTimeout>),
-	realpath: realpathSync,
+	realpath: async file => realpathSync(file),
 	appendFile: appendFileSync,
 };
+
+// A session file's identity: resolved against `cwd` with symlinks resolved, a file that does not exist yet through its folder.
+// Synchronous, for an adapter that keys records by it; the core's own comparison is `canonicalPath`.
+export function sessionKey(file: string, cwd: string): string {
+	const absolute = path.resolve(cwd, file);
+	try { return realpathSync(absolute); }
+	catch { try { return path.join(realpathSync(path.dirname(absolute)), path.basename(absolute)); } catch { return absolute; } }
+}
 
 // `closeEnv` with the transcript switch read from this process's environment.
 export const closeEnvHere = (args: readonly string[], agent: string, sessionId: string | undefined) => closeEnv(args, agent, sessionId, process.env.KATA_CLOSE_TRANSCRIPT_ENABLED);

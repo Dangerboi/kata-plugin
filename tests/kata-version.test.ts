@@ -2,9 +2,10 @@ import { expect, test } from "bun:test";
 import fc from "fast-check";
 import { daemonUnavailable } from "./kata-errors";
 import { createKata, NO_JOB, type Exec } from "../core/kata-cli";
+import { nodePlatform } from "../core/node-host";
 
 function client(exec: Exec) {
-  return createKata({ exec, executable: "/fixture/kata", teammate: () => "lead", ctx: () => "event", session: () => "session", debug() {} });
+  return createKata({ path: nodePlatform.path, exec, executable: "/fixture/kata", teammate: () => "lead", ctx: () => "event", session: () => "session", debug() {} });
 }
 const reply = (version: string) => ({ code: 0, stdout: JSON.stringify({ kata_api_version: 1, name: "kata", version }) });
 

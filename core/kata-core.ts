@@ -1,9 +1,8 @@
-import * as path from "./posix-path";
 import { decidePlanParent, explicitParent, isExplicitParent, namesPlanParent } from "./plan-parent";
 import { createInboxFollower, knownProjectHead, trustedInbox, type InboxFollower, type LiveInbox } from "./inbox";
 import { createDelegates, FINAL, heldByDelegate as heldBy, isUntracked, nameOf, Refusal, teammateFor, type DelegateAssignment, type DelegateStore, type Refused, type Reservation, type SavedDelegate, type Who } from "./delegates";
 import { createSettlement, MAX_FAILURES, openChildren, type PendingClose, type SettlementSnapshot } from "./settlement";
-import { createKata, debugTo, isKataCode, isUnusable, KataError, NO_JOB, waitAtMost, type Batch, type Exec, type Job, type Platform } from "./kata-cli";
+import { createKata, debugTo, isKataCode, isUnusable, KataError, NO_JOB, waitAtMost, type Batch, type Exec, type Job, type PathOps, type Platform, type Timers } from "./kata-cli";
 import { createTicketCompletion } from "./autocomplete";
 import { kataCommands, quote, shellOptions } from "./shell";
 import { closedTaskStatus, digest, FULL_ID_REF, heldBySession, heldMessage, itemTicket, OPEN, PROOF_MIN, projectOf, proofProblem, QUALIFIED_REF_ONLY, qualifiedRef, SESSION_KEY, sessionParentKeys, slug, tasksOf, textOf, TITLE_MAX, TODO_WORDING, WORKING, type Binding, type Change, type KataIssue, type KataShow, type Plan, type Status, type Task, type ToolWording } from "./model";
@@ -32,7 +31,7 @@ interface CoreHost {
 	// What the core takes from the machine it runs on (environment, cwd, timers, filesystem): node-host.ts's `nodePlatform` on Node.
 	platform: Platform;
 	// Timers the event's context owns, preferred over the platform's: omp's are contained in the session and cleared at its shutdown.
-	contextTimers?(ctx: any): Pick<Platform, "setTimer" | "clearTimer"> | undefined;
+	contextTimers?(ctx: any): Timers | undefined;
 	// `ctx` is the context of the event the call serves, for a host that spawns differently per agent (omp's transcript identity).
 	exec: Exec;
 	appendEntry(type: string, data: unknown): void;
@@ -100,18 +99,19 @@ function childName(sessionName: string | undefined, reserved: Reservation | unde
 	return short(sessionName?.trim()) ?? short(slug(reserved?.title)) ?? `pi-${id.replace(/[^a-z0-9]/gi, "").slice(-6).toLowerCase()}`;
 }
 
-// `realpath` is the host's (Platform.realpath, which throws for a missing path); without one the path is compared as written.
-export function sessionKey(file: string, cwd: string, realpath?: Platform["realpath"]): string {
-	const absolute = path.resolve(cwd, file);
-	if (!realpath) return absolute;
-	try { return realpath(absolute); }
-	catch { try { return path.join(realpath(path.dirname(absolute)), path.basename(absolute)); } catch { return absolute; } }
+// The path as the host's filesystem names it: `file` against `cwd`, with symlinks resolved. A file that does not exist yet
+// resolves through its folder, and a folder that does not either stays as written. Two workspaces are the same when their
+// canonical paths are.
+export async function canonicalPath(host: Pick<Platform, "path" | "realpath">, file: string, cwd: string): Promise<string> {
+	const { path, realpath } = host, absolute = path.resolve(cwd, file);
+	try { return await realpath(absolute); }
+	catch { try { return path.join(await realpath(path.dirname(absolute)), path.basename(absolute)); } catch { return absolute; } }
 }
 
 // The workspace name Kata would infer, read from the project_not_initialized
 // error's structured data: the project it names, else its alias ("local://" and
 // ".git" dropped, last segment kept), else the folder.
-function inferredName(data: Record<string, unknown> | undefined, cwd: string): string {
+function inferredName(path: PathOps, data: Record<string, unknown> | undefined, cwd: string): string {
 	const text = (value: unknown) => typeof value === "string" && value ? value : undefined;
 	const alias = text(data?.alias)?.replace(/^local:\/\//, "").replace(/\/+$/, "").split("/").pop();
 	return slug((text(data?.project) ?? alias ?? path.basename(path.resolve(cwd))).replace(/\.git$/, ""), true) ?? slug(path.basename(path.resolve(cwd)), true) ?? "workspace";
@@ -237,7 +237,7 @@ function render(plan: Plan, wording: ToolWording = TODO_WORDING): string {
 export function createKataCore(host: CoreHost, options: CoreOptions) {
 	const namespace = options.namespace;
 	const wording = options.wording ?? TODO_WORDING;
-	const platform = host.platform;
+	const platform = host.platform, path = platform.path;
 	const debug = debugTo(options.debugFile, platform.appendFile);
 	const bounded = <T>(promise: Promise<T>, ms = 250) => waitAtMost(promise, ms, debug, platform);
 	const heldByDelegate = (metadata: Record<string, unknown> | undefined) => heldBy(namespace, metadata);
@@ -282,7 +282,7 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 	let reminders = 0;
 	let progressed = true;
 	let cache: { id?: string; contract?: string; inbox?: string; pending?: Promise<void>; inboxPending?: Promise<void>; personInbox?: boolean } = {};
-	const kata = createKata({ exec: (...args) => host.exec(...args), executable: options.executable, teammate: () => sessionTeammate, ctx: () => currentCtx, session: () => currentId, debug });
+	const kata = createKata({ path, exec: (...args) => host.exec(...args), executable: options.executable, teammate: () => sessionTeammate, ctx: () => currentCtx, session: () => currentId, debug });
 	// Throttled closes, ticket closes waiting on children and the automatic parent's close (see settlement.ts).
 	// The timer is omp's ctx timer (contained, cleared on session_shutdown) when the host has one; pi has none.
 	const settlement = createSettlement({
@@ -576,7 +576,7 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 	// Where a plan created from this cwd lives. Never writes.
 	function candidate(cwd: string): { project?: string; label?: string; register?: boolean } {
 		if (!refusal) return {};
-		const name = inferredName(refusal, cwd);
+		const name = inferredName(path, refusal, cwd);
 		const configured = setting("KATA_DEFAULT_PROJECT")?.trim();
 		return configured ? { project: configured, label: slug(name) } : { project: name, register: true };
 	}
@@ -639,7 +639,10 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 		const where = candidate(cwd);
 		const list = await sessionParents(job, id, where.project, cwd);
 		// Creation records session identity before the guarded claim can finish.
-		const candidates = list.filter((issue: any) => (issue.metadata?.[keys.auto] === true || issue.metadata?.[keys.auto] === undefined) && issue.metadata?.[keys.session] === id && sessionKey(issue.metadata?.[keys.workspace] || ".", cwd, platform.realpath) === sessionKey(cwd, cwd, platform.realpath));
+		const here = await canonicalPath(platform, cwd, cwd), candidates = [];
+		for (const issue of list) {
+			if ((issue.metadata?.[keys.auto] === true || issue.metadata?.[keys.auto] === undefined) && issue.metadata?.[keys.session] === id && await canonicalPath(platform, issue.metadata?.[keys.workspace] || ".", cwd) === here) candidates.push(issue);
+		}
 		if (candidates.length === 1) return { parent: candidates[0].qualified_id, workspace: candidates[0].metadata[keys.workspace], sessionId: id, auto: true, label: where.label };
 	}
 	async function sessionBinding(job: Job, ctx: HostContext): Promise<Binding | undefined> {
@@ -662,7 +665,7 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 		boundAgent = agentKey(ctx);
 		sessionTeammate = assigned?.teammate;
 		assignedRef = assigned?.ref;
-		const sources = { cwd: ctx.cwd, assigned, explicit: configuredRef(), initRef };
+		const sources = { path, cwd: ctx.cwd, assigned, explicit: configuredRef(), initRef };
 		const requested = explicitParent(sources)?.parent;
 		requestedRef = requested;
 		const id = sid(ctx);
@@ -1075,7 +1078,7 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 	}
 
 	const planParentSources = (params: any, ctx: HostContext) => ({
-		cwd: ctx.cwd, assigned: { ref: assignedRef, workspace: plan.workspace }, explicit: configuredRef(), initRef: params.ref,
+		path, cwd: ctx.cwd, assigned: { ref: assignedRef, workspace: plan.workspace }, explicit: configuredRef(), initRef: params.ref,
 		stored: plan.parent ? { parent: plan.parent, workspace: plan.workspace } : undefined,
 	});
 
@@ -1430,7 +1433,7 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 	// the plan so the result shows it as Kata has it. `text` is the notice and the plan. `failed`: "pending" when the only
 	// failure is a close Kata deferred, "identity" when the call came from another agent than the one the plan is bound for.
 	type TodoOutcome = { text: string; notice: string; failed?: "error" | "pending" | "identity" };
-	function todoCall(params: any, ctx: HostContext, within?: Job): Promise<TodoOutcome> {
+	function todoCall(params: any, ctx: HostContext, within: Job): Promise<TodoOutcome> {
 		return serial(async (job): Promise<TodoOutcome> => {
 			if (boundAgent && boundAgent !== agentKey(ctx)) {
 				const text = "Kata agent identity changed; use this worker's own extension context.";
@@ -1457,7 +1460,7 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 		}, { ...within, ctx });
 	}
 
-	async function execute(params: any, ctx: HostContext, within?: Job) {
+	async function execute(params: any, ctx: HostContext, within: Job) {
 		const { text, notice, failed } = await todoCall(params, ctx, within);
 		return {
 			content: [{ type: "text" as const, text }],
@@ -1487,7 +1490,7 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 		const params = supported[sub];
 		if (!params) return `/todo ${sub} is not available with Kata. Use /todo [start|done|drop|rm|append|block|unblock|takeover], or kata tui.`;
 		// The widget shows the plan, so a failed command reports its message alone.
-		const { text, notice, failed } = await todoCall(params, ctx);
+		const { text, notice, failed } = await todoCall(params, ctx, NO_JOB);
 		return failed ? notice : text;
 	}
 
@@ -1496,7 +1499,7 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 		if (!main(ctx) || configuredRef() || event.toolName !== "bash" || event.isError || (event.details?.exitCode !== undefined && event.details.exitCode !== 0)) return;
 		const command = event.input?.command;
 		if (typeof command !== "string" || /[;|\n]/.test(command)) return;
-		for (const invocation of kataCommands(command, options.executable, options.executableVars)) {
+		for (const invocation of kataCommands(path, command, options.executable, options.executableVars)) {
 			const parsed = shellOptions(invocation.words), args = parsed.args;
 			let ref = args[0] === "claim" ? args[1] : args[0] === "meta" && args[1] === "set" && args[3] === "work.attention" && args[4] === "ok" ? args[2] : undefined;
 			if (!ref || parsed.options.has("--as")) continue;
@@ -1694,7 +1697,7 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 			platform.env.set("KATA_INBOX_USER", `${await actor(job, known.binding?.workspace ?? parent.workspace, known.ref ?? parent.ref)}/${known.teammate}`);
 			// The child runs again as the delegate its session saved: on what that record holds, or anew when it holds nothing.
 			await delegates.apply({ type: "started", id: known.id, sessionId: known.sessionId, leadSessionId: known.leadSessionId, leadTeammate: known.leadTeammate, teammate: known.teammate, text: prompt,
-				name: known.name, parent: known.parent, workspace: known.workspace, parentLabel: known.parentLabel, refused: known.refused });
+				name: known.name, parent: known.parent, workspace: known.workspace, parentLabel: known.parentLabel, refused: known.refused }, NO_JOB);
 			if (currentId !== sid(ctx)) await bounded(serial(job => bind(job, ctx)), DELEGATE_BIND_MS);
 			return;
 		}
@@ -1714,14 +1717,14 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 		// named, when it named several, and nowhere for a conflict (a taken or held task). A check Kata could not run decides
 		// nothing: the child starts undecided and its next use decides it. Any other failure leaves it untracked.
 		let reserved: Reservation | undefined, untracked = false, refused: Refused | undefined;
-		try { reserved = (await delegates.check([prompt], id, delegateScope))[0]; }
+		try { reserved = (await delegates.check([prompt], id, delegateScope, NO_JOB))[0]; }
 		catch (error) { debug(error); if (error instanceof Refusal) refused = { targets: error.targets }; else if (!isUnusable(error)) untracked = true; }
 		const name = childName(host.getSessionName?.(), reserved, id);
 		const teammate = kept ?? teammateFor(name, salt);
 		platform.env.set("KATA_TEAMMATE", teammate);
 		platform.env.set("KATA_INBOX_USER", `${await actor(job, binding.workspace, binding.parent)}/${teammate}`);
 		await delegates.apply({ type: "started", id, sessionId: id, leadSessionId: parent.sessionId, leadTeammate: parent.teammate, teammate, text: prompt,
-			name, parent: binding.parent, workspace: binding.workspace, parentLabel: binding.label, call: id, untracked, refused });
+			name, parent: binding.parent, workspace: binding.workspace, parentLabel: binding.label, call: id, untracked, refused }, NO_JOB);
 		if (currentId !== sid(ctx)) await bounded(serial(job => bind(job, ctx)), DELEGATE_BIND_MS);
 	}
 
@@ -1755,8 +1758,8 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 				if (session) await attention(job, "end", session);
 				await moveMarks(job, ending, undefined);
 			});
-			if (closing.delegate?.report) await delegates.apply({ type: "reported", id: closing.delegate.id, text: closing.delegate.report });
-			if (closing.delegate?.ended) await delegates.apply({ type: "exited", id: closing.delegate.id, outcome: "ended" });
+			if (closing.delegate?.report) await delegates.apply({ type: "reported", id: closing.delegate.id, text: closing.delegate.report }, NO_JOB);
+			if (closing.delegate?.ended) await delegates.apply({ type: "exited", id: closing.delegate.id, outcome: "ended" }, NO_JOB);
 		})(), closing.delegate ? DELEGATE_SHUTDOWN_MS : SHUTDOWN_BOUND_MS);
 	}
 
@@ -1874,7 +1877,7 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 			},
 		},
 		todo: {
-			apply: (ctx: HostContext, op: string, params: any, within?: Job) => execute({ ...params, op }, ctx, within),
+			apply: (ctx: HostContext, op: string, params: any, within: Job) => execute({ ...params, op }, ctx, within),
 			// Runs `fn` as one job of this session: the todo calls and delegate checks `fn` makes run in it one after another, share
 			// its Kata reads until a write, and no delegate event, timer or other call runs between them. For a host whose one tool
 			// call is several todo calls (OpenCode's todowrite).

@@ -1,5 +1,4 @@
 // Generated from core/kata-cli.ts; edit there.
-import { resolve } from "./posix-path";
 import { projectOf, type KataIssue, type KataShow } from "./model";
 
 // Running the Kata CLI: every call, its error envelope, and the registered projects it reads refs against.
@@ -24,18 +23,32 @@ export const isKataCode = (error: unknown, code: string) => error instanceof Kat
 
 // What the core needs from the machine it runs on, so that it imports nothing from Node. A Node host passes node-host.ts's
 // `nodePlatform`; a host without a process environment, timers or a synchronous filesystem supplies what it has.
+// The path operations the core uses. A Node host passes node:path (`nodePlatform.path`), so a Windows host keeps its separators
+// and drive letters; a host without Node passes `posixPath` (core/posix-path.ts).
+export interface PathOps {
+	resolve(...segments: string[]): string;
+	join(...segments: string[]): string;
+	basename(path: string): string;
+	dirname(path: string): string;
+}
+
+// The timer half of `Platform`: what the work that must not outlive its host needs.
+export type Timers = Pick<Platform, "setTimer" | "clearTimer">;
+
 export interface Platform {
 	// The environment Kata calls and the shell commands the host runs inherit. `set` exports a value to them (undefined
 	// removes it). A host with no process environment keeps the values itself and puts them on each call it makes.
 	env: { get(name: string): string | undefined; set(name: string, value: string | undefined): void };
 	cwd(): string;
+	path: PathOps;
 	// The host process Kata's attention hook is told about.
 	pid: number;
 	// Timers for work that must not outlive the host; a Node host unrefs them. `clearTimer` takes what `setTimer` returned.
 	setTimer(fire: () => void, ms: number): unknown;
 	clearTimer(handle: unknown): void;
-	// Resolves symlinks like fs.realpathSync (throws when the path does not exist). Absent: paths are compared as written.
-	realpath?(path: string): string;
+	// Resolves symlinks and rejects when the path does not exist (a Node host wraps fs.realpathSync; Claude Code's is
+	// `$.fs.stat(path, { resolve: true })`'s `realPath`). Required: the core compares workspaces by what they resolve to.
+	realpath(path: string): Promise<string>;
 	// Appends to the debug file. Absent: debugging writes nothing.
 	appendFile?(file: string, text: string): void;
 }
@@ -48,7 +61,7 @@ export const debugTo = (file: string | undefined, append: Platform["appendFile"]
 
 // Waits for `promise` at most `ms`: undefined when the time runs out or the promise rejects (the error goes to `onError`).
 // The promise itself is never cancelled.
-export async function waitAtMost<T>(promise: Promise<T>, ms: number, onError: (error: unknown) => void, timers: Pick<Platform, "setTimer" | "clearTimer">): Promise<T | undefined> {
+export async function waitAtMost<T>(promise: Promise<T>, ms: number, onError: (error: unknown) => void, timers: Timers): Promise<T | undefined> {
 	let timer: unknown;
 	try { return await Promise.race([promise.catch(error => { onError(error); return undefined; }), new Promise<undefined>(resolve => { timer = timers.setTimer(() => resolve(undefined), ms); })]); }
 	finally { timers.clearTimer(timer); }
@@ -141,6 +154,7 @@ export interface Kata {
 
 export function createKata(env: {
 	exec: Exec;
+	path: Pick<PathOps, "resolve">;
 	executable: string;
 	// Added to every call as `--teammate` when set.
 	teammate(): string | undefined;
@@ -163,7 +177,7 @@ export function createKata(env: {
 		const teammate = env.teammate();
 		// Options end at `--`: what follows (a title, an item) is data, even when it reads `--json`.
 		const at = args.indexOf("--"), end = at < 0 ? args.length : at;
-		const flags = [...(plain || args.slice(0, end).includes("--json") ? [] : ["--json"]), ...(teammate !== undefined && !plain ? ["--teammate", teammate] : []), ...(workspace ? ["--workspace", resolve(cwd)] : [])];
+		const flags = [...(plain || args.slice(0, end).includes("--json") ? [] : ["--json"]), ...(teammate !== undefined && !plain ? ["--teammate", teammate] : []), ...(workspace ? ["--workspace", env.path.resolve(cwd)] : [])];
 		args = [...args.slice(0, end), ...flags, ...args.slice(end)];
 		if (!isRead(args)) {
 			// Counted when it starts and when it ends, so a read that overlapped it is not reused either.

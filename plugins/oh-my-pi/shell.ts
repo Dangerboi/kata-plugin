@@ -1,6 +1,5 @@
 // Generated from core/shell.ts; edit there.
-import { basename } from "./posix-path";
-import { closeEnv } from "./kata-cli";
+import { closeEnv, type PathOps } from "./kata-cli";
 import { projectOf, type Binding } from "./model";
 
 // Kata invocations inside a bash command, and the rewrite that pins a delegate's to its teammate.
@@ -15,7 +14,7 @@ export function envPrefix(vars: Record<string, string>): string {
 type ShellWord = { value: string; start: number; end: number };
 // Inspect command positions only. Quoted arguments and heredoc bodies are data;
 // this lexer never infers whether a test/commit command proves completion.
-export function kataCommands(command: string, configuredExecutable = "kata", executableVars: readonly string[] = []): { executable: ShellWord; words: ShellWord[] }[] {
+export function kataCommands(path: Pick<PathOps, "basename">, command: string, configuredExecutable = "kata", executableVars: readonly string[] = []): { executable: ShellWord; words: ShellWord[] }[] {
 	const segments: ShellWord[][] = [[]];
 	let i = 0, heredoc: string | undefined, wantDelimiter = false;
 	while (i < command.length) {
@@ -48,7 +47,7 @@ export function kataCommands(command: string, configuredExecutable = "kata", exe
 		let j = 0;
 		while (j < segment.length && (/^[A-Za-z_][A-Za-z0-9_]*=/.test(segment[j].value) || ["if", "then", "elif", "do", "else", "!", "command", "env", "time"].includes(segment[j].value))) j++;
 		const executable = segment[j];
-		if (executable && (basename(executable.value) === "kata" || executable.value === configuredExecutable || executableVars.some(name => executable.value === `$${name}` || executable.value === `\${${name}}`))) commands.push({ executable, words: segment.slice(j + 1) });
+		if (executable && (path.basename(executable.value) === "kata" || executable.value === configuredExecutable || executableVars.some(name => executable.value === `$${name}` || executable.value === `\${${name}}`))) commands.push({ executable, words: segment.slice(j + 1) });
 	}
 	return commands;
 }
@@ -70,9 +69,9 @@ export function shellOptions(words: ShellWord[]) {
 	return { options, occurrences, args, value };
 }
 
-export function delegateCommand(command: string, executable: string, executableVars: readonly string[], teammate: string, binding?: Binding, transcriptSession?: { agent: string; id: string | undefined; enabled?: string }, extraEnv: Record<string, string> = {}): string {
+export function delegateCommand(path: Pick<PathOps, "basename">, command: string, executable: string, executableVars: readonly string[], teammate: string, binding?: Binding, transcriptSession?: { agent: string; id: string | undefined; enabled?: string }, extraEnv: Record<string, string> = {}): string {
 	const edits: { start: number; end: number; value: string }[] = [];
-	for (const invocation of kataCommands(command, executable, executableVars)) {
+	for (const invocation of kataCommands(path, command, executable, executableVars)) {
 		const parsed = shellOptions(invocation.words);
 		if (parsed.options.has("--as")) throw new Error("Kata subagents keep the current actor. Use your assigned --teammate; --as is not permitted.");
 		for (const previous of parsed.occurrences.get("--teammate") ?? []) edits.push({ start: previous[0].start, end: previous.at(-1)!.end, value: "" });
