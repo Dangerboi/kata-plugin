@@ -35,6 +35,9 @@ interface CoreHost {
 	// `ctx` is the context of the event the call serves, for a host that spawns differently per agent (omp's transcript identity).
 	exec: Exec;
 	appendEntry(type: string, data: unknown): void;
+	// Called inside the core's queue when a bind makes a main session's context the core's own, after the jobs queued for the session
+	// before it: the host moves what it keeps per session (its saved record, its delegate records) at that point, not before.
+	switched?(ctx: any): void;
 	getSessionName?(): string | undefined;
 	isMain?(ctx: any): boolean;
 	allowUI?(ctx: any): boolean;
@@ -672,6 +675,7 @@ export function createKataCore(host: CoreHost, options: CoreOptions) {
 		// Only a bind that starts a session this core did not already hold restores delegates: /tree and a branch switch keep the same one.
 		const newSession = currentId !== id;
 		currentId = id;
+		if (main(ctx)) host.switched?.(ctx);
 		lastSnapshot = undefined;
 		currentCtx = ctx;
 		plan = { tasks: [], workspace: path.resolve(ctx.cwd) }; named = []; aliases.clear(); deletedParent = undefined;

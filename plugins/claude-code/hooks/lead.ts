@@ -2,7 +2,7 @@ import { createKataCore, type KataCore } from "../core/kata-core";
 import { NO_JOB, waitAtMost } from "../core/kata-cli";
 import type { DelegateRecord, DelegateStore } from "../core/delegates";
 import type { Engine } from "./engine";
-import { canonicalPath, execOf, platformOf, type RunContext } from "./host";
+import { canonicalPath, execOf, platformOf, type Held, type RunContext } from "./host";
 import { planUi } from "./plan";
 import { liveInboxOf, resetInbox } from "./inbox";
 import { loadSession, NAMESPACE, pruneSessions, sessionWriter } from "./saved";
@@ -23,6 +23,7 @@ export interface Runtime {
 	// The session the core is bound to; changes at /clear, /resume and /branch, which fire no `session.start`.
 	id?: string;
 	header?: { parentSession: string };
+	// The saved record and delegate records of the session the core is bound to: they move with the core's bind (`switched`).
 	writer?: ReturnType<typeof sessionWriter>;
 	latest?: RunContext;
 	// What earlier prompts of this session carried, by section: a section is sent again only when it changed.
@@ -48,26 +49,27 @@ export const configure = (given: Record<string, unknown> | undefined) => {
 };
 export const runtime = () => current;
 
-export function contextOf($: Engine, rt: Runtime, delegate?: string): RunContext {
+export function contextOf($: Engine, rt: Runtime, delegate?: string, held: Held | undefined = rt.writer ? { writer: rt.writer, records: rt.records } : undefined): RunContext {
 	return {
 		cwd: rt.state.cwd,
+		held,
 		...(delegate ? { agent: { kind: "sub", id: delegate } } : {}),
-		sessionManager: { getSessionId: () => rt.id, getBranch: () => rt.writer?.entries ?? [], getHeader: () => rt.header },
+		sessionManager: { getSessionId: () => rt.id, getBranch: () => held?.writer.entries ?? [], getHeader: () => rt.header },
 		run: (argv, init) => $.process.run(argv, init),
 		ui: planUi($),
 		timers: { setTimer: (fire, ms) => $.clock.after(ms, fire), clearTimer: handle => (handle as { cancel(): void }).cancel() }
 	};
 }
 
-// Delegates are recorded in memory by record id (the delegate module names it); binding them to plan items is its job too.
-function delegateStore(records: Map<string, DelegateRecord>): DelegateStore {
+// Delegates are recorded in memory by record id (the delegate module names it); assigning them to plan items is its job too.
+function delegateStore(records: () => Map<string, DelegateRecord>): DelegateStore {
 	return {
-		records: () => [...records.values()],
-		get: key => records.get(key),
+		records: () => [...records().values()],
+		get: key => records().get(key),
 		put: record => {
-			records.set(record.id, record);
+			records().set(record.id, record);
 		},
-		of: ctx => (ctx?.agent?.id ? records.get(ctx.agent.id) : undefined)
+		of: ctx => (ctx?.agent?.id ? records().get(ctx.agent.id) : undefined)
 	};
 }
 
@@ -75,7 +77,6 @@ async function create($: Engine): Promise<Runtime> {
 	const env = await readEnv($);
 	const settings = resolveSettings(options, env);
 	const state = { cwd: "", debugFile: settings.debugFile };
-	const records = new Map<string, DelegateRecord>();
 	const platform = platformOf($, env, state);
 	const exec = execOf($, env, () => rt.latest);
 	const build = (store: DelegateStore, main: boolean) =>
@@ -86,6 +87,11 @@ async function create($: Engine): Promise<Runtime> {
 				exec,
 				appendEntry: (type, data) => {
 					if (main) rt.writer?.append(type, data);
+				},
+				switched: ctx => {
+					if (!main || !ctx.held) return;
+					rt.writer = ctx.held.writer;
+					rt.records = ctx.held.records;
 				},
 				isMain: ctx => ctx?.agent === undefined,
 				delegateStore: store,
@@ -100,10 +106,10 @@ async function create($: Engine): Promise<Runtime> {
 		state,
 		sent: {},
 		ready: Promise.resolve(),
-		records,
+		records: new Map(),
 		callers: new Map(),
 		spawning: new Set(),
-		core: build(delegateStore(records), true),
+		core: build(delegateStore(() => rt.records), true),
 		coreFor: store => build(store, false)
 	};
 	return rt;
@@ -125,25 +131,25 @@ async function attach($: Engine, hint: { fork?: boolean }): Promise<Entered> {
 	const cwd = await canonicalPath($, await $.session.cwd());
 	const rt = (current ??= await create($));
 	rt.state.cwd = cwd;
-	if (rt.id === id && rt.writer) {
-		const ctx = (rt.latest = contextOf($, rt));
+	if (rt.id === id && rt.latest) {
+		const ctx = (rt.latest = contextOf($, rt, undefined, rt.latest.held));
 		return { rt, ctx };
 	}
 	const previous = rt.id;
 	// A fork's own record is empty: it starts from what its source saved (the core's bind reads the source's snapshot
 	// through the header), taken before the source's writer ends.
-	const seed = hint.fork && previous && rt.writer ? rt.writer.entries : undefined;
-	if (rt.writer) await rt.writer.end(rt.core.session.owes(), await $.clock.now());
+	const left = rt.latest?.held?.writer;
+	const seed = hint.fork && previous && left ? left.entries : undefined;
+	if (left) await left.end(rt.core.session.owes(), await $.clock.now());
 	rt.id = id;
 	rt.previous = previous;
 	rt.header = hint.fork && previous ? { parentSession: previous } : undefined;
 	rt.sent = {};
 	// The previous session's delegates and cores stay with it (saved above, picked up when it resumes).
-	rt.records.clear();
 	rt.callers.clear();
-	rt.writer = sessionWriter($, id, () => $.clock.now());
-	rt.writer.start(await loadSession($, id), cwd, seed);
-	const ctx = (rt.latest = contextOf($, rt));
+	const held: Held = { writer: sessionWriter($, id, () => $.clock.now()), records: new Map() };
+	held.writer.start(await loadSession($, id), cwd, seed);
+	const ctx = (rt.latest = contextOf($, rt, undefined, held));
 	// The saved plan, pending closes and unfinished delegates of a resumed session are picked up by the core's bind.
 	await rt.core.session.start(ctx);
 	rt.ready = rt.core.todo.apply(ctx, "view", {}, NO_JOB).catch(() => undefined);

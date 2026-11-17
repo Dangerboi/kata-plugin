@@ -33,6 +33,8 @@ export function claudeHost(options: {
 	store?: Map<string, unknown>;
 	env?: Record<string, string>;
 	options?: Record<string, unknown>;
+	/** Holds a process call (a gate in a test) until the promise it returns settles. */
+	hold?: (argv: readonly string[]) => Promise<unknown> | undefined;
 }) {
 	reset();
 	const state = { session: options.session ?? crypto.randomUUID(), cwd: options.cwd };
@@ -154,8 +156,9 @@ export function claudeHost(options: {
 				return it;
 			},
 			// Like the engine: no shell, env merged over the process's, a timeout kills the child and rejects, any exit code resolves.
-			run: (argv: readonly string[], init: any = {}) =>
-				new Promise((resolve, reject) => {
+			run: async (argv: readonly string[], init: any = {}) => {
+				await options.hold?.(argv);
+				return new Promise((resolve, reject) => {
 					calls.push({ argv, init });
 					execFile(
 						argv[0]!,
@@ -167,7 +170,8 @@ export function claudeHost(options: {
 							reject(error);
 						}
 					);
-				})
+				});
+			}
 		}
 	};
 	const on = (event: string, ...rest: any[]) => {

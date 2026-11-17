@@ -268,3 +268,55 @@ test("a spawn whose Kata hangs still returns inside the hook's budget, with the 
 	expect(Date.now() - begun).toBeLessThan(5000);
 	expect(spawned.agentId).toBe("agent-hang");
 }, 20_000);
+
+test("a delegate's exit still running at a session switch saves to its own session, and the resumed session keeps its snapshot", async () => {
+	const store = new Map<string, unknown>();
+	const entriesOf = (id: string) => ((store.get(`session/${id}`) as any)?.entries ?? []) as any[];
+	const snapshotOf = (id: string) => entriesOf(id).find(entry => entry.customType.endsWith(".state"))?.data;
+	// A session X with a saved plan of its own, ended so that a resume can pick it up.
+	const first = host({ store });
+	await first.start();
+	await first.todo({ op: "init", items: ["Plan of the resumed session"] });
+	const x = first.state.session;
+	await first.end("clear");
+	expect(JSON.stringify(entriesOf(x))).toContain("Plan of the resumed session");
+
+	// Holds the first Kata metadata unset after `armed`: the delegate's exit is then a job running in the core's queue.
+	let armed = false;
+	let reached!: () => void;
+	const running = new Promise<void>(resolve => (reached = resolve));
+	let release!: () => void;
+	const gate = new Promise<void>(resolve => (release = resolve));
+	const h = host({
+		store,
+		hold: argv => {
+			if (!armed || !argv.includes("unset")) return undefined;
+			armed = false;
+			reached();
+			return gate;
+		}
+	});
+	await h.start();
+	const a = h.state.session;
+	await h.todo({ op: "init", items: ["Implement parser module"] });
+	const spawned = await h.spawn({ prompt: "Implement parser module", description: "Parser" }, "agent-switch");
+	expect(assignmentOf(tagged(spawned.prompt)).ref).not.toBe("");
+	const before = JSON.stringify(snapshotOf(a));
+	armed = true;
+	const exiting = h.agentTurn("agent-switch", "The parser module is implemented and verified.");
+	await running;
+	// The session switches to X while the exit still runs; the switch queues behind it.
+	h.state.session = x;
+	const viewing = h.todo({ op: "view" });
+	await Bun.sleep(150);
+	release();
+	await exiting;
+	const view = await viewing;
+	await Bun.sleep(300);
+	expect(view.result).toContain("Plan of the resumed session");
+	expect(snapshotOf(x).sessionId).toBe(x);
+	expect(JSON.stringify(entriesOf(x))).not.toContain("agent-switch");
+	expect(snapshotOf(x).plan.tasks.map((t: any) => t.content)).toEqual(["Plan of the resumed session"]);
+	expect(snapshotOf(a).sessionId).toBe(a);
+	expect(JSON.stringify(snapshotOf(a))).not.toBe(before);
+}, 30_000);
