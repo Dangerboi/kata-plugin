@@ -52,7 +52,7 @@ export function ticketAutocomplete(current: TicketAutocompleteProvider, source: 
 		shouldTriggerFileCompletion: current.shouldTriggerFileCompletion?.bind(current),
 		async getSuggestions(lines, cursorLine, cursorCol, hostOptions, onPartial) {
 			const inner = current.getSuggestions(lines, cursorLine, cursorCol, hostOptions, onPartial);
-			const signal = hostOptions instanceof AbortSignal ? hostOptions : hostOptions?.signal;
+			const signal = hostOptions && "aborted" in hostOptions ? hostOptions : hostOptions?.signal;
 			const match = (lines[cursorLine] ?? "").slice(0, cursorCol).match(TICKET_TOKEN);
 			const project = match?.[1], token = match?.[2] ?? "";
 			if (!match || (!project && (!token || /^\d+$/.test(token))) || options.active?.() === false) return inner;
