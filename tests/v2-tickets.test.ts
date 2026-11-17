@@ -133,20 +133,24 @@ test("a task named as the plan view lists it, with its ' (ref)' suffix, is that 
   const started = await app.call({ op: "start", task: listedA });
   expect(started.isError).toBeUndefined();
   expect(started.content[0].text).toContain(`[/] ${listedA}`);
-  const done = await app.call({ op: "done", task: `update the docs (${docs})`, message, evidence: ["test:listed name check"] });
+  // The stop reminder lists an open task the same way, so its line names that task too.
+  const reminder: string = (await app.event("session_stop", { messages: [] })).additionalContext;
+  const line = reminder.split("\n").find(l => l.startsWith("- update the docs"))!;
+  expect(line).toBe(`- update the docs (${docs}) — pending`);
+  const done = await app.call({ op: "done", task: line.slice(2, line.lastIndexOf(" — ")), message, evidence: ["test:listed name check"] });
   expect(done.isError).toBeUndefined();
   expect((await show(docs)).issue.status).toBe("closed");
 });
 
-test("a ticket item saved with its own ref after its action keeps that content when init names it", async () => {
+test("a ticket item saved with its own ref after its action keeps that content, also beside the item it was copied from", async () => {
   const first = host(); await first.event("session_start");
   const a = await issue("Ticket A");
-  await first.call({ op: "init", items: [`v2test#${a}: write the script`] });
-  // A plan saved before suffixes were dropped holds the item with its ticket repeated after the action.
+  await first.call({ op: "init", items: [`v2test#${a}: write the script`, `v2test#${a}: copied item`] });
+  // A plan saved before suffixes were dropped can hold an item copied from the view, its ticket repeated after the action.
   const saved = `v2test#${a}: write the script (v2test#${a})`;
-  const entries = JSON.parse(JSON.stringify(first.entries).replaceAll(`v2test#${a}: write the script`, saved));
+  const entries = JSON.parse(JSON.stringify(first.entries).replaceAll(`v2test#${a}: copied item`, saved));
   const resumed = host({ sid: first.sid, entries }); await resumed.event("session_start");
-  const again = await resumed.call({ op: "init", items: [saved] });
+  const again = await resumed.call({ op: "init", items: [`v2test#${a}: write the script`, saved] });
   expect(again.isError).toBeUndefined();
   expect(again.content[0].text).toContain(`${saved} (v2test#${a})`);
   expect(await commentsOf(a)).toHaveLength(0);

@@ -1128,7 +1128,7 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 	// An item named as the plan view lists it drops the view's ' (<ticket or ref>)' suffix, and a new ticket item drops
 	// a trailing ' (<ref>)' that repeats its own ticket. An item already in the plan under that exact content keeps it.
 	function withoutListedSuffix(content: string): string {
-		const task = plan.tasks.find(t => t.content === content || listedName(t) === content);
+		const task = plan.tasks.find(t => t.content === content) ?? plan.tasks.find(t => listedName(t) === content);
 		if (task) return task.content;
 		const ref = itemTicket(content)?.ref, suffix = ` (${ref})`;
 		return ref && content.endsWith(suffix) ? content.slice(0, -suffix.length) : content;
