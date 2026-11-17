@@ -1,9 +1,8 @@
 import { expect, test } from "bun:test";
-import { KataError } from "../core/kata-cli";
+import { KataError, NO_JOB } from "../core/kata-cli";
 import { missionCloseArgs, missionKey } from "../core/model";
-import { NO_JOB } from "../core/kata-cli";
 import { createSettlement, MAX_FAILURES, RETRY_MS, type CloseRequest, type TaskClose } from "../core/settlement";
-import { EVIDENCE, MESSAGE as message, realKata, unique } from "./kata-fixture";
+import { EVIDENCE, MESSAGE as message, realKata, retryNote, unique } from "./kata-fixture";
 const PROJECT = "settlement-test";
 const store = realKata({ prefix: "settlement", author: "actor-a", project: PROJECT });
 const withJson = (args: string[]) => args.includes("--json") ? args : [...args, "--json"];
@@ -68,7 +67,7 @@ function build(options: { fail?: (args: string[]) => Error | undefined; running?
 test("a throttled task close waits out the retry window, then runs once and leaves the snapshot", async () => {
   const child = await create("Throttled task");
   const s = build();
-  expect(s.settlement.pendTaskClose(await taskOf(child), "completed", change, cwd)).toContain("retry after 60 seconds");
+  expect(s.settlement.pendTaskClose(await taskOf(child), "completed", change, cwd)).toContain(retryNote);
   expect(s.timers.size).toBe(1);
   expect(s.settlement.snapshot().retries.map(([ref]) => ref)).toEqual([child]);
   s.advance(RETRY_MS - 1);

@@ -29,30 +29,32 @@ test("each adapter recognizes only its own executable variables", () => {
   expect(coreCommands(nodePlatform.path, '"${KATA_PI_EXECUTABLE}" list', "kata", pi)).toHaveLength(1);
 });
 
-test("a delegate's own session prefixes only its close", () => {
-  const own = { agent: "omp", id: "child-uuid" };
-  expect(delegateCommand(nodePlatform.path, "kata close ab12 --done && kata show ab12", "kata", [], "tm-1", undefined, own))
-    .toBe("env KATA_TRANSCRIPT_AGENT='omp' KATA_TRANSCRIPT_SESSION_ID='child-uuid' KATA_CLOSE_TRANSCRIPT_ENABLED='true' kata --teammate 'tm-1' close ab12 --done && kata --teammate 'tm-1' show ab12");
-  expect(delegateCommand(nodePlatform.path, "kata close ab12 --done", "kata", [], "tm-1")).toBe("kata --teammate 'tm-1' close ab12 --done");
-});
-test("a delegate whose own session is unknown switches recording off for its close only", () => {
-  expect(delegateCommand(nodePlatform.path, "kata close ab12 --done && kata show ab12", "kata", [], "tm-1", undefined, { agent: "omp", id: undefined }))
-    .toBe("env KATA_CLOSE_TRANSCRIPT_ENABLED='false' kata --teammate 'tm-1' close ab12 --done && kata --teammate 'tm-1' show ab12");
-});
-test("a delegate's close still runs after a skipped prefix word", () => {
-  const own = { agent: "omp", id: "child-uuid" };
+// A stub `kata` that reports the transcript environment it was started with and its arguments; `$KATA_BIN` names it too.
+function execute(command: string, extra: Record<string, string> = {}): string[] {
   const dir = mkdtempSync(join(tmpdir(), "kata-stub-"));
   try {
-    writeFileSync(join(dir, "kata"), '#!/bin/sh\necho "$KATA_TRANSCRIPT_AGENT/$KATA_TRANSCRIPT_SESSION_ID $*"\n', { mode: 0o755 });
-    for (const [input, prefix] of [["command kata close ab12", "command env "], ["time kata close ab12", "time env "], ['KATA_X=1 kata close ab12', "KATA_X=1 env "]]) {
-      const rewritten = delegateCommand(nodePlatform.path, input, "kata", [], "tm-1", undefined, own);
-      expect(rewritten.startsWith(`${prefix}KATA_TRANSCRIPT_AGENT='omp'`)).toBe(true);
-      const out = spawnSync(["bash", "-c", rewritten], { env: { ...process.env, PATH: `${dir}:${process.env.PATH}` } });
-      expect([out.exitCode, out.stdout.toString().trim()]).toEqual([0, "omp/child-uuid --teammate tm-1 close ab12"]);
-    }
-    const viaVariable = delegateCommand(nodePlatform.path, '"$KATA_BIN" close ab12', "kata", ["KATA_BIN"], "tm-1", undefined, own);
-    expect(viaVariable).toBe(`env KATA_TRANSCRIPT_AGENT='omp' KATA_TRANSCRIPT_SESSION_ID='child-uuid' KATA_CLOSE_TRANSCRIPT_ENABLED='true' "$KATA_BIN" --teammate 'tm-1' close ab12`);
-    const out = spawnSync(["bash", "-c", viaVariable], { env: { ...process.env, KATA_BIN: join(dir, "kata") } });
-    expect([out.exitCode, out.stdout.toString().trim()]).toEqual([0, "omp/child-uuid --teammate tm-1 close ab12"]);
+    writeFileSync(join(dir, "kata"), '#!/bin/sh\necho "$KATA_TRANSCRIPT_AGENT/$KATA_TRANSCRIPT_SESSION_ID/$KATA_CLOSE_TRANSCRIPT_ENABLED $*"\n', { mode: 0o755 });
+    const env: Record<string, string | undefined> = { ...process.env, PATH: `${dir}:${process.env.PATH}`, KATA_BIN: join(dir, "kata"), ...extra };
+    for (const name of ["KATA_TRANSCRIPT_AGENT", "KATA_TRANSCRIPT_SESSION_ID", "KATA_CLOSE_TRANSCRIPT_ENABLED"]) if (!(name in extra)) delete env[name];
+    const out = spawnSync(["bash", "-c", command], { env });
+    expect(out.exitCode).toBe(0);
+    return out.stdout.toString().trim().split("\n");
   } finally { rmSync(dir, { recursive: true, force: true }); }
+}
+const own = { env: { get: () => undefined }, agent: "omp", id: "child-uuid" };
+
+test("a delegate's own session prefixes only its close", () => {
+  const rewritten = delegateCommand(nodePlatform.path, "kata close ab12 --done && kata show ab12", "kata", [], "tm-1", undefined, own);
+  expect(execute(rewritten)).toEqual(["omp/child-uuid/true --teammate tm-1 close ab12 --done", "// --teammate tm-1 show ab12"]);
+  expect(execute(delegateCommand(nodePlatform.path, "kata close ab12 --done", "kata", [], "tm-1"))).toEqual(["// --teammate tm-1 close ab12 --done"]);
+});
+test("a delegate whose own session is unknown switches recording off for its close only", () => {
+  const rewritten = delegateCommand(nodePlatform.path, "kata close ab12 --done && kata show ab12", "kata", [], "tm-1", undefined, { env: { get: () => undefined }, agent: "omp", id: undefined });
+  expect(execute(rewritten, { KATA_TRANSCRIPT_AGENT: "lead", KATA_TRANSCRIPT_SESSION_ID: "lead-uuid" })).toEqual(["lead/lead-uuid/false --teammate tm-1 close ab12 --done", "lead/lead-uuid/ --teammate tm-1 show ab12"]);
+});
+test("a delegate's close still runs after a skipped prefix word, or through an executable variable", () => {
+  for (const input of ["command kata close ab12", "time kata close ab12", "KATA_X=1 kata close ab12"]) {
+    expect(execute(delegateCommand(nodePlatform.path, input, "kata", [], "tm-1", undefined, own))).toEqual(["omp/child-uuid/true --teammate tm-1 close ab12"]);
+  }
+  expect(execute(delegateCommand(nodePlatform.path, '"$KATA_BIN" close ab12', "kata", ["KATA_BIN"], "tm-1", undefined, own))).toEqual(["omp/child-uuid/true --teammate tm-1 close ab12"]);
 });

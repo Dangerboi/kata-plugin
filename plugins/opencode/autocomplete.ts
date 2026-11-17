@@ -1,7 +1,8 @@
 // Generated from core/autocomplete.ts; edit there.
 import { isKataCode, NO_JOB, type Kata, type Timers } from "./kata-cli";
 
-// `#` ticket completion in the host's editor: the provider wrapper and the per-session ticket lists it reads.
+// `#` ticket completion: `offer` adds it to the host's editor (omp, pi), `suggest` serves a host that draws its own menu
+// (Claude Code). Both read the per-session ticket lists below.
 
 export type Ticket = { short_id: string; title: string; qualified_id: string };
 type Suggestions = { items: { value: string; label: string; description?: string }[]; prefix: string } | null;
@@ -20,18 +21,25 @@ interface TicketAutocompleteProvider {
 const TICKET_TOKEN = /(?:^|[\s"'`(<=])#(?:([^\s#]+)#)?([^\s#]*)$/;
 const TICKET_LIMIT = 10;
 
-/**
- * Wraps the host's provider: it always runs, and tickets from `source` whose short
- * id starts with the token or whose title has a word starting with it come first,
- * before its items: omp's prompt actions match almost any token, and Tab/Enter
- * accepts the first item. A digits-only `#1234` stays GitHub's; `#project#1234`
- * reaches an all-digit Kata id. `source(undefined)` is the folder's bound project.
- * Typing never waits on Kata: an abort, a timeout or a failing source leaves the
- * wrapped items.
- */
-export function ticketAutocomplete(current: TicketAutocompleteProvider, source: (project?: string) => Promise<Ticket[]>, timers: Timers, options: { defaultProject?: string; timeout?: number; active?: () => boolean } = {}): TicketAutocompleteProvider {
-	const ours = new Set<string>();
-	async function search(project: string | undefined, token: string, signal: AbortSignal | undefined): Promise<Ticket[]> {
+type TicketSearch = { defaultProject?: string; timeout?: number };
+// One menu row: omp's and pi's menus cap the label column at 32 cells and give the description the rest of the row.
+const rowOf = (t: Ticket) => ({ value: t.qualified_id, label: t.qualified_id, description: t.title });
+
+// The tickets a `#` token at the end of `line` completes to, with the prefix the completion replaces; undefined when the
+// line ends in no ticket token. A digits-only `#1234` stays GitHub's; `#project#1234` reaches an all-digit Kata id.
+// `source(undefined)` is the folder's bound project. Typing never waits on Kata: an abort, a timeout or a failing source
+// finds nothing.
+async function findTickets(line: string, source: (project?: string) => Promise<Ticket[]>, timers: Timers, options: TicketSearch, signal: AbortSignal | undefined): Promise<{ prefix: string; tickets: Ticket[] } | undefined> {
+	const match = line.match(TICKET_TOKEN);
+	const project = match?.[1], token = match?.[2] ?? "";
+	if (!match || (!project && (!token || /^\d+$/.test(token)))) return undefined;
+	const projects = project ? [project] : [undefined, ...(options.defaultProject ? [options.defaultProject] : [])];
+	const found = await Promise.all(projects.map(p => search(p, token)));
+	const seen = new Set<string>();
+	const tickets = found.flat().filter(t => !seen.has(t.qualified_id) && !!seen.add(t.qualified_id)).slice(0, TICKET_LIMIT);
+	return { prefix: match[0].startsWith("#") ? match[0] : match[0].slice(1), tickets };
+
+	async function search(project: string | undefined, token: string): Promise<Ticket[]> {
 		let resolve!: (value: undefined) => void;
 		const gone = new Promise<undefined>(done => { resolve = done; });
 		const timer = timers.setTimer(() => resolve(undefined), options.timeout ?? 400);
@@ -48,25 +56,29 @@ export function ticketAutocomplete(current: TicketAutocompleteProvider, source: 
 			signal?.removeEventListener("abort", onAbort);
 		}
 	}
+}
+
+/**
+ * Wraps the host's provider: it always runs, and tickets from `source` whose short
+ * id starts with the token or whose title has a word starting with it come first,
+ * before its items: omp's prompt actions match almost any token, and Tab/Enter
+ * accepts the first item.
+ */
+export function ticketAutocomplete(current: TicketAutocompleteProvider, source: (project?: string) => Promise<Ticket[]>, timers: Timers, options: TicketSearch & { active?: () => boolean } = {}): TicketAutocompleteProvider {
+	const ours = new Set<string>();
 	return {
 		triggerCharacters: [...new Set([...(current.triggerCharacters ?? []), "#"])],
 		shouldTriggerFileCompletion: current.shouldTriggerFileCompletion?.bind(current),
 		async getSuggestions(lines, cursorLine, cursorCol, hostOptions, onPartial) {
 			const inner = current.getSuggestions(lines, cursorLine, cursorCol, hostOptions, onPartial);
 			const signal = hostOptions && "aborted" in hostOptions ? hostOptions : hostOptions?.signal;
-			const match = (lines[cursorLine] ?? "").slice(0, cursorCol).match(TICKET_TOKEN);
-			const project = match?.[1], token = match?.[2] ?? "";
-			if (!match || (!project && (!token || /^\d+$/.test(token))) || options.active?.() === false) return inner;
-			const projects = project ? [project] : [undefined, ...(options.defaultProject ? [options.defaultProject] : [])];
-			const [base, ...found] = await Promise.all([inner, ...projects.map(p => search(p, token, signal))]);
-			const seen = new Set<string>();
-			const tickets = found.flat().filter(t => !seen.has(t.qualified_id) && !!seen.add(t.qualified_id)).slice(0, TICKET_LIMIT);
-			if (!tickets.length) return base;
-			const prefix = match[0].startsWith("#") ? match[0] : match[0].slice(1);
+			if (options.active?.() === false) return inner;
+			const [base, found] = await Promise.all([inner, findTickets((lines[cursorLine] ?? "").slice(0, cursorCol), source, timers, options, signal)]);
+			if (!found?.tickets.length) return base;
+			const { prefix, tickets } = found;
 			if (base?.items.length && base.prefix !== prefix) return base; // one list needs one prefix
 			for (const t of tickets) ours.add(t.qualified_id);
-			// pi's and omp's menus cap the label column at 32 cells and give the description the rest of the row.
-			return { prefix, items: [...tickets.map(t => ({ value: t.qualified_id, label: t.qualified_id, description: t.title })), ...(base?.items ?? [])] };
+			return { prefix, items: [...tickets.map(rowOf), ...(base?.items ?? [])] };
 		},
 		applyCompletion(lines, cursorLine, cursorCol, item, prefix) {
 			if (!ours.has(item.value) || options.active?.() === false) return current.applyCompletion(lines, cursorLine, cursorCol, item, prefix);
@@ -118,12 +130,21 @@ export function createTicketCompletion(kata: Kata, scope: () => { session?: stri
 		return list.pending!.then(() => list.at ? list.tickets : Promise.reject(list.error));
 	}
 	const offered = new WeakSet<object>();
-	return (ui: { addAutocompleteProvider?(factory: (current: any) => TicketAutocompleteProvider): void } | undefined) => {
-		if (!ui?.addAutocompleteProvider || offered.has(ui)) return;
-		offered.add(ui);
-		const registration = {};
-		registry[NEWEST_REGISTRATION] = registration;
-		const active = () => registry[NEWEST_REGISTRATION] === registration;
-		ui.addAutocompleteProvider(current => ticketAutocomplete(current, tickets, timers, { defaultProject: scope().defaultProject?.trim() || undefined, active }));
+	// Read when a line is searched, so a change to the setting reaches a registration made before it.
+	const searchOptions = <T extends object>(extra?: T) => ({ get defaultProject() { return scope().defaultProject?.trim() || undefined; }, ...extra });
+	return {
+		offer(ui: { addAutocompleteProvider?(factory: (current: any) => TicketAutocompleteProvider): void } | undefined) {
+			if (!ui?.addAutocompleteProvider || offered.has(ui)) return;
+			offered.add(ui);
+			const registration = {};
+			registry[NEWEST_REGISTRATION] = registration;
+			const active = () => registry[NEWEST_REGISTRATION] === registration;
+			ui.addAutocompleteProvider(current => ticketAutocomplete(current, tickets, timers, searchOptions({ active })));
+		},
+		// The tickets `line` (up to the cursor) completes to, for a host that draws its own menu; null when there are none.
+		async suggest(line: string, signal?: AbortSignal): Promise<{ prefix: string; items: { value: string; label: string; description?: string }[] } | null> {
+			const found = await findTickets(line, tickets, timers, searchOptions(), signal);
+			return found?.tickets.length ? { prefix: found.prefix, items: found.tickets.map(rowOf) } : null;
+		},
 	};
 }

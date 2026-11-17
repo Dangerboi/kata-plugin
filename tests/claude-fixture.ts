@@ -1,25 +1,57 @@
-import { execFile, spawn } from "node:child_process";
+import { execFile, spawn, type ChildProcess } from "node:child_process";
 import { realpathSync, readFileSync, writeFileSync } from "node:fs";
 import { afterEach } from "bun:test";
 import { eventually, realKata, unique } from "./kata-fixture";
+import { assertIsolated } from "./isolation";
 import { register } from "../plugins/claude-code/hooks/register";
 import { reset, runtime } from "../plugins/claude-code/hooks/lead";
 
 export const PROJECT = "pi-port-claude";
 
-/** The context of the latest event, to hand to `afterEntry` before a hook is started. */
-export const latestEvent = () => runtime()?.latest;
-
 /**
- * Resolves once the hook started since `before` was taken has had its turn in the session chain: the context of the latest
- * event is replaced, and a switch has queued its job in the core by then. What the hook goes on to run is queued in the core
- * ahead of anything started after this returns.
+ * Starts a hook and resolves, with the hook's pending result, once it has entered the session chain: the latest event's
+ * context is replaced, and a switch has queued its job in the core in the same step. What the hook goes on to run is
+ * queued in the core ahead of anything started after this returns.
  */
-export async function afterEntry(before: ReturnType<typeof latestEvent>) {
+export async function entering<T>(start: () => Promise<T>): Promise<{ result: Promise<T> }> {
+	const before = runtime()?.latest;
+	const result = start();
 	await eventually(async () => runtime()?.latest !== before, true);
-	// The queuing that follows the context swap runs in microtasks: one timer turn lets it finish.
-	await new Promise(resolve => setTimeout(resolve, 0));
+	return { result };
 }
+
+/** A clock that moves only when the test says: `fireNext` runs the earliest timer the host armed and moves `elapsed` to its time. */
+export function pausedClock($: any) {
+	const begun = Date.now();
+	const due: { at: number; fire: () => void }[] = [];
+	let at = 0;
+	$.clock.now = async () => begun + at;
+	$.clock.after = (ms: number, fire: () => void) => {
+		const timer = { at: at + ms, fire };
+		due.push(timer);
+		return {
+			cancel: () => {
+				const i = due.indexOf(timer);
+				if (i >= 0) due.splice(i, 1);
+			}
+		};
+	};
+	return {
+		elapsed: () => at,
+		get pending() {
+			return due.length;
+		},
+		fireNext() {
+			due.sort((a, b) => a.at - b.at);
+			const timer = due.shift();
+			if (!timer) return false;
+			at = Math.max(at, timer.at);
+			timer.fire();
+			return true;
+		}
+	};
+}
+
 const AUTHOR = "claude-builder";
 
 type Hook = { event: string; matcher?: any; fn: (...args: any[]) => any };
@@ -47,8 +79,8 @@ export function claudeHost(options: {
 	store?: Map<string, unknown>;
 	env?: Record<string, string>;
 	options?: Record<string, unknown>;
-	/** Holds a process call (a gate in a test) until the promise it returns settles. */
-	hold?: (argv: readonly string[]) => Promise<unknown> | undefined;
+	/** Runs before a Kata call (`holdKata(…).before`): the call waits for it, and an answer it returns stands in for Kata's. */
+	before?: (argv: string[], init: any) => Promise<unknown> | undefined;
 }) {
 	reset();
 	const state = { session: options.session ?? crypto.randomUUID(), cwd: options.cwd };
@@ -58,7 +90,7 @@ export function claudeHost(options: {
 	const timers = new Set<ReturnType<typeof setTimeout>>();
 	// Set when the test is over: nothing may start after it (a stream that ends schedules its own restart).
 	let over = false;
-	const children = new Set<{ kill(signal?: string): unknown }>();
+	const streams: ChildProcess[] = [];
 	const spawned: any[] = [],
 		submitted: any[] = [],
 		appended: any[] = [];
@@ -69,7 +101,6 @@ export function claudeHost(options: {
 		session: {
 			id: async () => state.session,
 			cwd: async () => state.cwd,
-			// The engine's own answer for a row it accepts.
 			append: async (args: any) => {
 				appended.push(args);
 				return { message: args.message, uuid: crypto.randomUUID() };
@@ -125,7 +156,7 @@ export function claudeHost(options: {
 					env: { ...process.env, ...request.env },
 					stdio: ["ignore", "pipe", "ignore"]
 				});
-				children.add(child);
+				streams.push(child);
 				const queue: any[] = [];
 				let outcome: any, wake: (() => void) | undefined, failure: unknown;
 				const ring = () => {
@@ -170,8 +201,10 @@ export function claudeHost(options: {
 				return it;
 			},
 			// Like the engine: no shell, env merged over the process's, a timeout kills the child and rejects, any exit code resolves.
-			run: async (argv: readonly string[], init: any = {}) => {
-				await options.hold?.(argv);
+			run: async (argv: string[], init: any = {}) => {
+				assertIsolated();
+				const answered = await options.before?.(argv, init);
+				if (answered !== undefined) return answered;
 				return new Promise((resolve, reject) => {
 					calls.push({ argv, init });
 					execFile(
@@ -230,12 +263,13 @@ export function claudeHost(options: {
 		spawned,
 		submitted,
 		appended,
+		streams,
 		fire,
 		start: () => fire("session.start", { cwd: state.cwd, surface: null, isInteractive: false }),
 		toolList: () => fire("tool.list", {}, () => ({ value: base })),
-		/** A `todo` call; `agentId` makes it a subagent's. */
-		todo: (params: Record<string, unknown>, agentId?: string) =>
-			fire("tool.call", { tool: "todo", tool_use_id: `t-${unique()}`, ...(agentId ? { agentId } : {}), ...params }, () => {
+		/** A `todo` call; `agentId` makes it a subagent's, `callId` names the row its card is drawn for. */
+		todo: (params: Record<string, unknown>, agentId?: string, callId = `t-${unique()}`) =>
+			fire("tool.call", { tool: "todo", tool_use_id: callId, ...(agentId ? { agentId } : {}), ...params }, () => {
 				throw new Error("the engine ran todo");
 			}),
 		prompt: (text = "hello", origin = "composer") => fire("prompt.submit", { text, wait: true, origin: { kind: origin } }),
@@ -263,7 +297,6 @@ export function claudeHost(options: {
 		/** A tool call of a subagent; the engine's own answer is the call as it would run. */
 		agentCall: (agentId: string, tool: string, input: Record<string, unknown> = {}, terminal: (e: any) => any = e => e) =>
 			fire("tool.call", { tool, tool_use_id: `toolu_${unique()}`, agentId, ...input }, terminal),
-		/** The end of a subagent's run. */
 		agentTurn: (agentId: string, answer: string, extra: Record<string, unknown> = {}) =>
 			fire("turn.complete", { answer, durationMs: 1, isAborted: false, turnId: `turn-${unique()}`, reason: "answer", agentId, ...extra }),
 		turnStart: (agentId?: string) => fire("turn.start", { text: "", turnId: "t", ...(agentId ? { agentId } : {}) }),
@@ -274,9 +307,7 @@ export function claudeHost(options: {
 		cancelTimers: () => {
 			over = true;
 			for (const t of timers) clearTimeout(t);
-			timers.clear();
-			for (const c of children) c.kill("SIGKILL");
-			children.clear();
+			for (const stream of streams) stream.kill("SIGKILL");
 		}
 	};
 	return api;

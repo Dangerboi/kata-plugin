@@ -4,7 +4,7 @@ import path from "node:path";
 import { createKataCore, type Job } from "../core/kata-core";
 import { NO_JOB } from "../core/kata-cli";
 import { nodePlatform } from "../core/node-host";
-import { EVIDENCE, isolatedKata, later, memoryDelegateStore, MESSAGE as message, realKata, until } from "./kata-fixture";
+import { EVIDENCE, isolatedKata, later, memoryDelegateStore, MESSAGE as message, realKata, retryNote, until } from "./kata-fixture";
 import { daemonUnavailable, notInitialized, notInitializedBound, notInitializedNoData, notInitializedProject, siblingThrottle } from "./kata-errors";
 const { binary, scratch: root, cwd, env, run, text, kata, show, issue, closesOf, deleteIssue, sessionParents } = realKata({ prefix: "reliability", author: "actor-a", project: "reliability-test" });
 const outside = path.join(root, "outside"), localProject = path.join(root, "local-project");
@@ -327,7 +327,7 @@ test("throttled First completion survives starting Second and retry drain", asyn
   const first = await child(p, "First");
   const completion = await a.call({ ...done, task: "First" });
   expect(completion.isError).toBeUndefined();
-  expect(completion.content[0].text).toContain("retry after 60 seconds");
+  expect(completion.content[0].text).toContain(retryNote);
   const started = await a.call({ op: "start", task: "Second" });
   expect(started.isError).toBeUndefined();
   throttle = false;
@@ -345,7 +345,7 @@ for (const invalid of ["missing proof", "short message"]) test(`rejected done wi
   const ref = await child(await init(a), "First");
   const promised = await a.call({ ...done, task: "First" });
   expect(promised.isError).toBeUndefined();
-  expect(promised.content[0].text).toContain("retry after 60 seconds");
+  expect(promised.content[0].text).toContain(retryNote);
   const refused = await a.call({ ...done, task: "First", ...(invalid === "missing proof" ? { evidence: [] } : { message: "short" }) });
   expect(refused.isError).toBe(true);
   throttle = false;
@@ -392,7 +392,7 @@ for (const outcome of ["interrupted", "unrelated", "reassigned"]) test(`deferred
   const ref = await child(await init(a), "First");
   const removed = await a.call({ op: "rm", task: "First" });
   expect(removed.isError).toBeUndefined();
-  expect(removed.content[0].text).toContain("retry after 60 seconds");
+  expect(removed.content[0].text).toContain(retryNote);
   throttle = false;
   let interrupted = false, newer: any;
   if (outcome === "unrelated") {
@@ -503,7 +503,7 @@ test("a throttled close is deferred by its code, whatever the message says", asy
   const ref = await child(await init(a), "First");
   const r = await a.call({ ...done, task: "First" });
   expect(r.isError).toBeUndefined();
-  expect(r.content[0].text).toContain("retry after 60 seconds");
+  expect(r.content[0].text).toContain(retryNote);
   expect((await issueOf(ref)).status).toBe("open");
 });
 test("a throttled close is deferred when Kata prints a warning line before the envelope", async () => {
@@ -513,7 +513,7 @@ test("a throttled close is deferred when Kata prints a warning line before the e
   const ref = await child(await init(a), "First");
   const r = await a.call({ ...done, task: "First" });
   expect(r.isError).toBeUndefined();
-  expect(r.content[0].text).toContain("retry after 60 seconds");
+  expect(r.content[0].text).toContain(retryNote);
   expect((await issueOf(ref)).status).toBe("open");
 });
 test("throttle wording on a close Kata refused for another reason is an error, not a deferral", async () => {
@@ -626,7 +626,7 @@ test("a deleted automatic parent's pending task closes never run, also when the 
   const fires: (() => void)[] = [];
   Object.assign(a.ctx, { setTimeout: (fire: () => void) => fires.push(fire), clearTimer: () => {} });
   const parent = await init(a); const first = await child(parent, "First");
-  expect((await a.call({ ...done, task: "First" })).content[0].text).toContain("retry after 60 seconds");
+  expect((await a.call({ ...done, task: "First" })).content[0].text).toContain(retryNote);
   await deleteIssue(parent);
   throttle = false;
   // The timer's drain runs in the serial queue; the view after it waits for it.
@@ -672,8 +672,7 @@ test("a batch is one job: its todo calls run inside it in order, and a call made
   await outside;
   expect(order).toEqual(["batch: start", "batch: started Second", "batch: started First", "outside: in_progress,pending"]);
 });
-// Resolves after a wait no healthy call needs: a call that deadlocked behind its own batch shows as this.
-const stuck = () => new Promise<string>(resolve => setTimeout(resolve, 3000, "stuck"));
+// A call that deadlocked behind its own batch never settles, so these tests fail by timeout.
 test("a delegate check made with a batch's job runs inside the batch instead of queueing behind it", async () => {
   const a = app(); await init(a);
   const batch = a.core.todo.batch(a.ctx, async job => {
@@ -681,7 +680,7 @@ test("a delegate check made with a batch's job runs inside the batch instead of 
     expect((await a.call({ op: "view" }, job)).isError).toBeUndefined();
     return reserved.length;
   });
-  expect(await Promise.race([batch, stuck()])).toBe(1);
+  expect(await batch).toBe(1);
   a.core.delegates.release("batch-call");
 });
 
@@ -689,7 +688,7 @@ test("a job held after its batch ended queues like any other call", async () => 
   const a = app(); await init(a);
   let held!: Job;
   await a.core.todo.batch(a.ctx, async job => { held = job; });
-  expect(await Promise.race([a.call({ op: "view" }, held).then(result => result.isError), stuck()])).toBeUndefined();
+  expect((await a.call({ op: "view" }, held)).isError).toBeUndefined();
 });
 
 test("a turn's inbox section shows a request sent while an earlier inbox read was still answering", async () => {

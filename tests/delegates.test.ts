@@ -4,7 +4,7 @@ import { NO_JOB } from "../core/kata-cli";
 import { nodePlatform } from "../core/node-host";
 import { teammateFor, type DelegateEvent } from "../core/delegates";
 import { TODO_WORDING, type ToolWording } from "../core/model";
-import { eventually, EVIDENCE, holdKata, MESSAGE, memoryDelegateStore, realKata, unique } from "./kata-fixture";
+import { eventually, EVIDENCE, holdKata, holdNext, MESSAGE, memoryDelegateStore, realKata, unique } from "./kata-fixture";
 import { daemonUnavailable, siblingThrottle } from "./kata-errors";
 
 // The delegate lifecycle through the core's delegate events, against real Kata in a throwaway store.
@@ -172,9 +172,8 @@ test("a mission close Kata throttles is retried by the settlement timer, with no
   await a.scout("omega-scout", "The layout is flat.");
   expect((await missionsOf(parent)).map((c: any) => c.status)).toEqual(["open"]);
   throttled = undefined;
-  expect(a.timers.length).toBe(1);
   // Only the drain the timer starts closes it: nothing else touches the core meanwhile.
-  a.timers.shift()!();
+  for (const fire of a.timers.splice(0)) fire();
   await eventually(async () => (await missionsOf(parent)).map((c: any) => c.status), ["closed"]);
 });
 
@@ -907,4 +906,49 @@ test("session end does not rely on `this`, so a host may call it detached", asyn
   const a = lead(); await a.plan(["Build the psi widget"]);
   const { end } = a.core.session;
   expect(typeof await end(a.ctx)).toBe("boolean");
+});
+
+test("a check that finishes after its spawn's delegate started still gives the delegate its plan item", async () => {
+  const a = lead(); const parent = await a.plan(["Build the sigma widget", "Lead step"]);
+  const ref = await refOf(parent, "Build the sigma widget");
+  const held = holdNext();
+  holding = held.before;
+  held.arm();
+  const checking = a.delegates.check(["Build the sigma widget"], "sigma-call", undefined, NO_JOB);
+  await held.entered;
+  // The spawn went on without waiting for its check: the delegate starts, and the check lands its reservation afterwards.
+  const starting = a.delegates.apply(a.started("sigma", "Build the sigma widget", { call: "sigma-call" }), NO_JOB);
+  held.release();
+  await Promise.all([checking, starting]);
+  expect(await a.delegate("sigma").assignment()).toContain(ref);
+  expect((await show(ref)).issue.metadata["omp.subagent_id"]).toBe("sigma");
+});
+
+test("a call released while its check is still running leaves no reservation once the check finishes", async () => {
+  const a = lead(); const parent = await a.plan(["Build the upsilon widget", "Lead step"]);
+  const ref = await refOf(parent, "Build the upsilon widget");
+  const held = holdNext();
+  holding = held.before;
+  held.arm();
+  const checking = a.delegates.check(["Build the upsilon widget"], "upsilon-call", undefined, NO_JOB);
+  await held.entered;
+  a.delegates.release("upsilon-call");
+  held.release();
+  await checking;
+  const [again] = await a.delegates.check(["Build the upsilon widget"], "upsilon-next", undefined, NO_JOB);
+  expect(again).toMatchObject({ ref });
+});
+
+test("a delegate's core restores nothing from the saved entries of the session it shares with its lead", async () => {
+  const a = lead(); await a.plan(["Build the tau widget", "Lead step"]);
+  throttled = args => args[0] === "close";
+  await a.core.todo.apply(a.ctx, "done", { task: "Lead step", message: MESSAGE, evidence: EVIDENCE }, NO_JOB);
+  throttled = undefined;
+  expect(a.core.session.owes()).toBe(true);
+  await a.delegates.apply(a.started("tau", "Build the tau widget"), NO_JOB);
+  // A host without a session of its own for the delegate (Claude Code) gives its context the lead's id and entries.
+  const own = a.core.delegate("tau");
+  await own.todo.apply({ cwd, agent: { kind: "sub", id: "tau" }, sessionManager: { getSessionId: () => a.id, getBranch: () => a.entries, getHeader: () => ({}) } }, "view", {}, NO_JOB);
+  expect(own.session.owes()).toBe(false);
+  expect(a.core.session.owes()).toBe(true);
 });

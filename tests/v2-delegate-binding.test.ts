@@ -108,6 +108,14 @@ test("a task prompt naming an unusable ticket is blocked", async () => {
   await blocked(`Do v2test#${foreign} now`, "foreign");
 });
 
+test("a task prompt naming a ticket while Kata is unusable is not blocked", async () => {
+  let broken = false;
+  const app = host({ before: () => broken ? down() : undefined }); await app.event("session_start"); await app.init(["Implement widget"]);
+  const named = await issue("Named while Kata is down");
+  broken = true;
+  expect(await app.event("tool_call", { toolName: "task", toolCallId: "kata-down", input: { task: `Do v2test#${named} now` } })).toBeUndefined();
+});
+
 test("a file anchor is plain text in a task prompt; a ref in a registered project must resolve", async () => {
   const app = host(); await app.event("session_start"); await app.init(["Implement widget"]);
   const spawn = (text: string, id: string) => app.event("tool_call", { toolName: "task", toolCallId: id, input: { task: text } });

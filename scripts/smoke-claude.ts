@@ -14,13 +14,15 @@ import { randomUUID } from "node:crypto";
 import { mkdirSync } from "node:fs";
 import path from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
+import { ownComment } from "../core/delegates";
 import {
 	cleanEnv,
 	closeCount,
 	closeEvent,
 	closeEvidence,
 	closeTranscript,
-	commentsOn,
+	closingTeammate,
+	eventsOf,
 	kataProject,
 	lastLines,
 	option,
@@ -53,8 +55,8 @@ const work = path.join(tmp, "repo"),
 	kataHome = path.join(tmp, "kata");
 mkdirSync(work);
 mkdirSync(kataHome);
-// A smoke started from inside a Claude Code session must not inherit that session's identity.
-const env: NodeJS.ProcessEnv = { ...cleanEnv(/^(KATA_CLAUDE_|CLAUDE_CODE_SESSION_ID$)/), KATA_HOME: kataHome };
+// Also drop the session id of an outer Claude Code: a smoke started from inside a session must not inherit its identity.
+const env: NodeJS.ProcessEnv = { ...cleanEnv(/^CLAUDE_CODE_SESSION_ID$/), KATA_HOME: kataHome };
 const sessionId = randomUUID();
 const project = kataProject(env, work, PROJECT);
 
@@ -96,7 +98,7 @@ function checks(issues: Issue[], exit: { code: number | null; output: string }):
 		},
 		{
 			name: `the subagent closed "${VERIFY}" itself, once, with evidence and a comment of its own`,
-			ok: verify?.status === "closed" && closeCount(verify) === 1 && closeEvidence(verify).length > 0 && commentsOn(verify).some(c => !c.startsWith("Done:")),
+			ok: verify?.status === "closed" && closeCount(verify) === 1 && closeEvidence(verify).length > 0 && eventsOf(verify, "issue.commented").some(e => ownComment(e.payload, closingTeammate(verify))),
 			detail: JSON.stringify(verify?.events)
 		},
 		{
@@ -153,7 +155,6 @@ try {
 	report("run", false, String(error));
 	process.exitCode = 1;
 } finally {
-	project.stopDaemon();
 	teardown();
 }
 process.exit(process.exitCode ?? 0);

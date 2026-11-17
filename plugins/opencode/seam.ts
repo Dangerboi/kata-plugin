@@ -1,11 +1,11 @@
 import { debugTo, waitAtMost } from "./kata-cli";
 import { nodePlatform } from "./node-host";
 import { createLead, type Child, type Fate, type Lead } from "./lead";
-import { owes } from "./kata-core";
-import { coreState, sessionStorage, type SavedEntry, type SessionStorage } from "./saved";
+import { owes, savedSnapshot, type SavedEntry } from "./kata-core";
+import { sessionStorage, type SessionStorage } from "./saved";
 import type { DelegateOutcome } from "./delegates";
 import { createKataExec } from "./spawn";
-import type { Settings } from "./settings";
+import { NAMESPACE, type Settings } from "./settings";
 
 // A session's run ended (its turn, for a lead), and how, as a delegate's outcome.
 export const EXECUTION_ENDED: Readonly<Record<string, DelegateOutcome>> = {
@@ -182,7 +182,7 @@ export function createSeam(ctx: any, settings: Settings): SeamRegistry {
 		const flagged = await storage.ended(id);
 		const fate = await openCodeSays(id);
 		// The instance stopped meanwhile: a lead made now would never be suspended.
-		if (stopped || !(flagged || fate === "gone" || owes(coreState(entries)))) return;
+		if (stopped || !(flagged || fate === "gone" || owes(savedSnapshot(entries, NAMESPACE)))) return;
 		await leadFor(id, entries).revive(fate);
 	}
 

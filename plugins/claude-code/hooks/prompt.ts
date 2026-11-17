@@ -1,44 +1,46 @@
 import type { Hook } from "claude-code";
 import { turnEnded } from "./inbox";
+import { tagged, type PromptSections } from "../core/kata-core";
 import { delegateTurn } from "./delegates";
-import { contextOf, enter, runtime, type Runtime } from "./lead";
+import type { Session } from "./host";
+import { contextOf, enter, runtime } from "./lead";
 
-// What each turn carries and how a turn ends.
+type Section = readonly [keyof PromptSections, string];
 
-// A section goes out when it differs from what the last prompt carried.
-function fresh(rt: Runtime, sections: Record<string, string | undefined>): string[] {
-	const out: string[] = [];
-	for (const name of ["contract", "inbox", "todo"]) {
+function unsent(session: Session, sections: PromptSections): Section[] {
+	return (["contract", "inbox", "todo"] as const).flatMap(name => {
 		const text = sections[name];
-		if (!text || rt.sent[name] === text) continue;
-		rt.sent[name] = text;
-		out.push(`<kata_${name}>\n${text}\n</kata_${name}>`);
-	}
-	return out;
+		return text && session.sent[name] !== text ? [[name, text] as const] : [];
+	});
 }
 
 // The user's prompt gets the plan (and, when the option is on, the contract and inbox) as hidden context after it.
-// What a thread was sent is fixed, so a section the model already holds is not repeated; compaction forgets them.
+// What a thread was sent is fixed, so a section the model already holds is not repeated; compaction forgets them. A section
+// counts as sent once the prompt that carries it went through: a dropped prompt leaves it for the next.
 export const onPrompt: Hook<"prompt.submit"> = async ($, e, next) => {
-	let context: string[] = [];
+	let session: Session | undefined;
+	let carried: Section[] = [];
 	try {
 		const { rt, ctx } = await enter($);
+		session = ctx.held;
 		if (e.origin.kind === "composer" && !e.isMeta) rt.core.session.input();
 		const { sections } = await rt.core.session.beforePrompt(ctx, { context: rt.settings.contract });
-		context = fresh(rt, sections);
-	} catch {
-		/* The prompt goes without. */
+		carried = unsent(session, sections);
+	} catch (error) {
+		runtime()?.debug(error);
 	}
-	return next(context.length ? { ...e, context: [...(e.context ?? []), ...context] } : e);
+	const context = carried.map(([name, text]) => tagged(name, text));
+	const done = await next(context.length ? { ...e, context: [...(e.context ?? []), ...context] } : e);
+	if (session && !("drop" in done && done.drop)) for (const [name, text] of carried) session.sent[name] = text;
+	return done;
 };
 
 export const onCompact: Hook<"session.compact"> = async ($, e, next) => {
-	const rt = runtime();
-	if (rt) rt.sent = {};
+	const latest = runtime()?.latest;
+	if (latest) latest.held.sent = {};
 	return next(e);
 };
 
-// The lead's turn ended: due closes are retried and exited delegates handed back.
 export const onTurnComplete: Hook<"turn.complete"> = async ($, e, next) => {
 	turnEnded(e);
 	const done = await next(e);
@@ -47,11 +49,12 @@ export const onTurnComplete: Hook<"turn.complete"> = async ($, e, next) => {
 		return done;
 	}
 	const rt = runtime();
-	if (e.agentId === undefined && rt?.writer) {
+	const latest = rt?.latest;
+	if (rt?.bound && latest) {
 		try {
-			await rt.core.session.settle(contextOf($, rt), next.signal);
-		} catch {
-			/* Settling is retried at the next turn. */
+			await rt.core.session.settle(contextOf($, rt, latest.held), next.signal);
+		} catch (error) {
+			rt.debug(error);
 		}
 	}
 	return done;
@@ -65,8 +68,8 @@ export const onStop: Hook<"classic.Stop"> = async ($, e, next) => {
 			const { rt, ctx } = await enter($);
 			const reminder = await rt.core.session.stop(ctx, [{ role: "assistant", content: e.last_assistant_message ?? "" }], next.signal);
 			if (reminder) return { block: reminder };
-		} catch {
-			/* No reminder. */
+		} catch (error) {
+			runtime()?.debug(error);
 		}
 	}
 	return next(e);

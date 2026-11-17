@@ -4,12 +4,13 @@ import { expect, mock, test } from "claude-code/testing";
 // The band and the todo card draw from `$.state`, which the lead's plan fills (hooks/plan.ts); these tests fill it directly.
 // Kata and the lead's runtime are covered by tests/claude-ui.test.ts.
 
-// The test's `$` has no `state` noun; its stubs answer the plugin's reads. `held` is what the plugin's `$.state.get` finds.
+// The test's `$` has no `state` noun; its stubs answer the plugin's reads. `held` is what the plugin's `$.state.get` finds, by
+// key and, for a card, `cards#<id>` (the keying of tests/claude-ui.test.ts, whose todo calls write what is read here).
 const held = new Map<string, unknown>();
 const standing = (on: On, entries: [string, unknown][]) => {
 	held.clear();
-	for (const [id, value] of entries) held.set(id, value);
-	on("state.get", (_, e: { key: string; id?: string }) => ({ value: { value: held.get(e.id ?? e.key), version: 1 } }));
+	for (const [key, value] of entries) held.set(key, value);
+	on("state.get", (_, e: { key: string; id?: string }) => ({ value: { value: held.get(e.id === undefined ? e.key : `${e.key}#${e.id}`), version: 1 } }));
 };
 const copy = <T,>(value: T): T => JSON.parse(JSON.stringify(value));
 const SURFACES = ["terminal", "desktop"] as const;
@@ -71,7 +72,7 @@ for (const surface of SURFACES) {
 	});
 
 	test(`the todo result is a checklist card with refs and blocker notes on ${surface}`, async ($, on) => {
-		standing(on, [["tu1", { text: "the plan", notice: "Kata parent proj#gone was deleted.", view: copy(VIEW) }]]);
+		standing(on, [["cards#tu1", { text: "the plan", notice: "Kata parent proj#gone was deleted.", view: copy(VIEW) }]]);
 		const ui = await $.ui.mount({
 			plugin: "kata-cc",
 			surface,
@@ -94,7 +95,7 @@ for (const surface of SURFACES) {
 	});
 
 	test(`a todo result without a card, and an error, keep the engine's row on ${surface}`, async ($, on) => {
-		standing(on, [["tu2", { text: "no tasks" }]]);
+		standing(on, [["cards#tu2", { text: "no tasks" }]]);
 		for (const [id, isErrored, tool] of [
 			["tu2", false, "todo"],
 			["tu3", false, "todo"],

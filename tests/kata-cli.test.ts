@@ -69,9 +69,13 @@ test("a call carries the context of its job, kept by an operation started from i
   expect(contexts).toEqual(["call", "other", "latest"]);
 });
 
-test("only a close carries the transcript environment; a close with no known session switches recording off", () => {
-  expect(closeEnv(["show", "ab12"], "omp", "child")).toBeUndefined();
-  expect(closeEnv(["close", "ab12"], "omp", "child")).toMatchObject({ KATA_TRANSCRIPT_AGENT: "omp", KATA_TRANSCRIPT_SESSION_ID: "child" });
-  expect(closeEnv(["close", "ab12"], "omp", undefined)).toEqual({ KATA_CLOSE_TRANSCRIPT_ENABLED: "false" });
-  expect(closeEnv(["comment", "ab12"], "omp", undefined)).toBeUndefined();
+// The switch is the host's environment, not the process's.
+const host = (value?: string) => ({ get: (name: string) => name === "KATA_CLOSE_TRANSCRIPT_ENABLED" ? value : undefined });
+test("only a close carries the transcript environment: the host's opt-out stays, and a close with no known session switches recording off", () => {
+  const env = host();
+  expect(closeEnv(env, ["show", "ab12"], "omp", "child")).toBeUndefined();
+  expect(closeEnv(env, ["comment", "ab12"], "omp", undefined)).toBeUndefined();
+  expect(closeEnv(env, ["close", "ab12"], "omp", "child")).toMatchObject({ KATA_TRANSCRIPT_AGENT: "omp", KATA_TRANSCRIPT_SESSION_ID: "child", KATA_CLOSE_TRANSCRIPT_ENABLED: "true" });
+  expect(closeEnv(host("false"), ["close", "ab12"], "omp", "child")).toMatchObject({ KATA_TRANSCRIPT_SESSION_ID: "child", KATA_CLOSE_TRANSCRIPT_ENABLED: "false" });
+  expect(closeEnv(env, ["close", "ab12"], "omp", undefined)).toEqual({ KATA_CLOSE_TRANSCRIPT_ENABLED: "false" });
 });

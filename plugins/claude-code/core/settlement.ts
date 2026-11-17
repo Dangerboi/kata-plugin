@@ -36,7 +36,6 @@ export interface SettlementDeps {
 	itemsOpen(ticket: string): boolean;
 	// Re-run a throttled close (the transition or removal), then reload and advance the plan.
 	performTask(job: Job, pending: TaskClose): Promise<void>;
-	// Close the ticket with the saved request.
 	performTicket(job: Job, ticket: string, request: PendingClose): Promise<void>;
 	// A close was dropped: label the issue needs-review and comment with Kata's error code.
 	flag(job: Job, ref: string, cwd: string, error: unknown): Promise<void>;

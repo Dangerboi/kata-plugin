@@ -1,15 +1,14 @@
-import { DESCRIPTION, TODO_OPS, TODO_PARAMS } from "../core/kata-core";
+import type { EngineInterface, Hook } from "claude-code";
+import { DESCRIPTION, TODO_OPS, TODO_PARAMS, todoText } from "../core/kata-core";
 import { NO_JOB } from "../core/kata-cli";
-import type { Hook } from "claude-code";
-import type { Engine } from "./engine";
 import { delegateTodo } from "./delegates";
 import { contextOf, enter, runtime } from "./lead";
-import { leaveNotice } from "./plan";
+import { rememberCard } from "./plan";
 
 // The task tools Claude Code offers are replaced by one Kata-backed `todo`. TaskStop stays: it stops background tasks.
-export const REPLACED = new Set(["TaskCreate", "TaskGet", "TaskList", "TaskUpdate", "TodoWrite"]);
+const REPLACED = new Set(["TaskCreate", "TaskGet", "TaskList", "TaskUpdate", "TodoWrite"]);
 
-export const TODO_TOOL = {
+const TODO_TOOL = {
 	name: "todo",
 	description: DESCRIPTION,
 	mcp: false,
@@ -40,7 +39,6 @@ export const TODO_TOOL = {
 	}
 };
 
-// The pool is the hook's answer: the engine's list without the task tools, plus `todo`. Answered whole every time.
 export const onToolList: Hook<"tool.list"> = async ($, e, next) => {
 	const listed = await next(e);
 	if (listed.value === undefined) return listed;
@@ -49,8 +47,9 @@ export const onToolList: Hook<"tool.list"> = async ($, e, next) => {
 
 const failure = (text: string) => ({ isError: true as const, result: text });
 
-// `todo` is answered here, with no permission prompt: the call runs the core and its text is the result.
-export async function onTodoCall($: Engine, e: Record<string, unknown> & { agentId?: string }) {
+// `todo` is answered here, with no permission prompt: the call runs the core and its text is the result. A result that is not an
+// error also leaves its checklist card, which the transcript's result row draws.
+export async function onTodoCall($: EngineInterface, e: Record<string, unknown> & { agentId?: string }) {
 	const {
 		tool: _tool,
 		tool_use_id: callId,
@@ -58,8 +57,7 @@ export async function onTodoCall($: Engine, e: Record<string, unknown> & { agent
 		requestMeta: _meta,
 		...params
 	} = e as Record<string, unknown> & { agentId?: string; tool_use_id?: string };
-	const op = params.op;
-	if (typeof op !== "string" || !(TODO_OPS as readonly string[]).includes(op)) return failure(`todo needs op: one of ${TODO_OPS.join(", ")}.`);
+	const op = String(params.op);
 	// A subagent shares the tool pool but not the lead's plan: its call reaches the core of its own issue.
 	if (agentId !== undefined) {
 		const out = await delegateTodo($, agentId, op, params);
@@ -69,28 +67,29 @@ export async function onTodoCall($: Engine, e: Record<string, unknown> & { agent
 		const { rt, ctx } = await enter($);
 		const out = await rt.core.todo.apply(ctx, op, params, NO_JOB);
 		await rt.core.tools.result(ctx, { toolName: "todo", isError: out.isError === true });
-		const text = out.content.map(part => part.text).join("\n");
-		leaveNotice(String(callId), (out.details as { kata?: { notice?: string } } | undefined)?.kata?.notice);
-		return out.isError === true ? failure(text) : { result: text };
+		const text = todoText(out);
+		if (out.isError === true) return failure(text);
+		await rememberCard($, String(callId), text, out.details.kata).catch(rt.debug);
+		return { result: text };
 	} catch (error) {
 		return failure(`Kata todo could not run: ${error instanceof Error ? error.message : String(error)}`);
 	}
 }
 
-// Every other tool call: once it has run, the core learns of it (progress for the stop reminder, a `kata claim` that adopts its issue).
 export const onToolCall: Hook<"tool.call"> = async ($, e, next) => {
 	const done = await next(e);
 	const rt = runtime();
+	const latest = rt?.latest;
 	// A subagent's calls are its own: they never adopt an issue as the lead's plan parent or count as the lead's progress.
-	if (!rt?.writer || e.agentId !== undefined) return done;
+	if (!rt?.bound || !latest || e.agentId !== undefined) return done;
 	try {
-		await rt.core.tools.result(contextOf($, rt), {
+		await rt.core.tools.result(contextOf($, rt, latest.held), {
 			toolName: String(e.tool).toLowerCase(),
 			isError: done?.isError === true || done?.deny !== undefined,
 			input: e
 		});
-	} catch {
-		/* Observing never fails a call. */
+	} catch (error) {
+		rt.debug(error);
 	}
 	return done;
 };

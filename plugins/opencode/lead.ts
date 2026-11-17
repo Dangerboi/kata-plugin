@@ -1,9 +1,9 @@
 import { NO_JOB, waitAtMost } from "./kata-cli";
 import { nodePlatform } from "./node-host";
-import { createKataCore, type HostContext, type Job, type KataCore, type PlanView } from "./kata-core";
-import { teammateFor, type DelegateAssignment, type DelegateEvent, type DelegateRecord, type DelegateStore } from "./delegates";
-import { NAMESPACE, type SavedEntry, type SessionStorage } from "./saved";
-import { EXECUTABLE_VARS, type Settings } from "./settings";
+import { createKataCore, todoText, withEntry, type HostContext, type Job, type KataCore, type PlanView, type SavedEntry } from "./kata-core";
+import { recordStore, teammateFor, type DelegateAssignment, type DelegateEvent, type DelegateRecord } from "./delegates";
+import type { SessionStorage } from "./saved";
+import { EXECUTABLE_VARS, NAMESPACE, type Settings } from "./settings";
 import type { KataExec } from "./spawn";
 import { WORDING } from "./wording";
 
@@ -50,7 +50,8 @@ export interface Lead extends Planner {
 	// The plan of a delegate's session under its issue. The core refuses a todo for a delegate with no assigned issue.
 	delegatePlan(sessionID: string): Planner;
 	// Reads a `subagent` call against the plan before it runs, after any todowrite call still running, and keeps what it names
-	// reserved under the call's id. Throws the core's refusal.
+	// reserved under the call's id. Throws the core's Refusal when the plan refuses the spawn; any other rejection (Kata
+	// unusable) is no refusal and the spawn runs, its delegate decided when it starts.
 	checkSpawn(call: string, text: string): Promise<void>;
 	// The call is over: what it reserved and no child took is free again.
 	releaseSpawn(call: string): void;
@@ -96,86 +97,54 @@ interface LeadDeps {
 
 export function createLead(deps: LeadDeps): Lead {
 	const { id, directory, storage, debug } = deps;
-	const entries: SavedEntry[] = structuredClone(deps.entries ?? []);
+	let entries: SavedEntry[] = structuredClone(deps.entries ?? []);
 	// `ended`: the lead ended for good and saves nothing more. `owing`: it ended with work left, and `changed` says its core
 	// saved a change since its last end began: that work may be done now. `suspended`: the instance is going away.
 	let writes: Promise<unknown> = Promise.resolve(), ended = false, owing = false, changed = false, suspended = false;
-	// The core's saved state is its latest entry of each type: it reads nothing older.
 	function appendEntry(customType: string, data: unknown) {
-		const index = entries.findIndex(entry => entry.customType === customType);
-		if (index >= 0) entries.splice(index, 1);
-		entries.push({ type: "custom", customType, data: structuredClone(data) });
+		entries = withEntry(entries, customType, data);
 		if (ended) return;
-		const body = structuredClone(entries);
+		const body = entries;
 		writes = writes.then(() => storage.saveEntries(id, body)).catch(debug);
 		if (owing) { changed = true; void endAgain().catch(debug); }
 	}
 
 	// Kept by the record's id, which is its child session's id (see `began`).
 	const records = new Map<string, DelegateRecord>();
-	const delegates: DelegateStore = {
-		records: () => [...records.values()],
-		get: key => records.get(key),
-		put: record => { records.set(record.id, record); },
-		of: ctx => records.get(ctx.sessionManager.getSessionId()),
-	};
+	const delegates = recordStore(() => records, ctx => records.get(ctx.sessionManager.getSessionId()));
 
 	// What the core reads of a session on every call: the folder, the session's id and its saved entries (`agent` marks a delegate's).
-	const contextOf = (sessionID: string, saved: SavedEntry[], delegate: boolean): HostContext =>
-		({ cwd: directory, ...(delegate ? { agent: { kind: "sub", id: sessionID } } : {}), sessionManager: { getSessionId: () => sessionID, getBranch: () => saved, getHeader: () => undefined } });
-	// A session's core, the context the core gets on that session's calls, and its plan. The lead's core and each delegate's
-	// differ only in whose session they serve: a non-main core saves nothing and never settles, ends or reminds.
-	type Caller = { core: KataCore; ctx: HostContext; planner: Planner };
-	function callerOf(sessionID: string, saved: SavedEntry[], delegateStore: DelegateStore): Caller {
-		const main = sessionID === id;
-		const core = createKataCore({
-			platform: nodePlatform,
-			exec: (file, args, { ctx, ...options }) => deps.exec(ctx?.sessionManager?.getSessionId?.() ?? id, file, args, options),
-			appendEntry: main ? appendEntry : () => {},
-			isMain: () => main,
-			delegateStore,
-		}, {
-			namespace: NAMESPACE,
-			executable: deps.settings.executable,
-			executableVars: EXECUTABLE_VARS,
-			debugFile: deps.settings.debugFile,
-			env: deps.settings.env,
-			// The todowrite list says what is in progress; Kata tasks start when it says so.
-			autoStart: false,
-			closeParent: "shutdown",
-			wording: WORDING,
-		});
-		const ctx = contextOf(sessionID, saved, !main);
-		const planner: Planner = {
-			id: sessionID,
-			batch: fn => core.todo.batch(ctx, fn),
-			async todo(op, params, job) {
-				const result = await core.todo.apply(ctx, op, params, job);
-				return { text: result.content.map(part => part.text).join("\n"), kata: result.details.kata, isError: result.isError === true };
-			},
-		};
-		return { core, ctx, planner };
-	}
-	const { core, ctx, planner } = callerOf(id, entries, delegates);
+	const contextOf = (sessionID: string, delegate: boolean): HostContext =>
+		({ cwd: directory, ...(delegate ? { agent: { kind: "sub", id: sessionID } } : {}), sessionManager: { getSessionId: () => sessionID, getBranch: () => entries, getHeader: () => undefined } });
+	// A session's plan through its core and the context the core gets on that session's calls.
+	const plannerOf = (core: KataCore, ctx: HostContext, sessionID: string): Planner => ({
+		id: sessionID,
+		batch: fn => core.todo.batch(ctx, fn),
+		async todo(op, params, job) {
+			const result = await core.todo.apply(ctx, op, params, job);
+			return { text: todoText(result), kata: result.details.kata, isError: result.isError === true };
+		},
+	});
+	const core = createKataCore({
+		platform: nodePlatform,
+		exec: (file, args, { ctx, ...options }) => deps.exec(ctx?.sessionManager?.getSessionId?.() ?? id, file, args, options),
+		appendEntry,
+		delegateStore: delegates,
+	}, {
+		namespace: NAMESPACE,
+		executable: deps.settings.executable,
+		executableVars: EXECUTABLE_VARS,
+		debugFile: deps.settings.debugFile,
+		env: deps.settings.env,
+		// The todowrite list says what is in progress; Kata tasks start when it says so.
+		autoStart: false,
+		closeParent: "shutdown",
+		wording: WORDING,
+	});
+	const ctx = contextOf(id, false);
+	const planner = plannerOf(core, ctx, id);
 
 	const ready = planner.todo("view", {}, NO_JOB).then(() => undefined, debug);
-
-	const delegateCallers = new Map<string, Caller>();
-	function delegateCaller(sessionID: string): Caller {
-		let known = delegateCallers.get(sessionID);
-		if (!known) {
-			// Only the lead's core settles delegates, inside its own queue: this core sees its own record and no list of the others.
-			// Its state is the lead's record and the delegate's Kata issue: nothing of this core is saved.
-			const own: DelegateStore = {
-				records: () => [],
-				get: key => key === sessionID ? records.get(key) : undefined,
-				put: record => delegates.put(record),
-				of: () => records.get(sessionID),
-			};
-			delegateCallers.set(sessionID, known = callerOf(sessionID, [], own));
-		}
-		return known;
-	}
 
 	// Whether storage records this lead as an ended session: unknown until read once.
 	let flagged: boolean | undefined;
@@ -220,25 +189,26 @@ export function createLead(deps: LeadDeps): Lead {
 		flagged = false;
 	}
 
+	const readyWithin = () => waitAtMost(ready, READY_MS, debug, nodePlatform).then(() => undefined);
+
 	return {
 		...planner,
-		get ready() { return waitAtMost(ready, READY_MS, debug, nodePlatform).then(() => undefined); },
+		get ready() { return readyWithin(); },
 		async planSection() {
-			await waitAtMost(ready, READY_MS, debug, nodePlatform);
+			await readyWithin();
 			return (await core.session.beforePrompt(ctx, { context: false })).sections.todo;
 		},
 		child(sessionID) {
 			const record = records.get(sessionID);
-			return { teammate: record?.teammate ?? teammateFor(sessionID, id), record, assignment: core.delegates.assignment(contextOf(sessionID, [], true)) };
+			return { teammate: record?.teammate ?? teammateFor(sessionID, id), record, assignment: core.delegates.assignment(contextOf(sessionID, true)) };
 		},
-		delegatePlan: sessionID => delegateCaller(sessionID).planner,
+		delegatePlan: sessionID => plannerOf(core.delegate(sessionID), contextOf(sessionID, true), sessionID),
 		checkSpawn: (call, text) => core.todo.batch(ctx, async job => { await core.delegates.check([text], call, undefined, job); }),
 		releaseSpawn: call => core.delegates.release(call),
 		began: (sessionID, spawn) => core.delegates.start({ id: sessionID, sessionId: sessionID, leadSessionId: id, ...spawn }, NO_JOB),
 		delegateEvent: event => core.delegates.apply(event, NO_JOB),
 		async assignmentSection(sessionID, after) {
-			const own = delegateCaller(sessionID);
-			return (await own.core.session.beforePrompt(own.ctx, { context: false, after })).sections.assignment;
+			return (await core.delegate(sessionID).session.beforePrompt(contextOf(sessionID, true), { context: false, after })).sections.assignment;
 		},
 		async settle() {
 			await ready;

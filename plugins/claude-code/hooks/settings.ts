@@ -1,9 +1,12 @@
-import type { Engine } from "./engine";
+import type { EngineInterface } from "claude-code";
+
+// The host's name: the core's namespace (what it writes to Kata and to the saved entries) and the agent a close's transcript is for.
+export const NAMESPACE = "claude";
 
 // What the adapter reads from the host: plugin options first (plugin.json userConfig), then the environment.
 // `$.env.get` takes literal names only, so every variable the core or the adapter reads is spelled out here once; the
 // values are read when the runtime starts and live in an in-memory map the core's Platform reads synchronously.
-export async function readEnv($: Engine): Promise<Map<string, string>> {
+export async function readEnv($: EngineInterface): Promise<Map<string, string>> {
 	const found = new Map<string, string>();
 	const note = (name: string, value: string | undefined) => {
 		if (value !== undefined && value !== "") found.set(name, value);
@@ -14,6 +17,7 @@ export async function readEnv($: Engine): Promise<Map<string, string>> {
 	note("KATA_TEAMMATE", await $.env.get("KATA_TEAMMATE"));
 	note("KATA_INBOX_USER", await $.env.get("KATA_INBOX_USER"));
 	note("KATA_HOME", await $.env.get("KATA_HOME"));
+	note("KATA_ATTENTION_HOST", await $.env.get("KATA_ATTENTION_HOST"));
 	note("KATA_CLOSE_TRANSCRIPT_ENABLED", await $.env.get("KATA_CLOSE_TRANSCRIPT_ENABLED"));
 	note("USER", await $.env.get("USER"));
 	note("KATA_CLAUDE_EXECUTABLE", await $.env.get("KATA_CLAUDE_EXECUTABLE"));

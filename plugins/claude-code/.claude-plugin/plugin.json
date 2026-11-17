@@ -1,7 +1,7 @@
 {
   "name": "kata-cc",
   "version": "1.0.0",
-  "description": "Kata work tracking for Claude Code: a Kata-backed todo tool that replaces the task tools.",
+  "description": "Kata work tracking for Claude Code: a Kata-backed todo tool, delegate tracking, a plan band and a live inbox",
   "author": { "name": "Dangerboi" },
   "license": "MIT",
   "types": "./types/index.d.ts",
@@ -26,7 +26,7 @@
     "debugFile": {
       "type": "string",
       "title": "Debug log file",
-      "description": "Append-only diagnostic log the plugin writes. Blank: KATA_CLAUDE_DEBUG, else none."
+      "description": "Diagnostic log the plugin writes; it keeps the file's last 1,000,000 characters. Blank: KATA_CLAUDE_DEBUG, else none."
     }
   }
 }

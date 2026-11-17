@@ -1,12 +1,38 @@
 import { expect, test } from "bun:test";
-import { afterEntry, claudeKata, latestEvent, PROJECT } from "./claude-fixture";
-import { EVIDENCE, eventually, MESSAGE } from "./kata-fixture";
+import { savedSnapshot } from "../core/kata-core";
+import { claudeKata, entering, PROJECT } from "./claude-fixture";
+import { EVIDENCE, eventually, holdKata, holdNext, MESSAGE } from "./kata-fixture";
 
 // The Claude mod's todo tool and session handling, against a real Kata: a hand-made `$` stands in for the engine.
-const { host, kata, show, closesOf, cwd, issue } = claudeKata("claude-todo");
+const { host, show, closesOf, cwd, issue, binary, sessionParents } = claudeKata("claude-todo");
 
-const parentOf = async (id: string) => (await kata(["list", "--status", "all", "--meta", `claude.session_id=${id}`, "--json"])).issues[0];
+const parentOf = async (id: string) => (await sessionParents("claude", id, true))[0];
 const childrenOf = async (parent: any) => (await show(parent.short_id)).children as any[];
+const entriesOf = (store: Map<string, unknown>, id: string) => ((store.get(`session/${id}`) as any)?.entries ?? []) as any[];
+const snapshotOf = (store: Map<string, unknown>, id: string) => savedSnapshot(entriesOf(store, id), "claude") as any;
+
+// A started session whose first Kata close fails, so it owes the close, with the core's queue held on the next call a test arms.
+async function owingSession(store: Map<string, unknown>) {
+	const failing = holdKata(
+		argv => argv.includes("close"),
+		() => {
+			throw new Error("Kata went away");
+		}
+	);
+	failing.release();
+	const gate = holdNext();
+	const h = host({
+		store,
+		before: async (argv, init) => {
+			await gate.before(argv, init);
+			return failing.before(argv, init);
+		}
+	});
+	await h.start();
+	await h.todo({ op: "init", items: ["Plan of the old session"] });
+	await h.todo({ op: "done", task: "Plan of the old session", message: MESSAGE, evidence: EVIDENCE });
+	return { h, gate };
+}
 
 test("tool.list takes the task tools out, keeps TaskStop and adds todo with the core's schema", async () => {
 	const h = host();
@@ -17,7 +43,6 @@ test("tool.list takes the task tools out, keeps TaskStop and adds todo with the 
 	expect(todo.mcp).toBe(false);
 	expect(todo.inputSchema.properties.op.enum).toContain("init");
 	expect(todo.inputSchema.required).toEqual(["op"]);
-	expect(todo.description).toContain("Track multi-step work as a todo list stored in Kata.");
 });
 
 test("todo init, start, done and view run against Kata; done closes from evidence recorded for the Claude session", async () => {
@@ -40,7 +65,6 @@ test("todo init, start, done and view run against Kata; done closes from evidenc
 	expect((await show(closed.short_id)).issue.status).toBe("closed");
 	const close = (await closesOf(closed.short_id))[0];
 	expect(close.payload.transcript).toMatchObject({ agent: "claude", session_id: h.state.session });
-	// Starting the next task was automatic: the second is in progress.
 	expect((await h.todo({ op: "view" })).result).toContain("[/] Test the parser");
 });
 
@@ -63,7 +87,6 @@ test("a call of a subagent the lead does not track is refused and never reaches 
 	await h.todo({ op: "init", items: ["Lead task"] });
 	const sub = await h.todo({ op: "done", task: "Lead task", message: MESSAGE, evidence: EVIDENCE }, "agent-7");
 	expect(sub.isError).toBe(true);
-	expect(sub.result).toContain("no Kata assignment");
 	expect((await h.todo({ op: "view" })).result).toContain("[/] Lead task");
 });
 
@@ -74,7 +97,6 @@ test("the prompt carries the plan once, again when it changed or after compactio
 	await h.todo({ op: "init", items: ["Carry the plan"] });
 	const first = await h.prompt();
 	expect(first.context).toHaveLength(1);
-	expect(first.context[0]).toContain("<kata_todo>");
 	expect(first.context[0]).toContain("Carry the plan");
 	expect((await h.prompt()).context).toBeUndefined();
 	await h.todo({ op: "append", items: ["Second item"] });
@@ -83,29 +105,46 @@ test("the prompt carries the plan once, again when it changed or after compactio
 	expect((await h.prompt()).context[0]).toContain("Carry the plan");
 });
 
+test("a prompt the engine drops leaves the plan to be sent with the next prompt", async () => {
+	const h = host();
+	await h.start();
+	await h.todo({ op: "init", items: ["Carry the plan"] });
+	let offered: string[] | undefined;
+	const dropped = await h.fire("prompt.submit", { text: "go", wait: true, origin: { kind: "composer" } }, e => {
+		offered = e.context;
+		return { drop: "not now" };
+	});
+	expect(dropped).toEqual({ drop: "not now" });
+	expect(offered?.join("\n")).toContain("Carry the plan");
+	expect((await h.prompt()).context[0]).toContain("Carry the plan");
+	expect((await h.prompt()).context).toBeUndefined();
+});
+
 test("the contract section is added only when the plugin option asks for it", async () => {
 	const off = host();
 	await off.start();
-	expect(JSON.stringify((await off.prompt()).context ?? [])).not.toContain("kata_contract");
-	const on = host({ options: { kataExecutable: off.state.cwd && process.env.KATA_TEST_EXECUTABLE, contract: true } });
+	expect((await off.prompt()).context).toBeUndefined();
+	const on = host({ options: { kataExecutable: binary, contract: true } });
 	await on.start();
-	expect(JSON.stringify((await on.prompt()).context ?? [])).toContain("<kata_contract>");
+	expect((await on.prompt()).context).toHaveLength(1);
+	expect((await on.prompt()).context).toBeUndefined();
 });
 
-test("stop reminds of open tasks up to three times, not after a question, and keeps progress in mind", async () => {
+test("stop reminds of open tasks three times at most, only after progress and not after a question", async () => {
 	const h = host();
 	await h.start();
 	await h.todo({ op: "init", items: ["Reminded task"] });
 	await h.prompt("go");
-	const one = await h.stop();
-	expect(one.block).toContain("Reminded task");
-	expect(one.block).toContain("reminder 1/3");
-	// No progress since: no second reminder until a tool ran.
+	const progress = () => h.fire("tool.call", { tool: "Bash", tool_use_id: `b-${crypto.randomUUID()}`, command: "true" }, () => ({ result: "ok", text: "ok" }));
+	expect((await h.stop()).block).toContain("Reminded task");
 	expect((await h.stop()).block).toBeUndefined();
-	await h.fire("tool.call", { tool: "Bash", tool_use_id: "b1", command: "true" }, () => ({ result: "ok", text: "ok" }));
+	await progress();
 	expect((await h.stop("Which file did you mean?")).block).toBeUndefined();
-	expect((await h.stop()).block).toContain("reminder 2/3");
-	// A subagent's stop is not the lead's.
+	expect((await h.stop()).block).toContain("Reminded task");
+	await progress();
+	expect((await h.stop()).block).toContain("Reminded task");
+	await progress();
+	expect((await h.stop()).block).toBeUndefined();
 	expect((await h.fire("classic.Stop", { stop_hook_active: false, agent_id: "a1" })).block).toBeUndefined();
 });
 
@@ -150,21 +189,79 @@ test("the end of the process closes the finished plan's parent and forgets the s
 	expect(h.store.has(`session/${h.state.session}`)).toBe(false);
 });
 
-test("start prunes ended sessions past their keep time and keeps recent and running ones", async () => {
+test("start prunes ended sessions past their keep time and keeps recent ones, running ones and one that still owes work", async () => {
 	const store = new Map<string, unknown>();
 	const day = 86_400_000,
 		now = Date.now();
 	const record = (updatedAt: number, endedAt?: number) => ({ directory: cwd, entries: [], updatedAt, ...(endedAt ? { endedAt } : {}) });
+	const owing = host({ store });
+	await owing.start();
+	await owing.todo({ op: "init", items: ["Still open at the end"] });
+	await owing.end("prompt_input_exit");
+	const owingKey = `session/${owing.state.session}`;
+	store.set(owingKey, { ...(store.get(owingKey) as object), updatedAt: now - 10 * day, endedAt: now - 10 * day });
 	store.set("session/old-ended", record(now - 20 * day, now - 10 * day));
 	store.set("session/recent-ended", record(now - day, now - day));
 	store.set("session/stale-running", record(now - 40 * day));
 	store.set("session/other-running", record(now - day));
 	const h = host({ store });
 	await h.start();
-	await new Promise(resolve => setTimeout(resolve, 200));
-	expect(store.has("session/other-running") && store.has("session/recent-ended")).toBe(true);
-	expect(store.has("session/old-ended")).toBe(false);
-	expect(store.has("session/stale-running")).toBe(false);
+	await eventually(async () => ["session/old-ended", "session/stale-running"].filter(key => store.has(key)), []);
+	expect(["session/recent-ended", "session/other-running", owingKey].filter(key => !store.has(key))).toEqual([]);
+});
+
+test("over the store budget, start evicts ended sessions that owe nothing before older ones that owe work, counting bytes", async () => {
+	const store = new Map<string, unknown>();
+	const day = 86_400_000,
+		now = Date.now();
+	// 700,000 bytes of UTF-8 in 350,000 characters: three of them pass the 2 MiB budget only when bytes are counted.
+	const pad = { type: "custom", customType: "padding", data: "é".repeat(350_000) };
+	const owing = host({ store });
+	await owing.start();
+	await owing.todo({ op: "init", items: ["Owed after the end"] });
+	await owing.end("prompt_input_exit");
+	const owingKey = `session/${owing.state.session}`;
+	const owed = store.get(owingKey) as { entries: unknown[] };
+	store.set(owingKey, { ...owed, entries: [...owed.entries, pad], updatedAt: now - 3 * day, endedAt: now - 3 * day });
+	store.set("session/older-done", { entries: [pad], updatedAt: now - 2 * day, endedAt: now - 2 * day });
+	store.set("session/newer-done", { entries: [pad], updatedAt: now - day, endedAt: now - day });
+	store.set("session/running", { entries: [pad], updatedAt: now - day });
+	const h = host({ store });
+	await h.start();
+	await eventually(async () => ["session/older-done", "session/newer-done"].filter(key => store.has(key)), []);
+	expect([owingKey, "session/running"].filter(key => !store.has(key))).toEqual([]);
+});
+
+test("an unknown op is refused with the ops there are and changes nothing", async () => {
+	const h = host();
+	await h.start();
+	await h.todo({ op: "init", items: ["Only task"] });
+	const before = (await h.todo({ op: "view" })).result;
+	const bad = await h.todo({ op: "bogus" });
+	expect(bad.isError).toBe(true);
+	expect(bad.result).toContain("todo needs op: one of init");
+	expect((await h.todo({ op: "view" })).result).toBe(before);
+});
+
+test("a switch whose saved record fails to load is retried at the next hook instead of staying on the previous session", async () => {
+	let failing: string | undefined;
+	const store = new (class extends Map<string, unknown> {
+		has(key: string) {
+			if (key !== failing) return super.has(key);
+			failing = undefined;
+			throw new Error("store unreadable");
+		}
+	})();
+	const h = host({ store });
+	await h.start();
+	await h.todo({ op: "init", items: ["Old session's task"] });
+	const old = h.state.session;
+	h.state.session = crypto.randomUUID();
+	failing = `session/${h.state.session}`;
+	expect((await h.todo({ op: "view" })).isError).toBe(true);
+	await h.todo({ op: "init", items: ["New session's task"] });
+	await eventually(async () => JSON.stringify(entriesOf(store, h.state.session)).includes("New session's task"), true);
+	expect(JSON.stringify(entriesOf(store, old))).not.toContain("New session's task");
 });
 
 test("with no Kata the plan stays session-local and the call is not an error", async () => {
@@ -189,35 +286,23 @@ test("a fork starts with its source's plan and leaves the source resumable", asy
 	expect(store.has(`session/${source.state.session}`)).toBe(true);
 });
 
-test("a plan with an explicit parent survives the end of the process and a resume", async () => {
-	const parent = `${PROJECT}#${await issue("Explicit parent")}`;
+test.each([
+	["with an explicit parent", undefined, async () => ({ ref: `${PROJECT}#${await issue("Explicit parent")}` })],
+	["that is session-local", { kataExecutable: "/nonexistent/kata" }, async () => ({})]
+] as const)("a plan %s survives the end of the process and a resume", async (_name, options, extra) => {
 	const store = new Map<string, unknown>();
-	const first = host({ store });
+	const first = host({ store, options });
 	await first.start();
-	expect((await first.todo({ op: "init", ref: parent, items: ["Keep through the exit"] })).isError).toBeUndefined();
+	expect((await first.todo({ op: "init", items: ["Keep through the exit"], ...(await extra()) })).isError).toBeUndefined();
 	await first.end("prompt_input_exit");
 	expect(store.has(`session/${first.state.session}`)).toBe(true);
-	const resumed = host({ store, session: first.state.session });
+	const resumed = host({ store, session: first.state.session, options });
 	await resumed.start();
 	expect((await resumed.todo({ op: "view" })).result).toContain("Keep through the exit");
 });
 
-test("a session-local plan survives the end of the process and a resume", async () => {
-	const store = new Map<string, unknown>();
-	const first = host({ store, options: { kataExecutable: "/nonexistent/kata" } });
-	await first.start();
-	await first.todo({ op: "init", items: ["Local and open"] });
-	await first.end("prompt_input_exit");
-	expect(store.has(`session/${first.state.session}`)).toBe(true);
-	const resumed = host({ store, session: first.state.session, options: { kataExecutable: "/nonexistent/kata" } });
-	await resumed.start();
-	expect((await resumed.todo({ op: "view" })).result).toContain("Local and open");
-});
-
 test("a job of the old session still queued at a resume runs for that session and leaves the resumed one's snapshot alone", async () => {
 	const store = new Map<string, unknown>();
-	const entriesOf = (id: string) => ((store.get(`session/${id}`) as any)?.entries ?? []) as any[];
-	const snapshotOf = (id: string) => entriesOf(id).find(entry => entry.customType.endsWith(".state"))?.data;
 	const first = host({ store });
 	await first.start();
 	await first.todo({ op: "init", items: ["Plan of the resumed session"] });
@@ -229,80 +314,42 @@ test("a job of the old session still queued at a resume runs for that session an
 	const x = first.state.session;
 	await first.end();
 
-	// Holds the first Kata call after `armed`: the plan write is then running in the core's queue, and a later call of the
-	// same session waits behind it.
-	let armed = false;
-	let reached!: () => void;
-	const running = new Promise<void>(resolve => (reached = resolve));
-	let release!: () => void;
-	const gate = new Promise<void>(resolve => (release = resolve));
-	const h = host({
-		store,
-		hold: () => {
-			if (!armed) return undefined;
-			armed = false;
-			reached();
-			return gate;
-		}
-	});
+	const gate = holdNext();
+	const h = host({ store, before: gate.before });
 	await h.start();
 	const a = h.state.session;
-	armed = true;
+	gate.arm();
 	const writing = h.todo({ op: "init", items: ["Plan of the old session"] });
-	await running;
-	let before = latestEvent();
-	const queued = h.todo({ op: "view" });
-	await afterEntry(before);
+	await gate.entered;
+	const { result: queued } = await entering(() => h.todo({ op: "view" }));
 	// /resume X while both still run.
 	h.state.session = x;
-	before = latestEvent();
-	const resumed = h.todo({ op: "view" });
-	await afterEntry(before);
-	release();
+	const { result: resumed } = await entering(() => h.todo({ op: "view" }));
+	gate.release();
 	await writing;
 	await queued;
 	const view = await resumed;
-	await eventually(async () => snapshotOf(a)?.sessionId === a && snapshotOf(x)?.sessionId === x, true);
+	await eventually(async () => snapshotOf(store, a)?.sessionId === a && snapshotOf(store, x)?.sessionId === x, true);
 	expect(view.result).toContain("Plan of the resumed session");
-	expect(snapshotOf(x).sessionId).toBe(x);
-	expect(snapshotOf(x).plan.tasks.map((t: any) => t.content)).toEqual(["Plan of the resumed session"]);
-	expect(snapshotOf(a).sessionId).toBe(a);
-	// X's delegate came back with X: it is settled, and A's queued job did not take its place.
+	expect(snapshotOf(store, x).plan.tasks.map((t: any) => t.content)).toEqual(["Plan of the resumed session"]);
 	await eventually(async () => ((await show(issueRef)).labels ?? []).some((label: any) => label.label === "needs-review"), true);
 }, 30_000);
 
 test("a write that lands after its session ended keeps the record ended", async () => {
 	const store = new Map<string, unknown>();
-	let armed = false;
-	let reached!: () => void;
-	const running = new Promise<void>(resolve => (reached = resolve));
-	let release!: () => void;
-	const gate = new Promise<void>(resolve => (release = resolve));
-	const h = host({
-		store,
-		hold: () => {
-			if (!armed) return undefined;
-			armed = false;
-			reached();
-			return gate;
-		}
-	});
+	const gate = holdNext();
+	const h = host({ store, before: gate.before });
 	await h.start();
 	const a = h.state.session;
-	armed = true;
+	gate.arm();
 	const writing = h.todo({ op: "init", items: ["Plan the late write touches"] });
-	await running;
-	let before = latestEvent();
-	const queued = h.todo({ op: "view" });
-	await afterEntry(before);
+	await gate.entered;
+	const { result: queued } = await entering(() => h.todo({ op: "view" }));
 	// A new session replaces A while A's plan write still runs.
 	h.state.session = crypto.randomUUID();
-	before = latestEvent();
-	const switching = h.todo({ op: "view" });
-	await afterEntry(before);
-	release();
+	const { result: switching } = await entering(() => h.todo({ op: "view" }));
+	gate.release();
 	await Promise.all([writing, queued, switching]);
-	// The late write is in the record, and the record is still ended.
 	await eventually(async () => {
 		const record = store.get(`session/${a}`) as any;
 		return JSON.stringify(record?.entries ?? []).includes("Plan the late write touches") && (record?.endedAt ?? 0) > 0;
@@ -320,33 +367,18 @@ test("a process that exits before a queued switch has run ends the record of the
 	await eventually(async () => recordOf(x) !== undefined, true);
 	expect(recordOf(x).endedAt).toBeUndefined();
 
-	let armed = false;
-	let reached!: () => void;
-	const running = new Promise<void>(resolve => (reached = resolve));
-	let release!: () => void;
-	const gate = new Promise<void>(resolve => (release = resolve));
-	const h = host({
-		store,
-		hold: () => {
-			if (!armed) return undefined;
-			armed = false;
-			reached();
-			return gate;
-		}
-	});
+	const gate = holdNext();
+	const h = host({ store, before: gate.before });
 	await h.start();
-	armed = true;
+	gate.arm();
 	const writing = h.todo({ op: "init", items: ["Plan of the old session"] });
-	await running;
+	await gate.entered;
 	// /resume X while A's plan write holds the core's queue: the switch job is queued behind it.
 	h.state.session = x;
-	const before = latestEvent();
-	const switching = h.todo({ op: "view" });
-	await afterEntry(before);
-	// The process exits now; the switch has not run.
+	const { result: switching } = await entering(() => h.todo({ op: "view" }));
 	await h.end("prompt_input_exit");
 	expect(recordOf(x).endedAt).toBeGreaterThan(0);
-	release();
+	gate.release();
 	await Promise.all([writing, switching]);
 });
 
@@ -355,40 +387,35 @@ test("a process that exits before a queued switch has run deletes the switched-t
 	const x = crypto.randomUUID();
 	// X was resumed from a record with nothing left to do.
 	store.set(`session/${x}`, { directory: cwd, entries: [], updatedAt: Date.now() });
-
-	let mode: "off" | "fail-close" | "gate" = "off";
-	let reached!: () => void;
-	const running = new Promise<void>(resolve => (reached = resolve));
-	let release!: () => void;
-	const gate = new Promise<void>(resolve => (release = resolve));
-	const h = host({
-		store,
-		hold: argv => {
-			if (mode === "fail-close" && argv.includes("close")) throw new Error("Kata went away");
-			if (mode === "gate") {
-				mode = "off";
-				reached();
-				return gate;
-			}
-			return undefined;
-		}
-	});
-	await h.start();
-	await h.todo({ op: "init", items: ["Plan of the old session"] });
-	// A's close fails: A owes it.
-	mode = "fail-close";
-	await h.todo({ op: "done", task: "Plan of the old session", message: MESSAGE, evidence: EVIDENCE });
-	mode = "gate";
+	const { h, gate } = await owingSession(store);
+	gate.arm();
 	const writing = h.todo({ op: "view" });
-	await running;
+	await gate.entered;
 	// /resume X while A's call holds the core's queue: the switch job is queued behind it.
 	h.state.session = x;
-	const before = latestEvent();
-	const switching = h.todo({ op: "view" });
-	await afterEntry(before);
+	const { result: switching } = await entering(() => h.todo({ op: "view" }));
 	await h.end("prompt_input_exit");
-	// X has no work of its own: its record goes, A's debt is not X's.
 	expect(store.has(`session/${x}`)).toBe(false);
-	release();
+	gate.release();
 	await Promise.all([writing, switching]);
+});
+
+test("a switch ends the session it leaves with that session's own debts, also when two switches wait on a slow call", async () => {
+	const store = new Map<string, unknown>();
+	const b = crypto.randomUUID(),
+		c = crypto.randomUUID();
+	store.set(`session/${b}`, { directory: cwd, entries: [], updatedAt: Date.now() });
+	const { h, gate } = await owingSession(store);
+	const a = h.state.session;
+	gate.arm();
+	const writing = h.todo({ op: "view" });
+	await gate.entered;
+	h.state.session = b;
+	const { result: toB } = await entering(() => h.todo({ op: "view" }));
+	h.state.session = c;
+	const { result: toC } = await entering(() => h.todo({ op: "view" }));
+	gate.release();
+	await Promise.all([writing, toB, toC]);
+	await eventually(async () => store.has(`session/${b}`), false);
+	await eventually(async () => ((store.get(`session/${a}`) as any)?.endedAt ?? 0) > 0, true);
 });

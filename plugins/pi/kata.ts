@@ -1,11 +1,13 @@
 import path from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { createKataCore, DESCRIPTION, TODO_OPS, TODO_PARAMS, type Lead, type ChildParent } from "./kata-core";
+import { createKataCore, DESCRIPTION, PROMPT_TAGS, TODO_OPS, TODO_PARAMS, type Lead, type ChildParent } from "./kata-core";
 import { NO_JOB } from "./kata-cli";
 import { exportTranscriptSession, nodePlatform } from "./node-host";
 import { delegateCommand, kataCommands, quote } from "./shell";
 import type { DelegateRecord, DelegateStore } from "./delegates";
 import { lastText } from "./model";
+
+const NAMESPACE = "pi";
 
 // Match the native adapter's capability/scope selection, including a project
 // root boundary. Recheck at prompt time: either factory can load first.
@@ -80,7 +82,7 @@ export default async function piKata(pi: ExtensionAPI) {
 		allowUI: ctx => ctx.hasUI === true,
 		isMain: () => !inherited,
 		delegateStore: store,
-	}, { namespace: "pi", executable, executableVars: EXECUTABLE_VARS, explicitRef: () => inherited ? undefined : explicit, debugFile: process.env.KATA_PI_DEBUG || process.env.KATA_OMP_DEBUG });
+	}, { namespace: NAMESPACE, executable, executableVars: EXECUTABLE_VARS, explicitRef: () => inherited ? undefined : explicit, debugFile: process.env.KATA_PI_DEBUG || process.env.KATA_OMP_DEBUG });
 
 	// Where the lead's plan lives, as the latest core call reported it.
 	let lead: Lead = { workspace: path.resolve(process.cwd()) };
@@ -173,11 +175,11 @@ export default async function piKata(pi: ExtensionAPI) {
 		const { sections: text, lead: next } = await core.session.beforePrompt(ctx, { context: !native });
 		if (!inherited) lead = next;
 		const sections = event.systemPromptOptions.sections;
-		if (text.contract) sections.kata_contract = text.contract;
-		if (text.inbox) sections.kata_inbox = text.inbox;
-		if (text.assignment) sections.kata_binding = text.assignment;
-		if (text.todo) sections.kata_todo = text.todo;
-		else delete sections.kata_todo;
+		if (text.contract) sections[PROMPT_TAGS.contract] = text.contract;
+		if (text.inbox) sections[PROMPT_TAGS.inbox] = text.inbox;
+		if (text.assignment) sections[PROMPT_TAGS.assignment] = text.assignment;
+		if (text.todo) sections[PROMPT_TAGS.todo] = text.todo;
+		else delete sections[PROMPT_TAGS.todo];
 	});
 
 	pi.on("agent_before_settle", async (event, ctx) => {
@@ -192,7 +194,7 @@ export default async function piKata(pi: ExtensionAPI) {
 
 	pi.on("session_start", async (event, ctx) => {
 		// A child replaces the session its lead exported.
-		exportTranscriptSession("pi", ctx.sessionManager.getSessionId());
+		exportTranscriptSession(NAMESPACE, ctx.sessionManager.getSessionId());
 		const saved = savedOf(ctx);
 		if (saved?.marker && (!explicit || inherited)) {
 			inherited = saved.marker;
@@ -215,7 +217,7 @@ export default async function piKata(pi: ExtensionAPI) {
 		// Only the interactive main session has an editor; session_start fires again per session.
 		if (!inherited && ctx.hasUI) core.offerTickets(ctx.ui);
 		follow(next, ctx);
-	}); // startup/reload/new/resume/fork
+	});
 	pi.on("session_tree", async (_event, ctx) => {
 		follow(await core.session.tree(ctx), ctx);
 	});

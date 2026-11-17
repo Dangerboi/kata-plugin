@@ -4,12 +4,12 @@ import path from "node:path";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { assertIsolated, SCRUBBED_ENV } from "./isolation";
-import type { DelegateRecord, DelegateStore } from "../core/delegates";
+import { recordStore, type DelegateRecord, type DelegateStore } from "../core/delegates";
+import { RETRY_MS } from "../core/settlement";
 
 export function memoryDelegateStore(): DelegateStore & { drop(id: string): void } {
   const records = new Map<string, DelegateRecord>();
-  return { records: () => [...records.values()], get: key => records.get(key), put: record => { records.set(record.id, record); },
-    of: ctx => [...records.values()].find(record => record.sessionId === ctx.sessionManager.getSessionId()),
+  return { ...recordStore(() => records, ctx => [...records.values()].find(record => record.sessionId === ctx.sessionManager.getSessionId())),
     // Forgets a record, as a process whose memory never held it.
     drop: id => { records.delete(id); } };
 }
@@ -215,9 +215,12 @@ export function adoptIsolatedKata(binary: string, home: string): () => void {
   };
 }
 
+/** What a deferred close tells the model about its retry, as the core words it. */
+export const retryNote = `retry after ${RETRY_MS / 1000} seconds`;
+
 /** A retry deadline passes while `fn` runs, without sleeping: a throttled close is due again. */
 export async function later<T>(fn: () => Promise<T>): Promise<T> {
-	setSystemTime(new Date(Date.now() + 120_000));
+	setSystemTime(new Date(Date.now() + 2 * RETRY_MS));
 	try { return await fn(); } finally { setSystemTime(); }
 }
 
@@ -280,4 +283,34 @@ export function holdKata(applies: (args: string[], opts: any) => boolean = () =>
     release: () => gate.resolve(),
     get held() { return held; },
   };
+}
+
+/** `holdKata` for the one call `applies` accepts after `arm()`: calls before the arming and after that call pass at once. */
+export function holdNext(applies: (args: string[], opts: any) => boolean = () => true) {
+  let armed = false;
+  const hold = holdKata((args, opts) => {
+    if (!armed || !applies(args, opts)) return false;
+    armed = false;
+    return true;
+  });
+  return {
+    before: hold.before,
+    entered: hold.entered,
+    release: hold.release,
+    arm: () => { armed = true; },
+  };
+}
+
+/** A value as one word of a POSIX shell command. */
+export const quote = (value: string) => `'${value.replace(/'/g, "'\\''")}'`;
+
+/**
+ * What the delegate's prompt holds for it: its issue, its teammate and the close command it is told to run, with the two
+ * placeholders (the message and the evidence) still to fill. `close` is undefined when the prompt has no such command.
+ */
+export function assignmentOf(system: string) {
+	const ref = /Your Kata issue is (\S+?);/.exec(system)?.[1] ?? "";
+	const teammate = /your teammate is ([a-z0-9._-]+?)\. Keep/.exec(system)?.[1] ?? "";
+	const close = /YOU must then run: (.+?) --message '<[^']*>' --evidence '<[^']*>'/.exec(system)?.[1];
+	return { ref, teammate, close };
 }

@@ -1,16 +1,13 @@
-import { waitAtMost } from "../core/kata-cli";
 import type { Hook } from "claude-code";
-import { contextOf, enter, runtime } from "./lead";
+import { contextOf, enter, runtime, waitFor } from "./lead";
 import { registerTodoCommand } from "./ui";
-
-// Session start, the switches that fire no start, and the end.
 
 // Awaited before the first prompt: binds the session's plan (a resumed session's saved work resumes with it) and prunes.
 export const onStart: Hook<"session.start"> = async ($, e, next) => {
 	try {
 		await enter($);
-	} catch {
-		/* A slow or unreachable Kata never holds the session. */
+	} catch (error) {
+		runtime()?.debug(error);
 	}
 	await registerTodoCommand($);
 	return next(e);
@@ -21,29 +18,34 @@ export const onStart: Hook<"session.start"> = async ($, e, next) => {
 export const onSessionSwitch: Hook<"classic.SessionStart"> = async ($, e, next) => {
 	try {
 		await enter($, { fork: e.source === "fork" });
-	} catch {
-		/* As onStart. */
+	} catch (error) {
+		runtime()?.debug(error);
 	}
 	return next(e);
 };
 
-// The whole chain of session.end hooks has 1.5 s. A /clear or /resume goes on in the same process: nothing ends, the next
-// `enter` switches. At the end of the process the core's shutdown gets what time is left; what it did not finish stays
-// in the saved record, and the session's resume finishes it.
+// The whole chain of session.end hooks has 1.5 s. The core's shutdown gets at most SHUTDOWN_MS of what the chain has left,
+// less SAVE_RESERVE_MS kept for saving the record; what it did not finish stays in the record, and the session's resume finishes it.
+const SHUTDOWN_MS = 1200;
+const SAVE_RESERVE_MS = 300;
+
+// A /clear or /resume goes on in the same process: nothing ends here, the core's next switch ends the session it leaves.
 export const onEnd: Hook<"session.end"> = async ($, e, next) => {
 	const rt = runtime();
-	// The latest event's session: its writer is the one to end, whatever the core's queued switch has not yet moved.
-	const writer = rt?.latest?.held?.writer;
-	if (rt?.id && writer && e.reason !== "clear" && e.reason !== "resume") {
-		try {
-			const ctx = contextOf($, rt);
-			const remaining = next.budget.remainingMs;
-			await waitAtMost(rt.core.session.shutdown(ctx), Math.max(200, Math.min(remaining - 300, 1200)), () => undefined, ctx.timers!);
-			// The core's debts are the session it is bound to; a queued switch has not bound it to the latest session yet, whose own debts the saved record answers for.
-			await writer.end(writer === rt.writer && rt.core.session.owes(), await $.clock.now());
-		} catch {
-			/* Whatever was saved stays. */
-		}
-	} else if (rt?.writer) await rt.writer.settled();
+	if (!rt) return next(e);
+	if (e.reason === "clear" || e.reason === "resume") {
+		await rt.bound?.writer.settled();
+		return next(e);
+	}
+	const latest = rt.latest;
+	if (latest) {
+		const budget = Math.min(SHUTDOWN_MS, Math.max(0, next.budget.remainingMs - SAVE_RESERVE_MS));
+		await waitFor($, rt, rt.core.session.shutdown(contextOf($, rt, latest.held)), budget);
+		// Read after the shutdown: a switch still queued ahead of it moves `bound` (and ends the session it leaves). The core's
+		// debts are its bound session's; the latest session, when the core never switched to it, owes nothing the core knows of.
+		const bound = rt.bound;
+		if (bound) await bound.writer.end(rt.core.session.owes()).catch(rt.debug);
+		if (latest.held !== bound) await latest.held.writer.end(false).catch(rt.debug);
+	}
 	return next(e);
 };

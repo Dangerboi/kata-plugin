@@ -1,28 +1,21 @@
-import { chmodSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
 import { expect, test } from "bun:test";
-import { afterEntry, claudeKata, latestEvent } from "./claude-fixture";
-import { EVIDENCE, eventually, MESSAGE } from "./kata-fixture";
+import { savedSnapshot } from "../core/kata-core";
+import { claudeKata, entering, pausedClock, type ClaudeHost } from "./claude-fixture";
+import { assignmentOf, EVIDENCE, eventually, holdKata, holdNext, MESSAGE, quote } from "./kata-fixture";
 
 // Subagents and Workflow agents on the Claude mod, against a real Kata: a hand-made `$` stands in for the engine.
-const { host, kata, show, commentsOf, env, cwd, scratch, binary } = claudeKata("claude-delegates");
+const { host, kata, show, commentsOf, env, cwd, sessionParents } = claudeKata("claude-delegates");
 
-const itemsOf = async (h: ReturnType<typeof host>) => {
-	const parent = (await kata(["list", "--status", "all", "--meta", `claude.session_id=${h.state.session}`, "--label", "claude-session", "--json"])).issues[0];
+const itemsOf = async (h: ClaudeHost) => {
+	const [parent] = await sessionParents("claude", h.state.session, true);
 	return (await show(parent.short_id)).children as any[];
 };
-const issueOf = async (h: ReturnType<typeof host>, title: string) => {
+const issueOf = async (h: ClaudeHost, title: string) => {
 	const found = (await itemsOf(h)).find(child => child.title === title);
 	expect(found, title).toBeDefined();
 	return (await show(found.short_id)).issue;
 };
 const labelsOf = async (ref: string) => ((await show(ref)).labels ?? []).map((label: any) => label.label);
-const assignmentOf = (prompt: string) => ({
-	ref: /Your Kata issue is (\S+?);/.exec(prompt)?.[1] ?? "",
-	teammate: /your teammate is ([a-z0-9._-]+?)\. Keep/.exec(prompt)?.[1] ?? "",
-	close: /YOU must then run: (.+?) --message '<[^']*>' --evidence '<[^']*>'/.exec(prompt)?.[1]
-});
-const quote = (text: string) => `'${text.replace(/'/g, "'\\''")}'`;
 async function sh(command: string) {
 	const proc = Bun.spawn(["bash", "-c", command], { cwd, env: { ...env, PATH: process.env.PATH }, stdout: "pipe", stderr: "pipe" });
 	const [stdout, stderr] = await Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text()]);
@@ -35,7 +28,15 @@ async function started() {
 	return h;
 }
 const tagged = (prompt: string) => /<kata_binding>\n([\s\S]*?)\n<\/kata_binding>/.exec(prompt)?.[1] ?? "";
-const meta = async (h: ReturnType<typeof host>, title: string) => (await issueOf(h, title)).metadata;
+const meta = async (h: ClaudeHost, title: string) => (await issueOf(h, title)).metadata;
+const missions = async () => (await kata(["list", "--status", "all", "--json"])).issues.filter((issue: any) => issue.metadata?.["claude.mission_subagent_id"]);
+// The missions with a comment containing `text`, as `kata show` gives them.
+async function missionsWith(text: string) {
+	const found = [];
+	for (const mission of await missions()) if ((await commentsOf(mission.short_id)).join("\n").includes(text)) found.push((await show(mission.short_id)).issue);
+	return found;
+}
+const lastCommentOf = async (ref: string) => ((await show(ref)).comments as any[]).at(-1);
 
 test("a spawn that names a plan item gets that item's issue in its prompt, and its answer is posted when it left no comment", async () => {
 	const h = await started();
@@ -79,12 +80,9 @@ test("a spawn that names nothing is untracked: it is told so, and its run and an
 	const spawned = await h.spawn({ prompt: "Survey the build scripts and list the slow ones.", description: "Survey" }, "agent-survey");
 	expect(tagged(spawned.prompt)).toContain("you have no Kata issue");
 	await h.agentTurn("agent-survey", "Slow ones: build-all.sh and lint.sh (found by the survey).");
-	const missions = (await kata(["list", "--status", "all", "--json"])).issues.filter((issue: any) => issue.metadata?.["claude.mission_subagent_id"]);
-	const found = [];
-	for (const mission of missions) if ((await commentsOf(mission.short_id)).join("\n").includes("found by the survey")) found.push(mission);
+	const found = await missionsWith("found by the survey");
 	expect(found).toHaveLength(1);
 	expect(found[0].status).toBe("closed");
-	// The plan items are untouched.
 	expect((await meta(h, "Implement parser module"))["claude.subagent_id"]).toBeUndefined();
 });
 
@@ -139,11 +137,14 @@ test("a resumed run goes on with its record: its answer is posted on the issue i
 	expect(comments).toContain("Empty input handled in the second run.");
 });
 
-test("a fork no tool call starts, and a spawn when Kata is unreachable, run as they are", async () => {
+test("a fork no tool call starts runs as it is: no assignment, no mission, no comment on the plan", async () => {
 	const h = await started();
+	const before = (await missions()).map((mission: any) => mission.short_id);
 	const fork = await h.spawn({ prompt: "side question", tool_use_id: "", fork: true }, "agent-fork");
 	expect(fork.prompt).toBe("side question");
-	expect(await h.agentTurn("agent-fork", "answer")).toBeDefined();
+	await h.agentTurn("agent-fork", "answer of the fork");
+	expect((await missions()).map((mission: any) => mission.short_id)).toEqual(before);
+	for (const item of await itemsOf(h)) expect((await commentsOf(item.short_id)).join("\n")).not.toContain("answer of the fork");
 });
 
 test("a subagent's kata commands run under its teammate; --as is refused; a command that carries it is left as written", async () => {
@@ -151,58 +152,67 @@ test("a subagent's kata commands run under its teammate; --as is refused; a comm
 	const spawned = await h.spawn({ prompt: "Implement parser module", description: "Parser" }, "agent-shell");
 	const { ref, teammate } = assignmentOf(tagged(spawned.prompt));
 	const rewritten = await h.agentCall("agent-shell", "Bash", { command: `kata comment ${ref} --body 'progress' && ls` });
-	expect(rewritten.command).toContain(`kata --teammate '${teammate}' --workspace`);
-	expect(rewritten.command).toContain("--project");
 	expect(rewritten.command.endsWith("&& ls")).toBe(true);
 	const again = await h.agentCall("agent-shell", "Bash", { command: rewritten.command });
 	expect(again.command).toBe(rewritten.command);
-	const other = await h.agentCall("agent-shell", "Bash", { command: `kata --teammate somebody-else comment ${ref} --body x` });
-	expect(other.command).toContain(`--teammate '${teammate}'`);
+	const ran = await sh(rewritten.command.replace("&& ls", ""));
+	expect(ran.code, ran.stderr).toBe(0);
+	expect((await lastCommentOf(ref)).body).toBe("progress");
+	expect((await lastCommentOf(ref)).teammate).toBe(teammate);
+
+	const other = await h.agentCall("agent-shell", "Bash", { command: `kata --teammate somebody-else comment ${ref} --body 'second'` });
 	expect(other.command).not.toContain("somebody-else");
+	const reran = await sh(other.command);
+	expect(reran.code, reran.stderr).toBe(0);
+	expect((await lastCommentOf(ref)).teammate).toBe(teammate);
+
 	const asked = await h.agentCall("agent-shell", "Bash", { command: `kata close ${ref} --as someone --done` });
 	expect(asked.deny).toContain("--as is not permitted");
 	expect((await h.agentCall("agent-shell", "Bash", { command: "ls -la" })).command).toBe("ls -la");
-	// The lead's own commands are not touched.
 	expect((await h.fire("tool.call", { tool: "Bash", tool_use_id: "t", command: `kata show ${ref}` })).command).toBe(`kata show ${ref}`);
-	// The rewrite lands with the real Kata: a comment through it is the teammate's.
-	const ran = await sh(rewritten.command.replace("&& ls", ""));
-	expect(ran.code, ran.stderr).toBe(0);
 });
 
 test("under auto mode the engine refuses a changed call: the subagent is told the exact command to run, and the repeat passes", async () => {
 	const h = await started();
 	const spawned = await h.spawn({ prompt: "Implement parser module", description: "Parser", permissionMode: "auto" }, "agent-auto");
 	const { ref, teammate } = assignmentOf(tagged(spawned.prompt));
-	const refused = await h.agentCall("agent-auto", "Bash", { command: `kata comment ${ref} --body x` }, () => {
+	const refused = await h.agentCall("agent-auto", "Bash", { command: `kata comment ${ref} --body 'auto'` }, () => {
 		throw new Error("the engine ran a changed call");
 	});
-	expect(refused.deny).toContain(`kata --teammate '${teammate}' --workspace`);
-	expect(refused.deny).toContain("Run it again exactly like this");
 	const exact = refused.deny.split("exactly like this: ")[1];
+	expect(exact).toBeTruthy();
 	expect((await h.agentCall("agent-auto", "Bash", { command: exact })).command).toBe(exact);
+	const ran = await sh(exact);
+	expect(ran.code, ran.stderr).toBe(0);
+	expect((await lastCommentOf(ref)).teammate).toBe(teammate);
 
 	// A session whose mode the module could not see: the engine's own denial of the rewrite becomes the same instruction.
 	const open = await h.spawn({ prompt: "Document the parser output", description: "Docs" }, "agent-unknown");
 	const docs = assignmentOf(tagged(open.prompt));
-	const denied = await h.agentCall("agent-unknown", "Bash", { command: `kata comment ${docs.ref} --body x` }, () => ({
+	const denied = await h.agentCall("agent-unknown", "Bash", { command: `kata comment ${docs.ref} --body 'docs'` }, () => ({
 		deny: "a hook changed this call's input after auto mode reviewed it"
 	}));
-	expect(denied.deny).toContain(`--teammate '${docs.teammate}'`);
-	expect(denied.deny).toContain("Run it again exactly like this");
+	const docsExact = denied.deny.split("exactly like this: ")[1];
+	expect(docsExact).toBeTruthy();
+	const docsRan = await sh(docsExact);
+	expect(docsRan.code, docsRan.stderr).toBe(0);
+	expect((await lastCommentOf(docs.ref)).teammate).toBe(docs.teammate);
 	expect(teammate).not.toBe(docs.teammate);
 });
 
 test("an agent the lead does not track still gets a teammate of its own on its kata commands", async () => {
 	const h = await started();
 	const out = await h.agentCall("engine-fork-1", "Bash", { command: "kata list" });
-	expect(out.command).toMatch(/^kata --teammate 'engine-fork-1-[0-9a-f]{6}' list$/);
+	const other = await h.agentCall("engine-fork-2", "Bash", { command: "kata list" });
+	const teammateOf = (command: string) => /--teammate '([^']+)'/.exec(command)?.[1];
+	expect(teammateOf(out.command)).toBeTruthy();
+	expect(teammateOf(out.command)).not.toBe(teammateOf(other.command));
 });
 
 test("a subagent works its own issue through todo, and one without an issue is told it has none", async () => {
 	const h = await started();
 	const spawned = await h.spawn({ prompt: "Implement parser module", description: "Parser" }, "agent-todo");
 	const { ref } = assignmentOf(tagged(spawned.prompt));
-	// Its plan lives under its own issue.
 	const init = await h.todo({ op: "init", items: ["Write the parser", "Test the parser"] }, "agent-todo");
 	expect(init.isError, init.result).toBeUndefined();
 	expect(((await show(ref)).children as any[]).map(child => child.title).sort()).toEqual(["Test the parser", "Write the parser"]);
@@ -210,7 +220,6 @@ test("a subagent works its own issue through todo, and one without an issue is t
 	expect(done.isError, done.result).toBeUndefined();
 	expect(done.result).toContain("[x] Write the parser");
 	expect((await show(ref)).issue.status).toBe("open");
-	// The lead's plan is unharmed.
 	expect((await h.todo({ op: "view" })).result).toContain("Document the parser output");
 
 	const loose = await h.spawn({ prompt: "Survey the build scripts" }, "agent-loose");
@@ -240,39 +249,47 @@ test("an agent still running when the session ends is picked up by the resumed s
 });
 
 test("a spawn whose Kata hangs still returns inside the hook's budget, with the agent started and no assignment", async () => {
-	const flag = join(scratch, "hang-all");
-	const hang = join(scratch, "hang-kata.sh");
-	writeFileSync(hang, `#!/bin/sh\nif [ -e "${flag}" ]; then sleep 30; fi\nexec "${binary}" "$@"\n`);
-	chmodSync(hang, 0o755);
-	const h = host({ options: { kataExecutable: hang } });
+	let hanging = false;
+	const hang = holdKata(() => hanging);
+	const h = host({ before: hang.before });
 	await h.start();
 	await h.todo({ op: "init", items: ["Implement parser module"] });
-	writeFileSync(flag, "");
-	const begun = Date.now();
+	const clock = pausedClock(h.$);
+	hanging = true;
+	let outcome: any;
 	// A budget of 5 s: what is waited before the engine's spawn and after it must fit inside, not add up past it.
-	const spawned = await h.fire(
-		"agent.spawn",
-		{
-			tool_use_id: "toolu_hang",
-			prompt: "Implement parser module",
-			description: "Parser",
-			subagentType: "general-purpose",
-			provider: { plugin: "engine", tier: "core" },
-			parentModel: "sonnet",
-			background: true,
-			fork: false
-		},
-		(e: any) => ({ model: "haiku", agentId: "agent-hang", prompt: e.prompt }),
-		{ budget: { remainingMs: 5000 } }
-	);
-	expect(Date.now() - begun).toBeLessThan(5000);
-	expect(spawned.agentId).toBe("agent-hang");
+	const spawning = h
+		.fire(
+			"agent.spawn",
+			{
+				tool_use_id: "toolu_hang",
+				prompt: "Implement parser module",
+				description: "Parser",
+				subagentType: "general-purpose",
+				provider: { plugin: "engine", tier: "core" },
+				parentModel: "sonnet",
+				background: true,
+				fork: false
+			},
+			(e: any) => ({ model: "haiku", agentId: "agent-hang", prompt: e.prompt }),
+			{ budget: { remainingMs: 5000 } }
+		)
+		.then(result => (outcome = result));
+	await eventually(async () => {
+		clock.fireNext();
+		return outcome !== undefined;
+	}, true);
+	await spawning;
+	hang.release();
+	expect(outcome.agentId).toBe("agent-hang");
+	expect(outcome.prompt).toBe("Implement parser module");
+	expect(clock.elapsed()).toBeLessThan(5000);
 }, 20_000);
 
 test("a delegate's exit still running at a session switch saves to its own session, and the resumed session keeps its snapshot", async () => {
 	const store = new Map<string, unknown>();
 	const entriesOf = (id: string) => ((store.get(`session/${id}`) as any)?.entries ?? []) as any[];
-	const snapshotOf = (id: string) => entriesOf(id).find(entry => entry.customType.endsWith(".state"))?.data;
+	const snapshotOf = (id: string) => savedSnapshot(entriesOf(id), "claude") as any;
 	// A session X with a saved plan of its own, ended so that a resume can pick it up.
 	const first = host({ store });
 	await first.start();
@@ -281,85 +298,50 @@ test("a delegate's exit still running at a session switch saves to its own sessi
 	await first.end("clear");
 	expect(JSON.stringify(entriesOf(x))).toContain("Plan of the resumed session");
 
-	// Holds the first Kata metadata unset after `armed`: the delegate's exit is then a job running in the core's queue.
-	let armed = false;
-	let reached!: () => void;
-	const running = new Promise<void>(resolve => (reached = resolve));
-	let release!: () => void;
-	const gate = new Promise<void>(resolve => (release = resolve));
-	const h = host({
-		store,
-		hold: argv => {
-			if (!armed || !argv.includes("unset")) return undefined;
-			armed = false;
-			reached();
-			return gate;
-		}
-	});
+	// The delegate's exit unsets the first Kata metadata after `arm`: it is then a job running in the core's queue.
+	const gate = holdNext(argv => argv.includes("unset"));
+	const h = host({ store, before: gate.before });
 	await h.start();
 	const a = h.state.session;
 	await h.todo({ op: "init", items: ["Implement parser module"] });
 	const spawned = await h.spawn({ prompt: "Implement parser module", description: "Parser" }, "agent-switch");
-	expect(assignmentOf(tagged(spawned.prompt)).ref).not.toBe("");
+	expect(assignmentOf(spawned.prompt).ref).not.toBe("");
 	const before = JSON.stringify(snapshotOf(a));
-	armed = true;
+	gate.arm();
 	const exiting = h.agentTurn("agent-switch", "The parser module is implemented and verified.");
-	await running;
+	await gate.entered;
 	// The session switches to X while the exit still runs; the switch queues behind it.
 	h.state.session = x;
-	const latest = latestEvent();
-	const viewing = h.todo({ op: "view" });
-	await afterEntry(latest);
-	release();
+	const { result: viewing } = await entering(() => h.todo({ op: "view" }));
+	gate.release();
 	await exiting;
 	const view = await viewing;
-	await Bun.sleep(300);
+	await h.end("clear");
 	expect(view.result).toContain("Plan of the resumed session");
 	expect(snapshotOf(x).sessionId).toBe(x);
 	expect(JSON.stringify(entriesOf(x))).not.toContain("agent-switch");
 	expect(snapshotOf(x).plan.tasks.map((t: any) => t.content)).toEqual(["Plan of the resumed session"]);
-	expect(snapshotOf(a).sessionId).toBe(a);
-	expect(JSON.stringify(snapshotOf(a))).not.toBe(before);
+	await eventually(async () => snapshotOf(a)?.sessionId === a && JSON.stringify(snapshotOf(a)) !== before, true);
 }, 30_000);
 
 test("a delegate is recorded for the session its spawn began in when the session switches while the spawn waits on the core", async () => {
-	let armed = false;
-	let reached!: () => void;
-	const running = new Promise<void>(resolve => (reached = resolve));
-	let release!: () => void;
-	const gate = new Promise<void>(resolve => (release = resolve));
-	const h = host({
-		hold: () => {
-			if (!armed) return undefined;
-			armed = false;
-			reached();
-			return gate;
-		}
-	});
+	const gate = holdNext();
+	const h = host({ before: gate.before });
 	await h.start();
 	const a = h.state.session;
 	await h.todo({ op: "init", items: ["Implement parser module"] });
-	armed = true;
+	gate.arm();
 	const spawning = h.spawn({ prompt: "Survey the build scripts and list the slow ones.", description: "Survey" }, "agent-switching");
-	await running;
+	await gate.entered;
 	// A new session replaces A while the spawn still waits on the core's queue.
 	h.state.session = crypto.randomUUID();
-	const before = latestEvent();
-	const viewing = h.todo({ op: "view" });
-	await afterEntry(before);
-	release();
+	const { result: viewing } = await entering(() => h.todo({ op: "view" }));
+	gate.release();
 	await spawning;
 	await viewing;
 	await h.agentCall("agent-switching", "Read");
 	await h.agentTurn("agent-switching", "Slow ones: build-all.sh (found by the switching survey).");
-	let body = "";
-	await eventually(async () => {
-		const missions = (await kata(["list", "--status", "all", "--json"])).issues.filter((issue: any) => issue.metadata?.["claude.mission_subagent_id"]);
-		for (const mission of missions) {
-			if (!(await commentsOf(mission.short_id)).join("\n").includes("found by the switching survey")) continue;
-			body = (await show(mission.short_id)).issue.body ?? "";
-		}
-		return body.length > 0;
-	}, true);
-	expect(body).toContain(`session ${a}`);
+	await eventually(async () => (await missionsWith("found by the switching survey")).length, 1);
+	const [mission] = await missionsWith("found by the switching survey");
+	expect(mission.body).toContain(`session ${a}`);
 }, 30_000);

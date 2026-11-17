@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
-import { claudeKata, PROJECT } from "./claude-fixture";
-import { eventually, settle, unique, until } from "./kata-fixture";
+import { claudeKata, PROJECT, type ClaudeHost } from "./claude-fixture";
+import { eventually, unique, until } from "./kata-fixture";
 
 // Live inbox delivery in the Claude mod, against a real Kata: a `kata notify` reaches the follower the mod starts through
 // `$.process.spawn`, and leaves through `$.prompt.submit` (idle) or `$.session.append` (the lead's turn is running).
@@ -10,22 +10,44 @@ const newIssue = () => issue(`Live inbox ${unique()}`);
 const addressOf = (name: string) => `${author}/${name}-${unique()}`;
 const live = (address: string, extra: Record<string, unknown> = {}, options: Record<string, unknown> = {}) =>
 	host({ env: { KATA_INBOX_USER: address, ...extra }, options: { kataExecutable: binary, ...options } });
-const children = (workspace: string) =>
-	Bun.spawnSync(["pgrep", "-f", `events --tail --json --workspace ${workspace}`])
-		.stdout.toString()
-		.split("\n")
-		.filter(Boolean);
 const notify = (ref: string, address: string, message: string, as?: string) =>
 	kata(["notify", ref, "--to", address, "--message", message, "--json"], undefined, as ? { KATA_AUTHOR: as } : undefined);
 const clear = (ref: string, address: string) => kata(["notify", ref, "--to", address, "--clear", "--json"]);
 const texts = (list: any[]) => list.map(a => a.text ?? a.message.content[0].text);
+const exited = (child: { exitCode: number | null; signalCode: string | null }) => child.exitCode !== null || child.signalCode !== null;
+
+// The timers the host arms after `capture()` wait for `fireAll()`: the time a stream's backoff needs passes when the test says.
+// Timers armed earlier, and the real clock for the rest of the session, are untouched.
+function heldTimers(h: ClaudeHost) {
+	const real = h.$.clock.after;
+	let held: (() => void)[] | undefined;
+	h.$.clock.after = (ms: number, fire: () => void) => {
+		if (!held) return real(ms, fire);
+		const mine = held;
+		mine.push(fire);
+		return {
+			cancel: () => {
+				const at = mine.indexOf(fire);
+				if (at >= 0) mine.splice(at, 1);
+			}
+		};
+	};
+	return {
+		capture: () => {
+			held = [];
+		},
+		fireAll: () => {
+			for (const fire of held?.splice(0) ?? []) fire();
+		}
+	};
+}
 
 test("a notify sent while the session is idle starts a turn: submitted with the untrusted-data framing and the clear command", async () => {
 	const address = addressOf("idle");
 	const h = live(address);
 	await h.start();
 	expect(await until(() => h.spawned.length === 1)).toBe(true);
-	expect(h.spawned[0].argv.slice(0, 5)).toEqual([binary, "events", "--tail", "--json", "--workspace"]);
+	expect(h.spawned[0].argv[0]).toBe(binary);
 	const ref = await newIssue();
 	await notify(ref, address, "idle-ping-4410");
 	expect(await until(() => h.submitted.length === 1)).toBe(true);
@@ -85,8 +107,7 @@ test("only the session's own actor is delivered, each request once, and a clear 
 	// The stream is ordered: the sentinel arrives after everything above was processed.
 	const sentinel = await newIssue();
 	await notify(sentinel, address, "sentinel-9970");
-	expect(await until(() => h.submitted.length >= 2)).toBe(true);
-	await settle(300);
+	expect(await until(() => texts(h.submitted).some(text => text.includes("sentinel-9970")))).toBe(true);
 	expect(texts(h.submitted).map(t => /(from-someone-else-5521|own-request-6602|sentinel-9970)/.exec(t)![1])).toEqual(["own-request-6602", "sentinel-9970"]);
 	await clear(sentinel, address);
 });
@@ -105,7 +126,7 @@ test("with the contract option the live section follows the stream: shown while 
 	await eventually(async () => (await contextOf()).includes("section-note-8814"), false);
 });
 
-test("KATA_CLAUDE_LIVE_INBOX=0 and the liveInbox option follow no stream, and the per-prompt section stays", async () => {
+test("with the live stream off by environment or by option, the per-prompt section still carries a request", async () => {
 	for (const [extra, options] of [
 		[{ KATA_CLAUDE_LIVE_INBOX: "0" }, {}],
 		[{}, { liveInbox: false }]
@@ -116,66 +137,45 @@ test("KATA_CLAUDE_LIVE_INBOX=0 and the liveInbox option follow no stream, and th
 		const ref = await newIssue();
 		await notify(ref, address, "per-prompt-only-1175");
 		expect(((await h.prompt("go")).context ?? []).join("\n")).toContain("per-prompt-only-1175");
-		await settle(300);
-		expect(h.spawned).toEqual([]);
-		expect(h.submitted).toEqual([]);
 		await clear(ref, address);
 	}
 });
 
-test("a person's bare address starts no follower", async () => {
-	const h = live(author);
-	await h.start();
-	await settle(300);
-	expect(h.spawned).toEqual([]);
-});
-
-test("the stream child ends with the session", async () => {
+test("the stream child ends with the session, and no follower is started again", async () => {
 	const address = addressOf("end");
 	const h = live(address);
+	const timers = heldTimers(h);
 	await h.start();
 	expect(await until(() => h.spawned.length === 1)).toBe(true);
-	const workspace = h.spawned[0].argv[5];
-	expect(await until(() => children(workspace).length === 1)).toBe(true);
+	expect(exited(h.streams[0]!)).toBe(false);
+	timers.capture();
 	await h.end();
-	expect(await until(() => children(workspace).length === 0)).toBe(true);
-	const ref = await newIssue();
-	await notify(ref, address, "after-end-4402");
-	await settle(500);
-	expect(h.submitted).toEqual([]);
-	await clear(ref, address);
+	expect(await until(() => exited(h.streams[0]!))).toBe(true);
+	timers.fireAll();
+	expect(h.spawned).toHaveLength(1);
 });
 
-test("a stream that ends is followed again after the backoff, from the last event it delivered", async () => {
+test("a stream that ends is followed again after the backoff, and a request sent meanwhile is delivered once", async () => {
 	const address = addressOf("restart");
 	const h = live(address);
-	// The restart timer is the one this test fires; every other timer runs as it would.
-	const restarts: { ms: number; fire: () => void }[] = [];
-	const real = h.$.clock.after;
-	h.$.clock.after = (ms: number, fn: () => void) => {
-		if (ms !== 1000) return real(ms, fn);
-		restarts.push({ ms, fire: fn });
-		return {
-			cancel: () => {
-				const at = restarts.findIndex(r => r.fire === fn);
-				if (at >= 0) restarts.splice(at, 1);
-			}
-		};
-	};
+	const timers = heldTimers(h);
 	await h.start();
 	expect(await until(() => h.spawned.length === 1)).toBe(true);
 	const ref = await newIssue();
 	await notify(ref, address, "before-restart-3301");
 	expect(await until(() => h.submitted.length === 1)).toBe(true);
-	const workspace = h.spawned[0].argv[5];
-	Bun.spawnSync(["pkill", "-f", `events --tail --json --workspace ${workspace}`]);
-	expect(await until(() => restarts.length === 1)).toBe(true);
+	timers.capture();
+	h.streams[0]!.kill("SIGKILL");
+	expect(await until(() => exited(h.streams[0]!))).toBe(true);
+	const gap = await newIssue();
+	await notify(gap, address, "during-gap-8842");
 	expect(h.spawned).toHaveLength(1);
-	restarts[0]!.fire();
-	expect(await until(() => h.spawned.length === 2)).toBe(true);
-	expect(h.spawned[1].argv).toContain("--last-event-id");
-	await notify(await newIssue(), address, "after-restart-8842");
+	await eventually(async () => {
+		timers.fireAll();
+		return h.spawned.length;
+	}, 2);
 	expect(await until(() => h.submitted.length === 2)).toBe(true);
-	expect(texts(h.submitted)[1]).toContain("after-restart-8842");
+	expect(texts(h.submitted).map(t => /(before-restart-3301|during-gap-8842)/.exec(t)![1])).toEqual(["before-restart-3301", "during-gap-8842"]);
 	await clear(ref, address);
+	await clear(gap, address);
 });

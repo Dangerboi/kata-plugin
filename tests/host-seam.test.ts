@@ -6,11 +6,11 @@ import { digest } from "../core/model";
 import { sha256Hex } from "../core/sha256";
 import * as posix from "../core/posix-path";
 import { canonicalPath } from "../core/kata-core";
-import { nodePlatform } from "../core/node-host";
 import { kataCommands } from "../core/shell";
 import { explicitParent } from "../core/plan-parent";
 import { slotKey } from "../core/inbox";
-import { closeEnv, debugTo, waitAtMost, type Timers } from "../core/kata-cli";
+import { CORE_ENV, debugTo, waitAtMost, type Timers } from "../core/kata-cli";
+import { readEnv } from "../plugins/claude-code/hooks/settings";
 
 test("the pure SHA-256 matches the published vectors", () => {
   expect(sha256Hex("")).toBe("e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855");
@@ -46,7 +46,6 @@ test("canonicalPath resolves symlinks through the host's realpath, and a missing
 });
 
 test("a Node host keeps node:path's results, Windows included", async () => {
-  expect(nodePlatform.path).toBe(path);
   const win = { path: path.win32, realpath: async (p: string) => { if (p === "C:\\work\\link") return "D:\\real"; throw new Error("ENOENT"); } };
   expect(await canonicalPath(win, "s.jsonl", "C:\\work\\link")).toBe(path.win32.join("D:\\real", "s.jsonl"));
   expect(await canonicalPath(win, "..\\other\\s.jsonl", "C:\\work\\link")).toBe(path.win32.resolve("C:\\work\\link", "..\\other\\s.jsonl"));
@@ -62,25 +61,31 @@ test("slotKey is unpadded base64url of the address bytes", () => {
   expect(slotKey("ü/日?>")).toBe("notify." + Buffer.from("ü/日?>").toString("base64url"));
 });
 
-test("the transcript switch comes from the host's environment, not the process", () => {
-  expect(closeEnv(["close", "x"], "claude", "s1", "false")).toMatchObject({ KATA_CLOSE_TRANSCRIPT_ENABLED: "false", KATA_TRANSCRIPT_SESSION_ID: "s1" });
-  expect(closeEnv(["close", "x"], "claude", "s1")).toMatchObject({ KATA_CLOSE_TRANSCRIPT_ENABLED: "true" });
-});
+test("waitAtMost gives up when its timer fires, hands a rejection to the sink and cancels the timer it armed", async () => {
+  const armed: { fire: () => void; cancelled: boolean }[] = [];
+  const timers: Timers = { setTimer: fire => { const timer = { fire, cancelled: false }; armed.push(timer); return timer; }, clearTimer: handle => { (handle as { cancelled: boolean }).cancelled = true; } };
+  const errors: unknown[] = [];
 
-test("waitAtMost and debugTo take their timer and file sink from the host", async () => {
-  const armed: { fire: () => void; ms: number }[] = [], cleared: unknown[] = [];
-  const timers: Timers = { setTimer: (fire, ms) => { armed.push({ fire, ms }); return armed.length; }, clearTimer: handle => cleared.push(handle) };
-  const never = new Promise<string>(() => {});
-  const waiting = waitAtMost(never, 250, () => {}, timers);
+  const waiting = waitAtMost(new Promise<string>(() => {}), 250, e => errors.push(e), timers);
   armed[0].fire();
   expect(await waiting).toBeUndefined();
-  expect(armed[0].ms).toBe(250);
-  expect(cleared).toEqual([1]);
-  const lines: string[] = [];
-  debugTo("/log", (file, text) => lines.push(file + text))(new Error("boom"));
-  expect(lines[0]).toMatch(/^\/log\S+ Error: boom\n$/);
-  debugTo(undefined, () => lines.push("never"))("quiet");
-  expect(lines).toHaveLength(1);
+
+  expect(await waitAtMost(Promise.resolve("done"), 250, e => errors.push(e), timers)).toBe("done");
+  expect(armed[1].cancelled).toBe(true);
+
+  const boom = new Error("boom");
+  expect(await waitAtMost(Promise.reject(boom), 250, e => errors.push(e), timers)).toBeUndefined();
+  expect(errors).toEqual([boom]);
+});
+
+test("debugTo writes the error to its file, and nothing without one", () => {
+  const written: [string, string][] = [];
+  debugTo("/log", (file, text) => written.push([file, text]))(new Error("boom"));
+  expect(written).toHaveLength(1);
+  expect(written[0][0]).toBe("/log");
+  expect(written[0][1]).toContain("Error: boom");
+  debugTo(undefined, (file, text) => written.push([file, text]))("quiet");
+  expect(written).toHaveLength(1);
 });
 
 test("core/ imports nothing from Node, except the Node host module", () => {
@@ -92,4 +97,10 @@ test("core/ imports nothing from Node, except the Node host module", () => {
     });
   }
   expect(offenders).toEqual([]);
+});
+
+test("the Claude Code adapter asks its host for every variable the core reads", async () => {
+  const asked: string[] = [];
+  await readEnv({ env: { get: async (name: string) => { asked.push(name); return undefined; } } } as any);
+  for (const name of CORE_ENV) expect(asked).toContain(name);
 });

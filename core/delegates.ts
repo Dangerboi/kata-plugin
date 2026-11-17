@@ -181,13 +181,19 @@ export type DelegateAssignment = { ref: string; workspace: string; teammate: str
 
 // Where delegate records live: in the host's memory for a lead, in the session branch for a pi child.
 export interface DelegateStore {
-	// The records of the lead session this store serves.
 	records(): DelegateRecord[];
 	get(id: string): DelegateRecord | undefined;
 	put(record: DelegateRecord): void;
 	// The record of the delegate running in this extension context.
 	of(ctx: any): DelegateRecord | undefined;
 }
+// A store over records a host keeps in memory, by id; `of` finds the record of the delegate running in a context.
+export const recordStore = (records: () => Map<string, DelegateRecord>, of: (ctx: any) => DelegateRecord | undefined): DelegateStore => ({
+	records: () => [...records().values()],
+	get: id => records().get(id),
+	put: record => { records().set(record.id, record); },
+	of,
+});
 
 // Who an ownership check runs for. `teammate` absent: the session's own. `takeover`: the caller takes a plan task over from the
 // session holding it. `ticket`: the issue is a ticket item's ticket, which keeps the actor and teammate rule alone.
@@ -233,10 +239,11 @@ export interface Delegates {
 	// would otherwise spell for itself. The delegate's teammate is salted by the lead's session (see teammateFor).
 	start(host: DelegateStart, within: Job): Promise<void>;
 	// Says what each spawn of a call works (see resolve), or throws the Refusal of the first that cannot be delegated; a ticket
-	// must also be the lead's to delegate. `call`: the host's id of the call. What its spawns were matched to stays reserved
-	// under it, against every other spawn, until each spawn's `started` takes its own or the host releases the call.
+	// must also be the lead's to delegate. Any other rejection (Kata unusable) is not a refusal: the spawn runs and its delegate
+	// is decided at its start. `call`: the host's id of the call. What its spawns were matched to stays reserved under it,
+	// against every other spawn, until each spawn's `started` takes its own or the host releases the call.
 	check(texts: string[], call: string | undefined, scope: Scope | undefined, within: Job): Promise<Reservation[]>;
-	// The call is over: what its spawns reserved and no delegate took is free again.
+	// The call is over: what its spawns reserved and no delegate took is free again, and a check of it still running reserves nothing.
 	release(call: string): void;
 	// The issue the delegate running in `ctx` works, once assigned.
 	assignment(ctx: any): DelegateAssignment | undefined;
@@ -263,7 +270,6 @@ export interface Delegates {
 	// later run to resume. An unfinished one comes back as exited and settles in the background, on the lead's queue, so the
 	// caller does not wait for Kata.
 	restore(records: SavedDelegate[], within: Job): void;
-	// Settles every exited delegate not yet settled. Runs inside the serial queue.
 	settle(job: Job): Promise<void>;
 }
 
@@ -291,12 +297,16 @@ export function createDelegates(env: DelegatesEnv): Delegates {
 	// What check() matched each spawn of a call to, by the host's call id, until the spawn's delegate starts or the host
 	// releases the call.
 	const reservations = new Map<string, (Reservation | undefined)[]>();
+	// The check of each call whose result still counts: a release, or a newer check of the same call, ends it.
+	const checks = new Map<string, symbol>();
 	function take(call: string, index: number): Reservation | undefined {
 		const spawns = reservations.get(call), reserved = spawns?.[index];
 		if (spawns) spawns[index] = undefined;
 		if (spawns?.every(spawn => !spawn)) reservations.delete(call);
 		return reserved;
 	}
+	// The spawn a record began as: a check that finishes after the delegate started leaves its reservation to be taken at decide.
+	const spawnOf = new WeakMap<DelegateRecord, { call: string; index: number }>();
 	// The refs other spawns and delegates hold: every unfinished record's but `r`'s own, and every reservation but `call`'s.
 	const taken = (r?: DelegateRecord, call?: string) => new Set([
 		...unfinished().filter(other => other !== r).map(refOf),
@@ -336,23 +346,29 @@ export function createDelegates(env: DelegatesEnv): Delegates {
 	}
 
 	async function check(texts: string[], call: string | undefined, scope: Scope = {}, within: Job): Promise<Reservation[]> {
-		return env.serial(async job => {
-			const src = await source(job, scope);
-			// A local plan's own tasks have no issue to reserve: a spawn naming one is decided when its delegate starts.
-			const plan = src.local ? { ...src, tasks: src.tasks.filter(t => t.ticket) } : src;
-			const held = taken(undefined, call);
-			const projects = await env.kata.projectNames(job, src.workspace);
-			const reserved: Reservation[] = [];
-			for (const [index, text] of texts.entries()) {
-				const which = `Task ${index + 1}`;
-				const found: Reservation = resolve(text, plan, held, projects, which, env.wording);
-				await reserve(job, found, which, src.workspace, scope.leadTeammate);
-				if (found.ref) held.add(found.ref);
-				reserved.push(found);
-			}
-			if (call !== undefined) reservations.set(call, [...reserved]);
-			return reserved;
-		}, within);
+		const token = Symbol(call);
+		if (call !== undefined) checks.set(call, token);
+		try {
+			return await env.serial(async job => {
+				const src = await source(job, scope);
+				// A local plan's own tasks have no issue to reserve: a spawn naming one is decided when its delegate starts.
+				const plan = src.local ? { ...src, tasks: src.tasks.filter(t => t.ticket) } : src;
+				const held = taken(undefined, call);
+				const projects = await env.kata.projectNames(job, src.workspace);
+				const reserved: Reservation[] = [];
+				for (const [index, text] of texts.entries()) {
+					const which = `Task ${index + 1}`;
+					const found: Reservation = resolve(text, plan, held, projects, which, env.wording);
+					await reserve(job, found, which, src.workspace, scope.leadTeammate);
+					if (found.ref) held.add(found.ref);
+					reserved.push(found);
+				}
+				if (call !== undefined && checks.get(call) === token) reservations.set(call, [...reserved]);
+				return reserved;
+			}, within);
+		} finally {
+			if (call !== undefined && checks.get(call) === token) checks.delete(call);
+		}
 	}
 
 	const ompKeys = ns === "omp" ? ["omp.parent_agent_id", "omp.status"] : [];
@@ -366,6 +382,10 @@ export function createDelegates(env: DelegatesEnv): Delegates {
 	async function decide(job: Job, r: DelegateRecord) {
 		const scope: Scope = { parent: r.parent, workspace: r.workspace, label: r.parentLabel, leadTeammate: r.leadTeammate, teammate: r.teammate, leadSession: r.leadSessionId };
 		let src: Source | undefined;
+		if (!r.planRef) {
+			const own = spawnOf.get(r), reserved = own && take(own.call, own.index);
+			if (reserved?.ref) { r.planRef = reserved.ref; r.ticket = !!reserved.ticket; }
+		}
 		if (!r.planRef) {
 			if (!r.text.trim()) { r.state = "untracked"; return; }
 			// Nothing was reserved: no check() saw the spawn, or the plan it saw named nothing (todo init and task often share
@@ -530,10 +550,10 @@ export function createDelegates(env: DelegatesEnv): Delegates {
 	// acted is rolled back; otherwise the open issue is commented, flagged and handed back. Every step can run again after a failure.
 	async function settleOne(job: Job, r: DelegateRecord) {
 		// A delegate that exits before anything decided its target (no plan yet, or Kata could not be read) ran as an untracked one.
-		if (r.state === "untracked" || !refOf(r)) return settleUntracked(job, r);
 		const ref = refOf(r);
+		if (r.state === "untracked" || !ref) return settleUntracked(job, r);
 		const settled = () => { r.state = "settled"; save(job, r); };
-		if (!ref || !r.binding) return settled();
+		if (!r.binding) return settled();
 		const cwd = r.binding.workspace;
 		let shown: KataShow;
 		try { shown = await env.kata.show(job, ref, cwd); }
@@ -595,7 +615,9 @@ export function createDelegates(env: DelegatesEnv): Delegates {
 	function fresh(event: Started): DelegateRecord {
 		const { type: _type, call, index, untracked, ...fields } = event;
 		const reserved = call === undefined ? undefined : take(call, index ?? 0);
-		return { ...fields, state: untracked || fields.refused ? "untracked" : "started", planRef: reserved?.ref, ticket: !!reserved?.ticket };
+		const r: DelegateRecord = { ...fields, state: untracked || fields.refused ? "untracked" : "started", planRef: reserved?.ref, ticket: !!reserved?.ticket };
+		if (call !== undefined) spawnOf.set(r, { call, index: index ?? 0 });
+		return r;
 	}
 
 	// A run began for a delegate whose record goes on. It runs in the serial queue, after the settle of the earlier exit, so a
@@ -682,7 +704,7 @@ export function createDelegates(env: DelegatesEnv): Delegates {
 		apply,
 		start: (host, within) => apply({ type: "started", leadTeammate: env.teammate(), teammate: teammateFor(host.id, host.leadSessionId), ...host }, within),
 		check,
-		release: call => { reservations.delete(call); },
+		release: call => { reservations.delete(call); checks.delete(call); },
 		assignment(ctx) {
 			const r = env.store.of(ctx);
 			if (r?.state === "assigned" && r.ref && r.binding) return { ref: r.ref, workspace: r.binding.workspace, teammate: r.teammate, binding: r.binding };
