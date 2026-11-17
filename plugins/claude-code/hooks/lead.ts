@@ -50,12 +50,7 @@ export const runtime = () => current;
 
 // The context for a call. Without `held` it names the session of the latest event, which every hook has just entered, so a hook
 // and `enter` reach the same record; the core's own binding may still lag it until the core's switch job has run.
-export function contextOf(
-	$: Engine,
-	rt: Runtime,
-	delegate?: string,
-	held: Held | undefined = rt.latest?.held
-): RunContext {
+export function contextOf($: Engine, rt: Runtime, delegate?: string, held: Held | undefined = rt.latest?.held): RunContext {
 	return {
 		cwd: rt.state.cwd,
 		held,
@@ -155,7 +150,12 @@ async function attach($: Engine, hint: { fork?: boolean }): Promise<Entered> {
 	rt.sent = {};
 	// The previous session's delegates and cores stay with it (saved above, picked up when it resumes).
 	rt.callers.clear();
-	const held: Held = { id, header: hint.fork && previous ? { parentSession: previous } : undefined, writer: sessionWriter($, id, () => $.clock.now()), records: new Map() };
+	const held: Held = {
+		id,
+		header: hint.fork && previous ? { parentSession: previous } : undefined,
+		writer: sessionWriter($, id, () => $.clock.now()),
+		records: new Map()
+	};
 	held.writer.start(await loadSession($, id), cwd, seed);
 	const ctx = (rt.latest = contextOf($, rt, undefined, held));
 	// The saved plan, pending closes and unfinished delegates of a resumed session are picked up by the core's bind.
