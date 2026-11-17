@@ -3,9 +3,10 @@ import { closeEnv, type ExecResult, type Platform, type Timers } from "../core/k
 import type { DelegateRecord } from "../core/delegates";
 import type { HostContext } from "../core/kata-core";
 import { posixPath } from "../core/posix-path";
-import { NAMESPACE, type sessionWriter } from "./saved";
+import type { sessionWriter } from "./saved";
+import { NAMESPACE } from "./settings";
 
-// Everything the core takes from its machine, built from `$`: the one place that knows the mod runtime has no Node.
+// The core's Platform and its Kata process, built from `$`.
 
 // What one Claude session keeps in memory. An event's context names its session, and the core moves the host onto it when it
 // binds to that session (the host's `switched`).

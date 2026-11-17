@@ -7,6 +7,8 @@ import { delegateCommand, kataCommands, quote } from "./shell";
 import type { DelegateRecord, DelegateStore } from "./delegates";
 import { lastText } from "./model";
 
+const NAMESPACE = "pi";
+
 // Match the native adapter's capability/scope selection, including a project
 // root boundary. Recheck at prompt time: either factory can load first.
 function nativeContractActive(cwd: string): boolean {
@@ -80,7 +82,7 @@ export default async function piKata(pi: ExtensionAPI) {
 		allowUI: ctx => ctx.hasUI === true,
 		isMain: () => !inherited,
 		delegateStore: store,
-	}, { namespace: "pi", executable, executableVars: EXECUTABLE_VARS, explicitRef: () => inherited ? undefined : explicit, debugFile: process.env.KATA_PI_DEBUG || process.env.KATA_OMP_DEBUG });
+	}, { namespace: NAMESPACE, executable, executableVars: EXECUTABLE_VARS, explicitRef: () => inherited ? undefined : explicit, debugFile: process.env.KATA_PI_DEBUG || process.env.KATA_OMP_DEBUG });
 
 	// Where the lead's plan lives, as the latest core call reported it.
 	let lead: Lead = { workspace: path.resolve(process.cwd()) };
@@ -192,7 +194,7 @@ export default async function piKata(pi: ExtensionAPI) {
 
 	pi.on("session_start", async (event, ctx) => {
 		// A child replaces the session its lead exported.
-		exportTranscriptSession("pi", ctx.sessionManager.getSessionId());
+		exportTranscriptSession(NAMESPACE, ctx.sessionManager.getSessionId());
 		const saved = savedOf(ctx);
 		if (saved?.marker && (!explicit || inherited)) {
 			inherited = saved.marker;

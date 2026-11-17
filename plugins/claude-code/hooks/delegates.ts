@@ -3,7 +3,7 @@ import { NO_JOB, waitAtMost } from "../core/kata-cli";
 import { posixPath } from "../core/posix-path";
 import { Refusal, teammateFor, type DelegateOutcome, type DelegateRecord } from "../core/delegates";
 import type { Binding } from "../core/model";
-import { delegateCommand, kataCommands, shellOptions } from "../core/shell";
+import { delegateCommand, delegateRouted } from "../core/shell";
 import { tagged, todoText } from "../core/kata-core";
 import { timersOf, type Session } from "./host";
 import { contextOf, enter, runtime, waitFor, type Entered, type Runtime } from "./lead";
@@ -98,7 +98,8 @@ export const onSpawn: Hook<"agent.spawn"> = async ($, e, next) => {
 	let entered: Entered;
 	try {
 		entered = await enter($);
-	} catch {
+	} catch (error) {
+		runtime()?.debug(error);
 		return next(e);
 	}
 	const run = e.resume ? resumed($, entered, e, e.resume.agentId, next, spend) : spawned($, entered, e, next, spend);
@@ -142,7 +143,6 @@ async function spawned($: EngineInterface, { rt, ctx }: Entered, e: Spawn, next:
 	const base = e.workflow ? `${e.tool_use_id || e.workflow.runId}.${e.workflow.agentIndex}` : e.tool_use_id || "spawn";
 	const id = `${base}-${(await $.clock.now()).toString(36)}`;
 	const text = textOf(e);
-	// A nested spawn is the delegate's own, not the lead's: it is never matched against the lead's plan.
 	if (!nested) {
 		await waitFor($, rt, rt.core.tools.call(ctx, { startsChild: true }), await within(spend, ENGINE_MS));
 		let failure: unknown;
@@ -218,7 +218,7 @@ export async function delegateTurn($: EngineInterface, e: TurnEnd) {
 	}
 }
 
-export interface Routed {
+interface Routed {
 	command: string;
 	same: boolean;
 }
@@ -226,18 +226,10 @@ export interface Routed {
 // Where a kata command goes under the delegate's teammate: unchanged when it already carries it (and its workspace and
 // project, for a delegate with an issue), else the same command with the flags added. `--as` is refused. Pure, so a refusal
 // can name the exact command to run.
-export function shellRoute(command: string, executable: string, teammate: string, binding?: Binding): Routed {
-	if (!kataCommands(posixPath, command, executable, EXECUTABLE_VARS).length) return { command, same: true };
+function shellRoute(command: string, executable: string, teammate: string, binding?: Binding): Routed {
 	const fixed = delegateCommand(posixPath, command, executable, EXECUTABLE_VARS, teammate, binding);
-	const compliant = kataCommands(posixPath, command, executable, EXECUTABLE_VARS).every(invocation => {
-		const parsed = shellOptions(invocation.words);
-		return (
-			(parsed.occurrences.get("--teammate")?.length ?? 0) === 1 &&
-			parsed.value("--teammate") === teammate &&
-			(!binding || (parsed.options.has("--workspace") && parsed.options.has("--project")))
-		);
-	});
-	return { command: compliant ? command : fixed, same: compliant };
+	const same = delegateRouted(posixPath, command, executable, EXECUTABLE_VARS, teammate, binding);
+	return { command: same ? command : fixed, same };
 }
 
 const mustRun = (fixed: string) => `Kata subagents run every kata command under their own teammate. Run it again exactly like this: ${fixed}`;

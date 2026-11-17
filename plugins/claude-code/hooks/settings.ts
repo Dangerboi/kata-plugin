@@ -1,5 +1,8 @@
 import type { EngineInterface } from "claude-code";
 
+// The host's name: the core's namespace (what it writes to Kata and to the saved entries) and the agent a close's transcript is for.
+export const NAMESPACE = "claude";
+
 // What the adapter reads from the host: plugin options first (plugin.json userConfig), then the environment.
 // `$.env.get` takes literal names only, so every variable the core or the adapter reads is spelled out here once; the
 // values are read when the runtime starts and live in an in-memory map the core's Platform reads synchronously.

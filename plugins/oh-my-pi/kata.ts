@@ -33,6 +33,7 @@ import { describeTodoCall, describeTodoResult, todoWidget } from "./tsp";
 // What the lead's Delegates takes from an adapter other than the lead itself: a delegate's next use runs in the lead's queue.
 type DelegateEvents = Pick<Delegates, "apply" | "start">;
 
+const NAMESPACE = "omp";
 const EXECUTABLE = process.env.KATA_OMP_EXECUTABLE || "kata";
 const EXECUTABLE_VARS = ["KATA_OMP_EXECUTABLE"];
 export const kataCommands = (command: string) => parseKataCommands(nodePlatform.path, command, EXECUTABLE, EXECUTABLE_VARS);
@@ -121,9 +122,8 @@ delegateChannel.onmessage = (event: { data: unknown }) => {
 
 // ------------------------------------------------------------- live inbox stream feed
 
-/** Kata as a child of this process: no shell, the process environment, no stdin. */
-function spawnEvents(args: string[], cwd: string): InboxStream {
-	const proc = spawn(EXECUTABLE, args, { cwd, env: { ...process.env }, stdio: ["ignore", "pipe", "ignore"] });
+function spawnEvents([file, ...args]: string[], cwd: string): InboxStream {
+	const proc = spawn(file, args, { cwd, stdio: ["ignore", "pipe", "ignore"] });
 	const exited = new Promise<void>(resolve => { proc.on("error", () => resolve()); proc.on("close", () => resolve()); });
 	// Never keep omp alive for the stream.
 	proc.unref();
@@ -176,7 +176,7 @@ export default function ompKata(pi: any) {
 			if (process.env.KATA_OMP_LIVE_INBOX === "0" || typeof pi.sendUserMessage !== "function") return undefined;
 			return { spawn: spawnEvents, deliver: (text: string) => pi.sendUserMessage(text, { deliverAs: "aside", attribution: "agent" }) };
 		},
-	}, { namespace: "omp", executable: EXECUTABLE, executableVars: EXECUTABLE_VARS, debugFile: process.env.KATA_OMP_DEBUG, attentionHarness: "pi", prefetch: true,
+	}, { namespace: NAMESPACE, executable: EXECUTABLE, executableVars: EXECUTABLE_VARS, debugFile: process.env.KATA_OMP_DEBUG, attentionHarness: "pi", prefetch: true,
 		// RPC and print modes take string widgets only: a component is for the interactive TUI.
 		widget: (line, view, ctx) => todoWidget(ctx?.mode === "tui" ? pi.pi?.Text : undefined, line, view) });
 	// The task calls of the lead session `callsLead` that are not over yet.
@@ -362,7 +362,7 @@ export default function ompKata(pi: any) {
 			const { KATA_TRANSCRIPT_AGENT: agent, KATA_TRANSCRIPT_SESSION_ID: id } = process.env;
 			return agent && id ? { agent, id } : undefined;
 		}
-		return childSession(store.of(ctx)?.sessionId) ?? { agent: "omp", id: undefined };
+		return childSession(store.of(ctx)?.sessionId) ?? { agent: NAMESPACE, id: undefined };
 	}
 
 	// A delegate's session file starts with a header carrying its own session id, the one AgentsView lists it under.
@@ -383,7 +383,7 @@ export default function ompKata(pi: any) {
 			if (!id) return undefined;
 			childSessions.set(file, id);
 		}
-		return { agent: "omp", id: childSessions.get(file)! };
+		return { agent: NAMESPACE, id: childSessions.get(file)! };
 	}
 
 	pi.on("tool_result", async (event: any, ctx: any) => {
@@ -424,7 +424,7 @@ export default function ompKata(pi: any) {
 		await enter(ctx);
 		if (!main(ctx)) { await core.session.start(ctx, { after: nextUseOf(ctx) }); return; }
 		core.offerTickets(ctx.ui);
-		exportTranscriptSession("omp", sessionId(ctx));
+		exportTranscriptSession(NAMESPACE, sessionId(ctx));
 		await core.session.start(ctx);
 	}
 

@@ -6,9 +6,9 @@ import { contextOf, enter, runtime } from "./lead";
 import { rememberCard } from "./plan";
 
 // The task tools Claude Code offers are replaced by one Kata-backed `todo`. TaskStop stays: it stops background tasks.
-export const REPLACED = new Set(["TaskCreate", "TaskGet", "TaskList", "TaskUpdate", "TodoWrite"]);
+const REPLACED = new Set(["TaskCreate", "TaskGet", "TaskList", "TaskUpdate", "TodoWrite"]);
 
-export const TODO_TOOL = {
+const TODO_TOOL = {
 	name: "todo",
 	description: DESCRIPTION,
 	mcp: false,
@@ -69,7 +69,7 @@ export async function onTodoCall($: EngineInterface, e: Record<string, unknown> 
 		await rt.core.tools.result(ctx, { toolName: "todo", isError: out.isError === true });
 		const text = todoText(out);
 		if (out.isError === true) return failure(text);
-		await rememberCard($, String(callId), text, (out.details as { kata?: { notice?: string } } | undefined)?.kata?.notice).catch(rt.debug);
+		await rememberCard($, String(callId), text, out.details.kata).catch(rt.debug);
 		return { result: text };
 	} catch (error) {
 		return failure(`Kata todo could not run: ${error instanceof Error ? error.message : String(error)}`);

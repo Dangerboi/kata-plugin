@@ -8,8 +8,8 @@ import { createTicketCompletion } from "./autocomplete";
 import { kataCommands, quote, shellOptions } from "./shell";
 import { closedTaskStatus, digest, FULL_ID_REF, heldBySession, heldMessage, itemTicket, OPEN, PROOF_MIN, projectOf, proofProblem, QUALIFIED_REF_ONLY, qualifiedRef, SESSION_KEY, sessionParentKeys, slug, tasksOf, textOf, TITLE_MAX, TODO_WORDING, WORKING, type Binding, type Change, type KataIssue, type KataShow, type Plan, type Status, type Task, type ToolWording } from "./model";
 
-// Canonical shared source. scripts/vendor-core.ts copies it with the rest of core/ into each
-// self-contained plugin; host adapters own their event/schema/identity APIs.
+// Canonical shared source. scripts/vendor-core.ts copies it, and the core modules it imports, into each self-contained
+// plugin; host adapters own their event/schema/identity APIs.
 
 // The context of a host event, as the core reads it. omp and pi pass their extension context; a host with none builds this.
 export interface HostContext {
@@ -36,8 +36,9 @@ interface CoreHost {
 	// `ctx` is the context of the event the call serves, for a host that spawns differently per agent (omp's transcript identity).
 	exec: Exec;
 	appendEntry(type: string, data: unknown): void;
-	// Called inside the core's queue when a bind makes a main session's context the core's own, after the jobs queued for the session
-	// before it: the host moves what it keeps per session (its saved record, its delegate records) at that point, not before.
+	// Called inside the core's queue when a bind makes a different main session the core's own, after the jobs queued for the
+	// session before it: the host moves what it keeps per session (its saved record, its delegate records) at that point, not
+	// before. A bind of the session the core already holds (/tree, a branch switch) does not call it.
 	switched?(ctx: any): void;
 	getSessionName?(): string | undefined;
 	isMain?(ctx: any): boolean;
@@ -97,14 +98,12 @@ export type SavedEntry = { type: "custom"; customType: string; data: unknown };
 // `entries` with `data` as the latest of its type: the core reads only the latest of each type.
 export const withEntry = (entries: readonly SavedEntry[], customType: string, data: unknown): SavedEntry[] =>
 	[...entries.filter(entry => entry.customType !== customType), { type: "custom", customType, data: structuredClone(data) }];
-// What the core saved for the session: its latest snapshot.
 export const savedSnapshot = (entries: readonly SavedEntry[] | undefined, namespace: string): Partial<Snapshot> | undefined =>
-	entries?.find(entry => entry.customType === snapshotEntry(namespace))?.data as Partial<Snapshot> | undefined;
+	entries?.filter(entry => entry.customType === snapshotEntry(namespace)).at(-1)?.data as Partial<Snapshot> | undefined;
 // Whether a saved session has work a resume would take up: what the core owes, or a plan that still has open tasks, whatever
 // holds it (an automatic parent, an explicit one, named tickets or a session-local plan).
 export const holdsWork = (snapshot: Partial<Snapshot> | undefined): boolean =>
 	owes(snapshot) || [...(snapshot?.plan?.tasks ?? []), ...(snapshot?.named ?? [])].some(task => OPEN.has(task.status));
-// A todo result's text.
 export const todoText = (result: { content: readonly { text: string }[] }): string => result.content.map(part => part.text).join("\n");
 // A pi child's view of the session that started it.
 export type ChildParent = { sessionId: string; ref?: string; workspace: string; label?: string; teammate: string;
@@ -182,6 +181,8 @@ export const RULES = {
 
 // The todo tool's ops and parameter descriptions; each host builds its schema from them.
 export const TODO_OPS = ["init", "start", "done", "rm", "drop", "block", "unblock", "append", "view"] as const;
+// The subcommands `/todo` accepts after the bare form (the op names are `TODO_OPS`).
+export const TODO_COMMANDS = ["start", "done", "drop", "rm", "append", "block", "unblock", "takeover"] as const;
 export const TODO_PARAMS = {
 	list: "phases for init",
 	task: "verbatim task content or Kata ref",
@@ -254,11 +255,11 @@ function render(plan: Plan, wording: ToolWording = TODO_WORDING): string {
 	return lines.join("\n");
 }
 
-// A delegate's core: the same host and options, but never main, saving nothing and without a switch hook or live inbox. Its store
-// sees only its own record, which it writes through the lead's.
+// A delegate's core: the same host and options, but never main and saving nothing. Its store sees only its own record, which
+// it writes through the lead's.
 function delegateHost(host: CoreHost, id: string): CoreHost {
 	const lead = host.delegateStore;
-	return { ...host, isMain: () => false, appendEntry: () => {}, switched: undefined, liveInbox: undefined,
+	return { ...host, isMain: () => false, appendEntry: () => {},
 		delegateStore: { records: () => [], get: key => key === id ? lead.get(key) : undefined, put: record => lead.put(record), of: () => lead.get(id) } };
 }
 
@@ -269,8 +270,9 @@ export type KataCore = ReturnType<typeof buildCore> & {
 
 export function createKataCore(host: CoreHost, options: CoreOptions): KataCore {
 	const delegateCores = new Map<string, KataCore>();
+	const lead: CoreHost = { ...host, switched(ctx) { host.switched?.(ctx); delegateCores.clear(); } };
 	return {
-		...buildCore(host, options, () => delegateCores.clear()),
+		...buildCore(lead, options),
 		delegate(id) {
 			let known = delegateCores.get(id);
 			if (!known) delegateCores.set(id, known = createKataCore(delegateHost(host, id), options));
@@ -279,8 +281,7 @@ export function createKataCore(host: CoreHost, options: CoreOptions): KataCore {
 	};
 }
 
-// `onNewSession`: called when a bind makes this core's main session a different one.
-function buildCore(host: CoreHost, options: CoreOptions, onNewSession: () => void) {
+function buildCore(host: CoreHost, options: CoreOptions) {
 	const namespace = options.namespace;
 	const wording = options.wording ?? TODO_WORDING;
 	const platform = host.platform, path = platform.path;
@@ -717,20 +718,20 @@ function buildCore(host: CoreHost, options: CoreOptions, onNewSession: () => voi
 		// Only a bind that starts a session this core did not already hold restores delegates: /tree and a branch switch keep the same one.
 		const newSession = currentId !== id;
 		currentId = id;
-		if (main(ctx)) host.switched?.(ctx);
-		if (newSession && main(ctx)) onNewSession();
+		if (newSession && main(ctx)) host.switched?.(ctx);
 		lastSnapshot = undefined;
 		currentCtx = ctx;
 		plan = { tasks: [], workspace: path.resolve(ctx.cwd) }; named = []; aliases.clear(); deletedParent = undefined;
 		scope = "unknown"; refusal = undefined; outage = "";
-		const branch: readonly any[] = ctx.sessionManager?.getBranch?.() ?? [];
+		// A delegate restores nothing from the session's saved entries: they are its lead's.
+		const branch: readonly any[] = main(ctx) ? ctx.sessionManager?.getBranch?.() ?? [] : [];
 		const snapshotOf = (owner: unknown) => [...branch].reverse().find((entry: any) => entry?.type === "custom" && entry.customType === SNAPSHOT_ENTRY && entry.data?.version === 1 && entry.data.sessionId === owner)?.data;
 		let snapshot = snapshotOf(id);
 		// A fork gets a new session id and copies the source's entries. It shares the source's work:
 		// adopt its parent and ticket items, but not its retries (the source still owns those closes)
 		// nor its local plan (replaying that would make a second automatic parent).
 		let source: string | undefined;
-		if (!snapshot && id) {
+		if (!snapshot && id && main(ctx)) {
 			source = forkSource(ctx);
 			snapshot = source && snapshotOf(source);
 		}
@@ -1449,8 +1450,6 @@ function buildCore(host: CoreHost, options: CoreOptions, onNewSession: () => voi
 			case "unblock":
 				for (const task of await resolve(job, params.task, undefined, "none")) if (task.status === "blocked") await transition(job, task, "pending", change, cwd);
 				break;
-			default:
-				throw new Error(`Unknown op "${op}".`);
 		}
 		await advance(job, cwd);
 		await drain(job);
@@ -1538,7 +1537,7 @@ function buildCore(host: CoreHost, options: CoreOptions, onNewSession: () => voi
 			takeover: { op: "start", task: arg, takeover: true },
 		};
 		const params = supported[sub];
-		if (!params) return `/todo ${sub} is not available with Kata. Use /todo [start|done|drop|rm|append|block|unblock|takeover], or kata tui.`;
+		if (!params) return `/todo ${sub} is not available with Kata. Use /todo [${TODO_COMMANDS.join("|")}], or kata tui.`;
 		// The widget shows the plan, so a failed command reports its message alone.
 		const { text, notice, failed } = await todoCall(params, ctx, NO_JOB);
 		return failed ? notice : text;
@@ -1678,7 +1677,7 @@ function buildCore(host: CoreHost, options: CoreOptions, onNewSession: () => voi
 			address,
 			actor: () => actor(job, cwd),
 			read: async () => JSON.parse(await kata.run(job, ["inbox", "--for", address], cwd)),
-			spawn: cursor => live.spawn(["events", "--tail", "--json", "--workspace", cwd, ...(cursor ? ["--last-event-id", String(cursor)] : [])], cwd),
+			spawn: cursor => live.spawn([options.executable, "events", "--tail", "--json", "--workspace", cwd, ...(cursor ? ["--last-event-id", String(cursor)] : [])], cwd),
 			deliver: text => { try { Promise.resolve(live.deliver(text)).catch(debug); } catch (error) { debug(error); } },
 			publish: text => { liveInbox = text; },
 			head: () => knownProjectHead(cwd, args => kata.run(job, args, cwd), platform.env.get("KATA_HOME")),
@@ -1828,7 +1827,7 @@ function buildCore(host: CoreHost, options: CoreOptions, onNewSession: () => voi
 			// `after` is host work (a delegate's assignment retry) the first context read waits for.
 			// `child`: the workspace of a pi child still to join its parent; when Kata does not answer there, nothing starts and the result is undefined: the host runs the session as a main session and starts it again.
 			// `forked`: this session is a fork that replaces its source in this process (pi's /fork); it inherits the source's tasks.
-			// `wait`: how long the start waits for the bind (default 250 ms).
+			// `wait`: how long the start waits for the bind (default 250 ms; an explicit ref on a host with an attention harness waits for the attention start instead).
 			async start(ctx: HostContext, begin: { after?: Promise<unknown>; child?: string; forked?: boolean; wait?: number } = {}): Promise<Lead | undefined> {
 				if (!main(ctx)) {
 					if (begin.child !== undefined && !await probe(NO_JOB, begin.child)) return undefined;

@@ -2,9 +2,6 @@ import type { SavedEntry } from "./kata-core";
 
 // `ctx.storage` is one key-value store per plugin id, shared by every location and kept across server restarts, so every
 // key is `session/<sessionID>/<part>`. This file names the parts and is the only one that reads or writes them.
-
-// The namespace of this adapter's cores: it names their saved entries and their Kata metadata keys.
-export const NAMESPACE = "opencode";
 // The `entries` part: a lead's saved entries, and the folder of the location they belong to.
 type SavedLead = { directory: string; entries: SavedEntry[] };
 

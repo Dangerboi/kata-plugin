@@ -68,6 +68,16 @@ export function shellOptions(words: ShellWord[]) {
 	return { options, occurrences, args, value };
 }
 
+// Whether every Kata invocation of `command` already carries what `delegateCommand` would add: exactly the teammate and, with a
+// binding, `--workspace` and `--project`. Kept beside `delegateCommand`: a flag it adds must be checked here too.
+export function delegateRouted(path: Pick<PathOps, "basename">, command: string, executable: string, executableVars: readonly string[], teammate: string, binding?: Binding): boolean {
+	return kataCommands(path, command, executable, executableVars).every(invocation => {
+		const parsed = shellOptions(invocation.words);
+		return (parsed.occurrences.get("--teammate")?.length ?? 0) === 1 && parsed.value("--teammate") === teammate
+			&& (!binding || (parsed.options.has("--workspace") && parsed.options.has("--project")));
+	});
+}
+
 export function delegateCommand(path: Pick<PathOps, "basename">, command: string, executable: string, executableVars: readonly string[], teammate: string, binding?: Binding, transcript?: { env: Pick<Platform["env"], "get">; agent: string; id: string | undefined }, extraEnv: Record<string, string> = {}): string {
 	const edits: { start: number; end: number; value: string }[] = [];
 	for (const invocation of kataCommands(path, command, executable, executableVars)) {

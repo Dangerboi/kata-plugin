@@ -45,17 +45,16 @@ export function planUi($: EngineInterface) {
 // would lose an id (and leave its card behind for good).
 let queue: Promise<unknown> = Promise.resolve();
 
-// The checklist card of a finished `todo` call: the plan as the call left it, read from what the core just pushed.
-// `notice` is what the result said before the plan (a pending close, a deleted parent).
-export function rememberCard($: EngineInterface, id: string, text: string, notice?: string) {
-	const run = queue.then(() => write($, id, text, notice));
+// The checklist card of a finished `todo` call: `kata` is the result's `details.kata`, the plan as the call left it. Its `notice`
+// is what the result said before the plan (a pending close, a deleted parent).
+export function rememberCard($: EngineInterface, id: string, text: string, kata: Partial<PlanView> & { notice?: string }) {
+	const run = queue.then(() => write($, id, text, kata));
 	queue = run.catch(() => undefined);
 	return run;
 }
 
-async function write($: EngineInterface, id: string, text: string, notice: string | undefined) {
-	const view = (await planOf($)).value ?? undefined;
-	const card: KataTodoCard = { text, ...(notice ? { notice } : {}), ...(view?.phases.some(p => p.tasks.length) ? { view } : {}) };
+async function write($: EngineInterface, id: string, text: string, { notice, ...plan }: Partial<PlanView> & { notice?: string }) {
+	const card: KataTodoCard = { text, ...(notice ? { notice } : {}), ...(plan.phases?.some(p => p.tasks.length) ? { view: plan as PlanView } : {}) };
 	await $.state.set({ ...cards, id }, card);
 	const ids = [...((await $.state.get(cardIds)).value ?? []).filter(known => known !== id), id];
 	for (const old of ids.splice(0, Math.max(0, ids.length - KEPT_CARDS))) await $.state.set({ ...cards, id: old }, null);

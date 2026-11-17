@@ -2,8 +2,8 @@ import { NO_JOB, waitAtMost } from "./kata-cli";
 import { nodePlatform } from "./node-host";
 import { createKataCore, todoText, withEntry, type HostContext, type Job, type KataCore, type PlanView, type SavedEntry } from "./kata-core";
 import { recordStore, teammateFor, type DelegateAssignment, type DelegateEvent, type DelegateRecord } from "./delegates";
-import { NAMESPACE, type SessionStorage } from "./saved";
-import { EXECUTABLE_VARS, type Settings } from "./settings";
+import type { SessionStorage } from "./saved";
+import { EXECUTABLE_VARS, NAMESPACE, type Settings } from "./settings";
 import type { KataExec } from "./spawn";
 import { WORDING } from "./wording";
 
@@ -50,7 +50,8 @@ export interface Lead extends Planner {
 	// The plan of a delegate's session under its issue. The core refuses a todo for a delegate with no assigned issue.
 	delegatePlan(sessionID: string): Planner;
 	// Reads a `subagent` call against the plan before it runs, after any todowrite call still running, and keeps what it names
-	// reserved under the call's id. Throws the core's refusal.
+	// reserved under the call's id. Throws the core's Refusal when the plan refuses the spawn; any other rejection (Kata
+	// unusable) is no refusal and the spawn runs, its delegate decided when it starts.
 	checkSpawn(call: string, text: string): Promise<void>;
 	// The call is over: what it reserved and no child took is free again.
 	releaseSpawn(call: string): void;
@@ -103,7 +104,7 @@ export function createLead(deps: LeadDeps): Lead {
 	function appendEntry(customType: string, data: unknown) {
 		entries = withEntry(entries, customType, data);
 		if (ended) return;
-		const body = structuredClone(entries);
+		const body = entries;
 		writes = writes.then(() => storage.saveEntries(id, body)).catch(debug);
 		if (owing) { changed = true; void endAgain().catch(debug); }
 	}
@@ -114,7 +115,7 @@ export function createLead(deps: LeadDeps): Lead {
 
 	// What the core reads of a session on every call: the folder, the session's id and its saved entries (`agent` marks a delegate's).
 	const contextOf = (sessionID: string, delegate: boolean): HostContext =>
-		({ cwd: directory, ...(delegate ? { agent: { kind: "sub", id: sessionID } } : {}), sessionManager: { getSessionId: () => sessionID, getBranch: () => delegate ? [] : entries, getHeader: () => undefined } });
+		({ cwd: directory, ...(delegate ? { agent: { kind: "sub", id: sessionID } } : {}), sessionManager: { getSessionId: () => sessionID, getBranch: () => entries, getHeader: () => undefined } });
 	// A session's plan through its core and the context the core gets on that session's calls.
 	const plannerOf = (core: KataCore, ctx: HostContext, sessionID: string): Planner => ({
 		id: sessionID,
@@ -188,11 +189,13 @@ export function createLead(deps: LeadDeps): Lead {
 		flagged = false;
 	}
 
+	const readyWithin = () => waitAtMost(ready, READY_MS, debug, nodePlatform).then(() => undefined);
+
 	return {
 		...planner,
-		get ready() { return waitAtMost(ready, READY_MS, debug, nodePlatform).then(() => undefined); },
+		get ready() { return readyWithin(); },
 		async planSection() {
-			await waitAtMost(ready, READY_MS, debug, nodePlatform);
+			await readyWithin();
 			return (await core.session.beforePrompt(ctx, { context: false })).sections.todo;
 		},
 		child(sessionID) {

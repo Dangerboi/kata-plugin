@@ -51,14 +51,12 @@ export function install(seam: Seam): void {
 	// A lead's calls still waiting for their child (or, foreground, for their result), in creation order.
 	const calls = new Map<string, Call[]>();
 	const callsOf = (leadID: string) => calls.get(leadID) ?? (calls.set(leadID, []), calls.get(leadID)!);
-	// The call is over: it leaves the list, and what it reserved and no child took is free again.
 	const drop = (lead: Lead, call: Call) => {
 		const list = calls.get(lead.id);
 		const index = list?.indexOf(call) ?? -1;
 		if (index >= 0) list!.splice(index, 1);
 		lead.releaseSpawn(call.id);
 	};
-	// The run each child session is in.
 	const runs = new Map<string, Run>();
 	// A run ends once, with its report: by its foreground call's result or by the child's own end, whichever comes first.
 	async function exit(lead: Lead, run: Run, outcome: DelegateOutcome, report?: string) {

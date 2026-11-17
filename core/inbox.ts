@@ -82,8 +82,8 @@ type Slot = { from: string; message: string; re?: string; kind?: string; broadca
 export type InboxStream = { lines: AsyncIterable<string>; exited: Promise<unknown>; kill(): void };
 /** What a host gives the core to follow a session inbox live: the event stream child, and where a delivered request goes. */
 export type LiveInbox = {
-	/** Runs Kata with `args` (`events --tail --json …`, which the follower parses) in `cwd`: its output lines, a promise of its exit, a way to stop it. */
-	spawn(args: string[], cwd: string): InboxStream;
+	/** Runs `argv` (the core's Kata executable, then `events --tail --json …`, which the follower parses) in `cwd`: its output lines, a promise of its exit, a way to stop it. */
+	spawn(argv: string[], cwd: string): InboxStream;
 	/** Hands one request to the session as an aside. */
 	deliver(text: string): void | Promise<unknown>;
 };

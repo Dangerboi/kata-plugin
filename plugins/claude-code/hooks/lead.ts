@@ -4,9 +4,9 @@ import { recordStore } from "../core/delegates";
 import { canonicalPath, createKataCore, type KataCore } from "../core/kata-core";
 import { execOf, platformOf, timersOf, type RunContext, type Session } from "./host";
 import { planUi } from "./plan";
-import { liveInboxOf, resetInbox } from "./inbox";
-import { loadSession, NAMESPACE, pruneSessions, sessionWriter } from "./saved";
-import { EXECUTABLE_VARS, readEnv, resolveSettings, type Settings } from "./settings";
+import { liveInboxOf } from "./inbox";
+import { loadSession, pruneSessions, sessionWriter } from "./saved";
+import { EXECUTABLE_VARS, NAMESPACE, readEnv, resolveSettings, type Settings } from "./settings";
 
 // One core serves the process's one lead session. A hot reload starts a fresh module (and a fresh `session.start`), so
 // nothing here has to survive one; what must survive a restart is saved per session id (saved.ts).
@@ -29,6 +29,8 @@ export interface Runtime {
 	bound?: Session;
 	// Spawn hooks still running: a subagent's first call can arrive before its spawn hook has recorded its agent id.
 	spawning: Set<Promise<unknown>>;
+	// Whether the lead's loop is working: a live inbox request joins the turn then, and starts one when idle (inbox.ts).
+	busy: boolean;
 }
 
 let options: Record<string, unknown> | undefined;
@@ -71,6 +73,7 @@ async function create($: EngineInterface): Promise<Runtime> {
 		debug: debugTo(settings.debugFile, platform.appendFile),
 		state,
 		spawning: new Set(),
+		busy: false,
 		core: createKataCore(
 			{
 				platform,
@@ -82,14 +85,15 @@ async function create($: EngineInterface): Promise<Runtime> {
 				switched: (ctx: RunContext) => {
 					const before = rt.bound;
 					rt.bound = ctx.held;
-					if (before && before !== ctx.held) void before.writer.end(rt.core.session.owes()).catch(rt.debug);
+					if (before) void before.writer.end(rt.core.session.owes()).catch(rt.debug);
 				},
 				isMain: ctx => ctx?.agent === undefined,
+				// Before the core's first switch the records are those of the session the events belong to.
 				delegateStore: recordStore(
-					() => rt.bound?.records ?? new Map(),
-					ctx => (ctx?.agent?.id ? rt.bound?.records.get(ctx.agent.id) : undefined)
+					() => (rt.bound ?? rt.latest!.held).records,
+					ctx => (ctx?.agent?.id ? (rt.bound ?? rt.latest!.held).records.get(ctx.agent.id) : undefined)
 				),
-				liveInbox: settings.liveInbox ? liveInboxOf($, settings.executable) : undefined
+				liveInbox: settings.liveInbox ? liveInboxOf($, () => rt.busy) : undefined
 			},
 			{ namespace: NAMESPACE, executable: settings.executable, executableVars: EXECUTABLE_VARS, debugFile: settings.debugFile, widget: (_line, view) => view }
 		)
@@ -125,16 +129,15 @@ async function attach($: EngineInterface, hint: { fork?: boolean }): Promise<Ent
 	const session: Session = {
 		id,
 		header: source && { parentSession: source.id },
-		writer: sessionWriter($, id, () => $.clock.now(), rt.debug),
+		writer: sessionWriter($, id, () => $.clock.now(), rt.debug, await loadSession($, id), source?.writer.entries),
 		records: new Map(),
 		sent: {},
 		autoMode: new Set()
 	};
-	session.writer.start(await loadSession($, id), cwd, source?.writer.entries);
 	const ctx = (rt.latest = contextOf($, rt, session));
 	// The saved plan, pending closes and unfinished delegates of a resumed session are picked up by the core's bind.
 	await rt.core.session.start(ctx, { wait: READY_MS });
-	void pruneSessions($, await $.clock.now(), id).catch(rt.debug);
+	void $.clock.now().then(now => pruneSessions($, now, id)).catch(rt.debug);
 	return { rt, ctx };
 }
 
@@ -142,5 +145,4 @@ async function attach($: EngineInterface, hint: { fork?: boolean }): Promise<Ent
 export function reset() {
 	current = undefined;
 	chain = Promise.resolve();
-	resetInbox();
 }

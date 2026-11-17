@@ -1,6 +1,7 @@
 import { isKataCode, NO_JOB, type Kata, type Timers } from "./kata-cli";
 
-// `#` ticket completion in the host's editor: the provider wrapper and the per-session ticket lists it reads.
+// `#` ticket completion: `offer` adds it to the host's editor (omp, pi), `suggest` serves a host that draws its own menu
+// (Claude Code). Both read the per-session ticket lists below.
 
 export type Ticket = { short_id: string; title: string; qualified_id: string };
 type Suggestions = { items: { value: string; label: string; description?: string }[]; prefix: string } | null;
@@ -20,6 +21,8 @@ const TICKET_TOKEN = /(?:^|[\s"'`(<=])#(?:([^\s#]+)#)?([^\s#]*)$/;
 const TICKET_LIMIT = 10;
 
 type TicketSearch = { defaultProject?: string; timeout?: number };
+// One menu row: omp's and pi's menus cap the label column at 32 cells and give the description the rest of the row.
+const rowOf = (t: Ticket) => ({ value: t.qualified_id, label: t.qualified_id, description: t.title });
 
 // The tickets a `#` token at the end of `line` completes to, with the prefix the completion replaces; undefined when the
 // line ends in no ticket token. A digits-only `#1234` stays GitHub's; `#project#1234` reaches an all-digit Kata id.
@@ -74,8 +77,7 @@ export function ticketAutocomplete(current: TicketAutocompleteProvider, source: 
 			const { prefix, tickets } = found;
 			if (base?.items.length && base.prefix !== prefix) return base; // one list needs one prefix
 			for (const t of tickets) ours.add(t.qualified_id);
-			// pi's and omp's menus cap the label column at 32 cells and give the description the rest of the row.
-			return { prefix, items: [...tickets.map(t => ({ value: t.qualified_id, label: t.qualified_id, description: t.title })), ...(base?.items ?? [])] };
+			return { prefix, items: [...tickets.map(rowOf), ...(base?.items ?? [])] };
 		},
 		applyCompletion(lines, cursorLine, cursorCol, item, prefix) {
 			if (!ours.has(item.value) || options.active?.() === false) return current.applyCompletion(lines, cursorLine, cursorCol, item, prefix);
@@ -127,7 +129,8 @@ export function createTicketCompletion(kata: Kata, scope: () => { session?: stri
 		return list.pending!.then(() => list.at ? list.tickets : Promise.reject(list.error));
 	}
 	const offered = new WeakSet<object>();
-	const defaultProject = () => scope().defaultProject?.trim() || undefined;
+	// Read when a line is searched, so a change to the setting reaches a registration made before it.
+	const searchOptions = <T extends object>(extra?: T) => ({ get defaultProject() { return scope().defaultProject?.trim() || undefined; }, ...extra });
 	return {
 		offer(ui: { addAutocompleteProvider?(factory: (current: any) => TicketAutocompleteProvider): void } | undefined) {
 			if (!ui?.addAutocompleteProvider || offered.has(ui)) return;
@@ -135,12 +138,12 @@ export function createTicketCompletion(kata: Kata, scope: () => { session?: stri
 			const registration = {};
 			registry[NEWEST_REGISTRATION] = registration;
 			const active = () => registry[NEWEST_REGISTRATION] === registration;
-			ui.addAutocompleteProvider(current => ticketAutocomplete(current, tickets, timers, { defaultProject: defaultProject(), active }));
+			ui.addAutocompleteProvider(current => ticketAutocomplete(current, tickets, timers, searchOptions({ active })));
 		},
 		// The tickets `line` (up to the cursor) completes to, for a host that draws its own menu; null when there are none.
 		async suggest(line: string, signal?: AbortSignal): Promise<{ prefix: string; items: { value: string; label: string; description?: string }[] } | null> {
-			const found = await findTickets(line, tickets, timers, { defaultProject: defaultProject() }, signal);
-			return found?.tickets.length ? { prefix: found.prefix, items: found.tickets.map(t => ({ value: t.qualified_id, label: t.qualified_id, description: t.title })) } : null;
+			const found = await findTickets(line, tickets, timers, searchOptions(), signal);
+			return found?.tickets.length ? { prefix: found.prefix, items: found.tickets.map(rowOf) } : null;
 		},
 	};
 }

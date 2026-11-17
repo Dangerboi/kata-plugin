@@ -285,6 +285,22 @@ export function holdKata(applies: (args: string[], opts: any) => boolean = () =>
   };
 }
 
+/** `holdKata` for the one call `applies` accepts after `arm()`: calls before the arming and after that call pass at once. */
+export function holdNext(applies: (args: string[], opts: any) => boolean = () => true) {
+  let armed = false;
+  const hold = holdKata((args, opts) => {
+    if (!armed || !applies(args, opts)) return false;
+    armed = false;
+    return true;
+  });
+  return {
+    before: hold.before,
+    entered: hold.entered,
+    release: hold.release,
+    arm: () => { armed = true; },
+  };
+}
+
 /** A value as one word of a POSIX shell command. */
 export const quote = (value: string) => `'${value.replace(/'/g, "'\\''")}'`;
 

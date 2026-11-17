@@ -1,8 +1,7 @@
 import { delegateCommand, envPrefix, kataCommands, shellOptions } from "./shell";
 import { closeEnv } from "./kata-cli";
 import { nodePlatform } from "./node-host";
-import { NAMESPACE } from "./saved";
-import { EXECUTABLE_VARS } from "./settings";
+import { EXECUTABLE_VARS, NAMESPACE } from "./settings";
 import { CallRefused, type Seam } from "./seam";
 
 // Kata in the `shell` tool. A child session's commands run under its teammate (its delegate record's, or the one derived for

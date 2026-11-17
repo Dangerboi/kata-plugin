@@ -1,5 +1,5 @@
 import type { EngineInterface, Hook, MatchedHook } from "claude-code";
-import type { PlanView } from "../core/kata-core";
+import { TODO_COMMANDS, type PlanView } from "../core/kata-core";
 import { enter, runtime, type Runtime } from "./lead";
 import { cardOf, planOf } from "./plan";
 
@@ -14,7 +14,7 @@ const GLYPHS: Record<Task["status"], string> = { pending: "☐", in_progress: "�
 const closed = (task: Task) => task.status === "completed" || task.status === "abandoned";
 const clip = (text: string, width: number) => (text.length > width ? `${text.slice(0, Math.max(1, width - 1))}…` : text);
 
-// `Kata plan 2/5 · 1 blocked · ▶ active task`, the bar filled by the tasks completed. A survey holds the band: yield to it.
+// A survey holds the band: yield to it.
 export const onBand: Render<"AbovePrompt"> = async ($, e, next) => {
 	if (e.props.hasSurvey) return next(e);
 	const { value: shown } = await planOf($);
@@ -57,8 +57,7 @@ export const onTodoUse: Render<"ToolUse"> = async ($, e, next) => {
 	);
 };
 
-// The checklist: `Todo closed/total` and the plan's parent, then each task with its Kata ref and, for a paused one, its
-// blocker. An error keeps the engine's row, which reads what the model read.
+// An error keeps the engine's row, which reads what the model read.
 export const onTodoCard: Render<"ToolResult"> = async ($, e, next) => {
 	if (e.props.tool !== "todo" || e.props.isErrored) return next(e);
 	const { value: card } = await cardOf($, e.props.tool_use_id);
@@ -102,11 +101,8 @@ export const onTodoCard: Render<"ToolResult"> = async ($, e, next) => {
 	);
 };
 
-// The rows are the core's ticket completion (`suggestTickets`), shared with omp: its cache, its 400 ms wait and its rules for tokens
-// (a digits-only `#1234` is GitHub's, `#<project>#<token>` names a project).
-// Typing is never held by Kata: a loaded list answers from the core's cache whatever Kata is doing (it refreshes in the
-// background), and only the first fill of a session's list waits, for the core's 400 ms at most. The wait runs beside the
-// plugins beneath, not after them, and an unreachable or failing Kata adds no rows.
+// Typing is never held by Kata: the core's ticket lists answer from its cache, and the wait for a session's first fill runs
+// beside the plugins beneath, not after them. An unreachable or failing Kata adds no rows.
 async function ticketRows(
 	rt: Runtime,
 	e: { text: string; cursor: number },
@@ -134,7 +130,7 @@ export async function registerTodoCommand($: EngineInterface) {
 		await $.command.register({
 			name: "todo",
 			description: "Show or change the Kata plan",
-			argumentHint: "[start|done|drop|rm|append|block|unblock|takeover] [task]"
+			argumentHint: `[${TODO_COMMANDS.join("|")}] [task]`
 		});
 	} catch (error) {
 		runtime()?.debug(error);

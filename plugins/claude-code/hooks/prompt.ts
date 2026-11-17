@@ -7,7 +7,6 @@ import { contextOf, enter, runtime } from "./lead";
 
 type Section = readonly [keyof PromptSections, string];
 
-// The sections the session's earlier prompts did not already carry.
 function unsent(session: Session, sections: PromptSections): Section[] {
 	return (["contract", "inbox", "todo"] as const).flatMap(name => {
 		const text = sections[name];

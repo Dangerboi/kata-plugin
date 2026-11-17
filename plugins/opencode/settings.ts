@@ -21,6 +21,8 @@ const SETTINGS = {
 } as const;
 // The variable that names the executable: shell commands that call Kata through it are Kata invocations too.
 export const EXECUTABLE_VARS = [SETTINGS.executable[1]];
+// The host's name: the namespace of its cores (their saved entries and Kata metadata keys) and the agent a close's transcript is for.
+export const NAMESPACE = "opencode";
 
 export function resolveSettings(options: Record<string, unknown> | undefined, environment: NodeJS.ProcessEnv = process.env): Settings {
 	const read = (key: keyof typeof SETTINGS) => {

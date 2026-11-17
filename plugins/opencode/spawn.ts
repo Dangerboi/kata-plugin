@@ -1,7 +1,6 @@
 import { closeEnv, type ExecResult } from "./kata-cli";
 import { execKata, nodePlatform } from "./node-host";
-import { NAMESPACE } from "./saved";
-import type { Settings } from "./settings";
+import { NAMESPACE, type Settings } from "./settings";
 
 export type KataExec = (sessionID: string, file: string, args: string[], options: { cwd: string; timeout: number }) => Promise<ExecResult>;
 

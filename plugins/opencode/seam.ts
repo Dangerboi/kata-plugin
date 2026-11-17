@@ -2,10 +2,10 @@ import { debugTo, waitAtMost } from "./kata-cli";
 import { nodePlatform } from "./node-host";
 import { createLead, type Child, type Fate, type Lead } from "./lead";
 import { owes, savedSnapshot, type SavedEntry } from "./kata-core";
-import { NAMESPACE, sessionStorage, type SessionStorage } from "./saved";
+import { sessionStorage, type SessionStorage } from "./saved";
 import type { DelegateOutcome } from "./delegates";
 import { createKataExec } from "./spawn";
-import type { Settings } from "./settings";
+import { NAMESPACE, type Settings } from "./settings";
 
 // A session's run ended (its turn, for a lead), and how, as a delegate's outcome.
 export const EXECUTION_ENDED: Readonly<Record<string, DelegateOutcome>> = {
