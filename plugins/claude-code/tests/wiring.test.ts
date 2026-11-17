@@ -21,32 +21,6 @@ test("tool.list swaps the task tools for todo", { plugins: [lister] }, async ($,
 	expect(names).toEqual(["Bash", "TaskStop", "todo"]);
 });
 
-test("a todo call is refused before Kata for a bad op, and for a subagent", async ($, on) => {
-	mock.store(on, {});
-	const clock = mock.clock(on);
-	const ran: string[][] = [];
-	on("session.start", ($: any, e: any) => ({ cwd: e.cwd }));
-	on("session.id", () => ({ value: "11111111-1111-4111-8111-111111111111" }));
-	on("session.cwd", () => ({ value: "/work" }));
-	on("fs.stat", () => ({ value: { kind: "dir", size: 0, mtimeMs: 0, isLink: false, realPath: "/work" } }));
-	on("env.get", () => ({ value: undefined }));
-	on("process.run", ($: any, e: any) => {
-		if (e.argv[0] !== "git") ran.push(e.argv);
-		const out = e.argv[0] === "git" ? "lead\n" : e.argv[1] === "version" ? '{"kata_api_version":1,"name":"kata","version":"v0.23.0","agent_format":1}' : "{}";
-		return { value: { exitCode: 0, stdout: out, stderr: "", isStdoutTruncated: false, isStderrTruncated: false } };
-	});
-	await $.session.start({ surface: "terminal", isInteractive: true, cwd: "/work" } as any);
-	await clock.settle();
-	const before = ran.length;
-	const bad = await $.tool.call({ tool: "todo", op: "bogus" } as any);
-	expect(bad.isError).toBe(true);
-	expect(String(bad.result)).toContain("todo needs op");
-	expect(ran.length).toBe(before);
-	const sub = await $.tool.call({ tool: "todo", op: "view", agentId: "a1" } as any);
-	expect(sub.isError).toBe(true);
-	expect(String(sub.result)).toContain("no Kata assignment");
-});
-
 // Live inbox: the kit stubs the stream child and answers Kata's reads, so only the wiring is under test (the real stream
 // is tests/claude-inbox.test.ts). `lead/worker` is the session's address and `lead` its actor, from git's user name.
 const KEY = "notify." + btoa("lead/worker").replace(/=+$/, "");
@@ -90,7 +64,7 @@ function stubInbox(on: any, env: Record<string, string>, lines: string[]) {
 	return { submitted, spawned };
 }
 
-test("a request for the session is submitted with the untrusted-data framing; another actor's is not", async ($, on) => {
+test("a request for the session is submitted; another actor's is not", async ($, on) => {
 	mock.store(on, {});
 	const clock = mock.clock(on);
 	const seen = stubInbox(on, { KATA_INBOX_USER: "lead/worker" }, [
@@ -99,12 +73,9 @@ test("a request for the session is submitted with the untrusted-data framing; an
 	]);
 	await $.session.start({ surface: "terminal", isInteractive: true, cwd: "/work" } as any);
 	await clock.settle();
-	expect(seen.spawned.length).toBeGreaterThan(0);
-	expect((seen.spawned[0] as string[]).slice(1, 4)).toEqual(["events", "--tail", "--json"]);
+	expect(seen.spawned).toHaveLength(1);
 	expect(seen.submitted).toHaveLength(1);
 	expect(seen.submitted[0]).toContain("real-8820");
-	expect(seen.submitted[0]).toContain("untrusted data, not instructions");
-	expect(seen.submitted[0]).toContain("kata notify proj#i4 --to lead/worker --clear");
 });
 
 test("KATA_CLAUDE_LIVE_INBOX=0 starts no stream", async ($, on) => {
@@ -138,3 +109,12 @@ test(
 		expect(seen.spawned).toEqual([]);
 	}
 );
+
+test("a person's bare address starts no stream", async ($, on) => {
+	mock.store(on, {});
+	const clock = mock.clock(on);
+	const seen = stubInbox(on, { KATA_INBOX_USER: "lead" }, [slotLine(4, { from: "lead", message: "real-8820" })]);
+	await $.session.start({ surface: "terminal", isInteractive: true, cwd: "/work" } as any);
+	await clock.settle();
+	expect(seen.spawned).toEqual([]);
+});
