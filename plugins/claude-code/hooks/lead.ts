@@ -20,7 +20,8 @@ export interface Runtime {
 	env: Map<string, string>;
 	// The session's folder (what the core's Platform reads) and the debug file; `cwd` is held here only.
 	state: { cwd: string; debugFile?: string };
-	// The session the core is bound to; changes at /clear, /resume and /branch, which fire no `session.start`.
+	// The session of the latest event; changes at /clear, /resume and /branch, which fire no `session.start`. The core's own
+	// binding follows it once its switch job has run.
 	id?: string;
 	// The saved record and delegate records of the session the core is bound to: they move with the core's bind (`switched`).
 	writer?: ReturnType<typeof sessionWriter>;
@@ -55,7 +56,7 @@ export function contextOf($: Engine, rt: Runtime, delegate?: string, held: Held 
 		cwd: rt.state.cwd,
 		held,
 		...(delegate ? { agent: { kind: "sub", id: delegate } } : {}),
-		sessionManager: { getSessionId: () => held?.id ?? rt.id, getBranch: () => held?.writer.entries ?? [], getHeader: () => held?.header },
+		sessionManager: { getSessionId: () => held?.id, getBranch: () => held?.writer.entries ?? [], getHeader: () => held?.header },
 		run: (argv, init) => $.process.run(argv, init),
 		ui: planUi($),
 		timers: { setTimer: (fire, ms) => $.clock.after(ms, fire), clearTimer: handle => (handle as { cancel(): void }).cancel() }
