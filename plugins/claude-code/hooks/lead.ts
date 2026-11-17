@@ -49,7 +49,12 @@ export const configure = (given: Record<string, unknown> | undefined) => {
 };
 export const runtime = () => current;
 
-export function contextOf($: Engine, rt: Runtime, delegate?: string, held: Held | undefined = rt.writer ? { writer: rt.writer, records: rt.records } : undefined): RunContext {
+export function contextOf(
+	$: Engine,
+	rt: Runtime,
+	delegate?: string,
+	held: Held | undefined = rt.writer ? { writer: rt.writer, records: rt.records } : undefined
+): RunContext {
 	return {
 		cwd: rt.state.cwd,
 		held,
@@ -109,7 +114,10 @@ async function create($: Engine): Promise<Runtime> {
 		records: new Map(),
 		callers: new Map(),
 		spawning: new Set(),
-		core: build(delegateStore(() => rt.records), true),
+		core: build(
+			delegateStore(() => rt.records),
+			true
+		),
 		coreFor: store => build(store, false)
 	};
 	return rt;

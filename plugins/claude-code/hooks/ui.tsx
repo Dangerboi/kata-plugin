@@ -55,7 +55,9 @@ export const onTodoUse: Render<"ToolUse"> = async ($, e, next) => {
 	const { Box, Text } = $.ui.resolve(e);
 	return (
 		<Box>
-			<Text bold color={e.props.isErrored ? "error" : undefined}>{"Todo "}</Text>
+			<Text bold color={e.props.isErrored ? "error" : undefined}>
+				{"Todo "}
+			</Text>
 			<Text dimColor>{callTitle(e.props.input)}</Text>
 		</Box>
 	);
