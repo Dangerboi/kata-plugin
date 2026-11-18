@@ -16,15 +16,15 @@
     },
     "plugins/oh-my-pi": {
       "name": "@dangerboi/kata-omp",
-      "version": "2.12.0",
+      "version": "2.12.1",
     },
     "plugins/opencode": {
       "name": "@dangerboi/kata-opencode",
-      "version": "1.2.0",
+      "version": "1.2.1",
     },
     "plugins/pi": {
       "name": "@dangerboi/kata-pi",
-      "version": "1.12.0",
+      "version": "1.12.1",
       "peerDependencies": {
         "@earendil-works/pi-coding-agent": "*",
         "typebox": "*",
