@@ -252,6 +252,12 @@ export function planOf(result: { details: { kata: PlanView | { notice?: string }
   if (!("phases" in kata)) throw new Error(`The todo result holds no plan: ${kata.notice}`);
   return kata;
 }
+/** The Kata parent a todo result names. A local plan has none. */
+export function planParent(result: Parameters<typeof planOf>[0]): string {
+  const parent = planOf(result).parent;
+  if (!parent) throw new Error("The todo result holds a local plan, which has no Kata parent.");
+  return parent;
+}
 /**
  * Whether `work` finishes within `ms`, for a test that holds what `work` may or may not wait for (Kata's answer, say).
  * Expecting true shows `work` does not wait for it: the default `ms` only turns a hang into a failure and is far longer

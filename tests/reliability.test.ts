@@ -4,7 +4,7 @@ import path from "node:path";
 import { createKataCore, type Job } from "../core/kata-core";
 import { NO_JOB } from "../core/kata-cli";
 import { nodePlatform } from "../core/node-host";
-import { EVIDENCE, isolatedKata, later, memoryDelegateStore, MESSAGE as message, planOf, realKata, retryNote, until } from "./kata-fixture";
+import { EVIDENCE, isolatedKata, later, memoryDelegateStore, MESSAGE as message, planOf, planParent, realKata, retryNote, until } from "./kata-fixture";
 import { daemonUnavailable, notInitialized, notInitializedBound, notInitializedNoData, notInitializedProject, siblingThrottle } from "./kata-errors";
 const { binary, scratch: root, cwd, env, run, text, kata, show, issue, closesOf, deleteIssue, sessionParents } = realKata({ prefix: "reliability", author: "actor-a", project: "reliability-test" });
 const outside = path.join(root, "outside"), localProject = path.join(root, "local-project");
@@ -94,7 +94,7 @@ test("a plan or task title that reads like a flag is data, not a Kata option", a
   const a = app(); const r = await a.call({ op: "init", message: "--json", items: ["--json"] });
   expect(r.isError).toBeUndefined();
   expect(tasksOf(r).map(t => t.content)).toEqual(["--json"]);
-  const parent = await show(planOf(r).parent!);
+  const parent = await show(planParent(r));
   expect(parent.issue.title).toBe("--json");
   expect(parent.children[0].title).toBe("--json");
 });
@@ -251,7 +251,7 @@ test("authenticated daemon actor can create and complete a plan despite local ac
     const initialized = await core.todo.apply(ctx, "init", { items: ["Authenticated task"] }, NO_JOB);
     expect(initialized.isError, initialized.content[0].text).toBeUndefined();
     expect((await core.todo.apply(ctx, "done", { ...done, task: "Authenticated task" }, NO_JOB)).isError).toBeUndefined();
-    const parent = planOf(initialized).parent as string;
+    const parent = planParent(initialized);
     const taskId = JSON.parse((await authRun(["show", parent, "--json"])).stdout).children[0].short_id;
     const child = JSON.parse((await authRun(["show", `${parent.split("#")[0]}#${taskId}`, "--json"])).stdout).issue;
     expect(child.status).toBe("closed"); expect(child.owner).toBe("token-actor");
@@ -264,7 +264,7 @@ test("adoption leaves a populated automatic parent's relationship unchanged", as
   const a = app(); const old = await init(a); const b = app(); const next = await init(b, ["Elsewhere"]);
   const before = await issueOf(old);
   await claimed(a, next);
-  expect(planOf(await a.call({ op: "view" })).parent).toBe(next);
+  expect(planParent(await a.call({ op: "view" }))).toBe(next);
   expect(await issueOf(old)).toEqual(before);
 });
 test("adoption refuses a foreign empty automatic parent", async () => {
@@ -274,7 +274,7 @@ test("adoption refuses a foreign empty automatic parent", async () => {
   await kata(["claim", next, "--json"]);
   const before = await issueOf(old);
   await claimed(a, next);
-  expect(planOf(await a.call({ op: "view" })).parent).toBe(old);
+  expect(planParent(await a.call({ op: "view" }))).toBe(old);
   expect(await issueOf(old)).toEqual(before);
 });
 
@@ -383,7 +383,7 @@ test("matching qualified init resolves a short explicit binding in its pinned wo
   bound.ctx.cwd = outside;
   const result = await bound.call({ op: "init", ref: parent, items: ["First", "Second"] });
   expect(result.isError, result.content[0].text).toBeUndefined();
-  expect(planOf(result).parent).toBe(parent);
+  expect(planParent(result)).toBe(parent);
 });
 for (const outcome of ["interrupted", "unrelated", "reassigned"]) test(`deferred removal handles an ${outcome} close without hiding newer work`, async () => {
   let throttle = true;
@@ -555,7 +555,7 @@ test("after the automatic parent is deleted, init says so, creates a new parent 
   const fresh = await a.call({ op: "init", items: ["Fresh"] });
   expect(fresh.isError).toBeFalsy();
   expect(fresh.content[0].text).toContain(`${parent} was deleted`);
-  const next = planOf(fresh).parent!;
+  const next = planParent(fresh);
   expect(next).not.toBe(parent);
   expect((await show(next)).children.map((c: any) => c.title)).toEqual(["Fresh"]);
   expect((await issueOf(first)).status).toBe("open");
