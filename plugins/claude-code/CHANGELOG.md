@@ -4,6 +4,8 @@ All notable changes to the `kata-cc` Claude Code plugin are listed here. The for
 
 ## [Unreleased]
 
+## [1.0.0] - 2026-11-18
+
 ### Added
 
 #### Requirements
@@ -13,6 +15,7 @@ All notable changes to the `kata-cc` Claude Code plugin are listed here. The for
 #### Install and update
 
 - The `kata-cc` plugin installs from the repository's marketplace with `/plugin install kata-cc --marketplace Dangerboi/kata-plugin`, or `claude plugin install kata-cc@kata-plugin` from a shell. It has no npm package: updates come from `claude plugin marketplace update kata-plugin` and `claude plugin update kata-cc@kata-plugin`, and reach an installed copy when the plugin's version moves.
+  - To replace the earlier Claude Code adapter, `kata@kata-plugin` 0.2.0, run `claude plugin uninstall kata@kata-plugin`, then `claude plugin marketplace update kata-plugin` and `claude plugin install kata-cc@kata-plugin`. With both installed, a delegate's work is recorded twice.
 - The options `liveInbox`, `contract`, `kataExecutable` and `debugFile` are declared by the plugin and set with `/plugin configure` or `--config KEY=VALUE`, each with an environment variable where there is one (`KATA_CLAUDE_LIVE_INBOX`, `KATA_CLAUDE_EXECUTABLE`, `KATA_CLAUDE_DEBUG`). Claude Code prints `4 userConfig options not yet set` after an install; nothing has to be set.
 
 #### Plans
@@ -43,4 +46,5 @@ All notable changes to the `kata-cc` Claude Code plugin are listed here. The for
 
 - `bun run validate:claude` and `bun run test:claude` run `claude plugin validate` and `claude plugin test`, and `bun run smoke:claude` runs a real headless `claude -p` on haiku against a throwaway Kata store. The smoke run needs a Claude Code login and is paid; none of them runs in CI.
 
-[Unreleased]: https://github.com/Dangerboi/kata-plugin/compare/v1.12.0...HEAD
+[Unreleased]: https://github.com/Dangerboi/kata-plugin/compare/claude-code-v1.0.0...HEAD
+[1.0.0]: https://github.com/Dangerboi/kata-plugin/releases/tag/claude-code-v1.0.0

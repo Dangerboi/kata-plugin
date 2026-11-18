@@ -113,7 +113,17 @@ The TUI sidebar shows the plan with no extra setting. Set `experimental.todo: tr
 
 ## Claude Code
 
-Tested with Claude Code 2.1.326 (the mod API is early access; see the [limits](../explanation/limits.md#claude-code)) and needs Kata 0.23.0 or later. In Claude Code:
+Tested with Claude Code 2.1.326 (the mod API is early access; see the [limits](../explanation/limits.md#claude-code)) and needs Kata 0.23.0 or later.
+
+If Claude Code still has the earlier adapter, `kata@kata-plugin` 0.2.0 (removed in kata-plugin 1.3.0), replace it from a shell instead of the install below. The adapter also files delegates as Kata issues, so with both installed a delegate's work is recorded twice; and its marketplace copy predates `kata-cc` (and may have been added from `salmonumbrella/kata-plugin`), so it needs an update before the install:
+
+```sh
+claude plugin uninstall kata@kata-plugin
+claude plugin marketplace update kata-plugin
+claude plugin install kata-cc@kata-plugin
+```
+
+In Claude Code:
 
 ```
 /plugin install kata-cc --marketplace Dangerboi/kata-plugin

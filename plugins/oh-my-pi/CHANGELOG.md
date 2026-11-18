@@ -4,6 +4,8 @@ All notable changes to `@dangerboi/kata-omp` are listed here. The format follows
 
 ## [Unreleased]
 
+## [2.12.1] - 2026-11-18
+
 ### Fixed
 
 #### Plans
@@ -562,7 +564,8 @@ Every change in this release is by @salmonumbrella ([#4](https://github.com/Dang
 
 - The plugin skips its Kata contract when the system prompt already carries it.
 
-[Unreleased]: https://github.com/Dangerboi/kata-plugin/compare/omp-v2.12.0...HEAD
+[Unreleased]: https://github.com/Dangerboi/kata-plugin/compare/omp-v2.12.1...HEAD
+[2.12.1]: https://github.com/Dangerboi/kata-plugin/compare/omp-v2.12.0...omp-v2.12.1
 [2.12.0]: https://github.com/Dangerboi/kata-plugin/compare/omp-v2.11.0...omp-v2.12.0
 [2.11.0]: https://github.com/Dangerboi/kata-plugin/compare/omp-v2.10.0...omp-v2.11.0
 [2.10.0]: https://github.com/Dangerboi/kata-plugin/compare/omp-v2.9.2...omp-v2.10.0
