@@ -1,0 +1,11 @@
+{
+  "extends": "../tsconfig.json",
+  "compilerOptions": {
+    "lib": ["ES2024"],
+    "types": ["node", "bun"]
+  },
+  "include": [
+    "*.ts",
+    "../plugins/claude-code/types"
+  ]
+}

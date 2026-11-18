@@ -5,7 +5,7 @@ import { assertIsolated, assertUnchanged, SCRUBBED_ENV, snapshot } from "./isola
 
 // The adapter suites load the vendored copies in plugins/*, not core/: refuse to test a stale copy.
 if (Bun.spawnSync([process.execPath, "scripts/vendor-core.ts", "--check"], { stdout: "ignore", stderr: "inherit" }).exitCode !== 0) process.exit(1);
-const binary = process.env.KATA_TEST_EXECUTABLE;
+const binary = process.env.KATA_TEST_EXECUTABLE ?? "";
 if (!binary || !path.isAbsolute(binary)) {
   console.error('Set KATA_TEST_EXECUTABLE to the absolute Kata binary, e.g. KATA_TEST_EXECUTABLE="$(readlink -f "$(command -v kata)")" bun run test.');
   process.exit(1);
@@ -15,7 +15,7 @@ const MARKER = ".omp-kata-test", ROOT_PREFIX = "omp-kata-tests-";
 const root = mkdtempSync(path.join(os.tmpdir(), ROOT_PREFIX));
 // The runner's pid tells a later run whether this root's runner is still alive.
 writeFileSync(path.join(root, MARKER), `throwaway\npid=${process.pid}\n`);
-const env = { ...process.env, KATA_TEST_ROOT: root, KATA_HOME: path.join(root, "home") };
+const env: NodeJS.ProcessEnv & { KATA_TEST_ROOT: string; KATA_HOME: string } = { ...process.env, KATA_TEST_ROOT: root, KATA_HOME: path.join(root, "home") };
 mkdirSync(env.KATA_HOME);
 // Parallel workers each get their own home beside this one, so no two processes share a store.
 // The default never runs more workers than the machine has CPUs (CI runners have 2 to 4). Past 8, workers slow each

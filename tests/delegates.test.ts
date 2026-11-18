@@ -4,7 +4,7 @@ import { NO_JOB } from "../core/kata-cli";
 import { nodePlatform } from "../core/node-host";
 import { teammateFor, type DelegateEvent } from "../core/delegates";
 import { TODO_WORDING, type ToolWording } from "../core/model";
-import { eventually, EVIDENCE, holdKata, holdNext, MESSAGE, memoryDelegateStore, realKata, unique } from "./kata-fixture";
+import { eventually, EVIDENCE, holdKata, holdNext, MESSAGE, memoryDelegateStore, planOf, realKata, unique } from "./kata-fixture";
 import { daemonUnavailable, siblingThrottle } from "./kata-errors";
 
 // The delegate lifecycle through the core's delegate events, against real Kata in a throwaway store.
@@ -35,7 +35,7 @@ function lead(from?: { entries: any[]; id: string; fork?: boolean }, wording?: T
   const plan = async (items: string[]) => {
     const result = await core.todo.apply(ctx, "init", { items }, NO_JOB);
     if (result.isError) throw new Error(result.content[0].text);
-    return result.details.kata.parent as string;
+    return planOf(result).parent as string;
   };
   const view = () => core.todo.apply(ctx, "view", {}, NO_JOB);
   const delegate = (name: string) => {
@@ -689,7 +689,7 @@ test("starting a closed item a past delegate still marks reopens it on the first
   expect(view.issue.metadata["omp.subagent_id"]).toBeUndefined();
 });
 
-const reportsOf = async (ref: string) => ((await show(ref)).comments ?? []).filter((c: { body: string }) => c.body.startsWith("Report from subagent"));
+const reportsOf = async (ref: string): Promise<{ body: string; teammate?: string }[]> => ((await show(ref)).comments ?? []).filter((c: { body: string }) => c.body.startsWith("Report from subagent"));
 
 test("a delegate handed back without a comment of its own gets its latest report posted under its teammate", async () => {
   const a = lead(); const parent = await a.plan(["Build the lambda gadget", "Lead step"]);
@@ -899,7 +899,7 @@ test("a long init message titles the automatic parent cut to 120 characters", as
   const a = lead();
   const result = await a.core.todo.apply(a.ctx, "init", { items: ["Build the omega widget"], message: `Omega plan ${"x".repeat(200)}` }, NO_JOB);
   expect(result.isError).toBeUndefined();
-  expect((await show(result.details.kata.parent)).issue.title).toHaveLength(120);
+  expect((await show(planOf(result).parent!)).issue.title).toHaveLength(120);
 });
 
 test("session end does not rely on `this`, so a host may call it detached", async () => {

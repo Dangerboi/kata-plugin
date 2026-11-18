@@ -4,7 +4,7 @@ import path from "node:path";
 import { v2Fixture } from "./v2-fixture";
 
 // The omp adapter against a real Kata: /tan sub sessions, forks, issues moved between projects and default priority.
-const { scratch, env, run, kata, show, issue, unique, host, down, evidence, message, throttledClose, sessionParents } = v2Fixture();
+const { scratch, home, run, kata, show, issue, unique, host, down, evidence, message, throttledClose, sessionParents } = v2Fixture();
 
 // omp's /tan runs a side conversation in a sub session named Tan-<snowflake>
 // that no task spawn created; it keeps the todo tool.
@@ -236,7 +236,7 @@ test("free text containing # is never shown as a Kata ref", async () => {
 });
 
 async function withDefaultPriority(fn: () => Promise<void>): Promise<void> {
-  const config = path.join(env.KATA_HOME, "config.toml");
+  const config = path.join(home, "config.toml");
   writeFileSync(config, "[create]\ndefault_priority = 2\n");
   try { await fn(); } finally { writeFileSync(config, ""); }
 }
