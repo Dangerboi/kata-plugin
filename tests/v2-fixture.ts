@@ -50,8 +50,11 @@ export function v2Fixture() {
   }
   const closeSessions = async (shortId: string) => (await store.closesOf(shortId)).map((e: any) => e.payload?.transcript?.session_id);
   const total = async () => (await kata(["list", "--status", "all", "--limit", "0", "--json"])).issues.length;
-  // The omp adapter's records of a session.
-  const sessionParents = (sid: string) => store.sessionParents("omp", sid);
+  // The omp adapter's records of a session. A host made with `sid: null` has none to ask about.
+  const sessionParents = (sid: string | undefined) => {
+    if (!sid) throw new Error("This host has no session id.");
+    return store.sessionParents("omp", sid);
+  };
 
   return {
     ...store, outside, issue, unique, host,

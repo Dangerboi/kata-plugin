@@ -6,6 +6,7 @@ import { promisify } from "node:util";
 import { assertIsolated, SCRUBBED_ENV } from "./isolation";
 import { recordStore, type DelegateRecord, type DelegateStore } from "../core/delegates";
 import { RETRY_MS } from "../core/settlement";
+import type { PlanView } from "../core/kata-core";
 
 export function memoryDelegateStore(): DelegateStore & { drop(id: string): void } {
   const records = new Map<string, DelegateRecord>();
@@ -242,8 +243,20 @@ export const until = (condition: () => boolean, ms = 8000): Promise<boolean> => 
  * value still fails and shows what was seen. For state a plugin settles in the background after the
  * event handler returned (the core bounds how long a handler waits for it).
  */
-export async function eventually<T>(read: () => Promise<T>, expected: T, ms = 8000): Promise<void> {
+export async function eventually<T>(read: () => Promise<T>, expected: Awaited<T>, ms = 8000): Promise<void> {
   expect(await poll(read, value => Bun.deepEquals(value, expected), ms)).toEqual(expected);
+}
+/** The plan a todo result reports. A call from another identity reports a notice and no plan. */
+export function planOf(result: { details: { kata: PlanView | { notice?: string } } }): PlanView {
+  const kata = result.details.kata;
+  if (!("phases" in kata)) throw new Error(`The todo result holds no plan: ${kata.notice}`);
+  return kata;
+}
+/** The Kata parent a todo result names. A local plan, an empty one or one whose items all name tickets has none. */
+export function planParent(result: Parameters<typeof planOf>[0]): string {
+  const parent = planOf(result).parent;
+  if (!parent) throw new Error(`The todo result names no Kata parent: ${JSON.stringify(result.details.kata)}`);
+  return parent;
 }
 /**
  * Whether `work` finishes within `ms`, for a test that holds what `work` may or may not wait for (Kata's answer, say).

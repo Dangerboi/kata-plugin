@@ -100,7 +100,7 @@ exec "${binary}" "$@"
 
 	/** Runs a shell command as a delegate's shell would, against this store: the `kata` on PATH is the adopted binary. `without` names variables the command's environment must not hold. */
 	async function sh(command: string, without: string[] = []) {
-		const commandEnv = { ...env, PATH: process.env.PATH };
+		const commandEnv: NodeJS.ProcessEnv = { ...env, PATH: process.env.PATH };
 		for (const key of without) delete commandEnv[key];
 		const proc = Bun.spawn(["bash", "-c", command], { cwd, env: commandEnv, stdout: "pipe", stderr: "pipe" });
 		const [stdout, stderr] = await Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text()]);

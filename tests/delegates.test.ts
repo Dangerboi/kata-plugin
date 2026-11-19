@@ -4,7 +4,7 @@ import { NO_JOB } from "../core/kata-cli";
 import { nodePlatform } from "../core/node-host";
 import { teammateFor, type DelegateEvent } from "../core/delegates";
 import { TODO_WORDING, type ToolWording } from "../core/model";
-import { eventually, EVIDENCE, holdKata, holdNext, MESSAGE, memoryDelegateStore, realKata, unique } from "./kata-fixture";
+import { eventually, EVIDENCE, holdKata, holdNext, MESSAGE, memoryDelegateStore, planParent, realKata, unique } from "./kata-fixture";
 import { daemonUnavailable, siblingThrottle } from "./kata-errors";
 
 // The delegate lifecycle through the core's delegate events, against real Kata in a throwaway store.
@@ -35,7 +35,7 @@ function lead(from?: { entries: any[]; id: string; fork?: boolean }, wording?: T
   const plan = async (items: string[]) => {
     const result = await core.todo.apply(ctx, "init", { items }, NO_JOB);
     if (result.isError) throw new Error(result.content[0].text);
-    return result.details.kata.parent as string;
+    return planParent(result);
   };
   const view = () => core.todo.apply(ctx, "view", {}, NO_JOB);
   const delegate = (name: string) => {
@@ -689,7 +689,7 @@ test("starting a closed item a past delegate still marks reopens it on the first
   expect(view.issue.metadata["omp.subagent_id"]).toBeUndefined();
 });
 
-const reportsOf = async (ref: string) => ((await show(ref)).comments ?? []).filter((c: { body: string }) => c.body.startsWith("Report from subagent"));
+const reportsOf = async (ref: string): Promise<{ body: string; teammate?: string }[]> => ((await show(ref)).comments ?? []).filter((c: { body: string }) => c.body.startsWith("Report from subagent"));
 
 test("a delegate handed back without a comment of its own gets its latest report posted under its teammate", async () => {
   const a = lead(); const parent = await a.plan(["Build the lambda gadget", "Lead step"]);
@@ -749,7 +749,9 @@ test("check refuses a task naming two plan items, an already delegated task, and
 test("check refuses to delegate a ticket that other open plan items name, and allows it once it is the last one", async () => {
   const a = lead();
   const ref = await ticketRef("Shared ticket");
-  await a.plan([`${ref}: write the omicron parser`, `${ref}: test the omicron parser`]);
+  // A plan whose items all name tickets has no parent, so `plan()` does not apply.
+  const init = await a.core.todo.apply(a.ctx, "init", { items: [`${ref}: write the omicron parser`, `${ref}: test the omicron parser`] }, NO_JOB);
+  expect(init.isError).toBeUndefined();
   // The delegate would close the ticket and strand the lead's other item on it.
   await expect(a.delegates.check([`Do "${ref}: test the omicron parser"`], undefined, undefined, NO_JOB)).rejects.toThrow(/other open plan items name it/);
   await expect(a.delegates.check([`Work ${ref}`], undefined, undefined, NO_JOB)).rejects.toThrow(/other open plan items name it/);
@@ -899,7 +901,7 @@ test("a long init message titles the automatic parent cut to 120 characters", as
   const a = lead();
   const result = await a.core.todo.apply(a.ctx, "init", { items: ["Build the omega widget"], message: `Omega plan ${"x".repeat(200)}` }, NO_JOB);
   expect(result.isError).toBeUndefined();
-  expect((await show(result.details.kata.parent)).issue.title).toHaveLength(120);
+  expect((await show(planParent(result))).issue.title).toHaveLength(120);
 });
 
 test("session end does not rely on `this`, so a host may call it detached", async () => {
