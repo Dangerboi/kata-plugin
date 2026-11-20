@@ -1,6 +1,6 @@
 # kata-cc
 
-Kata work tracking for Claude Code. The plugin keeps Claude Code's todo plan in [Kata](https://katatracker.com), a local-first issue tracker for people and coding agents: each plan item is an issue, the subagents that work an item claim it, and every close records evidence and the session that made it. Kata checks each close, and an automatic session parent closes once its children are done.
+[Kata](https://github.com/kenn-io/kata) work tracking for Claude Code. The plugin keeps Claude Code's plan in Kata, a local-first issue tracker for people and coding agents: each plan item is an issue, the delegates that work an item claim it, and every close records evidence and the session that made it. Kata checks each close, and the automatic parent of a session's plan closes once its children are done.
 
 It is a Claude Code mod (a hooks module, `hooks/register.ts`), so it runs inside Claude Code. It works in the terminal, the desktop Code tab and the VS Code chat panel; `claude -p` and the Agent SDK run its hooks and draw nothing.
 
@@ -31,12 +31,16 @@ Or `claude plugin marketplace add Dangerboi/kata-plugin` and `claude plugin inst
 
 The plugin makes no network requests of its own. Everything it records goes to Kata through the `kata` command.
 
-- **Processes.** It runs the `kata` executable (or `kataExecutable`) to read and change issues: create, claim, comment, label and close. With the live inbox on, it keeps one `kata events --tail` process running for the main session.
-- **What Kata receives.** Plan item text, delegate assignments, an untracked subagent's final report (recorded as a closed mission issue), and on every close the agent name `claude` and the lead session's id. Set `KATA_CLOSE_TRANSCRIPT_ENABLED=false` to stop sending the session id.
+- **Processes.** It runs the `kata` executable (or `kataExecutable`) to read and change issues: create, claim, comment, label and close. With the live inbox on, it keeps one `kata events --tail` process running for the main session. When it needs the user's name and neither `KATA_AUTHOR` nor `USER` is set, it runs `git config user.name`.
+- **What Kata receives.**
+  - Plan item text and delegate assignments.
+  - The lead session's id and the workspace's absolute path, as metadata on the plan's issues and in the automatic parent's body.
+  - A delegate's final report: as a comment on its issue when it left none itself, or, for an untracked delegate, in a closed mission issue together with the delegate's task prompt.
+  - On every close, the agent name `claude` and the lead session's id. Unless Claude Code's environment sets `KATA_CLOSE_TRANSCRIPT_ENABLED`, the plugin sets it to `true` on each close, so Kata records the session that closed the issue even where Kata's own config leaves that off. `KATA_CLOSE_TRANSCRIPT_ENABLED=false` stops Kata recording it; the id is still passed, and still stored in the metadata above.
 - **Tool list.** It removes the task tools listed above and adds `todo`. The plugin answers `todo` calls itself, so they need no permission prompt.
-- **Bash commands.** A `kata close` in a `Bash` call is rewritten to start with `env KATA_TRANSCRIPT_AGENT='claude' KATA_TRANSCRIPT_SESSION_ID='<session id>' KATA_CLOSE_TRANSCRIPT_ENABLED='true'`. A subagent's `kata` commands get `--teammate`, `--workspace` and `--project` for its assignment, and a subagent's `--as` is refused. Other commands are left alone.
+- **Bash commands.** A `kata close` in a `Bash` call is rewritten to start with `env KATA_TRANSCRIPT_AGENT='claude' KATA_TRANSCRIPT_SESSION_ID='<session id>' KATA_CLOSE_TRANSCRIPT_ENABLED='true'` (the switch as Claude Code's environment sets it). A delegate's `kata` commands get `--teammate`, `--workspace` and `--project` for its assignment, and a delegate's `--as` is refused. Other commands are left alone.
 - **Permissions.** That rewrite stops an allow rule such as `Bash(kata *)` from matching. When Claude Code's own rules would ask about a rewritten call, the plugin allows it only if the command the model wrote is allowed outright. Deny rules, asks from hooks or other plugins, and every other verdict stand. Under auto permission mode the plugin refuses the call instead and tells the model the exact command to run.
-- **Subagent spawns.** It appends the assignment (issue, teammate, and the commands to comment on and close it) to the subagent's prompt. It refuses a spawn whose item or ticket is already delegated, whose prompt names two tickets, or whose ticket cannot be delegated.
+- **Delegate spawns.** It appends the assignment (issue, teammate, and the commands to comment on and close it) to the prompt of each `Agent` subagent, Workflow agent or teammate. It refuses a spawn whose item or ticket is already delegated, whose prompt names two tickets, or whose ticket cannot be delegated.
 - **Prompts it submits.** When `KATA_INBOX_USER` names a session address (`<actor>/<name>`), the main session follows that inbox and submits each new request from the same actor into the session, starting a turn if the session is idle. Turn this off with `liveInbox` off or `KATA_CLAUDE_LIVE_INBOX=0`.
 - **Local storage.** Each session's plan record is saved in Claude Code's plugin store under `session/<session id>`. Ended sessions' records are dropped after 7 days, or 30 days when the session left work open. With `debugFile` set, the plugin writes a diagnostic log there, capped at its last 1,000,000 characters.
 - **Environment.** It reads `KATA_REF`, `KATA_DEFAULT_PROJECT`, `KATA_AUTHOR`, `KATA_TEAMMATE`, `KATA_INBOX_USER`, `KATA_HOME`, `KATA_ATTENTION_HOST`, `KATA_CLOSE_TRANSCRIPT_ENABLED`, `KATA_CLAUDE_LIVE_INBOX`, `KATA_CLAUDE_EXECUTABLE`, `KATA_CLAUDE_DEBUG` and `USER`, and writes none.

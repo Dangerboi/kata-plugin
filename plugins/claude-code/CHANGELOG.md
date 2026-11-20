@@ -6,7 +6,9 @@ All notable changes to the `kata-cc` Claude Code plugin are listed here. The for
 
 ### Added
 
-- A README in the plugin folder, with what the mod runs, changes, sends and stores, and a listing icon (`.claude-plugin/icon.png`, source in `docs/media/kata-cc-icon.svg`), for Anthropic's plugin directory.
+#### Install and update
+
+- The plugin folder has a README that lists what the mod runs, changes, sends and stores, and a listing icon, for Anthropic's plugin directory.
 
 ## [1.0.0] - 2026-11-18
 
