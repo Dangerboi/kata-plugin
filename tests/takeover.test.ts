@@ -57,6 +57,7 @@ test("an unregistered git repo registers its inferred project and plans there wi
 
 test("the inferred project keeps the repo's case", async () => {
   const app = host({ cwd: repo("MixedCaseRepo") });
+  await app.event("session_start");
   await app.call({ op: "init", items: ["Case step"] });
   expect(await parentOf("MixedCaseRepo", app)).toMatch(/^MixedCaseRepo#/);
 });
@@ -64,6 +65,7 @@ test("the inferred project keeps the repo's case", async () => {
 test("a folder without git uses its basename", async () => {
   const dir = path.join(scratch, "plainfolder"); mkdirSync(dir);
   const app = host({ cwd: dir });
+  await app.event("session_start");
   await app.call({ op: "init", items: ["Only step"] });
   expect(await parentOf("plainfolder", app)).toMatch(/^plainfolder#/);
 });
@@ -73,6 +75,7 @@ test("KATA_DEFAULT_PROJECT collects the issues with a repo label and registers n
   const dir = repo("Label.Repo_X");
   const before = await projects();
   const app = host({ cwd: dir });
+  await app.event("session_start");
   const result = await app.call({ op: "init", items: ["Labeled step", "Second step"] });
   expect(result.isError).toBeUndefined();
   const parent = await parentOf("takeover-home", app);
@@ -88,6 +91,7 @@ test("an initialized repo keeps its own project and gets no repo label", async (
   const dir = repo("initrepo");
   expect((await run(["init", "--project", "takeinit"], dir)).code).toBe(0);
   const app = host({ cwd: dir });
+  await app.event("session_start");
   await app.call({ op: "init", items: ["Own project step"] });
   expect(await parentOf("takeinit", app)).toMatch(/^takeinit#/);
   const labels = (await issues("takeinit")).flatMap((i: any) => (i.labels ?? []).map((l: any) => typeof l === "string" ? l : l.label));
@@ -136,6 +140,7 @@ test("a replay that fails partway keeps the local plan and finishes on the next 
   let down = true, flaky = false;
   const app = host({ cwd: repo("flakyreplay"), before: (a: string[]) => down ? daemonUnavailable()
     : flaky && a[0] === "create" && a.includes("--parent") ? { code: 1, stdout: "", stderr: "storage hiccup" } : undefined });
+  await app.event("session_start");
   await app.call({ op: "init", items: ["Kept one", "Kept two"] });
   down = false; flaky = true;
   expect((await app.call({ op: "append", items: ["Kept three"] })).isError).toBeUndefined();
@@ -153,6 +158,7 @@ test("a resumed session replays a local plan even after a partly failed replay",
   const before = (a: string[]) => down ? daemonUnavailable()
     : flaky && a[0] === "create" && a.includes("--parent") ? { code: 1, stdout: "", stderr: "storage hiccup" } : undefined;
   const first = host({ cwd: dir, before });
+  await first.event("session_start");
   await first.call({ op: "init", items: ["Survives one", "Survives two"] });
   down = false; flaky = true;
   await first.call({ op: "append", items: ["Survives three"] });
@@ -171,6 +177,7 @@ test("a resumed session replays a local plan even after a partly failed replay",
 test("a daemon that dies after a client-side refusal still yields a local plan", async () => {
   const dir = path.join(scratch, "nogit-outage"); mkdirSync(dir);
   const app = host({ cwd: dir, before: (a: string[]) => a[0] === "projects" || a[0] === "create" ? daemonUnavailable() : undefined });
+  await app.event("session_start");
   const result = await app.call({ op: "init", items: ["Offline in a plain folder"] });
   expect(result.isError).toBeUndefined();
   expect(app.list()[0].tasks.map(t => t.content)).toEqual(["Offline in a plain folder"]);
@@ -180,6 +187,7 @@ test("a daemon that dies after a client-side refusal still yields a local plan",
 
 test("a missing executable is an outage too", async () => {
   const app = host({ cwd: repo("noexec"), before: () => { throw missingExecutable(); } });
+  await app.event("session_start");
   await app.call({ op: "init", items: ["No binary"] });
   expect(app.list()[0].tasks.map(t => t.content)).toEqual(["No binary"]);
   expect(warnings(app)).toHaveLength(1);

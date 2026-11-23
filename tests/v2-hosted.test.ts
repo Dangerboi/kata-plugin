@@ -20,6 +20,7 @@ test("hosted show lasting over one second still mirrors a native init into the h
     if (args[0] !== "show") return;
     if (opts.timeout < 1100) return { code: 0, killed: true, stdout: "", stderr: "" };
   } });
+  await app.event("session_start");
   expect((await app.call({ op: "init", items: ["Slow hosted read"] })).isError).toBeUndefined();
   expect((await show(ref)).children[0].title).toBe("Slow hosted read");
 });
@@ -31,12 +32,13 @@ for (const source of ["/todo ref", "environment", "stored"]) test(`qualified ${s
   await app.event("session_start");
   if (source === "/todo ref") await app.event("input", { text: `/todo ref ${parent}`, source: "interactive" });
   expect((await app.call({ op: "init", items: ["Hosted worker task"] })).isError).toBeUndefined();
-  expect(app.backendErrors).toEqual([]);
+  expect(app.mirrorFailures()).toEqual([]);
   expect((await show(parent)).children[0].title).toBe("Hosted worker task");
 });
 
 test("tracked worker todo uses its assigned issue and teammate from an unbound worktree", async () => {
   const lead = host();
+  await lead.event("session_start");
   const parent = await lead.init(["Implement worker task"]);
   const sessionFile = `${scratch}/worker-todo.jsonl`;
   lead.emit("task:subagent:lifecycle", { id: "worker-todo", status: "started", sessionFile, description: "Implement worker task" });
@@ -63,15 +65,20 @@ test("tracked worker todo uses its assigned issue and teammate from an unbound w
 
 test("a sub identity cannot reuse the main adapter's bound session", async () => {
   const app = host();
+  await app.event("session_start");
   const parent = await app.init(["Main task"]);
   const before = app.calls.length;
-  await app.call({ op: "init", items: ["Foreign task"] }, { ...app.ctx, agent: { kind: "sub", id: "advisor" } });
+  const foreign = await app.call({ op: "init", items: ["Foreign task"] }, { ...app.ctx, agent: { kind: "sub", id: "advisor" } });
   expect(app.calls.slice(before).some(a => ["create", "close", "meta"].includes(a[0]))).toBe(false);
   expect((await show(parent)).children.map((c: any) => c.title)).toEqual(["Main task"]);
+  // The sub's call works on its own native list; the lead's list is the one Kata mirrors.
+  expect(foreign.details.phases?.[0]?.tasks.map((t: any) => t.content)).toEqual(["Foreign task"]);
+  expect(app.list().flatMap(p => p.tasks.map(t => t.content))).toEqual(["Main task"]);
 });
 
 test("an assigned delegate fetches the contract with its exact hook arguments", async () => {
   const lead = host();
+  await lead.event("session_start");
   const leadParent = await lead.init(["Lead contract task"]);
   const sessionFile = `${scratch}/worker-contract.jsonl`;
   lead.emit("task:subagent:lifecycle", { id: "worker-contract", status: "started", sessionFile, description: "Lead contract task" });
@@ -92,6 +99,7 @@ test("a failed assignment leaves no worker tasks in Kata and recovers once the p
   let unavailable = false;
   const lead = host({ before: (args: string[]) => unavailable && args[0] === "meta" && args[3] === "omp.subagent_id"
     ? { code: 1, stdout: "", stderr: "delegation service permission denied" } : undefined });
+  await lead.event("session_start");
   const parent = await lead.init(["Lead error task"]);
   unavailable = true;
   const sessionFile = `${scratch}/worker-error.jsonl`;

@@ -1,9 +1,10 @@
 import { expect, test } from "bun:test";
+import { eventually } from "./kata-fixture";
 import { v2Fixture } from "./v2-fixture";
 
 // The omp adapter against a real Kata, on omp's native `todo`: the guard that refuses calls (`tool_call`) and the mirror that follows
 // the list into Kata (the todo backend's `replace`). Edge cases of both, one behaviour per test.
-const { show, issue, host, down, total, commentsOf, sessionParents, closesOf } = v2Fixture();
+const { show, issue, host, down, total, commentsOf, sessionParents, closesOf, scratch } = v2Fixture();
 
 const refOf = (short: string) => `v2test#${short}`;
 async function children(parent: string): Promise<any[]> { return (await show(parent)).children ?? []; }
@@ -202,7 +203,7 @@ test("a delegate's todo with no assignment is neither guarded nor mirrored", asy
   expect(await total()).toBe(before);
   expect(await sessionParents(delegate.sid)).toHaveLength(0);
   expect(await titles(parent)).toEqual(["Lead task"]);
-  expect(delegate.backendErrors).toEqual([]);
+  expect(delegate.mirrorFailures()).toEqual([]);
 });
 
 test("a mirror while Kata is unreachable does not throw, and the change lands in Kata on the next change once it answers", async () => {
@@ -213,14 +214,140 @@ test("a mirror while Kata is unreachable does not throw, and the change lands in
   const before = await total();
   const init = await app.call({ op: "init", items: ["Write parser", "Write docs"] });
   expect(init.isError, init.content[0].text).toBeUndefined();
-  expect(app.backendErrors).toEqual([]);
+  expect(app.mirrorFailures()).toEqual([]);
   expect(await total()).toBe(before);
 
   unreachable = false;
   const appended = await app.call({ op: "append", items: ["Write tests"] });
   expect(appended.isError, appended.content[0].text).toBeUndefined();
-  expect(app.backendErrors).toEqual([]);
+  expect(app.mirrorFailures()).toEqual([]);
   const [parent] = await sessionParents(app.sid);
   expect(parent).toBeDefined();
   expect(await titles(parent.qualified_id)).toEqual(["Write docs", "Write parser", "Write tests"]);
+});
+
+test("an init with no op that leaves out an open task is refused like op init, and nothing changes", async () => {
+  const app = host(); await app.event("session_start");
+  const parent = await app.init(["Write parser", "Write docs"]);
+  const before = app.list();
+  const refused = await app.call({ list: [{ phase: "Tasks", items: ["Write parser"] }] });
+  expect(refused.isError).toBe(true);
+  expect(refused.content[0].text).toContain("Write docs");
+  expect(refused.content[0].text).toContain("The new list leaves out tasks that are still open in Kata");
+  expect(app.list()).toEqual(before);
+  expect(await titles(parent)).toEqual(["Write docs", "Write parser"]);
+});
+
+test("an init with an empty list is refused while tasks are open, and closes nothing", async () => {
+  const app = host(); await app.event("session_start");
+  const parent = await app.init(["Write parser", "Write docs"]);
+  const before = app.list();
+  const refused = await app.call({ op: "init", list: [] });
+  expect(refused.isError).toBe(true);
+  expect(refused.content[0].text).toContain("Write parser");
+  expect(refused.content[0].text).toContain("Write docs");
+  expect(app.list()).toEqual(before);
+  for (const title of ["Write parser", "Write docs"]) expect((await issueOf(await childRef(parent, title))).status).toBe("open");
+});
+
+test("after /todo ref the init refusal for a child omp never listed advises append then drop, and following it works end to end", async () => {
+  const parent = refOf(await issue("Explicit parent"));
+  const existing = refOf(await planTask("Existing work", parent));
+  const existingTitle = (await issueOf(existing)).title;
+  const app = host(); await app.event("session_start");
+  await app.event("input", { text: `/todo ref ${parent}`, source: "interactive" });
+  const refused = await app.call({ op: "init", items: ["Fresh one"] });
+  expect(refused.isError).toBe(true);
+  const text = refused.content[0].text;
+  expect(text).toContain("never in your list");
+  expect(text).toContain("todo append");
+  expect(text).not.toMatch(/drop (them )?first/i);
+
+  expect((await app.call({ op: "append", items: [existingTitle] })).isError).toBeUndefined();
+  const dropped = await app.call({ op: "drop", task: existingTitle });
+  expect(dropped.isError, dropped.content[0]?.text).toBeUndefined();
+  const init = await app.call({ op: "init", items: ["Fresh one"] });
+  expect(init.isError, init.content[0]?.text).toBeUndefined();
+  expect(await issueOf(existing)).toMatchObject({ status: "closed", closed_reason: "wontfix" });
+  expect(await titles(parent)).toEqual([existingTitle, "Fresh one"].sort());
+  expect((await issueOf(await childRef(parent, "Fresh one"))).status).toBe("open");
+});
+
+test("a task moved to another phase in omp is still guarded by done on that phase while its issue is open", async () => {
+  const app = host(); await app.event("session_start");
+  const parent = await app.init(["Write parser", "Write docs"]);
+  const child = await childRef(parent, "Write parser");
+  const moved = await app.call({ op: "init", list: [{ phase: "Later", items: ["Write parser", "Write docs"] }] });
+  expect(moved.isError, moved.content[0]?.text).toBeUndefined();
+  expect(app.list().map(p => p.name)).toEqual(["Later"]);
+  const refused = await app.call({ op: "done", phase: "Later" });
+  expect(refused.isError).toBe(true);
+  expect(refused.content[0].text).toContain(`is open in Kata as ${child}`);
+  expect(app.list()[0]!.tasks.every(t => t.status !== "completed")).toBe(true);
+  expect((await issueOf(child)).status).toBe("open");
+});
+
+test("/todo ref with a bare short id makes that issue the plan parent", async () => {
+  const parentShort = await issue("Explicit parent");
+  const parent = refOf(parentShort);
+  const app = host(); await app.event("session_start");
+  const handled = await app.event("input", { text: `/todo ref ${parentShort}`, source: "interactive" });
+  expect(handled).toMatchObject({ handled: true });
+  expect(app.notices.at(-1)![0]).toContain("is now this plan's parent");
+  const init = await app.call({ op: "init", items: ["Fresh one"] });
+  expect(init.isError, init.content[0].text).toBeUndefined();
+  expect(await titles(parent)).toEqual(["Fresh one"]);
+});
+
+test("/todo ref while KATA_REF names another issue is refused and the plan stays under KATA_REF", async () => {
+  const fixed = refOf(await issue("Fixed parent")), other = refOf(await issue("Other parent"));
+  process.env.KATA_REF = fixed;
+  try {
+    const app = host(); await app.event("session_start");
+    await app.event("input", { text: `/todo ref ${other}`, source: "interactive" });
+    expect(app.notices.at(-1)![0]).toContain("KATA_REF is set to");
+    expect(app.notices.at(-1)![0]).toContain("is not used");
+    const init = await app.call({ op: "init", items: ["Fresh one"] });
+    expect(init.isError, init.content[0].text).toBeUndefined();
+    expect(await titles(fixed)).toEqual(["Fresh one"]);
+    expect(await titles(other)).toEqual([]);
+  } finally { delete process.env.KATA_REF; }
+});
+
+test("/todo ref when the plan already has another parent says nothing changed, and the plan keeps its parent", async () => {
+  const other = refOf(await issue("Other parent"));
+  const app = host(); await app.event("session_start");
+  const parent = await app.init(["Write parser"]);
+  await app.event("input", { text: `/todo ref ${other}`, source: "interactive" });
+  const answer = String(app.notices.at(-1)![0]);
+  expect(answer).toContain(`This plan's parent is ${parent}`);
+  expect(answer).toContain("not changed");
+  expect(await titles(other)).toEqual([]);
+  expect((await app.call({ op: "append", items: ["Write docs"] })).isError).toBeUndefined();
+  expect(await titles(parent)).toEqual(["Write docs", "Write parser"]);
+  expect(await titles(other)).toEqual([]);
+});
+
+test("the lead's done on a task delegated to a subagent is refused: its subagent closes it", async () => {
+  const app = host(); await app.event("session_start");
+  const parent = await app.init(["Delegated work", "Own work"]);
+  const child = await childRef(parent, "Delegated work");
+  await app.event("tool_call", { toolName: "task", toolCallId: "delegate-guard", input: { task: 'Complete "Delegated work"' } });
+  app.emit("task:subagent:lifecycle", { id: "delegate-guard", status: "started", sessionFile: `${scratch}/delegate-guard.jsonl`, parentToolCallId: "delegate-guard", index: 0 });
+  await eventually(async () => (await show(child)).issue.metadata?.["omp.subagent_id"], "delegate-guard");
+  const before = app.list();
+  const refused = await app.call({ op: "done", task: "Delegated work" });
+  expect(refused.isError).toBe(true);
+  expect(refused.content[0].text).toContain("its subagent closes it");
+  expect(refused.content[0].text).toContain(child);
+  expect(app.list()).toEqual(before);
+  expect((await issueOf(child)).status).toBe("open");
+});
+
+test("/todo takeover with todo.backend native is not handled by the plugin", async () => {
+  const app = host(); await app.event("session_start");
+  await app.init(["Write parser"]);
+  await app.backend("native");
+  const result = await app.event("input", { text: "/todo takeover Write parser", source: "interactive" });
+  expect(result?.handled).toBeUndefined();
 });

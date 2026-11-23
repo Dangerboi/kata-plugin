@@ -4,6 +4,12 @@ All notable changes to `@dangerboi/kata-opencode` are listed here. The format fo
 
 ## [Unreleased]
 
+### Fixed
+
+#### Plans
+
+- Restarting a closed task you own with `todowrite` reopens it, instead of failing with "no longer owned" when Kata cleared the owner on close.
+
 ## [1.2.1] - 2026-11-18
 
 ### Fixed

@@ -49,6 +49,47 @@ type TaskCall = { texts: string[]; jobs?: Set<string> };
 const recordsBySession = new Map<string, DelegateRecord>();
 const leads = new Map<string, DelegateEvents>();
 
+// The todo backend omp has selected, followed by one settings listener per module copy (per thread): every extension
+// instance on the thread reads this value and subscribes to changes through `backendWatchers`.
+let backend: string | undefined;
+const backendWatchers = new Set<(next: string) => void>();
+// One import shared by concurrent callers; kept once the setting is found, dropped when it is not (yet) available so a later call retries.
+let following: Promise<void> | undefined;
+function followBackend(settings: unknown, debug: (error: unknown) => void): Promise<void> {
+	following ??= (async () => {
+		try {
+			// A static import cannot work: the module resolves only inside omp, and tests mock it after this module loads.
+			const { lookup } = await import("@oh-my-pi/pi-coding-agent/config/registry");
+			const setting = lookup("todo.backend");
+			if (!setting) { following = undefined; return; }
+			backend = setting.get(settings);
+			setting.listen(settings, (next: string) => {
+				backend = next;
+				for (const watcher of backendWatchers) watcher(next);
+			});
+		} catch (error) { following = undefined; debug(error); }
+	})();
+	return following;
+}
+
+// The todo ops the guard checks, the same as the core's. omp infers `init` when `op` is missing and `list` is non-empty.
+const GUARDED_OPS = ["init", "start", "done", "drop", "rm"];
+function guardChecks(input: unknown): boolean {
+	if (!input || typeof input !== "object") return false;
+	const { op, list } = input as { op?: unknown; list?: unknown };
+	const inferred = typeof op === "string" ? op : Array.isArray(list) && list.length ? "init" : undefined;
+	return inferred !== undefined && GUARDED_OPS.includes(inferred);
+}
+
+// The most a todo call waits for a delegate's queued next use: the guard's own bound, well under omp's 30 s handler timeout.
+const GUARD_WAIT_MS = 10_000;
+async function waitUpTo(pending: Promise<void> | undefined, ms: number) {
+	if (!pending) return;
+	let timer: ReturnType<typeof setTimeout> | undefined;
+	try { await Promise.race([pending, new Promise<void>(resolve => { timer = setTimeout(resolve, ms); })]); }
+	catch { /* the guard reads on without the wait */ }
+	finally { clearTimeout(timer); }
+}
 // omp runs a subagent on a worker thread once enough run at once, and loads a separate copy of this module there, so
 // the records and lead Delegates above stay on the main thread. A worker's copy asks the main thread's copy over this
 // channel (omp's event bus does not cross threads) and keeps the answer in its own map, which its store then reads.
@@ -140,7 +181,11 @@ export default function ompKata(pi: any) {
 	};
 	// The context of the latest event: the lifecycle bus carries none. A sub identity that reaches a main-session handler (omp's advisor) never replaces the main one.
 	let seen: any;
-	const see = (ctx: any) => { if (main(ctx) || !seen || !main(seen)) seen = ctx; };
+	const see = (ctx: any) => {
+		if (main(ctx) || !seen || !main(seen)) seen = ctx;
+		// Only a main session shows the off-notice: sub-agent instances never subscribe, so nothing holds their context.
+		if (main(ctx)) backendWatchers.add(offWatcher);
+	};
 	const leadSession = () => seen && main(seen) ? sessionId(seen) : undefined;
 	const store: DelegateStore = {
 		records: () => [...recordsBySession.values()].filter(record => record.leadSessionId === leadSession()),
@@ -235,29 +280,11 @@ export default function ompKata(pi: any) {
 		},
 	});
 
-	// Which backend omp has selected, read lazily: the registry module exists only inside omp, and tests replace it after
-	// this module loads.
-	let backend: string | undefined;
+	// Which backend omp has selected is read lazily (see `followBackend`); the off-notice below is per session.
 	let noticeFor: string | undefined;
 	const active = () => backend === BACKEND_ID;
-	// One import shared by concurrent callers; kept once the setting is found, dropped when it is not (yet) available so a later call retries.
-	let following: Promise<void> | undefined;
-	function followBackend(): Promise<void> {
-		following ??= (async () => {
-			try {
-				// A static import cannot work: the module resolves only inside omp, and tests mock it after this module loads.
-				const { lookup } = await import("@oh-my-pi/pi-coding-agent/config/registry");
-				const setting = lookup("todo.backend");
-				if (!setting) { following = undefined; return; }
-				backend = setting.get(pi.pi.settings);
-				setting.listen(pi.pi.settings, (next: string) => {
-					backend = next;
-					if (next !== BACKEND_ID && seen && main(seen)) notifyOff(seen);
-				});
-			} catch (error) { following = undefined; debug(error); }
-		})();
-		return following;
-	}
+	function offWatcher(next: string) { if (next !== BACKEND_ID && seen && main(seen)) notifyOff(seen); }
+	const follow = () => followBackend(pi.pi.settings, debug);
 	// Once per session: with another backend selected nothing reaches Kata.
 	function notifyOff(ctx: any) {
 		const id = sessionId(ctx);
@@ -272,7 +299,7 @@ export default function ompKata(pi: any) {
 		const text = event.text.trim();
 		const match = /^\/todo\s+(\S+)(?:\s+([\s\S]*))?$/.exec(text);
 		if (match && (NATIVE_TODO_COMMANDS as readonly string[]).includes(match[1]!)) {
-			await followBackend();
+			await follow();
 			if (active()) {
 				ctx.ui?.notify?.(await core.todo.command(ctx, `${match[1]} ${match[2] ?? ""}`.trim()), "info");
 				return { handled: true };
@@ -357,9 +384,10 @@ export default function ompKata(pi: any) {
 		await core.tools.call(ctx);
 		const record = ctx.agent?.kind === "sub" ? await recordOf(ctx) : undefined;
 		if (record) ranTool(record);
-		if (event.toolName === "todo" && (await followBackend(), active())) {
+		if (event.toolName === "todo" && (await follow(), active())) {
 			const owner = main(ctx) ? core : record && !isUntracked(record) ? core.delegate(record.id) : undefined;
-			if (!main(ctx)) await nextUseOf(ctx);
+			// A delegate's turn waits for its queued next use only when its guard will run, and never past the bound.
+			if (!main(ctx) && owner && guardChecks(event.input)) await waitUpTo(nextUseOf(ctx), GUARD_WAIT_MS);
 			const reason = await owner?.todo.guard(ctx, event.input);
 			if (reason) return { block: true, reason };
 		}
@@ -428,7 +456,7 @@ export default function ompKata(pi: any) {
 		} else if (call) over(event.toolCallId);
 		await core.tools.result(ctx, event);
 		// A delegate's todo list is not mirrored by omp (backends are main-session only), so its result carries the list here.
-		if (event.toolName === "todo" && !event.isError && ctx.agent?.kind === "sub" && event.details?.op !== "view" && Array.isArray(event.details?.phases) && (await followBackend(), active())) {
+		if (event.toolName === "todo" && !event.isError && ctx.agent?.kind === "sub" && event.details?.op !== "view" && Array.isArray(event.details?.phases) && (await follow(), active())) {
 			const record = await recordOf(ctx);
 			if (record && !isUntracked(record)) {
 				await nextUseOf(ctx);
@@ -446,7 +474,7 @@ export default function ompKata(pi: any) {
 		// omp discards the result of a revive and nothing needs the work.
 		if (event.reason === "revive") return;
 		await enter(ctx);
-		await followBackend();
+		await follow();
 		const { sections } = await core.session.beforePrompt(ctx, { after: !main(ctx) ? nextUseOf(ctx) : undefined });
 		const ours = new RegExp(`^<(${Object.values(PROMPT_TAGS).join("|")})>`);
 		const base = (Array.isArray(event.systemPrompt) ? event.systemPrompt : [event.systemPrompt || ""]).filter((s: string) => !ours.test(s));
@@ -466,7 +494,7 @@ export default function ompKata(pi: any) {
 		if (!main(ctx)) { await core.session.start(ctx, { after: nextUseOf(ctx) }); return; }
 		core.offerTickets(ctx.ui);
 		exportTranscriptSession(NAMESPACE, sessionId(ctx));
-		await followBackend();
+		await follow();
 		await core.session.start(ctx);
 		if (backend !== undefined && backend !== BACKEND_ID) notifyOff(ctx);
 	}
@@ -479,5 +507,6 @@ export default function ompKata(pi: any) {
 	pi.on("session_shutdown", async (_event: any, ctx: any) => {
 		await enter(ctx);
 		await core.session.shutdown(ctx);
+		backendWatchers.delete(offWatcher);
 	});
 }

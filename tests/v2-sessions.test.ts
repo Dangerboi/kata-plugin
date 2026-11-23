@@ -102,7 +102,7 @@ test("an unreachable Kata keeps the native list working, makes no Kata mutations
   expect(app.list().flatMap(p => p.tasks.map(t => [t.content, t.status]))).toEqual([["Implement fixture", "completed"], ["Verify fixture", "in_progress"]]);
   expect(app.calls.some(a => ["create", "claim", "meta", "close"].includes(a[0]))).toBe(false);
   expect(app.notices.map(n => n[1])).toEqual(["warning"]);
-  expect(app.backendErrors).toEqual([]);
+  expect(app.mirrorFailures()).toEqual([]);
 });
 
 test("KATA_REF beats stored session binding and is qualified", async () => {
@@ -116,7 +116,7 @@ test("KATA_REF beats stored session binding and is qualified", async () => {
 });
 
 test("auto parents carry typed identity and close exactly once from child evidence", async () => {
-  const app = host(); const ref = await app.init();
+  const app = host(); await app.event("session_start"); const ref = await app.init();
   expect(ref).toMatch(/^v2test#/);
   expect((await show(ref)).issue.metadata["omp.auto_parent"]).toBe(true);
   expect((await show(ref)).issue.metadata["omp.session_id"]).toBe(app.sid);
@@ -127,8 +127,8 @@ test("auto parents carry typed identity and close exactly once from child eviden
   const closes = await closesOf(ref);
   expect(closes).toHaveLength(1);
   expect(closes[0].payload.evidence).toEqual([{ type: "test", command: "bun test fixture" }]);
-  // Every project-scoped Kata call pins the plan's workspace, so a worktree or a moved cwd never resolves another project.
-  expect(app.calls.filter(a => a[0] !== "version").every(a => a.includes("--workspace"))).toBe(true);
+  // Every project-scoped Kata call pins the plan's workspace, so a worktree or a moved cwd never resolves another project. Session start also fetches the agent contract, which names no project.
+  expect(app.calls.filter(a => !["version", "agent-contract-hook"].includes(a[0])).every(a => a.includes("--workspace"))).toBe(true);
 });
 
 test("a session with no id never creates an unknown automatic parent", async () => {
@@ -158,7 +158,7 @@ test("contract is cached verbatim, inbox read every turn, slow hooks bounded and
 });
 
 test("external closes reconcile an auto parent, including non-todo children", async () => {
-  const app = host(); const ref = await app.init(["External task"]);
+  const app = host(); await app.event("session_start"); const ref = await app.init(["External task"]);
   const extra = await issue("External verification child", { parent: ref });
   expect((await app.done("External task")).isError).toBeUndefined();
   await app.event("session_stop");
@@ -298,7 +298,7 @@ test("subagent bash attribution ignores quoted data, replaces teammates and refu
 });
 
 test("pinned plan survives cwd changes and ignores another session's saved binding", async () => {
-  const app = host(); const parent = await app.init(["Pinned task"]);
+  const app = host(); await app.event("session_start"); const parent = await app.init(["Pinned task"]);
   app.ctx.cwd = outside;
   expect((await app.call({ op: "append", items: ["Another pinned task"] })).isError).toBeUndefined();
   expect((await show(parent)).children).toHaveLength(2);
@@ -309,12 +309,12 @@ test("pinned plan survives cwd changes and ignores another session's saved bindi
 });
 
 test("new work reopens an auto parent; all-wontfix parents require review", async () => {
-  const app = host(); const parent = await app.init(["Initial work"]);
+  const app = host(); await app.event("session_start"); const parent = await app.init(["Initial work"]);
   await app.done("Initial work"); await app.event("session_stop");
   expect((await show(parent)).issue.status).toBe("closed");
   await app.call({ op: "append", items: ["Additional work"] });
   expect((await show(parent)).issue.status).toBe("open");
-  const dropped = host(); const retired = await dropped.init(["x"]);
+  const dropped = host(); await dropped.event("session_start"); const retired = await dropped.init(["x"]);
   await dropped.call({ op: "drop", task: "x" }); await dropped.event("session_stop");
   const view = await show(retired);
   expect(view.issue.status).toBe("open");
@@ -322,7 +322,7 @@ test("new work reopens an auto parent; all-wontfix parents require review", asyn
 });
 
 test("a flagged automatic parent is not re-audited until its revision changes", async () => {
-  const app = host(); const parent = await app.init(["x"]);
+  const app = host(); await app.event("session_start"); const parent = await app.init(["x"]);
   await app.call({ op: "drop", task: "x" });
   const turn = async () => {
     const before = app.calls.length;
@@ -339,6 +339,7 @@ test("a throttled automatic-parent close does not label the parent for review", 
   let parent = "";
   const app = host({ before: (a: string[]) => a[0] === "close" && a.includes(parent) ? siblingThrottle() : undefined });
   const timers = hostTimers(app);
+  await app.event("session_start");
   parent = await app.init(["Throttled parent"]);
   await app.done("Throttled parent"); await app.event("session_stop");
   const view = await show(parent);
@@ -349,6 +350,7 @@ test("a throttled automatic-parent close does not label the parent for review", 
 
 test("a throttled automatic-parent close is retried by the host timer", async () => {
   const { app, timers, closing, lift } = throttledClose();
+  await app.event("session_start");
   const parent = await app.init(["Throttled task"]);
   await app.done("Throttled task"); await app.event("session_stop");
   expect((await show(parent)).issue.status).toBe("open");
@@ -360,6 +362,7 @@ test("a throttled automatic-parent close is retried by the host timer", async ()
 });
 test("binding another session cancels the pending retry through the host", async () => {
   const { app, timers } = throttledClose();
+  await app.event("session_start");
   await app.init(["Throttled task"]);
   await app.done("Throttled task"); await app.event("session_stop");
   expect(timers.size).toBe(1);
@@ -373,6 +376,7 @@ test("a sibling throttle on the automatic parent's close is retried by a resumed
   const app = host({ before: (a: string[]) => {
     if (!throttled && a[0] === "close") { throttled = true; return siblingThrottle(); }
   } });
+  await app.event("session_start");
   const parent = await app.init(["Throttled task"]);
   const result = await app.done("Throttled task");
   expect(result.isError).toBeUndefined();
@@ -389,6 +393,7 @@ test("membership changes during evidence retrieval prevent auto-parent close", a
   const app = host({ before: async (a: string[]) => {
     if (mutate && a[0] === "events") { mutate = false; await kata(["create", "Concurrent child", "--parent", parent, "--force-new", "--json"]); }
   } });
+  await app.event("session_start");
   parent = await app.init(["Initial closed child"]); mutate = true;
   await app.done("Initial closed child"); await app.event("session_stop");
   expect((await show(parent)).issue.status).toBe("open");
@@ -398,7 +403,7 @@ test("cross-project adoption pins new children to the claimed project", async ()
   const other = path.join(scratch, `other-${unique()}`); mkdirSync(other);
   await kata(["init", "--project", "v2other", "--json"], other);
   const foreign = await issue("Cross-project claimed issue", { owner: "v2-builder", workspace: other });
-  const app = host(); const original = await app.init(["Original task"]);
+  const app = host(); await app.event("session_start"); const original = await app.init(["Original task"]);
   await app.event("tool_result", { toolName: "bash", input: { command: `kata --workspace '${other}' claim ${foreign}` }, isError: false });
   expect((await app.call({ op: "append", items: ["Claimed-project task"] })).isError).toBeUndefined();
   const view = await show(`v2other#${foreign}`);
@@ -408,7 +413,7 @@ test("cross-project adoption pins new children to the claimed project", async ()
 });
 
 test("typed automatic parent can be recovered after losing the session entry", async () => {
-  const app = host(); const parent = await app.init(["Durable existing task"]);
+  const app = host(); await app.event("session_start"); const parent = await app.init(["Durable existing task"]);
   const recovered = host({ sid: app.sid }); await recovered.event("session_start");
   expect((await recovered.call({ op: "init", items: ["Durable existing task", "Recovered task"] })).isError).toBeUndefined();
   expect((await show(parent)).children.map((c: any) => c.title).sort()).toEqual(["Durable existing task", "Recovered task"]);

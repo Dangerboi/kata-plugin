@@ -5,7 +5,7 @@ import { isRead } from "../core/kata-cli";
 
 // The omp adapter against a real Kata, driven through omp's native todo: plan items that name tickets (their guard, mirror and
 // comments), delegates working a ticket an item names, and the guard's check of an init against the plan's open tasks.
-// Behaviour that only the other hosts' todo tool still has (done with evidence, block, replace, held ticket closes) is in pi-v2-tickets.test.ts.
+// Behaviour that only the other hosts' todo tool still has (done with evidence, block, replace, held ticket closes) is in pi-tickets.test.ts.
 const { scratch, kata, show, issue, host, evidence, message, total, commentsOf, sessionParents, closesOf } = v2Fixture();
 const namingPlan = (a: string, b: string) => [
   { phase: "Smoke test", items: [`v2test#${a}: write the script`, `v2test#${a}: bump the version`] },
@@ -89,8 +89,9 @@ test("a non-last item of a ticket is done with a comment on the ticket; the last
   expect(await labelsOf(a)).not.toContain("needs-review");
   let comments = await commentsOf(a);
   expect(comments).toHaveLength(1);
+  expect(comments[0]).toContain("Todo item done");
   expect(comments[0]).toContain("write the script");
-  expect(comments[0]).toContain("without a Kata close");
+  expect(comments[0]).not.toContain("without a Kata close");
   const refused = await app.call({ op: "done", task: second });
   expect(refused.isError).toBe(true);
   expect(refused.content[0].text).toContain("Close the ticket first");
@@ -141,14 +142,41 @@ test("a ticket item saved in a list edit as completed, without a close, comments
   await app.edit(phases);
   expect(await labelsOf(a)).not.toContain("needs-review");
   expect(await commentsOf(a)).toHaveLength(1);
+  expect((await commentsOf(a))[0]).toContain("Todo item done");
   expect((await commentsOf(a))[0]).toContain("write the script");
+  expect((await commentsOf(a))[0]).not.toContain("without a Kata close");
   phases[0].tasks[1].status = "completed";
   await app.edit(phases);
   const comments = await commentsOf(a);
   expect(comments.some(c => c.includes("write the script"))).toBe(true);
   expect(comments.some(c => c.includes("bump the version"))).toBe(true);
-  expect(comments.every(c => c.includes("without a Kata close"))).toBe(true);
+  expect(comments).toHaveLength(2);
+  expect(comments[0]).toContain("Todo item done");
+  expect(comments[0]).not.toContain("without a Kata close");
+  expect(comments[1]).toContain("without a Kata close");
+  expect(comments[1]).toContain("bump the version");
   expect(await labelsOf(a)).toContain("needs-review");
+  expect((await show(a)).issue.status).toBe("open");
+  expect(await closesOf(a)).toHaveLength(0);
+});
+
+test("completing the one item omp lists does not flag the ticket last while another item of it, never in omp's list, is still open", async () => {
+  const app = await begin();
+  const a = await issue("Ticket A");
+  const [first, second] = [`v2test#${a}: write the script`, `v2test#${a}: bump the version`];
+  await app.call({ op: "init", items: [first, second] });
+  // A resumed session whose omp list never held the second item: the plan has it, omp's last-seen list does not.
+  const entries = structuredClone(app.entries);
+  for (const entry of entries) if (entry.data?.nativePrev) delete entry.data.nativePrev[second];
+  const resumed = host({ sid: app.sid, entries });
+  await resumed.event("session_start");
+  await resumed.edit([{ name: "Tasks", tasks: [{ content: first, status: "completed" }] }]);
+  expect(await labelsOf(a)).not.toContain("needs-review");
+  const comments = await commentsOf(a);
+  expect(comments).toHaveLength(1);
+  expect(comments[0]).toContain("Todo item done");
+  expect(comments[0]).toContain("write the script");
+  expect(comments[0]).not.toContain("without a Kata close");
   expect((await show(a)).issue.status).toBe("open");
   expect(await closesOf(a)).toHaveLength(0);
 });
@@ -351,7 +379,7 @@ test("an item whose ticket was closed wontfix elsewhere is done without a refusa
 });
 
 test("init refuses a plan with open tasks left out, naming them, and writes nothing to Kata", async () => {
-  const app = host(); const parent = await app.init(["Started task", "Waiting task", "Pending task"]);
+  const app = host(); await app.event("session_start"); const parent = await app.init(["Started task", "Waiting task", "Pending task"]);
   await app.call({ op: "start", task: "Waiting task" });
   const before = await show(parent);
   const mark = app.calls.length;
@@ -366,7 +394,7 @@ test("init refuses a plan with open tasks left out, naming them, and writes noth
 });
 
 test("init goes through when the new list keeps every open task", async () => {
-  const app = host(); const parent = await app.init(["One", "Two"]);
+  const app = host(); await app.event("session_start"); const parent = await app.init(["One", "Two"]);
   const result = await app.call({ op: "init", items: ["One", "Two", "Three"] });
   expect(result.isError, result.content[0].text).toBeUndefined();
   const children = (await show(parent)).children;
@@ -375,7 +403,7 @@ test("init goes through when the new list keeps every open task", async () => {
 });
 
 test("init names only the open tasks the new list leaves out", async () => {
-  const app = host(); const parent = await app.init(["One", "Two", "Three"]);
+  const app = host(); await app.event("session_start"); const parent = await app.init(["One", "Two", "Three"]);
   const before = await show(parent);
   const mark = app.calls.length;
   const result = await app.call({ op: "init", items: ["One", "Four"] });

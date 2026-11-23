@@ -48,6 +48,9 @@ export function heldBySession(issue: Pick<KataIssue, "status" | "metadata">, own
 // The start of every refusal for a plan task another session holds.
 export const heldMessage = (ref: string, holder: string) => `Plan task ${ref} was started by another session (${holder}), which has not released it`;
 
+// Whether an issue carries `label`; Kata lists labels as strings or as `{ label }` objects.
+export const hasLabel = (issue: Pick<KataIssue, "labels">, label: string) => (issue.labels ?? []).some(l => (typeof l === "string" ? l : l?.label) === label);
+
 // Kata children as plan tasks, oldest first. Which children are plan tasks is the caller's choice (a lead's plan holds those with
 // a phase; a pi child may also name any other open child). What only the asker knows is its own: whether a delegate of another
 // teammate holds a task, and which session started it.
@@ -68,7 +71,7 @@ export function tasksOf(children: readonly KataIssue[], parent: string, rule: { 
 				delegated: rule.delegated(c),
 				holder: rule.holder(c),
 				released: status === "in_progress" && !meta[SESSION_KEY] ? true : undefined,
-				review: (c.labels ?? []).some(l => (typeof l === "string" ? l : l?.label) === "needs-review"),
+				review: hasLabel(c, "needs-review"),
 				status,
 				blocker: status === "blocked" ? meta["work.attention_msg"] as string | undefined : undefined,
 			};
@@ -113,7 +116,7 @@ export interface ToolWording {
 	takeOverFirst: string;
 	planUnder(ticket: string): string;
 }
-// The `todo` tool of omp and pi, which takes ops.
+// The `todo` tool of pi, which takes ops. (omp's own tool takes the same ops, but has no takeover or ref parameter: see NATIVE_WORDING.)
 export const TODO_WORDING: ToolWording = {
 	tool: "todo",
 	refresh: "Use todo op=view to refresh.",
@@ -123,6 +126,19 @@ export const TODO_WORDING: ToolWording = {
 	retryTakeover: "repeat the call with takeover: true",
 	takeOverFirst: "todo start with takeover: true",
 	planUnder: ticket => `todo init with ref ${ticket}`,
+};
+
+// omp's own todo tool, whose list is mirrored into Kata. It has no `replace`, `takeover` or `ref` parameter: a held task is taken over by
+// the user's `/todo takeover`, and the plan parent is set by `kata claim` or `/todo ref`.
+export const NATIVE_WORDING: ToolWording = {
+	tool: "todo",
+	refresh: "Use todo op=view to refresh.",
+	plan: "Use todo op=init.",
+	planFirst: "Call todo op=init first.",
+	leftOut: "Keep them in the list, or todo drop them first (todo append any that omp's list lacks), then call init again.",
+	retryTakeover: "ask the user to run /todo takeover <task>",
+	takeOverFirst: "ask the user to run /todo takeover <task>",
+	planUnder: ticket => `kata claim ${ticket}, or ask the user to run /todo ref ${ticket}`,
 };
 
 export const projectOf = (ref: string) => ref.split("#")[0];

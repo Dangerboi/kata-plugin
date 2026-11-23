@@ -147,8 +147,9 @@ export type NativeItem = { phase: string; content: string; status: NativeStatus 
 // What the Kata plan must do to follow omp's list, in the order to do it: removals and settlements first (so two tasks are never
 // started at once), then new tasks, then starts.
 export type NativeStep =
+	// `cleared`: Kata already has the task closed (the agent closed it before marking it done): drops a stale `needs-review` label.
 	| { step: "rm" | "drop" | "pause" | "start" | "cleared"; task: Task }
-	// `lastOfTicket`: the task is an item naming a ticket, and no other item of that ticket is still open in omp's list.
+	// `lastOfTicket`: the task is an item naming a ticket, and no other item of that ticket is still open (omp lists it open, never listed it, or is not led).
 	| { step: "flag"; task: Task; lastOfTicket: boolean }
 	// A task omp's list has and the plan lacks, or a closed one omp's list wants open again (named by the plan's phase).
 	// `start`: omp's list has it in progress, so it is started once appended.
@@ -173,13 +174,19 @@ export function diffNativeList(tasks: readonly Task[], prev: ReadonlyMap<string,
 		const task = group && representative(group);
 		if (!task) { if (nativeOpen(wanted)) adds.push({ step: "append", phase: item.phase, content, start: wanted === "in_progress" }); continue; }
 		const before = prev.get(content);
-		if (before === wanted || !led(task)) continue;
+		// Steps on an open task reach every open copy of the content (one title in several phases) that this session leads.
+		const mine = (group ?? []).filter(c => OPEN.has(c.status) && led(c));
+		if (before === wanted || (!mine.length && !led(task))) continue;
 		const open = OPEN.has(task.status);
-		if (wanted === "abandoned") { if (open) settles.push({ step: "drop", task }); }
+		if (wanted === "abandoned") { for (const c of mine) settles.push({ step: "drop", task: c }); }
 		else if (wanted === "completed") {
-			const lastOfTicket = !!task.ticket && !tasks.some(other => other !== task && other.ticket === task.ticket && OPEN.has(other.status) && nativeOpen(status.get(other.content)));
+			// Another open item of the ticket counts as closed once omp's list has it completed or abandoned, or has just removed it (its
+			// removal closes it in Kata this same mirror). One omp never listed, or one this session does not lead, is still open.
+			const stillOpen = (other: Task) => OPEN.has(other.status) && other.content !== content
+				&& (nativeOpen(status.get(other.content)) || (!status.has(other.content) && (!prev.has(other.content) || !led(other))));
 			// Already closed in Kata (the agent closed it before marking it done): only the completed bookkeeping is left, e.g. a stale needs-review.
-			if (open) settles.push({ step: "flag", task, lastOfTicket }); else if (!task.ticket) settles.push({ step: "cleared", task });
+			if (open) for (const c of mine) settles.push({ step: "flag", task: c, lastOfTicket: !!c.ticket && !tasks.some(o => o.ticket === c.ticket && stillOpen(o)) });
+			else if (!task.ticket) settles.push({ step: "cleared", task });
 		}
 		// A task closed in Kata that omp's list wants open: reopened only when omp had it finished (or never listed it). One omp had open
 		// was closed in Kata on purpose.
@@ -189,8 +196,8 @@ export function diffNativeList(tasks: readonly Task[], prev: ReadonlyMap<string,
 			if (wanted === "pending") adds.push({ step: "append", phase: task.phase, content }); else starts.push({ step: "start", task });
 		}
 		// A task Kata has in progress that omp's list just started: its session released it (or never held it), so the start marks it for this one.
-		else if (wanted === "in_progress") { if (task.status === "pending" || task.released) starts.push({ step: "start", task }); }
-		else if (task.status === "in_progress" && before === "in_progress") settles.push({ step: "pause", task });
+		else if (wanted === "in_progress") { for (const c of mine) if (c.status === "pending" || c.released) starts.push({ step: "start", task: c }); }
+		else if (before === "in_progress") { for (const c of mine) if (c.status === "in_progress") settles.push({ step: "pause", task: c }); }
 	}
 	return [...removals, ...settles, ...adds, ...starts];
 }

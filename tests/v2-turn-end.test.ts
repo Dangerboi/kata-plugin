@@ -219,7 +219,7 @@ test("/todo ref naming the auto parent revokes and persists automatic close auth
 });
 
 test("Kata rejects incompatible parent evidence without dropping it from the union", async () => {
-  const app = host(); const parent = await app.init(["Typed union task"]);
+  const app = host(); await app.event("session_start"); const parent = await app.init(["Typed union task"]);
   const audit = await issue("No-change verification", { parent });
   await kata(["close", audit, "--audit-no-change", "--message", "Audited the current implementation and verified no additional changes were required.", "--reviewed", "README.md", "--evidence", "no-change-audit:Existing behavior already satisfies the specification", "--json"]);
   await app.done("Typed union task");
@@ -246,7 +246,7 @@ function withAttachment(keepOthers: boolean) {
 }
 
 test("auto-parent close skips children's attachment evidence and carries the rest", async () => {
-  const app = host({ before: withAttachment(true) }); const parent = await app.init(["Attachment and test evidence"]);
+  const app = host({ before: withAttachment(true) }); await app.event("session_start"); const parent = await app.init(["Attachment and test evidence"]);
   expect((await app.done("Attachment and test evidence")).isError).toBeUndefined();
   await app.event("session_stop", { messages: [] });
   expect((await show(parent)).issue.status).toBe("closed");
@@ -255,7 +255,7 @@ test("auto-parent close skips children's attachment evidence and carries the res
 });
 
 test("auto parent whose children carry only attachment evidence stays open for review", async () => {
-  const app = host({ before: withAttachment(false) }); const parent = await app.init(["Attachment only evidence"]);
+  const app = host({ before: withAttachment(false) }); await app.event("session_start"); const parent = await app.init(["Attachment only evidence"]);
   await app.done("Attachment only evidence");
   await app.event("session_stop", { messages: [] });
   expect(app.calls.some(a => a[0] === "close" && a[1] === parent)).toBe(false);
@@ -274,7 +274,7 @@ test("advisor tool calls cannot steal the main session's spawn coordinator", asy
 test("auto-parent evidence resolves cross-project children in their own projects", async () => {
   const other = path.join(scratch, `evidence-${unique()}`); mkdirSync(other);
   await kata(["init", "--project", "v2evidence", "--json"], other);
-  const app = host(); const parent = await app.init(["Local evidence task"]);
+  const app = host(); await app.event("session_start"); const parent = await app.init(["Local evidence task"]);
   const extra = await issue("Cross-project evidence", { parent, workspace: other });
   await kata(["close", `v2evidence#${extra}`, "--done", "--message", "Verified this cross-project component with its own independent test evidence.", "--test", "cross-project validation", "--json"], other);
   await app.done("Local evidence task");

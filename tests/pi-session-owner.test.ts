@@ -1,9 +1,11 @@
 import { afterEach, expect, test } from "bun:test";
+import { eventually, later } from "./kata-fixture";
+import { siblingThrottle } from "./kata-errors";
 import { piFixture } from "./pi-fixture";
 
 // Ownership of a plan task between two pi leads of one actor, through pi's own todo tool and /todo command: refusals for another
 // session's task, takeover, init that leaves held tasks out, bare done, blocked and same-title tasks.
-const { show, issue, closesOf, host, evidence, message } = piFixture();
+const { show, issue, closesOf, host, evidence, message, unique } = piFixture();
 afterEach(() => { delete process.env.KATA_REF; });
 
 const held = (parent: string, title: string) => show(parent).then(shown => shown.children.find((c: { title: string }) => c.title === title));
@@ -132,4 +134,29 @@ test("tasks of one title in two phases are dropped with close messages of their 
   expect(messages).toHaveLength(2);
   // With Kata's close throttle on, a close that repeats a sibling's message is refused (duplicate_message).
   expect(new Set(messages).size).toBe(2);
+});
+
+test("a lead's end keeps the hold of a task whose close Kata deferred, and the resumed session makes that close", async () => {
+  let throttled = true;
+  const sid = `pi-deferred-${unique()}`;
+  const a = await host({ sid, before: (args: string[]) => args[0] === "close" && throttled ? siblingThrottle() : undefined });
+  await a.event("session_start", { reason: "startup" });
+  const parent = await a.init(["Deferred pi close"]);
+  await a.call({ op: "start", task: "Deferred pi close" });
+  const ref = (await held(parent, "Deferred pi close")).qualified_id as string;
+  expect((await a.call({ op: "done", task: "Deferred pi close", message, evidence })).isError).toBeUndefined();
+  const open = await show(ref);
+  expect(open.issue.status).toBe("open");
+  await a.event("session_shutdown", {});
+  const kept = (await show(ref)).issue;
+  expect(kept.status).toBe("open");
+  expect(kept.metadata["todo.session"]).toBe(sid);
+  expect(kept.revision).toBe(open.issue.revision);
+  throttled = false;
+  // The retry is due when the session resumes: its bind restores the pending close and makes it.
+  const resumed = await host({ sid, entries: a.entries });
+  await later(async () => {
+    await resumed.event("session_start", { reason: "resume" });
+    await eventually(async () => (await show(ref)).issue.status, "closed");
+  });
 });

@@ -148,6 +148,7 @@ test("a local plan survives extension recreation through session entries", async
 
 test("queued close survives extension recreation and retries only after its deadline", async () => {
   const app = host({ before: (a: string[]) => a[0] === "close" ? siblingThrottle() : undefined });
+  await app.event("session_start");
   const parent = await app.init(["Durable queued close"]);
   await app.done("Durable queued close");
   const entries = JSON.parse(JSON.stringify(app.entries));

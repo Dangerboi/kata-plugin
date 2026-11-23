@@ -48,7 +48,7 @@ async function closeChild(parent: string, title: string) {
   await closeRef(`${parent.split("#")[0]}#${child.short_id}`);
 }
 for (const form of ["id", "file"] as const) test(`a fork (parentSession as ${form}) keeps the source plan and makes no new parent`, async () => {
-  const source = host(); const parent = await source.init(["Shared alpha", "Shared beta"]);
+  const source = host(); await source.event("session_start"); const parent = await source.init(["Shared alpha", "Shared beta"]);
   const next = await forkWithList(source, form);
   expect((await next.call({ op: "append", items: ["Fork gamma"] })).isError).toBeUndefined();
   expect(await sessionParents(next.sid)).toEqual([]);
@@ -57,6 +57,7 @@ for (const form of ["id", "file"] as const) test(`a fork (parentSession as ${for
 
 test("a fork does not replay the source's pending close retries", async () => {
   const { app: source, lift } = throttledClose();
+  await source.event("session_start");
   const parent = await source.init(["Throttled shared"]);
   // Dropping the task makes the plugin close it as wontfix; the throttle holds that close back, so a retry is pending.
   await source.call({ op: "drop", task: "Throttled shared" });
@@ -80,7 +81,7 @@ test("a fork does not adopt the source's local plan", async () => {
 });
 
 test("shutting down either session keeps the shared parent open until every task is closed", async () => {
-  const source = host(); const parent = await source.init(["Shared one", "Shared two"]);
+  const source = host(); await source.event("session_start"); const parent = await source.init(["Shared one", "Shared two"]);
   const next = await forkWithList(source, "id");
   await source.event("session_shutdown");
   await next.event("session_shutdown");
@@ -96,7 +97,7 @@ test("shutting down either session keeps the shared parent open until every task
 });
 
 test("a restarted fork still owns the shared parent", async () => {
-  const source = host(); const parent = await source.init(["Shared once"]);
+  const source = host(); await source.event("session_start"); const parent = await source.init(["Shared once"]);
   const next = await forkWithList(source, "id");
   const resumed = host({ sid: next.sid, entries: next.entries, header: next.ctx.sessionManager.getHeader() });
   await resumed.event("session_start");
@@ -108,7 +109,7 @@ test("a restarted fork still owns the shared parent", async () => {
 });
 
 test("a session without parentSession ignores another session's entries", async () => {
-  const source = host(); const parent = await source.init(["Not shared"]);
+  const source = host(); await source.event("session_start"); const parent = await source.init(["Not shared"]);
   const next = host({ entries: structuredClone(source.entries), header: {} }); await next.event("session_start");
   const own = await next.init(["Own task"]);
   expect(own).not.toBe(parent);
@@ -120,7 +121,7 @@ test("a session without parentSession ignores another session's entries", async 
 async function otherProject() { const name = `v2moved${unique()}`; await kata(["projects", "create", name, "--json"]); return name; }
 
 test("a plan whose parent moved to another project creates new items there and rebinds the parent", async () => {
-  const app = host(); const parent = await app.init(["Before the move"]);
+  const app = host(); await app.event("session_start"); const parent = await app.init(["Before the move"]);
   const target = await otherProject(), short = parent.split("#")[1];
   await kata(["move", parent, target, "--json"]);
   expect((await app.call({ op: "append", items: ["After the move"] })).isError).toBeUndefined();
@@ -201,7 +202,7 @@ test("a project renamed mid-session is found by the very next call using the new
   const started = await app.call({ op: "start", task: item });
   expect(started.isError, started.content[0].text).toBeUndefined();
   expect((await show(`${renamed}#${second}`)).issue.owner).toBe("v2-builder");
-  expect(app.backendErrors).toEqual([]);
+  expect(app.mirrorFailures()).toEqual([]);
 });
 
 test("unmoved refs are pinned from the cached project list without another projects call", async () => {
@@ -228,7 +229,7 @@ test("re-binding the bound parent appends no further parent state entry", async 
 });
 
 test("free text containing # is never shown as a Kata ref", async () => {
-  const app = host(); await app.init(["Plain task"]);
+  const app = host(); await app.event("session_start"); await app.init(["Plain task"]);
   for (const target of ["Fix C# parser", "Fix #12 bug", "-flag#abc"]) {
     expect((await app.call({ op: "done", task: target })).isError).toBe(true);
     expect(app.calls.some(a => a[0] === "show" && a[1] === target)).toBe(false);
@@ -242,7 +243,8 @@ async function withDefaultPriority(fn: () => Promise<void>): Promise<void> {
 }
 
 test("plan tasks and automatic parents take no default priority", () => withDefaultPriority(async () => {
-  const parent = await host().init(["Fresh priority child"]);
+  const app = host(); await app.event("session_start");
+  const parent = await app.init(["Fresh priority child"]);
   // Kata leaves `priority` out of the issue when it has none.
   expect((await show(parent)).issue.priority).toBeUndefined();
   const child = (await show(parent)).children.find((c: any) => c.title === "Fresh priority child");
@@ -267,7 +269,7 @@ function earlierVersion(matches: (args: string[]) => boolean) {
 
 test("a plan task an earlier version created under a default priority replays", () => withDefaultPriority(async () => {
   const earlier = earlierVersion(args => args.includes("Legacy item"));
-  const app = host({ before: earlier.before }); const parent = await app.init(["Legacy sibling"]);
+  const app = host({ before: earlier.before }); await app.event("session_start"); const parent = await app.init(["Legacy sibling"]);
   const again = await app.call({ op: "append", items: ["Legacy item"] });
   expect(again.isError, again.content?.[0]?.text).toBeUndefined();
   expect(earlier.made.issue?.priority).toBe(2);

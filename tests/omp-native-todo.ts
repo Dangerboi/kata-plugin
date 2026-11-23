@@ -28,12 +28,12 @@ export interface TodoResult {
 export interface TodoOutcome { result: TodoResult; committed?: TodoPhase[] }
 
 const OPS: readonly string[] = ["init", "start", "done", "rm", "drop", "append", "view"];
-const DEFAULT_INIT_PHASE = "Tasks"; // todo.ts 330
+const DEFAULT_INIT_PHASE = "Tasks"; // todo.ts, initPhases
 
 const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
 const isStrings = (value: unknown): value is string[] => Array.isArray(value) && value.every(item => typeof item === "string");
 
-// tui todo.ts 129-162: delimiters tried in order on a `task` string that names no task verbatim.
+// tui todo.ts, `splitTaskList`: delimiters tried in order on a `task` string that names no task verbatim.
 const TASK_LIST_DELIMITERS: readonly { pattern: RegExp; partial: boolean }[] = [
   { pattern: /\r?\n/, partial: true },
   { pattern: /;/, partial: true },
@@ -57,14 +57,14 @@ function splitTaskList(content: string, known: ReadonlySet<string>): string[] {
   }
   return partial ?? [content];
 }
-/** The task contents a `task` arg targets (tui todo.ts 164-174): a verbatim name is one target, a flattened list splits; absent, `""` and `[]` target none. */
+/** The task contents a `task` arg targets (tui todo.ts, `todoTaskTargets`): a verbatim name is one target, a flattened list splits; absent, `""` and `[]` target none. */
 export function todoTaskTargets(phases: readonly TodoPhase[], task: string | readonly string[] | undefined): string[] {
   if (task === undefined || task === "") return [];
   const known = new Set(phases.flatMap(phase => phase.tasks.map(item => item.content)));
   return (typeof task === "string" ? [task] : task).flatMap(content => splitTaskList(content, known));
 }
 
-// todo.ts 80-123
+// todo.ts, `findTaskByContent`, `findPhaseByName`, `getCompletionTransitions`
 const findTaskByContent = (phases: TodoPhase[], content: string) => {
   for (const phase of phases) {
     const task = phase.tasks.find(t => t.content === content);
@@ -87,7 +87,7 @@ function getCompletionTransitions(previous: TodoPhase[], updated: TodoPhase[]): 
   return transitions;
 }
 
-/** todo.ts 125-141: the first in_progress task stays and later ones go back to pending; with none, the first pending task starts. */
+/** todo.ts, `normalizeInProgressTask`: the first in_progress task stays and later ones go back to pending; with none, the first pending task starts. */
 export function normalizeInProgressTask(phases: TodoPhase[]): void {
   const ordered = phases.flatMap(phase => phase.tasks);
   if (ordered.length === 0) return;
@@ -97,7 +97,7 @@ export function normalizeInProgressTask(phases: TodoPhase[]): void {
   const firstPending = ordered.find(task => task.status === "pending");
   if (firstPending) firstPending.status = "in_progress";
 }
-/** todo.ts 143-154 */
+/** todo.ts, `nextActionableTask` */
 function nextActionableTask(phases: readonly TodoPhase[]): TodoItem | undefined {
   let firstPending: TodoItem | undefined;
   for (const phase of phases) for (const task of phase.tasks) {
@@ -107,7 +107,7 @@ function nextActionableTask(phases: readonly TodoPhase[]): TodoItem | undefined 
   return firstPending;
 }
 
-// todo.ts 264-327
+// todo.ts, `resolveTaskOrError`, `resolveTasksOrError`, `resolvePhaseOrError`
 function resolveTaskOrError(phases: TodoPhase[], content: string | undefined, errors: string[]) {
   if (!content) { errors.push("Missing task content"); return undefined; }
   const hit = findTaskByContent(phases, content);
@@ -132,7 +132,7 @@ function resolvePhaseOrError(phases: TodoPhase[], name: string | undefined, erro
   if (!phase) errors.push(`Phase "${name}" not found`);
   return phase;
 }
-/** done/drop/rm targets: `task`, else `items` (todo.ts 313-316). */
+/** done/drop/rm targets: `task`, else `items` (todo.ts, `getTaskTargets`). */
 const namedTaskContents = (phases: TodoPhase[], entry: TodoParams): string[] => {
   const contents = todoTaskTargets(phases, entry.task);
   return contents.length > 0 ? contents : (entry.items ?? []);
@@ -148,7 +148,7 @@ function getTaskTargets(phases: TodoPhase[], entry: TodoParams, errors: string[]
   return [];
 }
 
-// todo.ts 332-367: a non-empty `list` wins over flat `items` (+ `phase`); an empty phase name becomes "Tasks".
+// todo.ts, `initPhases`: a non-empty `list` wins over flat `items` (+ `phase`); an empty phase name becomes "Tasks".
 function initPhases(entry: TodoParams, errors: string[]): TodoPhase[] {
   const flat = entry.items && entry.items.length > 0 ? [{ phase: entry.phase as string, items: entry.items }] : undefined;
   const list = entry.list?.length ? entry.list : (flat ?? entry.list);
@@ -169,7 +169,7 @@ function initPhases(entry: TodoParams, errors: string[]): TodoPhase[] {
   return phases;
 }
 
-// todo.ts 369-407: an existing item anywhere is an error; without `phase`, items go to the phase of the in-progress task, else the first pending task, else the last phase, else "Tasks".
+// todo.ts, `appendItems`: an existing item anywhere is an error; without `phase`, items go to the phase of the in-progress task, else the first pending task, else the last phase, else "Tasks".
 function appendItems(phases: TodoPhase[], entry: TodoParams, errors: string[]): TodoPhase[] {
   if (entry.phase === "") { errors.push("Missing phase name for append operation"); return phases; }
   if (!entry.items || entry.items.length === 0) { errors.push("Missing items for append operation"); return phases; }
@@ -188,7 +188,7 @@ function appendItems(phases: TodoPhase[], entry: TodoParams, errors: string[]): 
   return phases;
 }
 
-// todo.ts 409-425: rm removes the targets; with only `phase` it empties that phase.
+// todo.ts, `removeTasks`: rm removes the targets; with only `phase` it empties that phase.
 function removeTasks(phases: TodoPhase[], entry: TodoParams, errors: string[]): TodoPhase[] {
   const contents = namedTaskContents(phases, entry);
   if (contents.length > 0) {
@@ -204,7 +204,7 @@ function removeTasks(phases: TodoPhase[], entry: TodoParams, errors: string[]): 
   return phases;
 }
 
-// todo.ts 427-477
+// todo.ts, `applyEntry`
 function applyEntry(phases: TodoPhase[], entry: TodoParams, errors: string[]): TodoPhase[] {
   switch (entry.op) {
     case "init": return initPhases(entry, errors);
@@ -225,7 +225,7 @@ function applyEntry(phases: TodoPhase[], entry: TodoParams, errors: string[]): T
   }
 }
 
-/** todo.ts 479-488: only unambiguous shapes infer a missing `op`. */
+/** todo.ts, `inferTodoOp`: only unambiguous shapes infer a missing `op`. */
 function inferTodoOp(args: Record<string, unknown>, hasExistingPhases: boolean): TodoOperation | undefined {
   if (Array.isArray(args.list) && args.list.length > 0) return "init";
   if (Array.isArray(args.items) && args.items.length > 0) {
@@ -235,7 +235,7 @@ function inferTodoOp(args: Record<string, unknown>, hasExistingPhases: boolean):
   return undefined;
 }
 
-/** What the arktype schema (todo.ts 53-70) rejects: a summary per problem, none when `raw` is valid. */
+/** What the arktype schema (todo.ts, `todoSchema`) rejects: a summary per problem, none when `raw` is valid. */
 function schemaProblems(raw: unknown): string[] {
   if (!isRecord(raw)) return [`must be an object (was ${raw === null ? "null" : typeof raw})`];
   const problems: string[] = [];
@@ -251,12 +251,12 @@ function schemaProblems(raw: unknown): string[] {
   }
   if (raw.task !== undefined && typeof raw.task !== "string" && !isStrings(raw.task)) problems.push("task must be a string or an array of strings");
   if (raw.phase !== undefined && typeof raw.phase !== "string") problems.push("phase must be a string");
-  // No minimum length for `items`: init and append enforce it with their own errors (todo.ts 63-67).
+  // No minimum length for `items`: init and append enforce it with their own errors (todo.ts schema).
   if (raw.items !== undefined && !isStrings(raw.items)) problems.push("items must be an array of strings");
   return problems;
 }
 
-/** todo.ts 496-507: validate, repairing an omitted `op` next to an unambiguous payload; else the schema error text. Unknown keys stay. */
+/** todo.ts, `resolveTodoParams`: validate, repairing an omitted `op` next to an unambiguous payload; else the schema error text. Unknown keys stay. */
 export function resolveTodoParams(raw: unknown, hasExistingPhases: boolean): TodoParams | string {
   const problems = schemaProblems(raw);
   if (problems.length === 0) return raw as TodoParams;
@@ -267,7 +267,7 @@ export function resolveTodoParams(raw: unknown, hasExistingPhases: boolean): Tod
   return `Invalid todo arguments: ${problems.join("\n")}`;
 }
 
-/** todo.ts 509-515: the op, then normalization (also on a failing call, whose result is discarded). */
+/** todo.ts, `applyParams`: the op, then normalization (also on a failing call, whose result is discarded). */
 export function applyParams(phases: TodoPhase[], params: TodoParams): { phases: TodoPhase[]; errors: string[] } {
   const errors: string[] = [];
   const next = applyEntry(phases, params, errors);
@@ -275,7 +275,7 @@ export function applyParams(phases: TodoPhase[], params: TodoParams): { phases: 
   return { phases: next, errors };
 }
 
-/** todo.ts 617-683 */
+/** todo.ts, `formatSummary` */
 function formatSummary(phases: TodoPhase[], errors: string[], readOnly = false): string {
   const tasks = phases.flatMap(phase => phase.tasks);
   if (tasks.length === 0) {
@@ -316,7 +316,7 @@ function formatSummary(phases: TodoPhase[], errors: string[], readOnly = false):
 }
 
 /**
- * One native `todo` call against `previous` (todo.ts 685-743, `TodoTool.execute`). A schema failure, any op error, or a
+ * One native `todo` call against `previous` (todo.ts, `TodoTool.execute`). A schema failure, any op error, or a
  * `view` leaves the list as it was; an error discards the whole call. `details` is `{ op, phases, storage, completedTasks? }`
  * (a schema failure has no `op`); the error result carries `isError: true`.
  */

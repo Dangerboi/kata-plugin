@@ -23,7 +23,9 @@ export function v2Fixture() {
       // The adapter spawns closes itself while a transcript session is exported, so a host that must see or fail closes runs without one; `transcript: true` keeps it.
       afterEvent: () => { if (!options.transcript) for (const key of TRANSCRIPT_ENV) delete process.env[key]; },
     });
-    return { ...app, init: (items = ["Implement fixture", "Verify fixture"]) => app.init(items) };
+    // Not a spread copy: `sid` is a getter that follows `switchSession`.
+    const init = app.init;
+    return Object.assign(app, { init: (items = ["Implement fixture", "Verify fixture"]) => init(items) });
   }
 
   // Like omp: the host owns retry timers, and sweeps whatever is pending on shutdown. Returns the timers `app` has armed.

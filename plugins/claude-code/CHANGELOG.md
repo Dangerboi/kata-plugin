@@ -10,6 +10,12 @@ All notable changes to the `kata-cc` Claude Code plugin are listed here. The for
 
 - The plugin folder has a listing icon and a README that lists what the mod runs, changes, sends and stores, for Anthropic's plugin directory.
 
+### Fixed
+
+#### Plans
+
+- Restarting a closed task you own with `todo` reopens it, instead of failing with "no longer owned" when Kata cleared the owner on close.
+
 ## [1.0.0] - 2026-11-18
 
 ### Added

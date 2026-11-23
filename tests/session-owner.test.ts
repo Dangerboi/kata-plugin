@@ -21,7 +21,7 @@ const closeTask = (ref: string) => kata(["close", ref, "--done", "--message", ME
 // A refusal for a task another session holds: names the holder and sends the model to the user.
 function heldBy(result: { isError?: boolean; content: { text: string }[] }, session: string) {
   expect(result.isError).toBe(true);
-  expect(result.content[0].text).toContain(`is held by session ${session}`);
+  expect(result.content[0].text).toContain(`was started by another session (${session}), which has not released it`);
   expect(result.content[0].text).toContain("ask the user to run /todo takeover");
 }
 // A refusal for this session's own task: only the Kata close is missing.
@@ -249,7 +249,6 @@ test("a ticket item may name another plan's task that session holds; tickets kee
   expect(result.isError).toBeUndefined();
   expect(b.app.list().flatMap(p => p.tasks.map(t => t.content))).toEqual([item]);
   // The mirror reported no refusal for the held ticket.
-  expect(b.app.backendErrors).toEqual([]);
   expect(b.app.notices.filter(n => /did not take the latest change/.test(String(n[0])))).toEqual([]);
 });
 

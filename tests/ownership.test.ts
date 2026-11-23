@@ -43,7 +43,7 @@ function host(parent: string | undefined, before?: Before) {
   };
 }
 // The mirror could not make a change in Kata: omp keeps its list and the user is told once.
-const refused = (app: { notices: string[] }) => app.notices.some(message => /did not take the latest change/.test(message));
+const refused = (app: { notices: string[] }) => app.notices.some(message => /Kata did not take the latest change|Kata refused the latest change/.test(message));
 const workWrites = (app: { calls: string[][] }) => app.calls.filter(args => args[0] === "meta" && args[3]?.startsWith("work."));
 
 // Removing the ownership gate or swallowing claim failures must fail these.
@@ -81,7 +81,8 @@ test("a failed parent claim is reported before creating or starting children", a
       return { code: 1, stderr: "parent claim transport failed", stdout: "" };
     }
   });
-  await app.call({ op: "init", items: ["A child that must never start"] });
+  await app.begin();
+  await app.edit([{ name: "Tasks", tasks: [{ content: "A child that must never start", status: "in_progress" }] }]);
   expect(parentRef).toBeDefined();
   expect(refused(app)).toBe(true);
   expect((await show(parentRef!)).children ?? []).toEqual([]);
@@ -276,7 +277,7 @@ test("a native init's auto-start cannot claim another teammate's task", async ()
   expect((await app.call({ op: "start", task: other })).isError).toBeUndefined();
   expect(refused(app)).toBe(false);
   expect((await app.call({ op: "start", task: title })).isError).toBeUndefined();
-  expect(app.notices.filter(message => /did not take the latest change/.test(message)).length).toBe(1);
+  expect(app.notices.filter(message => /Kata did not take the latest change|Kata refused the latest change/.test(message)).length).toBe(1);
   const after = await issueOf(ref);
   expect(after.metadata["work.attention"]).toBe("needs-human");
   expect(after.metadata["todo.status"]).toBe("pending");
