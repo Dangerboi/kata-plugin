@@ -5,7 +5,7 @@ import { piFixture } from "./pi-fixture";
 
 // Ownership of a plan task between two pi leads of one actor, through pi's own todo tool and /todo command: refusals for another
 // session's task, takeover, init that leaves held tasks out, bare done, blocked and same-title tasks.
-const { show, issue, closesOf, host, evidence, message, unique } = piFixture();
+const { show, closesOf, host, evidence, message, unique } = piFixture();
 afterEach(() => { delete process.env.KATA_REF; });
 
 const held = (parent: string, title: string) => show(parent).then(shown => shown.children.find((c: { title: string }) => c.title === title));

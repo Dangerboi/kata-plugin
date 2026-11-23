@@ -7,7 +7,7 @@ import { kataViews } from "./omp-host";
 // the list into Kata (the todo backend's `replace`). Edge cases of both, one behaviour per test.
 const { show, issue, host, down, total, commentsOf, sessionParents, closesOf, scratch, kata, message } = v2Fixture();
 
-const { refOf, children, childRef, issueOf, labelsOf, titles } = kataViews(show);
+const { refOf, childRef, issueOf, labelsOf, titles } = kataViews(show);
 // A pre-existing plan task (todo.phase set), as an earlier session's mirror leaves it; `issue` suffixes the title.
 const planTask = (title: string, parent: string) => issue(title, { parent, meta: ["todo.phase=Tasks", "todo.status=pending"] });
 

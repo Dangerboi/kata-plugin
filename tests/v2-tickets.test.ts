@@ -7,7 +7,7 @@ import { isRead } from "../core/kata-cli";
 // The omp adapter against a real Kata, driven through omp's native todo: plan items that name tickets (their guard, mirror and
 // comments), delegates working a ticket an item names, and the guard's check of an init against the plan's open tasks.
 // Behaviour that only the other hosts' todo tool still has (done with evidence, block, replace, held ticket closes) is in pi-tickets.test.ts.
-const { scratch, kata, show, issue, host, evidence, message, total, commentsOf, sessionParents, closesOf } = v2Fixture();
+const { scratch, kata, show, issue, host, message, total, commentsOf, sessionParents, closesOf } = v2Fixture();
 const namingPlan = (a: string, b: string) => [
   { phase: "Smoke test", items: [`v2test#${a}: write the script`, `v2test#${a}: bump the version`] },
   { phase: "Inbox", items: [`v2test#${b}: fetch the inbox`] },

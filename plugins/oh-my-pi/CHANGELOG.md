@@ -24,7 +24,7 @@ All notable changes to `@dangerboi/kata-omp` are listed here. The format follows
 
 - omp's own `todo` tool, `/todo`, HUD, reminders and nudges run, and the plugin's `kata` todo backend mirrors the list into Kata after omp saves each change.
   - An added task creates a child issue, starting it claims it, and dropping or removing it closes it as wontfix.
-  - Changes made in Kata stand: an agent's `kata close`, a delegate's close or a hand back is never undone by the mirror.
+  - Changes made in Kata stand: the mirror follows what changed in omp's list, so an agent's `kata close`, a delegate's close or a hand back is not undone (except when Kata answers slower than omp's 30 s backend timeout across a `/tree` or fork; see limits).
   - A task the user marks completed through `/todo` or RPC `set_todos` while its issue is open stays open, labeled `needs-review` with one comment.
   - A task that was never in omp's list (from an adopted parent, `KATA_REF` or a claimed ticket) is never removed. Tasks are matched by text, and moving one to another phase is not mirrored.
   - While Kata is unreachable the plan is kept in the session and replays when Kata returns; omp's list is never held up by Kata.

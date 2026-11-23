@@ -1955,7 +1955,7 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 			if (!Array.isArray(call.list) && !Array.isArray(call.items)) return;
 			const list = Array.isArray(call.list) && call.list.length ? call.list.flatMap((p: unknown) => p && typeof p === "object" && "items" in p ? texts(p.items) : []) : texts(call.items);
 			const left = open.filter(t => !t.ticket && !list.includes(t.content) && !delegated(t));
-			const lines = [...left.filter(t => t.holder).map(held)];
+			const lines = left.filter(t => t.holder).map(held);
 			const free = left.filter(t => !t.holder);
 			// A task omp's list held can be dropped there; one it never held (it came from Kata) must be appended first, or omp's drop finds nothing.
 			const listed = (tasks: Task[]) => tasks.map(t => `- "${t.content}" (${t.ref})`).join("\n");
