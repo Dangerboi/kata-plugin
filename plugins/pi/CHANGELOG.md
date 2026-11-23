@@ -4,6 +4,8 @@ All notable changes to `@dangerboi/kata-pi` are listed here. The format follows 
 
 ## [Unreleased]
 
+## [1.12.2] - 2026-11-23
+
 ### Fixed
 
 #### Plans
@@ -474,7 +476,8 @@ Every change in this release is by @salmonumbrella ([#4](https://github.com/Dang
   - An automatic parent closes only when every child has accepted evidence.
   - An interrupted parent setup recovers with its original session identity.
 
-[Unreleased]: https://github.com/Dangerboi/kata-plugin/compare/pi-v1.12.1...HEAD
+[Unreleased]: https://github.com/Dangerboi/kata-plugin/compare/pi-v1.12.2...HEAD
+[1.12.2]: https://github.com/Dangerboi/kata-plugin/compare/pi-v1.12.1...pi-v1.12.2
 [1.12.1]: https://github.com/Dangerboi/kata-plugin/compare/pi-v1.12.0...pi-v1.12.1
 [1.12.0]: https://github.com/Dangerboi/kata-plugin/compare/pi-v1.11.0...pi-v1.12.0
 [1.11.0]: https://github.com/Dangerboi/kata-plugin/compare/pi-v1.10.0...pi-v1.11.0

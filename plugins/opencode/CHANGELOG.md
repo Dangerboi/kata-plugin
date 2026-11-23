@@ -4,6 +4,8 @@ All notable changes to `@dangerboi/kata-opencode` are listed here. The format fo
 
 ## [Unreleased]
 
+## [1.2.2] - 2026-11-23
+
 ### Fixed
 
 #### Plans
@@ -164,7 +166,8 @@ All notable changes to `@dangerboi/kata-opencode` are listed here. The format fo
 
 - `bun run smoke:opencode` runs the OpenCode plugin in a real headless OpenCode with a scripted model provider and checks the result in a real Kata daemon. It runs locally and is not part of CI.
 
-[Unreleased]: https://github.com/Dangerboi/kata-plugin/compare/opencode-v1.2.1...HEAD
+[Unreleased]: https://github.com/Dangerboi/kata-plugin/compare/opencode-v1.2.2...HEAD
+[1.2.2]: https://github.com/Dangerboi/kata-plugin/compare/opencode-v1.2.1...opencode-v1.2.2
 [1.2.1]: https://github.com/Dangerboi/kata-plugin/compare/opencode-v1.2.0...opencode-v1.2.1
 [1.2.0]: https://github.com/Dangerboi/kata-plugin/compare/opencode-v1.1.0...opencode-v1.2.0
 [1.1.0]: https://github.com/Dangerboi/kata-plugin/compare/opencode-v1.0.0...opencode-v1.1.0
