@@ -209,7 +209,7 @@ test("a refused call is no extension error, leaves Kata and the list as they wer
   expect((await issueOf(await childRef(parent, "Write docs"))).status).toBe("open");
 });
 
-test("an accepted change is in Kata when the call returns, without a replace after it", async () => {
+test("an accepted change reaches Kata through the replace omp sends after committing it", async () => {
   const app = host(); await app.event("session_start");
   const parent = await app.init(["Write parser"]);
   const mark = app.calls.length;
@@ -217,6 +217,41 @@ test("an accepted change is in Kata when the call returns, without a replace aft
   expect(await titles(parent)).toEqual(["Write docs", "Write parser"]);
   const created = app.calls.slice(mark).filter(c => c[0] === "create");
   expect(created).toHaveLength(1);
+});
+
+test("an accepted done that omp does not commit leaves the task closed in Kata: the resend of the old list reopens nothing", async () => {
+  const app = host(); await app.event("session_start");
+  const parent = await app.init(["Write parser", "Write docs"]);
+  const child = await childRef(parent, "Write docs");
+  await app.close("Write docs");
+  const before = app.list(), commentsBefore = (await commentsOf(child)).length;
+  // The call is aborted after `apply` accepted it: omp keeps its list and resends it.
+  app.beforeCommit = () => true;
+  const mark = app.calls.length;
+  const result = await app.call({ op: "done", task: "Write docs" });
+  expect(result.isError).toBe(true);
+  expect(result.content[0].text).toContain("did not take this change in time");
+  expect(app.list()).toEqual(before);
+  expect(app.mirrorFailures()).toEqual([]);
+  expect(await issueOf(child)).toMatchObject({ status: "closed", closed_reason: "done" });
+  expect(await labelsOf(child)).not.toContain("needs-review");
+  expect(await commentsOf(child)).toHaveLength(commentsBefore);
+  expect(app.calls.slice(mark).filter(c => c[0] === "reopen")).toEqual([]);
+});
+
+test("a lead's done naming two tasks, one still open in Kata, is refused naming the open one", async () => {
+  const app = host(); await app.event("session_start");
+  const parent = await app.init(["Write parser", "Write docs"]);
+  const closedRef = await childRef(parent, "Write parser"), openRef = await childRef(parent, "Write docs");
+  await app.close("Write parser");
+  const before = app.list();
+  const refused = await app.call({ op: "done", task: ["Write parser", "Write docs"] });
+  expect(refused.isError).toBe(true);
+  expect(refused.details.refused).toBe(true);
+  expect(refused.content[0].text).toContain(`"Write docs" is open in Kata as ${openRef}`);
+  expect(refused.content[0].text).not.toContain(closedRef);
+  expect(app.list()).toEqual(before);
+  expect((await issueOf(openRef)).status).toBe("open");
 });
 
 test("a delegate's todo with no assignment is neither asked nor mirrored", async () => {
@@ -254,6 +289,26 @@ test("a delegate whose assignment failed and is retried by its first todo call i
   expect(refused.isError).toBe(true);
   expect(refused.content[0].text).toContain(`v2test#${open}`);
   expect((await issueOf(`v2test#${open}`)).status).toBe("open");
+});
+
+test("a delegate's refusal reads like the lead's for the same case: a done on a task still open in Kata", async () => {
+  const lead = host(); await lead.event("session_start");
+  const parent = await lead.init(["Delegated plan task", "Own task"]);
+  const assigned = await childRef(parent, "Delegated plan task");
+  const sessionFile = `${scratch}/same-wording.jsonl`;
+  lead.emit("task:subagent:lifecycle", { id: "same-wording", status: "started", sessionFile, description: "Delegated plan task" });
+  await lead.call({ op: "view" });
+  await eventually(async () => (await show(assigned)).issue.metadata?.["omp.subagent_id"], "same-wording");
+  const step = await planTask("Same step", assigned);
+  const title = (await issueOf(`v2test#${step}`)).title;
+  const worker = host({ sessionFile, agent: { kind: "sub", id: "same-wording", parentId: lead.ctx.agent.id } });
+  const delegated = (await worker.call({ op: "done", task: title })).content[0].text as string;
+  const own = (await lead.call({ op: "done", task: "Own task" })).content[0].text as string;
+  const ownRef = await childRef(parent, "Own task");
+  // Refs and titles differ per plan, and omp flattens the lead's reason to one line and adds its own prefix and list: the wording is the same.
+  const wording = (text: string, ref: string, name: string) => text.replaceAll(ref, "<ref>").replaceAll(name, "<task>").replace(/\s+/g, " ").trim();
+  const reason = wording(own, ownRef, "Own task").replace(/^Todo backend "kata" did not accept this change: /, "").replace(/ Remaining items.*$/, "");
+  expect(reason).toBe(wording(delegated, `v2test#${step}`, title));
 });
 
 test("a mirror while Kata is unreachable does not throw, and the change lands in Kata on the next change once it answers", async () => {

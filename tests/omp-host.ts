@@ -199,20 +199,16 @@ export function ompHost(options: OmpHostOptions) {
   const lineOf = (text: string) => text.replace(/\s+/g, " ").trim() || "no reason given";
   /**
    * omp's `apply` ask (todo.ts): only the model's call in the main session, after `session_start`, when the selected backend has `apply`. A throw
-   * refuses the call. On accept the backend holds `next`, so a backend that held `previous` is recorded as holding `next` and gets no `replace`.
+   * refuses the call. `apply` is a veto only: an accepted call that commits is sent through `replace` like any other commit.
    */
   async function askBackend(context: any, op: string | undefined, previous: TodoPhase[], next: TodoPhase[]): Promise<{ asked: boolean; refusal?: string }> {
     const backend = host.todoBackend;
     if ((context.agent?.kind ?? "main") !== "main" || !started || settings.backend !== backend?.id || typeof backend.apply !== "function" || !op || op === "view") return { asked: false };
     try { await backend.apply({ op, previous: clonePhases(previous), next: clonePhases(next) }, context); }
     catch (error) { return { asked: true, refusal: lineOf(String((error as Error)?.message ?? error)) }; }
-    // The same held check as `sync`: with nothing sent yet, an empty list counts as held.
-    const key = JSON.stringify(previous), at = manager.getSessionId();
-    const held = sent ? sent.id === backend.id && sent.sid === at && sent.phases === key : previous.length === 0;
-    if (held) sent = { sid: at, id: backend.id, phases: JSON.stringify(next) };
     return { asked: true };
   }
-  // The tool's execution and what follows it: the backend's ask, the commit, then `replace` after the list is saved and `tool_result`. A refused call fails with the list unchanged.
+  // The tool's execution and what follows it: the backend's ask, the commit, then `replace` after the list is saved and `tool_result`. A refused or uncommitted call fails with the list unchanged, then omp resends its current list.
   async function execute(params: any, context: any, callId: string): Promise<TodoResult> {
     // A `tool_call` handler that returns `{ block, reason }` refuses the call: it never runs and omp reports no result for it.
     const blocked = await fire("tool_call", { type: "tool_call", toolName: "todo", toolCallId: callId, input: params }, context);
@@ -223,11 +219,16 @@ export function ompHost(options: OmpHostOptions) {
     if (outcome.committed) {
       const at = manager.getSessionId();
       const { asked, refusal } = await askBackend(context, result.details.op, previous, outcome.committed);
+      // Between the ask and the commit omp's call can be aborted: the test's hook says so by returning true.
+      const aborted = (await app.beforeCommit?.()) === true;
       const current = () => executeTodo(previous, { op: "view" }, "memory").result.content[0].text;
       const fail = (text: string, refused?: true): TodoResult => ({ content: [{ type: "text", text }], details: { ...result.details, phases: clonePhases(previous), ...refused && { refused } }, isError: true });
-      if (refusal !== undefined) result = fail(`Todo backend "${host.todoBackend.id}" did not accept this change: ${refusal}\n${current()}`, true);
+      if (refusal !== undefined) {
+        result = fail(`Todo backend "${host.todoBackend.id}" did not accept this change: ${refusal}\n${current()}`, true);
+        sent = undefined; await sync(context);
+      }
       // omp's commit rule: the list and the session are as they were when the backend was asked. Otherwise the backend is stale and gets the current list again.
-      else if (asked && (JSON.stringify(listOf(context)) !== JSON.stringify(previous) || manager.getSessionId() !== at)) {
+      else if (asked && (aborted || JSON.stringify(listOf(context)) !== JSON.stringify(previous) || manager.getSessionId() !== at)) {
         result = fail(`Todo backend "${host.todoBackend.id}" did not take this change in time.\n${current()}`);
         sent = undefined; await sync(context);
       } else { lists.set(listKey(context), outcome.committed); await sync(context); }
@@ -266,7 +267,7 @@ export function ompHost(options: OmpHostOptions) {
     return ref;
   }
 
-  const app = { ctx, get sid() { return manager.getSessionId(); }, entries: host.entries, calls: host.calls, notices: host.notices, widgets: host.widgets,
+  const app = { beforeCommit: undefined as (() => unknown) | undefined, ctx, get sid() { return manager.getSessionId(); }, entries: host.entries, calls: host.calls, notices: host.notices, widgets: host.widgets,
     contractReady: host.answered("agent-contract-hook"),
     /** Every warning the adapter showed except the backend-off one: a failing or refused mirror shows only here, because the adapter catches a failing `replace` and tells the user. */
     mirrorFailures: () => mirrorFailures(host.notices),

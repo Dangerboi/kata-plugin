@@ -310,23 +310,22 @@ export function createKataCore(host: CoreHost, options: CoreOptions): KataCore {
 }
 
 // A native `todo` call as omp receives it. omp infers a missing `op` (inferTodoOp): a non-empty `list` is init, `items` with a phase is
-// append, and `items` alone is init while omp's list has no phases (`listed` false).
+// append, and `items` alone is init when omp's list has no phases. Whether it has any is not known here, so `items` alone counts as init.
 type NativeCall = { op?: unknown; task?: unknown; phase?: unknown; items?: unknown; list?: unknown };
 const GUARDED_OPS: readonly string[] = ["init", "start", "done", "drop", "rm"];
-function inferNativeOp(call: NativeCall, listed: boolean): string | undefined {
+function inferNativeOp(call: NativeCall): string | undefined {
 	if (typeof call.op === "string") return call.op;
 	if (Array.isArray(call.list) && call.list.length) return "init";
 	if (Array.isArray(call.items) && call.items.length) {
-		if (typeof call.phase === "string" && call.phase) return "append";
-		if (!listed) return "init";
+		return typeof call.phase === "string" && call.phase ? "append" : "init";
 	}
 	return undefined;
 }
-// Whether the guard checks this call: init, start, done, drop or rm, with the op omp would infer. Conservative: a call with only `items`
-// and no `phase` counts as init, since whether omp's list has phases is known only inside the guard.
+// Whether the delegate guard checks this call: init, start, done, drop or rm, with the op omp would infer. Conservative: a call with only
+// `items` and no `phase` counts as init.
 function guardedNativeCall(input: unknown): boolean {
 	if (!input || typeof input !== "object") return false;
-	const op = inferNativeOp(input as NativeCall, false);
+	const op = inferNativeOp(input as NativeCall);
 	return !!op && GUARDED_OPS.includes(op);
 }
 // What a native `todo` call is about to change, as omp hands it to the backend's `apply`.
@@ -1407,7 +1406,7 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 	const forkSources = ((globalThis as Record<symbol, unknown>)[Symbol.for(`kata.${namespace}.forkSources`)] ??= new Map<string, Leaving>()) as Map<string, Leaving>;
 
 	// A main session starts: the session it replaces ends (its attention, its tasks) or hands its tasks to this fork, then this one binds and its attention
-	// starts. `session.start` runs it, and so does every other entry of a native host that finds a new main session first (a mirrored list, a guarded call,
+	// starts. `session.start` runs it, and so does every other entry of a native host that finds a new main session first (a mirrored list, a main-session call asked through `accept`, a delegate's guarded call,
 	// `/todo ref`, a prompt: omp may deliver any of them before `session_start`), so the switch is handled once, whichever comes first.
 	async function enterSession(job: Job, ctx: HostContext, begin: { forked?: boolean } = {}, replay = true, initRef?: string): Promise<void> {
 		const id = sid(ctx), explicit = configuredRef();
@@ -1915,15 +1914,6 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 		seenIds.add(last.id);
 	}
 
-	// One mirror job: omp's whole list into Kata, then a failure shown to the user. Never rejects.
-	async function mirrorJob(job: Job, ctx: HostContext, phases: NativePhase[]): Promise<void> {
-		let failures: MirrorFailure[];
-		try { failures = await mirrorList(job, ctx, phases); }
-		catch (error) { failures = [failureOf(error)]; }
-		finally { if (persist(job)) ownSnapshotLanded(ctx); }
-		report(ctx, failures);
-	}
-
 	// omp calls this after it saved its list, with the whole list. Newest wins: a mirror still queued when a newer one of the SAME session
 	// arrives does nothing, since the newer one carries everything; a list of a session left behind still lands. Never rejects.
 	function mirror(ctx: HostContext, phases: NativePhase[]): Promise<void> {
@@ -1931,7 +1921,11 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 		mirrorStamps.set(session, mine);
 		return serial(async job => {
 			if (mine !== mirrorStamps.get(session)) return;
-			await mirrorJob(job, ctx, phases);
+			let failures: MirrorFailure[];
+			try { failures = await mirrorList(job, ctx, phases); }
+			catch (error) { failures = [failureOf(error)]; }
+			finally { if (persist(job)) ownSnapshotLanded(ctx); }
+			report(ctx, failures);
 		}, { ctx }).catch(debug);
 	}
 
@@ -2030,28 +2024,22 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 	function guard(ctx: HostContext, input: unknown, after?: Promise<unknown>): Promise<string | undefined> {
 		const call = input as NativeCall | null;
 		if (!call || typeof call !== "object" || !guardedNativeCall(call)) return Promise.resolve(undefined);
-		const op = inferNativeOp(call, false)!;
+		const op = inferNativeOp(call)!;
 		return bounded((async () => { await after?.catch(debug); if (main(ctx) || !delegates.assignment(ctx)) return undefined; return serial(job => guardText(job, ctx, op, delegateAim(call, op)), { ctx }); })(), GUARD_MS);
 	}
 
-	// Asked before omp commits a `todo` call of the lead: the text that refuses it, or undefined once Kata holds the change's list (what a
-	// mirror of `change.next` does), so omp sends no `replace` for it. Kata failing a read does not refuse: the mirror keeps the list locally or reports it.
+	// Asked before omp commits a `todo` call of the lead: the text that refuses it, or undefined. It only checks: omp sends `replace` with the
+	// list once it commits, and that mirror is what writes Kata, so a change omp does not commit never reaches it. A read Kata fails (down, too
+	// old) refuses nothing; the mirror meets the same failure and tells the user.
 	function accept(ctx: HostContext, change: NativeChange): Promise<string | undefined> {
-		const session = sid(ctx) ?? "";
-		mirrorStamps.set(session, (mirrorStamps.get(session) ?? 0) + 1);
 		return serial(async job => {
-			let text: string | undefined;
-			// A read Kata fails (down, too old) refuses nothing: the mirror below meets the same failure and tells the user.
 			try {
-				text = await guardText(job, ctx, change.op, () => {
+				return await guardText(job, ctx, change.op, () => {
 					const items = (phases: NativePhase[]) => new Set(nativeItems(phases).map(i => i.content));
 					return change.op === "init" ? { init: { kept: items(change.next), was: items(change.previous) } } : { contents: targetsOf(change) };
 				});
 			}
-			catch (error) { debug(error); }
-			if (text) return text;
-			await mirrorJob(job, ctx, change.next);
-			return undefined;
+			catch (error) { debug(error); return undefined; }
 		}, { ctx });
 	}
 
