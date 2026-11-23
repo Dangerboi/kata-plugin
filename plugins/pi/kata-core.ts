@@ -22,8 +22,9 @@ export interface HostContext {
 	agent?: { kind?: string; id?: string };
 	sessionManager?: {
 		getSessionId?(): string | undefined;
-		// The session's entries, oldest first: the core reads back the ones the host's `appendEntry` added (`type: "custom"`).
+		// The current branch of the session, oldest first: the core reads back the ones the host's `appendEntry` added (`type: "custom"`).
 		getBranch?(): readonly unknown[];
+		// Every entry of the session, on any branch, in the order they were added; the last one is the newest. Read to tell which entries are new.
 		getEntries?(): readonly unknown[];
 		// omp: `parentSession` names the session this one was forked from.
 		getHeader?(): { parentSession?: unknown } | null | undefined;
@@ -96,7 +97,7 @@ export const PROMPT_TAGS = { contract: "kata_contract", inbox: "kata_inbox", ass
 export const tagged = (name: keyof PromptSections, text: string) => `<${PROMPT_TAGS[name]}>\n${text}\n</${PROMPT_TAGS[name]}>`;
 // The session entry the core saves its state in: appended after each change, and the session's latest is read at the next bind.
 export const snapshotEntry = (namespace: string) => `io.kata.${namespace}.state`;
-export type Snapshot = SettlementSnapshot & { version: number; sessionId: string; ownSessions?: string[]; plan: Plan; delegates?: SavedDelegate[]; named?: Task[]; deletedParent?: string; nativePrev?: Record<string, NativeStatus>; nativePhase?: Record<string, string>; nativeListed?: boolean; leaf?: string; memoryId?: string };
+export type Snapshot = SettlementSnapshot & { version: number; sessionId: string; ownSessions?: string[]; plan: Plan; delegates?: SavedDelegate[]; named?: Task[]; deletedParent?: string; nativePrev?: Record<string, NativeStatus>; nativePhase?: Record<string, string>; nativeListed?: boolean; leaf?: string };
 // Whether a saved session left work a later instance must finish: a pending close (a task's or a ticket's) or an unfinished
 // delegate. The automatic parent's close is not counted: a session owes it only once it ends (see session.end).
 export function owes(snapshot: Partial<Snapshot> | undefined): boolean {
@@ -386,8 +387,9 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 	let mirrorWarned = false, errorsSeen = 0;
 	// What this core last mirrored of omp's list for the session (see diffNativeList), saved in the session snapshot.
 	let native = nativeMemory(undefined);
-	// The id of the last entry of the branch `native` describes, and every branch entry id this core has read for the session (at a bind, a mirror or a guard).
+	// The id of the last entry of the branch `native` describes.
 	let nativeLeaf: unknown;
+	// The ids of the entries this core has read: the branch at a bind, a reload or a mirror pass, and every `getEntries` id at a bind or a reload.
 	const seenIds = new Set<unknown>();
 	const flagged = new Set<string>();
 	let sessionTeammate: string | undefined;
@@ -820,7 +822,7 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 		// A fork gets a new session id and copies the source's entries. It shares the source's work:
 		// adopt its parent and ticket items, but not its retries (the source still owns those closes)
 		// nor its local plan (replaying that would make a second automatic parent).
-		const { snapshot, source } = savedSnapshot(ctx, branch, id);
+		const { snapshot, source } = savedSnapshot(ctx, branch, id, onBranch(branch));
 		// A forked session keeps the source id as the parent's owner: the parent's session_id metadata names it.
 		const parentOwner = source ?? id;
 		// A resumed lead keeps its saved sessions; a fork adds itself to its source's, so it works on what its source started.
@@ -839,7 +841,7 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 			if (typeof snapshot.deletedParent === "string") deletedParent = snapshot.deletedParent;
 		}
 		// The mirror continues from the list this branch's snapshot last mirrored, or from none: a tree move or a branch switch must not carry the old branch's.
-		if (main(ctx)) { native = nativeMemory(snapshot); nativeLeaf = options.native ? branch[branch.length - 1]?.id : undefined; seenIds.clear(); for (const entry of [...branch, ...(ctx.sessionManager?.getEntries?.() ?? [])] as any[]) seenIds.add(entry?.id); }
+		if (main(ctx)) { native = nativeMemory(snapshot); nativeLeaf = options.native ? branch[branch.length - 1]?.id : undefined; seenIds.clear(); markSeen(ctx, true); }
 		let stored: any = snapshot?.plan?.parent ? snapshot.plan : undefined;
 		for (const entry of branch) {
 			if (entry?.type !== "custom" || entry.customType !== PARENT_ENTRY || (entry.data?.sessionId && entry.data.sessionId !== parentOwner)) continue;
@@ -1745,6 +1747,7 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 			native = { prev: next, phase: phaseOf, listed: phases.length > 0 };
 			const own: readonly any[] = main(ctx) ? ctx.sessionManager?.getBranch?.() ?? [] : [];
 			nativeLeaf = own[own.length - 1]?.id;
+			markSeen(ctx, false);
 		};
 		if (boundAgent && boundAgent !== agentKey(ctx)) return [];
 		// A delegate with no assignment has no plan to mirror into.
@@ -1854,7 +1857,17 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 	const snapshotOf = (entry: any, session: unknown): Snapshot | undefined =>
 		entry?.type === "custom" && entry.customType === SNAPSHOT_ENTRY && entry.data?.version === 1 && entry.data.sessionId === session ? entry.data : undefined;
 
+	// Marks the branch's entry ids as read, and with `all` every entry of the session too.
+	function markSeen(ctx: HostContext, all: boolean) {
+		for (const entry of (ctx.sessionManager?.getBranch?.() ?? []) as readonly any[]) seenIds.add(entry?.id);
+		if (all) for (const entry of (ctx.sessionManager?.getEntries?.() ?? []) as readonly any[]) seenIds.add(entry?.id);
+	}
+
+	// Accepts a snapshot whose `leaf` is on `branch`, or that has none: one saved under another branch's tip is not this branch's memory.
+	const onBranch = (branch: readonly any[]) => (data: Snapshot) => data.leaf === undefined || branch.some(entry => entry?.id === data.leaf);
+
 	// The snapshot of the session's current branch; a branch with no snapshot of its own starts from its fork source's, named as `source`.
+	// `accept` filters the candidates: the latest one it accepts is taken.
 	function savedSnapshot(ctx: HostContext, branch: readonly any[], id: string | undefined, accept: (data: Snapshot) => boolean = () => true): { snapshot?: Snapshot; source?: string } {
 		const find = (session: unknown): Snapshot | undefined => [...branch].reverse().map(entry => snapshotOf(entry, session)).find(data => !!data && accept(data));
 		const own = find(id);
@@ -1865,20 +1878,20 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 
 	// The mirror's memory (omp's last list, its phases, whether it had any) belongs to the branch whose last entry is `nativeLeaf`. It is kept while that entry is on
 	// the ctx's branch and none of the entries after it was read before: they are new since the memory was made (messages, tool results, snapshots this core or a
-	// delegate saved). Otherwise the branch moved (a `/tree` to a sibling, back, forward to entries read before) and every entry of the session is read now, and the memory is reloaded from the branch's latest
-	// snapshot of this session or of one it descends from, taking only a snapshot whose `leaf` is on the branch or that has none; no snapshot starts from none.
+	// delegate saved). Then nothing moves: only a mirror pass, a reload or a bind sets `nativeLeaf` and `seenIds`. Otherwise the branch moved (a `/tree` to a
+	// sibling, back, forward to entries read before) and every entry of the session is read now, and the memory is reloaded from the branch's latest
+	// snapshot of this session or of its direct fork source (not the source's own source), taking only a snapshot whose `leaf` is on the branch or that has
+	// none; a branch with no such snapshot starts from none.
 	function nativeFromBranch(ctx: HostContext) {
 		if (!options.native || !main(ctx)) return;
 		const branch: readonly any[] = ctx.sessionManager?.getBranch?.() ?? [];
 		const at = nativeLeaf === undefined ? -1 : branch.findIndex(entry => entry?.id === nativeLeaf);
 		const keep = at >= 0 && !branch.slice(at + 1).some(entry => seenIds.has(entry?.id));
-		nativeLeaf = branch[branch.length - 1]?.id;
-		for (const entry of branch) seenIds.add(entry?.id);
 		if (keep) return;
+		nativeLeaf = branch[branch.length - 1]?.id;
 		// Every entry of the session as it is now was read: a later `/tree` forward to one of them reloads.
-		for (const entry of (ctx.sessionManager?.getEntries?.() ?? []) as readonly any[]) seenIds.add(entry?.id);
-		const ids = new Set(branch.map(entry => entry?.id));
-		const saved = nativeMemory(savedSnapshot(ctx, branch, sid(ctx), data => data.leaf === undefined || ids.has(data.leaf)).snapshot);
+		markSeen(ctx, true);
+		const saved = nativeMemory(savedSnapshot(ctx, branch, sid(ctx), onBranch(branch)).snapshot);
 		const key = (m: NativeMemory) => JSON.stringify([[...m.prev], [...m.phase], m.listed]);
 		if (key(saved) === key(native)) return;
 		native = saved;

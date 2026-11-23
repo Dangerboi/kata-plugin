@@ -274,6 +274,8 @@ function rawOmpHost(sid: string, before: (args: string[], opts: any) => any) {
     moveTo: (next: any[], nextLeaf: string | null) => { branch = next; leaf = nextLeaf; },
     /** /tree right after the next saved entry: the move lands between one mirror's save and the next mirror's bind. */
     moveAfterNextAppend: (next: any[], nextLeaf: string | null) => { afterAppend = () => { branch = next; leaf = nextLeaf; }; },
+    /** Runs `then` right after the next saved entry, as another caller appending to the session would. */
+    afterNextAppend: (then: () => void) => { afterAppend = then; },
     /** /tree to an earlier entry: the branch is the entries up to it; the entries after it stay in `app.entries`. */
     moveToEntry: (id: string) => { branch = app.entries.slice(0, app.entries.findIndex((e: any) => e.id === id) + 1); leaf = id; } };
 }
@@ -423,7 +425,7 @@ test("a fork's /tree forward to a later entry of its source's branch, before its
 
 test("a snapshot another caller saved from the bind's memory after the captured tip does not reload the memory on a late mirror", async () => {
   const { parser: parserTask, docs: docsTask } = names();
-  const { app, event, replace, moveTo } = rawOmpHost(`v2-bind-id-${unique()}`, () => undefined);
+  const { app, event, replace, moveTo } = rawOmpHost(`v2-bind-after-tip-${unique()}`, () => undefined);
   const base = { id: "entry-base", type: "custom", customType: "other", data: {} };
   const message = { id: "entry-message", type: "custom", customType: "other", data: {} };
   app.entries.push(base);
@@ -435,7 +437,7 @@ test("a snapshot another caller saved from the bind's memory after the captured 
   moveTo(branch, message.id);
   await replace(listOf([parserTask, "pending"], [docsTask, "pending"]));
   // Another caller saved a snapshot from the bind's memory, which had no list; it landed after the pass's own.
-  branch.push({ id: "entry-bind-id", type: "custom", customType: snapshotEntry("omp"), data: { ...bound, leaf: base.id } });
+  branch.push({ id: "entry-bind-after-tip", type: "custom", customType: snapshotEntry("omp"), data: { ...bound, leaf: base.id } });
   const entries = app.entries.length;
   await replace(listOf([parserTask, "pending"], [docsTask, "pending"]));
   // The memory is kept: reloading from the bind's emptier snapshot would mirror both tasks again and save a snapshot.
@@ -482,9 +484,36 @@ test("a snapshot of branch Z that landed on branch W (a mirror held across /tree
   // The held mirror's snapshot landed on W, stamped with Z's leaf, which is not on W: W's next mirror must not load it.
   const landed = branchW.filter((e: any) => e.customType === snapshotEntry("omp") && e.data.leaf === "entry-z");
   expect(landed.length).toBeGreaterThan(0);
+  // W is bound again (a /tree): its memory comes from the latest snapshot on W whose leaf is on W, not from Z's.
+  await event("session_tree");
   // W's next list: the docs task was never on W, so nothing of Z's memory may remove it.
   const docs = await childRef(parent, docsTask);
   await replace(listOf([parserTask, "pending"]));
   expect(app.notices.filter(n => MIRROR_FAILURE.test(String(n[0])))).toEqual([]);
   expect((await show(docs)).issue.status).toBe("open");
+});
+
+test("a guarded call between a held mirror and the next one does not move the memory's branch, so the next list is still diffed against the held mirror's list", async () => {
+  const { parser: parserTask, docs: docsTask } = names();
+  let creates = 0;
+  const hold = holdKata((args) => args[0] === "create" && ++creates === 3);
+  const { app, event, replace, afterNextAppend } = rawOmpHost(`v2-guard-keeps-${unique()}`, hold.before);
+  await event("session_start");
+  // Mirror N plans both tasks, then waits on Kata with the branch it captured.
+  const first = replace(listOf([parserTask, "pending"], [docsTask, "pending"]));
+  await hold.entered;
+  const parent = await planParentOf(parserTask);
+  // Another caller's entry lands right after N's snapshot, so the live branch ends past it and N's own snapshot is not its last entry.
+  afterNextAppend(() => app.entries.push({ id: "entry-after-snapshot", type: "custom", customType: "other", data: {} }));
+  // A guarded call is queued behind N, and mirror N+1 captures N's branch, which has no snapshot of N's, with the docs task removed.
+  const guarded = app.event("tool_call", { toolName: "todo", toolCallId: "guard-keeps", input: { op: "start", task: `No such task ${unique()}` } });
+  // The adapter's guard handler awaits its cached backend lookup and job sync before queuing the guard; neither waits on Kata,
+  // so a few event-loop turns put the guard in the core's queue ahead of N+1.
+  for (let turn = 0; turn < 5; turn++) await new Promise(resolve => setImmediate(resolve));
+  const second = replace(listOf([parserTask, "pending"]));
+  hold.release();
+  await Promise.all([first, guarded, second]);
+  expect(app.notices.filter(n => MIRROR_FAILURE.test(String(n[0])))).toEqual([]);
+  // The guard did not move the memory to the live tip, which is not on the captured branch: N's list is what N+1 is diffed against, so the docs task is removed.
+  expect((await show(await childRef(parent, docsTask))).issue.status).toBe("closed");
 });
