@@ -60,6 +60,9 @@ class FakeSessionManager {
   switchTo(id: string, header: any) { this.#id = id; this.#header = header; }
 }
 
+/** The notices the adapter shows when a mirror to Kata failed or was refused. */
+export const MIRROR_FAILURE = /Kata did not take the latest change|Kata refused the latest change/;
+
 /**
  * The fake omp host: the shared fake host plus omp's agent, session file, async jobs and event bus, with the omp adapter loaded,
  * and omp 19.1.1's native todo (`omp-native-todo.ts`) with the todo-backend plumbing around it.
@@ -84,6 +87,7 @@ export function ompHost(options: OmpHostOptions) {
   let sent: { sid: string | undefined; id: string; phases: string } | undefined;
   /** omp sends no list before the host's `session_start` has fired. */
   let started = false;
+  let unsent: Parameters<typeof sync>[0];
 
   // The queue behind `queuedReplace`: one list waits while a `replace` runs, and a newer list takes its place.
   let waiting: { phases: TodoPhase[]; key: string; sid: string | undefined; context: any } | undefined;
@@ -115,7 +119,8 @@ export function ompHost(options: OmpHostOptions) {
   // `session_start`, a registered backend that `todo.backend` selects, and a list that differs from the one last taken. A throw
   // leaves nothing recorded, so the next list goes out again.
   async function sync(context: any) {
-    if ((context.agent?.kind ?? "main") !== "main" || !started) return;
+    if ((context.agent?.kind ?? "main") !== "main") return;
+    if (!started) { unsent = context; return; }
     const backend = host.todoBackend;
     if (settings.backend === "native" || !backend || backend.id !== settings.backend) return;
     const phases = clonePhases(listOf(context)), key = JSON.stringify(phases), sid = manager.getSessionId();
@@ -174,11 +179,17 @@ export function ompHost(options: OmpHostOptions) {
   const app = { ctx, get sid() { return manager.getSessionId(); }, entries: host.entries, calls: host.calls, notices: host.notices, widgets: host.widgets,
     contractReady: host.answered("agent-contract-hook"),
     /** The "did not take the latest change" notices: the adapter catches a failing `replace` and tells the user, so a mirror that failed shows only here. */
-    mirrorFailures: () => host.notices.filter(args => String(args[0]).includes("did not take the latest change")),
+    mirrorFailures: () => host.notices.filter(args => MIRROR_FAILURE.test(String(args[0]))),
     event: async (name: string, data: any = {}, context: any = ctx) => {
       try { return await host.event(name, data, context); }
       finally {
-        if (name === "session_start") started = true;
+        if (name === "session_start") {
+          started = true;
+          // A list set before `session_start` waited (omp's `syncTodoBackend`) and goes out now.
+          const waitingContext = unsent;
+          unsent = undefined;
+          if (waitingContext) await sync(waitingContext);
+        }
         options.afterEvent?.();
       }
     },

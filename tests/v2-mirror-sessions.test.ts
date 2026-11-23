@@ -1,12 +1,14 @@
 import { expect, test } from "bun:test";
-import { eventually, holdNext } from "./kata-fixture";
+import { eventually, holdNext, memoryDelegateStore } from "./kata-fixture";
 import { v2Fixture } from "./v2-fixture";
 import { ompHost } from "./omp-host";
 import { TRANSCRIPT_ENV } from "../core/kata-cli";
+import { createKataCore } from "../core/kata-core";
+import { nodePlatform } from "../core/node-host";
 
 // The omp adapter against a real Kata, on omp's native `todo`: how the mirror and the session's task ownership hold up when the
 // session changes under it (/new, a fork, /tree) or Kata is away. One behaviour per test.
-const { scratch, cwd, run, show, issue, host, down, commentsOf, kata, unique } = v2Fixture();
+const { binary: kataBinary, scratch, cwd, run, show, issue, host, down, commentsOf, kata, unique } = v2Fixture();
 
 // Every test names its own tasks: a title shared with another test would let the harness's title lookup find that test's plan.
 const names = () => { const id = unique(); return { parser: `Write parser ${id}`, docs: `Write docs ${id}`, tests: `Write tests ${id}` }; };
@@ -18,6 +20,11 @@ async function childRef(parent: string, title: string): Promise<string> {
   if (!child) throw new Error(`${parent} has no child "${title}"`);
   return refOf(child.short_id);
 }
+const planParentOf = async (title: string): Promise<string> => {
+  const found = (await kata(["list", "--all", "--status", "all", "--json"])).issues.find((i: any) => i.title === title && i.parent);
+  if (!found) throw new Error(`No plan task "${title}"`);
+  return found.parent.qualified_id;
+};
 const holder = async (ref: string) => (await show(ref)).issue.metadata?.["todo.session"];
 const labelsOf = async (ref: string): Promise<string[]> => ((await show(ref)).labels ?? []).map((l: any) => l.label);
 // A host bound to an existing plan parent, as a second lead of the same user is.
@@ -121,4 +128,83 @@ test("with omp's queue, three rapid list changes during a slow mirror leave Kata
   expect(app.mirrorFailures()).toEqual([]);
   const status = async (title: string) => (await show(await childRef(parent, title))).issue.metadata?.["todo.status"];
   expect([await status(parserTask), await status(docsTask), await status(testsTask)]).toEqual(["in_progress", "pending", "pending"]);
+});
+
+test("a /tree back to a branch with a task in progress, whose list arrives before session_tree, does not reopen the task Kata closed since", async () => {
+  const { parser: parserTask, docs: docsTask } = names();
+  const app = host(); await app.event("session_start");
+  const parent = await app.init([parserTask, docsTask]);
+  const parser = await childRef(parent, parserTask);
+  expect((await app.call({ op: "start", task: parserTask })).isError).toBeUndefined();
+  const earlier = structuredClone(app.entries), earlierList = app.list();
+  expect(earlierList[0].tasks.find((t: any) => t.content === parserTask)?.status).toBe("in_progress");
+  expect((await app.done(parserTask)).isError).toBeUndefined();
+  expect((await show(parser)).issue.status).toBe("closed");
+  app.entries.splice(0, app.entries.length, ...earlier);
+  await app.edit(earlierList);
+  await app.event("session_tree");
+  expect(app.mirrorFailures()).toEqual([]);
+  expect((await show(parser)).issue.status).toBe("closed");
+  expect(await labelsOf(parser)).not.toContain("needs-review");
+});
+
+test("a task started natively on a plan made while Kata was away, whose replayed start Kata refuses, gets needs-review and one comment and is not blocked", async () => {
+  const { parser: parserTask, docs: docsTask, tests: testsTask } = names();
+  let mode: "away" | "refusing" = "away", claims = 0;
+  const refusal = { code: 1, stdout: "", stderr: '{"error":{"kind":"conflict","code":"claim_refused","message":"claim refused by a hook","exit_code":1}}\n' };
+  const app = host({ before: (args: string[]) => mode === "away" ? down() : args[0] === "claim" && ++claims > 1 ? refusal : undefined });
+  await app.event("session_start");
+  expect((await app.call({ op: "init", items: [parserTask, docsTask] })).isError).toBeUndefined();
+  expect((await app.call({ op: "start", task: parserTask })).isError).toBeUndefined();
+  // The replay claims the plan parent first (let through), then the started task (refused).
+  mode = "refusing";
+  expect((await app.call({ op: "append", items: [testsTask] })).isError).toBeUndefined();
+  const parent = (await planParentOf(parserTask));
+  const parser = await childRef(parent, parserTask);
+  await eventually(async () => await labelsOf(parser), ["needs-review"]);
+  expect(await commentsOf(parser)).toHaveLength(1);
+  expect((await show(parser)).issue.metadata?.["todo.status"]).not.toBe("blocked");
+});
+
+test("a ticket item set in omp's list while Kata was away reports an outage, not a refusal, and lands once Kata is back", async () => {
+  const ticket = await issue("Outage ticket");
+  let away = true;
+  const app = host({ before: (args: string[]) => away ? down() : undefined });
+  await app.event("session_start");
+  const item = `v2test#${ticket}: do the action`;
+  await app.edit([{ name: "Tasks", tasks: [{ content: item, status: "in_progress" }] }]);
+  expect(app.mirrorFailures()).toHaveLength(1);
+  expect(String(app.mirrorFailures()[0][0])).toContain("did not take");
+  expect(app.notices.some(n => /refused the latest change/.test(String(n[0])))).toBe(false);
+  away = false;
+  await app.edit([{ name: "Tasks", tasks: [{ content: item, status: "in_progress" }, { content: `Plain ${unique()}`, status: "pending" }] }]);
+  await eventually(async () => (await show(ticket)).issue.metadata?.["todo.status"], "in_progress");
+  expect((await show(ticket)).issue.owner).toBe("v2-builder");
+});
+
+const statusOf = async (ref: string) => (await show(ref)).issue.metadata?.["todo.status"];
+
+// Driven on the core itself: omp's queue hands the backend one list at a time, so only the core can have two mirrors of one session
+// and one of another waiting behind a running job.
+test("a session's newest list still lands when another session's list is mirrored after it, behind the same slow job", async () => {
+  const { parser: parserTask, docs: docsTask } = names();
+  const sessionA = `v2-core-a-${unique()}`, sessionB = `v2-core-b-${unique()}`;
+  const hold = holdNext(args => args[0] === "claim");
+  const entries: any[] = [];
+  const ctxOf = (id: string) => ({ cwd, sessionManager: { getSessionId: () => id, getBranch: () => entries } });
+  const core = createKataCore({ platform: nodePlatform, appendEntry: (customType, data) => entries.push({ type: "custom", customType, data }),
+    exec: async (_file, args, opts) => await hold.before(args, opts) ?? run(args, opts.cwd, opts.timeout), delegateStore: memoryDelegateStore() },
+    { namespace: "omp", executable: kataBinary, executableVars: ["KATA_OMP_EXECUTABLE"], native: true });
+  const list = (inProgress?: string) => [{ name: "Tasks", tasks: [parserTask, docsTask].map(content => ({ content, status: content === inProgress ? "in_progress" as const : "pending" as const })) }];
+  const a = ctxOf(sessionA), b = ctxOf(sessionB);
+  await core.todo.mirror(a, list());
+  const parent = (await kata(["list", "--status", "all", "--meta", `omp.session_id=${sessionA}`, "--json"])).issues[0].qualified_id;
+  hold.arm();
+  const slow = core.todo.mirror(a, list(parserTask));
+  await hold.entered;
+  // Queued behind the slow job: two lists of A (the second replaces the first) and one of B.
+  const queued = [core.todo.mirror(a, list(docsTask)), core.todo.mirror(a, list(docsTask)), core.todo.mirror(b, [])];
+  hold.release();
+  await Promise.all([slow, ...queued]);
+  expect(await statusOf(await childRef(parent, docsTask))).toBe("in_progress");
 });

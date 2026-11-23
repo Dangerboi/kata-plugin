@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { MESSAGE, realKata, unique } from "./kata-fixture";
-import { ompHost } from "./omp-host";
+import { MIRROR_FAILURE, ompHost } from "./omp-host";
 
 // Who may move a Kata task when omp's native todo list changes: a start the mirror cannot make because another actor, teammate or
 // session holds the task leaves its attention and status alone, at every point a handoff can race it; a restart reopens only an owned
@@ -43,7 +43,7 @@ function host(parent: string | undefined, before?: Before) {
   };
 }
 // The mirror could not make a change in Kata: omp keeps its list and the user is told once.
-const refused = (app: { notices: string[] }) => app.notices.some(message => /Kata did not take the latest change|Kata refused the latest change/.test(message));
+const refused = (app: { notices: string[] }) => app.notices.some(message => MIRROR_FAILURE.test(message));
 const workWrites = (app: { calls: string[][] }) => app.calls.filter(args => args[0] === "meta" && args[3]?.startsWith("work."));
 
 // Removing the ownership gate or swallowing claim failures must fail these.
@@ -277,7 +277,7 @@ test("a native init's auto-start cannot claim another teammate's task", async ()
   expect((await app.call({ op: "start", task: other })).isError).toBeUndefined();
   expect(refused(app)).toBe(false);
   expect((await app.call({ op: "start", task: title })).isError).toBeUndefined();
-  expect(app.notices.filter(message => /Kata did not take the latest change|Kata refused the latest change/.test(message)).length).toBe(1);
+  expect(app.notices.filter(message => MIRROR_FAILURE.test(message)).length).toBe(1);
   const after = await issueOf(ref);
   expect(after.metadata["work.attention"]).toBe("needs-human");
   expect(after.metadata["todo.status"]).toBe("pending");

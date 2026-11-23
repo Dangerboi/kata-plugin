@@ -4,7 +4,7 @@ import { v2Fixture } from "./v2-fixture";
 
 // The omp adapter against a real Kata, on omp's native `todo`: the guard that refuses calls (`tool_call`) and the mirror that follows
 // the list into Kata (the todo backend's `replace`). Edge cases of both, one behaviour per test.
-const { show, issue, host, down, total, commentsOf, sessionParents, closesOf, scratch } = v2Fixture();
+const { show, issue, host, down, total, commentsOf, sessionParents, closesOf, scratch, kata, message } = v2Fixture();
 
 const refOf = (short: string) => `v2test#${short}`;
 async function children(parent: string): Promise<any[]> { return (await show(parent)).children ?? []; }
@@ -350,4 +350,82 @@ test("/todo takeover with todo.backend native is not handled by the plugin", asy
   await app.backend("native");
   const result = await app.event("input", { text: "/todo takeover Write parser", source: "interactive" });
   expect(result?.handled).toBeUndefined();
+});
+
+test("an init with no op and only items, sent while omp's list is empty, is refused when it leaves out an open task from /todo ref", async () => {
+  const parent = refOf(await issue("Explicit parent"));
+  const existing = refOf(await planTask("Existing work", parent));
+  const app = host(); await app.event("session_start");
+  await app.event("input", { text: `/todo ref ${parent}`, source: "interactive" });
+  const refused = await app.call({ items: ["Fresh one"] });
+  expect(refused.isError).toBe(true);
+  expect(refused.content[0].text).toContain("leaves out tasks that are open in Kata");
+  expect(app.list()).toEqual([]);
+  expect((await issueOf(existing)).status).toBe("open");
+  expect(await titles(parent)).toEqual([(await issueOf(existing)).title]);
+});
+
+test("an init with no op and only items, sent while omp's list is empty, is refused when it leaves out an open task from KATA_REF", async () => {
+  const parent = refOf(await issue("Fixed parent"));
+  const existing = refOf(await planTask("Existing work", parent));
+  process.env.KATA_REF = parent;
+  try {
+    const app = host(); await app.event("session_start");
+    const refused = await app.call({ items: ["Fresh one"] });
+    expect(refused.isError).toBe(true);
+    expect(refused.content[0].text).toContain("leaves out tasks that are open in Kata");
+    expect(app.list()).toEqual([]);
+    expect((await issueOf(existing)).status).toBe("open");
+  } finally { delete process.env.KATA_REF; }
+});
+
+test("after every task is removed, leaving empty phases, a call with only items and no op is not an init for the guard", async () => {
+  const parent = refOf(await issue("Explicit parent"));
+  await planTask("Existing work", parent);
+  const app = host(); await app.event("session_start");
+  await app.event("input", { text: `/todo ref ${parent}`, source: "interactive" });
+  expect((await app.call({ op: "append", items: ["Fresh one", "Fresh two"] })).isError).toBeUndefined();
+  for (const task of ["Fresh one", "Fresh two"]) expect((await app.call({ op: "rm", task })).isError, task).toBeUndefined();
+  expect(app.list().length).toBeGreaterThan(0);
+  expect(app.list().every(p => p.tasks.length === 0)).toBe(true);
+  const result = await app.call({ items: ["Fresh three"] });
+  expect(JSON.stringify(result.content)).not.toContain("leaves out");
+  expect(JSON.stringify(result.content)).not.toContain("Existing work");
+});
+
+const closedTicketItem = async () => {
+  const closed = await issue("Closed work");
+  await kata(["close", refOf(closed), "--done", "--message", message, "--test", "closed-item-fixture", "--json"]);
+  return { closed, item: `${refOf(closed)}: more work` };
+};
+
+test("a ticket item naming a closed ticket, appended to a plan, warns once, and two unrelated list changes neither warn again nor retry it", async () => {
+  const { closed, item } = await closedTicketItem();
+  const app = host(); await app.event("session_start");
+  await app.init(["Plain start"]);
+  const refusals = () => app.notices.filter(n => /Kata refused the latest change/.test(String(n[0])));
+  expect(refusals()).toHaveLength(0);
+  expect((await app.call({ op: "append", items: [item] })).isError).toBeUndefined();
+  expect(refusals()).toHaveLength(1);
+  const naming = () => app.calls.filter(c => c.some(arg => arg.includes(closed))).length;
+  const attempts = naming();
+  expect(attempts).toBeGreaterThan(0);
+  expect((await app.call({ op: "append", items: ["Plain one"] })).isError).toBeUndefined();
+  expect((await app.call({ op: "append", items: ["Plain two"] })).isError).toBeUndefined();
+  expect(refusals()).toHaveLength(1);
+  expect(naming()).toBe(attempts);
+});
+
+test("a ticket item naming a closed ticket, in the init that starts the plan, warns once, and two unrelated list changes neither warn again nor retry it", async () => {
+  const { closed, item } = await closedTicketItem();
+  const app = host(); await app.event("session_start");
+  expect((await app.call({ op: "init", items: [item] })).isError).toBeUndefined();
+  const refusals = () => app.notices.filter(n => /Kata refused the latest change/.test(String(n[0])));
+  expect(refusals()).toHaveLength(1);
+  const naming = () => app.calls.filter(c => c.some(arg => arg.includes(closed))).length;
+  const attempts = naming();
+  expect((await app.call({ op: "append", items: ["Plain one"] })).isError).toBeUndefined();
+  expect((await app.call({ op: "append", items: ["Plain two"] })).isError).toBeUndefined();
+  expect(refusals()).toHaveLength(1);
+  expect(naming()).toBe(attempts);
 });

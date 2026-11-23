@@ -171,7 +171,9 @@ export function diffNativeList(tasks: readonly Task[], prev: ReadonlyMap<string,
 		const item = next.find(n => n.content === content)!;
 		const group = copies.get(content);
 		const task = group && representative(group);
-		if (!task) { if (nativeOpen(wanted)) adds.push({ step: "append", phase: item.phase, content, start: wanted === "in_progress" }); continue; }
+		// A content the plan lacks is appended when omp's list just added it or changed its status; one prev already had in this status was
+		// refused (or removed from the plan) at that mirror, and is not asked again on every unrelated change.
+		if (!task) { if (nativeOpen(wanted) && prev.get(content) !== wanted) adds.push({ step: "append", phase: item.phase, content, start: wanted === "in_progress" }); continue; }
 		const before = prev.get(content);
 		// Steps on an open task reach every open copy of the content (one title in several phases) that this session leads.
 		const mine = (group ?? []).filter(c => OPEN.has(c.status) && led(c));

@@ -115,6 +115,8 @@ export interface ToolWording {
 	retryTakeover: string;
 	takeOverFirst: string;
 	planUnder(ticket: string): string;
+	// What the host calls its own todo list, where a message says it is left as it was (hosts whose list the core mirrors).
+	list?: string;
 }
 // The `todo` tool of pi, which takes ops. (omp's own tool takes the same ops, but has no takeover or ref parameter: see NATIVE_WORDING.)
 export const TODO_WORDING: ToolWording = {
@@ -126,6 +128,7 @@ export const TODO_WORDING: ToolWording = {
 	retryTakeover: "repeat the call with takeover: true",
 	takeOverFirst: "todo start with takeover: true",
 	planUnder: ticket => `todo init with ref ${ticket}`,
+	list: "the todo list",
 };
 
 // omp's own todo tool, whose list is mirrored into Kata. It has no `replace`, `takeover` or `ref` parameter: a held task is taken over by
@@ -136,9 +139,11 @@ export const NATIVE_WORDING: ToolWording = {
 	plan: "Use todo op=init.",
 	planFirst: "Call todo op=init first.",
 	leftOut: "Keep them in the list, or todo drop them first (todo append any that omp's list lacks), then call init again.",
-	retryTakeover: "ask the user to run /todo takeover <task>",
-	takeOverFirst: "ask the user to run /todo takeover <task>",
-	planUnder: ticket => `kata claim ${ticket}, or ask the user to run /todo ref ${ticket}`,
+	retryTakeover: "ask the user to run /todo takeover with the task's text",
+	takeOverFirst: "ask the user to run /todo takeover with the task's text",
+	// The plan already has its parent when this is read, and a parent never changes: work several items share is split into child issues of the ticket.
+	planUnder: ticket => `create each one with kata create --parent ${ticket}`,
+	list: "omp's todo list",
 };
 
 export const projectOf = (ref: string) => ref.split("#")[0];
