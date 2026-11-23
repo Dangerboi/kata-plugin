@@ -231,8 +231,10 @@ export default function ompKata(pi: any) {
 	const enter = async (ctx: any) => { see(ctx); await syncJobs(ctx); };
 
 	// omp's context and session manager are class instances with private fields: a method only works called on the
-	// original, so the view is a plain object whose methods are bound to it (never Object.create or a spread).
-	const boundContext = (ctx: any, id: string | undefined) => {
+	// original, so the view is a plain object (never Object.create or a spread). The branch, header and file are
+	// captured by the caller before its first await, since the originals answer for omp's CURRENT session.
+	type Header = { parentSession?: unknown } | null | undefined;
+	const boundContext = (ctx: any, id: string | undefined, captured: { branch: unknown[]; header: Header; file: string | undefined }) => {
 		const sm = ctx?.sessionManager;
 		const bind = (owner: any, name: string) => typeof owner?.[name] === "function" ? owner[name].bind(owner) : undefined;
 		return {
@@ -240,8 +242,8 @@ export default function ompKata(pi: any) {
 			setTimeout: bind(ctx, "setTimeout"), clearTimer: bind(ctx, "clearTimer"),
 			sessionManager: {
 				getSessionId: () => id,
-				getBranch: bind(sm, "getBranch"), getHeader: bind(sm, "getHeader"),
-				getSessionFile: bind(sm, "getSessionFile"), getEntries: bind(sm, "getEntries"),
+				getBranch: () => captured.branch, getHeader: () => captured.header,
+				getSessionFile: () => captured.file, getEntries: bind(sm, "getEntries"),
 			},
 		};
 	};
@@ -255,9 +257,15 @@ export default function ompKata(pi: any) {
 		async replace(phases: any, ctx: any) {
 			// Read before the first await: a later /new changes what the session manager answers.
 			const id = sessionId(ctx);
+			const sm = ctx?.sessionManager;
+			const captured = {
+				branch: [...(sm?.getBranch?.() ?? [])] as unknown[],
+				header: sm?.getHeader?.() as Header,
+				file: sm?.getSessionFile?.() as string | undefined,
+			};
 			try {
 				await enter(ctx);
-				await core.todo.mirror(boundContext(ctx, id), phases);
+				await core.todo.mirror(boundContext(ctx, id, captured), phases);
 			} catch (error) { debug(error); }
 		},
 	});

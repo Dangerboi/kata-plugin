@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { eventually, holdNext, memoryDelegateStore } from "./kata-fixture";
+import { eventually, holdKata, holdNext, memoryDelegateStore } from "./kata-fixture";
 import { v2Fixture } from "./v2-fixture";
 import { ompHost } from "./omp-host";
 import { TRANSCRIPT_ENV } from "../core/kata-cli";
@@ -207,4 +207,45 @@ test("a session's newest list still lands when another session's list is mirrore
   hold.release();
   await Promise.all([slow, ...queued]);
   expect(await statusOf(await childRef(parent, docsTask))).toBe("in_progress");
+});
+
+test("a queued list of a session that runs after /new is diffed against that session's own branch, not the new one's", async () => {
+  const { parser: parserTask, docs: docsTask } = names();
+  let armed = false;
+  const hold = holdKata(() => armed);
+  const sid = `v2-queued-new-${unique()}`;
+  const app = ompHost({ run: (args, opts) => run(args, opts.cwd, opts.timeout), cwd, sid, sessionFile: `${scratch}/${sid}.jsonl`, before: hold.before, queuedReplace: true,
+    afterEvent: () => { for (const key of TRANSCRIPT_ENV) delete process.env[key]; } });
+  await app.event("session_start");
+  const parent = await app.init([parserTask, docsTask]);
+  await app.settled();
+  const parser = await childRef(parent, parserTask), docs = await childRef(parent, docsTask);
+  // The agent closes the parser task in Kata and marks it done natively: A's snapshot has it completed and the docs task pending.
+  expect((await app.done(parserTask)).isError).toBeUndefined();
+  await app.settled();
+  expect((await show(parser)).issue.status).toBe("closed");
+  expect((await show(docs)).issue.status).toBe("open");
+  const sessionA = app.sid;
+  const parserBefore = JSON.stringify((await show(parser)).issue), commentsBefore = (await commentsOf(parser)).length;
+  // A todo call the core is still guarding (its Kata reads held) has A's next list (the docs task removed) queued behind it.
+  armed = true;
+  const reading = app.call({ op: "start", task: `No such task ${sid}` });
+  await hold.entered;
+  await app.edit([{ name: "Tasks", tasks: [{ content: parserTask, status: "completed" as const }] }]);
+  // /new: B's branch holds none of A's entries. The fake session manager has one entry list for every session, so B's is made by emptying it.
+  app.entries.splice(0, app.entries.length);
+  await app.switchSession(`${sessionA}-b`);
+  armed = false;
+  hold.release();
+  await reading;
+  await app.settled();
+  expect(app.mirrorFailures()).toEqual([]);
+  // Diffed against A's snapshot, the removed docs task is removed in Kata; against B's empty one nothing would be removed.
+  const removed = await show(docs);
+  expect(removed.issue.status).toBe("closed");
+  // The closed parser task is neither re-started, re-appended nor commented on.
+  expect(JSON.stringify((await show(parser)).issue)).toBe(parserBefore);
+  expect(await commentsOf(parser)).toHaveLength(commentsBefore);
+  expect((await children(parent)).map((c: any) => c.title).sort()).toEqual([docsTask, parserTask].sort());
+  expect(await labelsOf(parser)).not.toContain("needs-review");
 });

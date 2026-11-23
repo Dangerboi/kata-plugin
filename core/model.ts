@@ -115,7 +115,7 @@ export interface ToolWording {
 	retryTakeover: string;
 	takeOverFirst: string;
 	planUnder(ticket: string): string;
-	// What the host calls its own todo list, where a message says it is left as it was (hosts whose list the core mirrors).
+	// What the host calls its own todo list in the notes and comments the core writes when it mirrors that list (hosts whose list the core mirrors).
 	list?: string;
 }
 // The `todo` tool of pi, which takes ops. (omp's own tool takes the same ops, but has no takeover or ref parameter: see NATIVE_WORDING.)

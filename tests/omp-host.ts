@@ -178,7 +178,7 @@ export function ompHost(options: OmpHostOptions) {
 
   const app = { ctx, get sid() { return manager.getSessionId(); }, entries: host.entries, calls: host.calls, notices: host.notices, widgets: host.widgets,
     contractReady: host.answered("agent-contract-hook"),
-    /** The "did not take the latest change" notices: the adapter catches a failing `replace` and tells the user, so a mirror that failed shows only here. */
+    /** The "did not take the latest change" and "refused the latest change" notices: the adapter catches a failing `replace` and tells the user, so a mirror that failed shows only here. */
     mirrorFailures: () => host.notices.filter(args => MIRROR_FAILURE.test(String(args[0]))),
     event: async (name: string, data: any = {}, context: any = ctx) => {
       try { return await host.event(name, data, context); }

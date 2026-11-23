@@ -217,7 +217,7 @@ Kata specifics:
 - Every other task is a Kata child issue of one parent issue. On init pass \`ref\` with the Kata issue this plan serves (${RULES.search}); an explicit KATA_REF or a delegate's assignment must match it. Without a ref, use that issue, the session's existing parent, or a new parent titled by \`message\`.
 - done closes the issue (an item naming a ticket: see above). Kata requires \`evidence\` (${RULES.evidence}) and a \`message\` of ${PROOF_MIN}+ characters saying what changed and how it was verified. Unverified work: block it instead.
 - The tool does the Kata bookkeeping for its tasks and ticket items: it claims them, sets \`work.attention\` (block: stuck with the reason; start/unblock: ok) and closes them on done. ${RULES.bookkeeping("a plan item")}
-- A delegate (a pi started from this session, or a Claude Code subagent) is bound to a plan item ${RULES.named("task text", "title")} A delegate whose text names neither is untracked: it ${RULES.untracked}, and you finish the item yourself with done. A bound delegate is told to close ${RULES.ownClose("task text")}. That close is expected: the item then shows done without your \`done\`, and a later \`done\` on it changes nothing. To close it yourself after your own checks, write "leave the Kata issue open" in the delegate's task text. A delegate that exits with its issue still open hands it back to you, labeled \`needs-review\`.
+- A delegate (a pi started from this session, or a Claude Code \`Agent\`) is bound to a plan item ${RULES.named("task text", "title")} A delegate whose text names neither is untracked: it ${RULES.untracked}, and you finish the item yourself with done. A bound delegate is told to close ${RULES.ownClose("task text")}. That close is expected: the item then shows done without your \`done\`, and a later \`done\` on it changes nothing. To close it yourself after your own checks, write "leave the Kata issue open" in the delegate's task text. A delegate that exits with its issue still open hands it back to you, labeled \`needs-review\`.
 - init whose new list leaves out open tasks changes nothing and returns an error listing the missing ones; pass \`replace: true\` only to deliberately drop them (they close as wontfix).
 - A task another session started stays that session's until it ends; a session that ends normally releases its tasks. Ops on a held task are refused. ${RULES.takeover("repeat the op naming the task")}
 - drop/rm take the reason in \`message\`.
@@ -332,6 +332,15 @@ type MirrorFailure = { error: unknown; outage: boolean };
 // An error that is, or was caused by, Kata being unreachable.
 const outageOf = (error: unknown): boolean => isUnusable(error) || (error instanceof Error && error.cause !== undefined && outageOf(error.cause));
 const mapOf = <T>(value: unknown) => new Map<string, T>(Object.entries(typeof value === "object" && value ? value as Record<string, T> : {}));
+type NativeMemory = {
+	// Content -> status of the last native list this core mirrored.
+	prev: Map<string, NativeStatus>;
+	// Content -> phase of omp's list at the same mirror: a `{phase}` target of a todo call names omp's phases, which Kata's `todo.phase` may no longer match.
+	phase: Map<string, string>;
+	// Whether omp's last list had any phases (an emptied list still has them), as omp's own check of `todo` calls without an op reads it.
+	listed: boolean;
+};
+const nativeMemory = (saved: Snapshot | undefined): NativeMemory => ({ prev: mapOf<NativeStatus>(saved?.nativePrev), phase: mapOf<string>(saved?.nativePhase), listed: saved?.nativeListed === true });
 
 // `newSession` runs after the host's `switched`, when a bind makes a different session the core's.
 function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void) {
@@ -371,13 +380,9 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 	const autoStart = options.autoStart !== false && !options.native;
 	// The state of `todo.mirror`: its newest call, whether an outage was already reported, and the completions already flagged for review.
 	const mirrorStamps = new Map<string, number>(), refusedOnce = new Set<string>();
-	let mirrorWarned = false;
-	// Content -> status of the last native list this core mirrored for the session (see diffNativeList). Saved in the session snapshot.
-	let nativePrev = new Map<string, NativeStatus>();
-	// Content -> phase of omp's list at the same mirror: a `{phase}` target of a todo call names omp's phases, which Kata's `todo.phase` may no longer match.
-	let nativePhase = new Map<string, string>();
-	// Whether omp's last list had any phases (an emptied list still has them), as omp's own check of `todo` calls without an op reads it. Saved with them.
-	let nativeListed = false;
+	let mirrorWarned = false, errorsSeen = 0;
+	// What this core last mirrored of omp's list for the session (see diffNativeList), saved in the session snapshot.
+	let native = nativeMemory(undefined);
 	const flagged = new Set<string>();
 	let sessionTeammate: string | undefined;
 	const ownTeammate = () => sessionTeammate ?? setting("KATA_TEAMMATE") ?? "";
@@ -444,7 +449,7 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 			plan: structuredClone({ ...plan, tasks: plan.tasks.filter(t => !t.ticket) }), ...settlement.snapshot(),
 			...(kept.length ? { delegates: structuredClone(kept) } : {}),
 			...(named.length ? { named: structuredClone(named) } : {}), ...(deletedParent ? { deletedParent } : {}),
-			...(nativePrev.size ? { nativePrev: Object.fromEntries(nativePrev) } : {}), ...(nativePhase.size ? { nativePhase: Object.fromEntries(nativePhase) } : {}), ...(nativeListed ? { nativeListed: true } : {}) };
+			...(native.prev.size ? { nativePrev: Object.fromEntries(native.prev) } : {}), ...(native.phase.size ? { nativePhase: Object.fromEntries(native.phase) } : {}), ...(native.listed ? { nativeListed: true } : {}) };
 		const encoded = JSON.stringify(data);
 		if (encoded === lastSnapshot) return;
 		host.appendEntry(SNAPSHOT_ENTRY, data satisfies Snapshot);
@@ -802,16 +807,10 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 		scope = "unknown"; refusal = undefined; outage = "";
 		// A delegate restores nothing from the session's saved entries: they are its lead's.
 		const branch: readonly any[] = main(ctx) ? ctx.sessionManager?.getBranch?.() ?? [] : [];
-		const snapshotOf = (owner: unknown) => [...branch].reverse().find((entry: any) => entry?.type === "custom" && entry.customType === SNAPSHOT_ENTRY && entry.data?.version === 1 && entry.data.sessionId === owner)?.data;
-		let snapshot = snapshotOf(id);
 		// A fork gets a new session id and copies the source's entries. It shares the source's work:
 		// adopt its parent and ticket items, but not its retries (the source still owns those closes)
 		// nor its local plan (replaying that would make a second automatic parent).
-		let source: string | undefined;
-		if (!snapshot && id && main(ctx)) {
-			source = forkSource(ctx);
-			snapshot = source && snapshotOf(source);
-		}
+		const { snapshot, source } = savedSnapshot(ctx, branch, id);
 		// A forked session keeps the source id as the parent's owner: the parent's session_id metadata names it.
 		const parentOwner = source ?? id;
 		// A resumed lead keeps its saved sessions; a fork adds itself to its source's, so it works on what its source started.
@@ -830,11 +829,7 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 			if (typeof snapshot.deletedParent === "string") deletedParent = snapshot.deletedParent;
 		}
 		// The mirror continues from the list this branch's snapshot last mirrored, or from none: a tree move or a branch switch must not carry the old branch's.
-		if (main(ctx)) {
-			nativePrev = mapOf<NativeStatus>(snapshot?.nativePrev);
-			nativePhase = mapOf<string>(snapshot?.nativePhase);
-			nativeListed = snapshot?.nativeListed === true;
-		}
+		if (main(ctx)) native = nativeMemory(snapshot);
 		let stored: any = snapshot?.plan?.parent ? snapshot.plan : undefined;
 		for (const entry of branch) {
 			if (entry?.type !== "custom" || entry.customType !== PARENT_ENTRY || (entry.data?.sessionId && entry.data.sessionId !== parentOwner)) continue;
@@ -1658,20 +1653,21 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 	const nativeItems = (phases: NativePhase[]): NativeItem[] => phases.flatMap(p => p.tasks.map(t => ({ phase: p.name || "Tasks", content: t.content, status: t.status })));
 
 	// omp's list stays the truth when Kata cannot take a change, and the next change repeats it all, so an outage is reported once. A change Kata
-	// refused for another reason is not repeated (see mirrorList), so each such refusal is reported as it happens and holds no outage notice back.
+	// refused for another reason is not repeated (see mirrorList): each distinct refusal is reported once, until a change goes through, and holds no outage notice back.
 	function mirrorFailed(ctx: HostContext, { error, outage }: MirrorFailure) {
 		debug(error);
 		const message = (error as Error)?.message ?? error;
-		if (!outage) { uiOf(ctx)?.notify?.(`Kata refused the latest change to the todo list (${message}). The change stays in ${listName} and is not sent to Kata again.`, "warning"); return; }
+		if (!outage) { uiOf(ctx)?.notify?.(`Kata refused the latest change to the todo list (${message}). The change stays in ${listName} and is sent to Kata again only when that task changes in the list.`, "warning"); return; }
 		if (outageOf(error)) wentDown(error);
 		if (mirrorWarned) return;
 		mirrorWarned = true;
 		uiOf(ctx)?.notify?.(`Kata did not take the latest change to the todo list (${message}). The change stays in ${listName}; the next change tries again.`, "warning");
 	}
 
-	// A failure to report: an outage (or any failure while the plan is local), or a refusal not already reported in the session; a refusal
-	// Kata repeats (the same message, whichever step or init makes it) is reported once.
+	// A failure to report: an outage (or any failure while the plan is local), or a refusal not already reported since the last clean change;
+	// a refusal Kata repeats (the same message, whichever step or init makes it) is reported once, until a mirror pass completes without error.
 	function failureOf(error: unknown): MirrorFailure | undefined {
+		errorsSeen++;
 		if (outageOf(error) || plan.local) return { error, outage: true };
 		const key = (error as Error)?.message ?? String(error);
 		if (refusedOnce.has(key)) return undefined;
@@ -1687,7 +1683,7 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 		const flag = `${key}:${lastOfTicket}`;
 		if (flagged.has(flag) || (!task.ticket && task.review)) return;
 		if (!task.ticket) {
-			await kata.run(job, ["comment", task.ref, "--idempotency-key", key, "--body", `"${task.content}" was marked completed in ${listName} without a Kata close, so it stays open. Close it with its evidence, or set it back to pending in the todo list.`], cwd);
+			await kata.run(job, ["comment", task.ref, "--idempotency-key", key, "--body", `"${task.content}" was marked completed in ${listName} without a Kata close, so it stays open. Close it with its evidence, or set it back to pending in ${listName}.`], cwd);
 			await kata.run(job, ["label", "add", task.ref, "needs-review"], cwd);
 			task.review = true;
 		} else if (lastOfTicket) {
@@ -1714,13 +1710,11 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 			const next = new Map<string, NativeStatus>(), phaseOf = new Map<string, string>();
 			for (const item of items) if (!next.has(item.content)) { next.set(item.content, item.status); phaseOf.set(item.content, item.phase); }
 			for (const content of failed) {
-				const old = nativePrev.get(content), oldPhase = nativePhase.get(content);
+				const old = native.prev.get(content), oldPhase = native.phase.get(content);
 				if (old === undefined) next.delete(content); else next.set(content, old);
 				if (oldPhase === undefined) phaseOf.delete(content); else phaseOf.set(content, oldPhase);
 			}
-			nativePrev = next;
-			nativePhase = phaseOf;
-			nativeListed = phases.length > 0;
+			native = { prev: next, phase: phaseOf, listed: phases.length > 0 };
 		};
 		if (boundAgent && boundAgent !== agentKey(ctx)) return;
 		// A delegate with no assignment has no plan to mirror into.
@@ -1752,10 +1746,9 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 					else await load(job, plan.workspace);
 				} else await apply(job, { op: "init", list }, ctx);
 			} catch (error) {
-				// A refusal (not an outage) fails the same way next time: the list counts as applied, as for a refused step, so it is not asked again.
+				// A refusal (not an outage) leaves no parent: the list is not remembered, so the next mirror after a parent exists appends every open item.
 				const refused = failureOf(error);
 				if (refused?.outage) throw error;
-				remember(items);
 				return refused;
 			}
 		}
@@ -1771,7 +1764,7 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 			} catch (error) { debug(error); failure = failureOf(error); }
 		}
 		const failed = new Set<string>();
-		const steps = diffNativeList(plan.tasks, nativePrev, items, leads);
+		const steps = diffNativeList(plan.tasks, native.prev, items, leads);
 		for (const step of steps) {
 			try {
 				const cwd = plan.workspace;
@@ -1811,7 +1804,7 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 				debug(error);
 				const content = step.step === "append" ? step.content : step.task.content, next = failureOf(error);
 				// An outage is what the next mirror repeats, so the step stays unmirrored. A refusal fails the same way next time: it counts as applied
-				// (the list is remembered with it, and the diff asks for it again only when its status changes), and is reported once per message.
+				// (the list is remembered with it, and the diff asks for it again only when its status changes), and is reported once per distinct error until a change goes through.
 				if (next?.outage) failed.add(content);
 				if (next && (!failure || next.outage && !failure.outage)) failure = next;
 			}
@@ -1820,18 +1813,25 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 		return failure;
 	}
 
+	// The snapshot of the session's current branch; a branch with no snapshot of its own starts from its fork source's, named as `source`.
+	function savedSnapshot(ctx: HostContext, branch: readonly any[], id: string | undefined): { snapshot?: Snapshot; source?: string } {
+		const find = (session: unknown): Snapshot | undefined => [...branch].reverse().find(entry => entry?.type === "custom" && entry.customType === SNAPSHOT_ENTRY && entry.data?.version === 1 && entry.data.sessionId === session)?.data;
+		const own = find(id);
+		if (own || !id || !main(ctx)) return { snapshot: own };
+		const source = forkSource(ctx);
+		return { snapshot: source ? find(source) : undefined, source };
+	}
+
 	// The mirror's memory (omp's last list, its phases, whether it had any) is a cache of the current branch's latest snapshot, which wins: after
 	// a `/tree` move omp can send the list before `session_tree` rebinds. A branch with no snapshot of this session starts from none (a fork,
 	// from its source's).
 	function nativeFromBranch(ctx: HostContext) {
 		if (!options.native || !main(ctx)) return;
-		const id = sid(ctx), branch: readonly any[] = ctx.sessionManager?.getBranch?.() ?? [];
-		const snapshotOf = (owner: unknown) => [...branch].reverse().find((entry: any) => entry?.type === "custom" && entry.customType === SNAPSHOT_ENTRY && entry.data?.version === 1 && entry.data.sessionId === owner)?.data;
-		const source = forkSource(ctx), saved = snapshotOf(id) ?? (source ? snapshotOf(source) : undefined);
-		const prev = mapOf<NativeStatus>(saved?.nativePrev), phase = mapOf<string>(saved?.nativePhase), listed = saved?.nativeListed === true;
-		const key = (p: Map<string, unknown>, ph: Map<string, unknown>, l: boolean) => JSON.stringify([[...p], [...ph], l]);
-		if (key(prev, phase, listed) === key(nativePrev, nativePhase, nativeListed)) return;
-		nativePrev = prev; nativePhase = phase; nativeListed = listed;
+		const branch: readonly any[] = ctx.sessionManager?.getBranch?.() ?? [];
+		const saved = nativeMemory(savedSnapshot(ctx, branch, sid(ctx)).snapshot);
+		const key = (m: NativeMemory) => JSON.stringify([[...m.prev], [...m.phase], m.listed]);
+		if (key(saved) === key(native)) return;
+		native = saved;
 		// The branch moved: the next snapshot is written even when it equals the last one this core wrote on the other branch.
 		lastSnapshot = undefined;
 	}
@@ -1839,16 +1839,19 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 	// omp calls this after it saved its list, with the whole list. Newest wins: a mirror still queued when a newer one of the SAME session
 	// arrives does nothing, since the newer one carries everything; a list of a session left behind still lands. Never rejects.
 	function mirror(ctx: HostContext, phases: NativePhase[], within: Job = NO_JOB): Promise<void> {
-		const owner = sid(ctx) ?? "", mine = (mirrorStamps.get(owner) ?? 0) + 1;
-		mirrorStamps.set(owner, mine);
+		const session = sid(ctx) ?? "", mine = (mirrorStamps.get(session) ?? 0) + 1;
+		mirrorStamps.set(session, mine);
 		return serial(async job => {
-			if (mine !== mirrorStamps.get(owner)) return;
+			if (mine !== mirrorStamps.get(session)) return;
+			const errors = errorsSeen;
 			let failure: MirrorFailure | undefined;
 			try { failure = await mirrorList(job, ctx, phases); }
 			catch (error) { failure = failureOf(error); }
 			finally { persist(job); refresh(ctx); }
 			if (failure) mirrorFailed(ctx, failure);
 			if (!failure?.outage) mirrorWarned = false;
+			// A pass with no error at all: a refusal that comes back after this clean change is reported again.
+			if (!failure && errors === errorsSeen) refusedOnce.clear();
 		}, { ...within, ctx }).catch(debug);
 	}
 
@@ -1861,7 +1864,7 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 		currentCtx = ctx;
 		nativeFromBranch(ctx);
 		// Inferred here: whether omp's list had phases is the branch's, known only after the sync above.
-		const op = inferNativeOp(call, nativeListed);
+		const op = inferNativeOp(call, native.listed);
 		if (!op || !GUARDED_OPS.includes(op)) return;
 		if (plan.local) return;
 		// What the agent closed in its shell since the last operation counts: every read here reaches Kata.
@@ -1880,7 +1883,7 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 			const free = left.filter(t => !t.holder);
 			// A task omp's list held can be dropped there; one it never held (it came from Kata) must be appended first, or omp's drop finds nothing.
 			const listed = (tasks: Task[]) => tasks.map(t => `- "${t.content}" (${t.ref})`).join("\n");
-			const inList = free.filter(t => nativePrev.has(t.content)), notInList = free.filter(t => !nativePrev.has(t.content));
+			const inList = free.filter(t => native.prev.has(t.content)), notInList = free.filter(t => !native.prev.has(t.content));
 			if (inList.length) lines.push(`The new list leaves out tasks that are still open in Kata:\n${listed(inList)}\nCall todo drop for them first, in an earlier call, then init again; or keep them in the list.`);
 			if (notInList.length) lines.push(`The new list leaves out tasks that are open in Kata but were never in your list:\n${listed(notInList)}\nKeep them in the list; or call todo append for them and then todo drop, in earlier calls, then init again.`);
 			return lines.join("\n") || undefined;
@@ -1890,7 +1893,7 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 		if (op === "start") { if (contents.length !== 1) return; }
 		else if (!contents.length) contents = texts(call.items);
 		// A `{phase}` target names omp's phase, as of the last mirrored list; Kata's own phase is the answer only for a task omp's list never held.
-		if (!contents.length && typeof call.phase === "string") contents = plan.tasks.filter(t => (nativePhase.get(t.content) ?? t.phase) === call.phase).map(t => t.content);
+		if (!contents.length && typeof call.phase === "string") contents = plan.tasks.filter(t => (native.phase.get(t.content) ?? t.phase) === call.phase).map(t => t.content);
 		const targets = open.filter(t => contents.includes(t.content));
 		const lines = targets.filter(t => t.holder).map(held);
 		if (op === "done") {

@@ -399,33 +399,77 @@ const closedTicketItem = async () => {
   return { closed, item: `${refOf(closed)}: more work` };
 };
 
+// The warning the mirror gives when Kata refuses a change, and the Kata calls that named a ticket.
+const refusalsOf = (app: { notices: any[][] }) => app.notices.filter(n => /Kata refused the latest change/.test(String(n[0])));
+const namingOf = (app: { calls: string[][] }, text: string) => app.calls.filter(c => c.some(arg => arg.includes(text))).length;
+const refuse = (stderr: string) => ({ code: 1, stdout: "", stderr });
+
 test("a ticket item naming a closed ticket, appended to a plan, warns once, and two unrelated list changes neither warn again nor retry it", async () => {
   const { closed, item } = await closedTicketItem();
   const app = host(); await app.event("session_start");
   await app.init(["Plain start"]);
-  const refusals = () => app.notices.filter(n => /Kata refused the latest change/.test(String(n[0])));
-  expect(refusals()).toHaveLength(0);
+  expect(refusalsOf(app)).toHaveLength(0);
   expect((await app.call({ op: "append", items: [item] })).isError).toBeUndefined();
-  expect(refusals()).toHaveLength(1);
-  const naming = () => app.calls.filter(c => c.some(arg => arg.includes(closed))).length;
-  const attempts = naming();
+  expect(refusalsOf(app)).toHaveLength(1);
+  const attempts = namingOf(app, closed);
   expect(attempts).toBeGreaterThan(0);
   expect((await app.call({ op: "append", items: ["Plain one"] })).isError).toBeUndefined();
   expect((await app.call({ op: "append", items: ["Plain two"] })).isError).toBeUndefined();
-  expect(refusals()).toHaveLength(1);
-  expect(naming()).toBe(attempts);
+  expect(refusalsOf(app)).toHaveLength(1);
+  expect(namingOf(app, closed)).toBe(attempts);
 });
 
-test("a ticket item naming a closed ticket, in the init that starts the plan, warns once, and two unrelated list changes neither warn again nor retry it", async () => {
+test("a ticket item naming a closed ticket, in the init that starts the plan, warns once, creates no issue for it, and later changes retry it without warning again", async () => {
   const { closed, item } = await closedTicketItem();
   const app = host(); await app.event("session_start");
+  const before = await total();
   expect((await app.call({ op: "init", items: [item] })).isError).toBeUndefined();
-  const refusals = () => app.notices.filter(n => /Kata refused the latest change/.test(String(n[0])));
-  expect(refusals()).toHaveLength(1);
-  const naming = () => app.calls.filter(c => c.some(arg => arg.includes(closed))).length;
-  const attempts = naming();
+  expect(refusalsOf(app)).toHaveLength(1);
+  const attempts = namingOf(app, closed);
   expect((await app.call({ op: "append", items: ["Plain one"] })).isError).toBeUndefined();
   expect((await app.call({ op: "append", items: ["Plain two"] })).isError).toBeUndefined();
-  expect(refusals()).toHaveLength(1);
-  expect(naming()).toBe(attempts);
+  expect(refusalsOf(app)).toHaveLength(1);
+  expect(namingOf(app, closed)).toBeGreaterThan(attempts);
+  expect(app.calls.filter(c => c[0] === "create" && c.some(arg => arg.includes("more work")))).toEqual([]);
+  const [parent] = await sessionParents(app.sid);
+  expect(await titles(parent.qualified_id)).toEqual(["Plain one", "Plain two"]);
+  expect(await total()).toBe(before + 3);
+});
+
+test("a first mirror whose parent setup is refused without an outage leaves no parent, and /todo ref makes every open item of omp's list its child", async () => {
+  let refused = true;
+  const app = host({ before: (args: string[]) => refused && args[0] === "claim" ? (refused = false, refuse("claim refused by the test")) : undefined });
+  await app.event("session_start");
+  const explicit = refOf(await issue("Explicit parent"));
+  expect((await app.call({ op: "init", items: ["Write parser", "Write docs"] })).isError).toBeUndefined();
+  expect(refusalsOf(app)).toHaveLength(1);
+  expect(refused).toBe(false);
+  await app.event("input", { text: `/todo ref ${explicit}`, source: "interactive" });
+  expect((await app.call({ op: "append", items: ["Write tests"] })).isError).toBeUndefined();
+  expect(await titles(explicit)).toEqual(["Write docs", "Write parser", "Write tests"]);
+});
+
+test("a first mirror whose parent setup is refused without an outage is retried by the next change once the refusal lifts, and every open item becomes a child of the parent", async () => {
+  let refused = true;
+  const app = host({ before: (args: string[]) => refused && args[0] === "claim" ? refuse("claim refused by the test") : undefined });
+  await app.event("session_start");
+  expect((await app.call({ op: "init", items: ["Write parser", "Write docs"] })).isError).toBeUndefined();
+  expect(refusalsOf(app)).toHaveLength(1);
+  refused = false;
+  expect((await app.call({ op: "append", items: ["Write tests"] })).isError).toBeUndefined();
+  const [parent] = await sessionParents(app.sid);
+  expect(parent).toBeDefined();
+  expect(await titles(parent.qualified_id)).toEqual(["Write docs", "Write parser", "Write tests"]);
+});
+
+test("a refusal warns once, a later clean change goes through, and the same refusal then warns again", async () => {
+  const app = host({ before: (args: string[]) => args[0] === "create" && args.some(a => a.includes("Refused")) ? refuse("create refused by the test") : undefined });
+  await app.event("session_start");
+  await app.init(["Plain start"]);
+  expect((await app.call({ op: "append", items: ["Refused one"] })).isError).toBeUndefined();
+  expect(refusalsOf(app)).toHaveLength(1);
+  expect((await app.call({ op: "append", items: ["Plain one"] })).isError).toBeUndefined();
+  expect(refusalsOf(app)).toHaveLength(1);
+  expect((await app.call({ op: "append", items: ["Refused two"] })).isError).toBeUndefined();
+  expect(refusalsOf(app)).toHaveLength(2);
 });
