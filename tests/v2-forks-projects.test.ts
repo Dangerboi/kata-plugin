@@ -1,73 +1,56 @@
 import { expect, test } from "bun:test";
 import { writeFileSync } from "node:fs";
 import path from "node:path";
+import { eventually } from "./kata-fixture";
 import { v2Fixture } from "./v2-fixture";
 
-// The omp adapter against a real Kata: /tan sub sessions, forks, issues moved between projects and default priority.
+// The omp adapter against a real Kata, driven by omp's native todo: /tan sub sessions, forks, issues moved between projects and default priority.
 const { scratch, home, run, kata, show, issue, unique, host, down, evidence, message, throttledClose, sessionParents } = v2Fixture();
 
 // omp's /tan runs a side conversation in a sub session named Tan-<snowflake>
-// that no task spawn created; it keeps the todo tool.
-test("an untracked /tan sub session uses omp's native todo and makes no Kata calls", async () => {
+// that no task spawn created; it keeps omp's native todo.
+test("an untracked /tan sub session's native todo makes no Kata calls", async () => {
   const app = host();
-  const received: any[] = [];
-  const native = { content: [{ type: "text", text: "native list" }], details: { phases: [] } };
   const tan = host({ agent: { kind: "sub", id: "Tan-7000000000001", parentId: app.ctx.agent.id }, sessionFile: `${scratch}/Tan-7000000000001.jsonl` });
-  const ctx = { ...tan.ctx, invokeTool: async (params: any) => { received.push(params); return native; } };
-  const params = { op: "init", list: [{ phase: "Side", items: ["Look into the question"] }] };
-  const result = await tan.call(params, ctx);
-  expect(result).toBe(native);
-  expect(received).toEqual([params]);
+  const result = await tan.call({ op: "init", list: [{ phase: "Side", items: ["Look into the question"] }] });
+  expect(result.isError).toBeUndefined();
+  expect(tan.list()[0].tasks.map(t => t.content)).toEqual(["Look into the question"]);
   expect(tan.calls).toEqual([]);
 });
 
-test("a /tan sub session on an omp without invokeTool keeps the assignment error", async () => {
-  const tan = host({ agent: { kind: "sub", id: "Tan-7000000000002", parentId: "main" } });
-  const result = await tan.call({ op: "view" });
-  expect(result.isError).toBe(true);
-  expect(result.content[0].text).toContain("Kata assignment unavailable");
-});
-
-test("a delegate whose assignment failed still gets the assignment error, not the native list", async () => {
-  let refuse = false;
-  const lead = host({ before: (args: string[]) => refuse && args[0] === "meta" && args[3] === "omp.subagent_id" ? { code: 1, stdout: "", stderr: "meta refused" } : undefined });
-  await lead.init(["Delegated plan"]);
-  refuse = true;
-  const sessionFile = `${scratch}/failed-binding.jsonl`;
-  lead.emit("task:subagent:lifecycle", { id: "failed-binding", status: "started", sessionFile, description: "Delegated plan" });
-  const worker = host({ sessionFile, agent: { kind: "sub", id: "failed-binding", parentId: lead.ctx.agent.id } });
-  let native = 0;
-  const result = await worker.call({ op: "view" }, { ...worker.ctx, invokeTool: async () => { native++; return { content: [], details: {} }; } });
-  expect(native).toBe(0);
-  expect(result.isError).toBe(true);
-  expect(result.content[0].text).toContain("Kata assignment failed");
-});
-
 test("a delegate spawned under a Tan- name keeps its record and the Kata path", async () => {
-  const lead = host();
+  const lead = host(); await lead.event("session_start");
   await lead.init(["Plan one"]);
   const sessionFile = `${scratch}/Tan-named.jsonl`;
-  lead.emit("task:subagent:lifecycle", { id: "Tan-named", status: "started", sessionFile, description: "Plan one" });
+  lead.emit("task:subagent:lifecycle", { id: "Tan-named", agent: "scout", status: "started", sessionFile, description: "Plan one" });
   const worker = host({ sessionFile, agent: { kind: "sub", id: "Tan-named", parentId: lead.ctx.agent.id } });
-  let native = 0;
-  const result = await worker.call({ op: "init", items: ["Delegated step"] }, { ...worker.ctx, invokeTool: async () => { native++; return { content: [], details: {} }; } });
-  expect(native).toBe(0);
-  expect(result.details.kata.parent).toMatch(/^v2test#/);
+  await worker.event("session_start");
+  const result = await worker.call({ op: "init", items: ["Delegated step"] });
+  expect(result.isError).toBeUndefined();
+  await eventually(async () => (await kata(["list", "--status", "all", "--limit", "0", "--json"])).issues.some((i: any) => i.title === "Delegated step"), true);
 });
 
-// An omp fork gets a new session id and copies the source's entries: the fork shares the source's work.
+// An omp fork gets a new session id and copies the source's entries (and so its todo list): the fork shares the source's work.
 function fork(source: ReturnType<typeof host>, form: "id" | "file", options: any = {}) {
   const parentSession = form === "id" ? source.sid : `/sessions/2026-11-02T10-00-00-000Z_${source.sid}.jsonl`;
   return host({ entries: structuredClone(source.entries), header: { parentSession }, ...options });
 }
+// A fork that starts holding the source's native list, as omp's fork copies it.
+async function forkWithList(source: ReturnType<typeof host>, form: "id" | "file") {
+  const next = fork(source, form);
+  await next.event("session_start");
+  await next.edit(source.list());
+  return next;
+}
+const closeRef = (ref: string) => kata(["close", ref, "--done", "--message", message, ...evidence.flatMap(e => ["--evidence", e]), "--json"]);
+async function closeChild(parent: string, title: string) {
+  const child = (await show(parent)).children.find((c: any) => c.title === title);
+  await closeRef(`${parent.split("#")[0]}#${child.short_id}`);
+}
 for (const form of ["id", "file"] as const) test(`a fork (parentSession as ${form}) keeps the source plan and makes no new parent`, async () => {
   const source = host(); const parent = await source.init(["Shared alpha", "Shared beta"]);
-  const next = fork(source, form); await next.event("session_start");
-  const view = await next.call({ op: "view" });
-  expect(view.details.kata.parent).toBe(parent);
-  expect(view.content[0].text).toContain("Shared alpha");
+  const next = await forkWithList(source, form);
   expect((await next.call({ op: "append", items: ["Fork gamma"] })).isError).toBeUndefined();
-  await next.call({ op: "view" });
   expect(await sessionParents(next.sid)).toEqual([]);
   expect((await show(parent)).children.map((c: any) => c.title).sort()).toEqual(["Fork gamma", "Shared alpha", "Shared beta"]);
 });
@@ -75,11 +58,12 @@ for (const form of ["id", "file"] as const) test(`a fork (parentSession as ${for
 test("a fork does not replay the source's pending close retries", async () => {
   const { app: source, lift } = throttledClose();
   const parent = await source.init(["Throttled shared"]);
-  await source.call({ op: "done", message, evidence });
-  expect((await show(parent)).issue.status).toBe("open");
+  // Dropping the task makes the plugin close it as wontfix; the throttle holds that close back, so a retry is pending.
+  await source.call({ op: "drop", task: "Throttled shared" });
+  expect((await show(parent)).children.map((c: any) => c.status)).toEqual(["open"]);
   lift();
   const next = fork(source, "id"); await next.event("session_start");
-  expect((await next.call({ op: "view" })).details.kata.parent).toBe(parent);
+  await next.call({ op: "view" });
   expect((await show(parent)).children.map((c: any) => c.status)).toEqual(["open"]);
   expect(next.calls.some(a => a[0] === "close")).toBe(false);
 });
@@ -88,19 +72,24 @@ test("a fork does not adopt the source's local plan", async () => {
   const source = host({ before: (a: string[]) => a[0] !== "init" && a[0] !== "projects" ? down() : undefined });
   await source.event("session_start");
   await source.call({ op: "init", items: ["Offline only"] });
-  expect((await source.call({ op: "view" })).content[0].text).toContain("Offline only");
   const next = fork(source, "id"); await next.event("session_start");
-  expect((await next.call({ op: "view" })).content[0].text).not.toContain("Offline only");
+  await next.call({ op: "init", items: ["Online only"] });
+  const titles = (await kata(["list", "--status", "all", "--limit", "0", "--json"])).issues.map((i: any) => i.title);
+  expect(titles).toContain("Online only");
+  expect(titles).not.toContain("Offline only");
 });
 
 test("shutting down either session keeps the shared parent open until every task is closed", async () => {
   const source = host(); const parent = await source.init(["Shared one", "Shared two"]);
-  const next = fork(source, "id"); await next.event("session_start");
+  const next = await forkWithList(source, "id");
   await source.event("session_shutdown");
   await next.event("session_shutdown");
   expect((await show(parent)).issue.status).toBe("open");
-  await next.call({ op: "done", message, evidence });
-  await next.call({ op: "done", message, evidence });
+  for (const title of ["Shared one", "Shared two"]) {
+    await closeChild(parent, title);
+    expect((await next.call({ op: "done", task: title })).isError).toBeUndefined();
+  }
+  await next.event("session_shutdown");
   expect((await show(parent)).issue.status).toBe("closed");
   await source.event("session_shutdown");
   expect((await show(parent)).issue.status).toBe("closed");
@@ -108,19 +97,22 @@ test("shutting down either session keeps the shared parent open until every task
 
 test("a restarted fork still owns the shared parent", async () => {
   const source = host(); const parent = await source.init(["Shared once"]);
-  const next = fork(source, "id"); await next.event("session_start");
-  await next.call({ op: "view" });
+  const next = await forkWithList(source, "id");
   const resumed = host({ sid: next.sid, entries: next.entries, header: next.ctx.sessionManager.getHeader() });
   await resumed.event("session_start");
-  expect((await resumed.call({ op: "view" })).details.kata.parent).toBe(parent);
-  await resumed.call({ op: "done", message, evidence });
+  await resumed.edit(source.list());
+  await closeChild(parent, "Shared once");
+  expect((await resumed.call({ op: "done", task: "Shared once" })).isError).toBeUndefined();
+  await resumed.event("session_shutdown");
   expect((await show(parent)).issue.status).toBe("closed");
 });
 
 test("a session without parentSession ignores another session's entries", async () => {
   const source = host(); const parent = await source.init(["Not shared"]);
   const next = host({ entries: structuredClone(source.entries), header: {} }); await next.event("session_start");
-  expect((await next.call({ op: "view" })).details.kata.parent).toBeUndefined();
+  const own = await next.init(["Own task"]);
+  expect(own).not.toBe(parent);
+  expect((await show(parent)).children.map((c: any) => c.title)).toEqual(["Not shared"]);
   expect((await show(parent)).issue.status).toBe("open");
 });
 
@@ -132,28 +124,31 @@ test("a plan whose parent moved to another project creates new items there and r
   const target = await otherProject(), short = parent.split("#")[1];
   await kata(["move", parent, target, "--json"]);
   expect((await app.call({ op: "append", items: ["After the move"] })).isError).toBeUndefined();
-  const view = await app.call({ op: "view" });
-  expect(view.details.kata.parent).toBe(`${target}#${short}`);
   const moved = await show(`${target}#${short}`);
   expect(moved.children.map((c: any) => c.title).sort()).toEqual(["After the move", "Before the move"]);
   expect(moved.children.every((c: any) => c.project_id === moved.issue.project_id)).toBe(true);
+  await app.close("Before the move");
+  expect((await app.call({ op: "done", task: "Before the move" })).isError).toBeUndefined();
   const stale = moved.children.find((c: any) => c.title === "Before the move");
-  const closedByOldRef = await app.call({ op: "done", task: `${parent.split("#")[0]}#${stale.short_id}`, message, evidence });
-  expect(closedByOldRef.isError, closedByOldRef.content[0].text).toBeUndefined();
   expect((await show(`${target}#${stale.short_id}`)).issue.status).toBe("closed");
   expect(app.entries.filter(e => e.customType === "io.kata.omp.parent").at(-1)!.data.parent).toBe(`${target}#${short}`);
   const resumed = host({ sid: app.sid, entries: structuredClone(app.entries) }); await resumed.event("session_start");
-  expect((await resumed.call({ op: "view" })).details.kata.parent).toBe(`${target}#${short}`);
+  expect((await resumed.call({ op: "append", items: ["After the resume"] })).isError).toBeUndefined();
+  expect((await show(`${target}#${short}`)).children.map((c: any) => c.title).sort()).toEqual(["After the move", "After the resume", "Before the move"]);
+  // sessionParents lists the workspace's own project; the moved parent now lives in the target, so ask every project.
+  const recorded: { short_id: string }[] = (await kata(["list", "--all", "--status", "all", "--meta", `omp.session_id=${app.sid}`, "--json"])).issues;
+  expect(recorded.map(i => i.short_id)).toEqual([short]);
 });
 
 test("a ticket item naming a moved ticket is pinned and closed in its current project", async () => {
   const app = host(); await app.event("session_start");
   const ticket = await issue("Moving ticket"), target = await otherProject();
   await kata(["move", `v2test#${ticket}`, target, "--json"]);
-  expect((await app.call({ op: "init", items: [`v2test#${ticket}: finish the move`] })).isError).toBeUndefined();
-  const done = await app.call({ op: "done", task: `v2test#${ticket}: finish the move`, message, evidence });
+  const item = `v2test#${ticket}: finish the move`;
+  expect((await app.call({ op: "init", items: [item] })).isError).toBeUndefined();
+  await closeRef(`${target}#${ticket}`);
+  const done = await app.call({ op: "done", task: item });
   expect(done.isError, done.content[0].text).toBeUndefined();
-  expect(done.content[0].text).toContain(`(${target}#${ticket})`);
   expect((await show(`${target}#${ticket}`)).issue.status).toBe("closed");
 });
 
@@ -163,21 +158,22 @@ test("a parent moved once or twice is not re-adopted by every later todo call th
   const short = parent.split("#")[1];
   const app = host(); await app.event("session_start"); await app.init(["First"]);
   const shows = () => app.calls.filter(a => a[0] === "show" && a[1].endsWith(`#${short}`)).length;
-  const replace = async (item: string) => {
+  const more = async (item: string) => {
     const before = shows();
-    expect((await app.call({ op: "init", replace: true, items: [item] })).isError).toBeUndefined();
+    expect((await app.call({ op: "append", items: [item] })).isError).toBeUndefined();
     return shows() - before;
   };
-  await replace("Second");
-  const baseline = await replace("Third");
+  await more("Second");
+  const baseline = await more("Third");
   const second = await otherProject(), third = await otherProject();
   await kata(["move", parent, second, "--json"]);
-  await replace("Fourth");
-  expect(await replace("Fifth")).toBe(baseline);
+  await more("Fourth");
+  expect(await more("Fifth")).toBe(baseline);
   await kata(["move", `${second}#${short}`, third, "--json"]);
-  await replace("Sixth");
-  expect((await app.call({ op: "view" })).details.kata.parent).toBe(`${third}#${short}`);
-  expect(await replace("Seventh")).toBe(baseline);
+  await more("Sixth");
+  expect((await show(`${third}#${short}`)).children.map((c: any) => c.title)).toContain("Sixth");
+  expect(await more("Seventh")).toBe(baseline);
+  expect((await show(`${third}#${short}`)).children.map((c: any) => c.title)).toContain("Seventh");
 });
 
 test("a ticket in another project is never taken for a plan item by its short id", async () => {
@@ -185,9 +181,9 @@ test("a ticket in another project is never taken for a plan item by its short id
   const foreign = await otherProject();
   const ticket = await issue("Foreign ticket", { project: foreign });
   await app.init(["Plain item"]);
-  const result = await app.call({ op: "done", task: `${foreign}#${ticket}`, message, evidence });
+  const result = await app.call({ op: "done", task: `${foreign}#${ticket}` });
   expect(result.isError).toBe(true);
-  expect(result.content[0].text).toContain("No task");
+  expect((await show(`${foreign}#${ticket}`)).issue.status).toBe("open");
 });
 
 test("a project renamed mid-session is found by the very next call using the new name", async () => {
@@ -198,11 +194,14 @@ test("a project renamed mid-session is found by the very next call using the new
   await app.init(["Plain item"]);
   expect((await app.call({ op: "append", items: [`${project}#${first}: first`] })).isError).toBeUndefined();
   // Drop the old-name item so no background refresh of it fails first and clears the cached project list.
-  expect((await app.call({ op: "drop", task: `${project}#${first}: first`, message: "Not needed." })).isError).toBeUndefined();
+  expect((await app.call({ op: "drop", task: `${project}#${first}: first` })).isError).toBeUndefined();
   await kata(["projects", "rename", project, renamed, "--json"]);
-  const result = await app.call({ op: "append", items: [`${renamed}#${second}: second`] });
-  expect(result.isError, result.content[0].text).toBeUndefined();
-  expect(result.content[0].text).toContain(`${renamed}#${second}`);
+  const item = `${renamed}#${second}: second`;
+  expect((await app.call({ op: "append", items: [item] })).isError).toBeUndefined();
+  const started = await app.call({ op: "start", task: item });
+  expect(started.isError, started.content[0].text).toBeUndefined();
+  expect((await show(`${renamed}#${second}`)).issue.owner).toBe("v2-builder");
+  expect(app.backendErrors).toEqual([]);
 });
 
 test("unmoved refs are pinned from the cached project list without another projects call", async () => {
@@ -222,15 +221,16 @@ test("re-binding the bound parent appends no further parent state entry", async 
   const app = host(); await app.event("session_start"); await app.init(["First"]);
   const parentEntries = () => app.entries.filter(e => e.customType === "io.kata.omp.parent").length;
   const before = parentEntries();
-  await app.call({ op: "init", replace: true, items: ["Second"] });
-  await app.call({ op: "init", replace: true, ref: parent, items: ["Third"] });
+  await app.call({ op: "append", items: ["Second"] });
+  await app.event("input", { text: `/todo ref ${parent}`, source: "interactive" });
+  await app.call({ op: "append", items: ["Third"] });
   expect(parentEntries()).toBe(before);
 });
 
 test("free text containing # is never shown as a Kata ref", async () => {
   const app = host(); await app.init(["Plain task"]);
   for (const target of ["Fix C# parser", "Fix #12 bug", "-flag#abc"]) {
-    expect((await app.call({ op: "done", task: target, message, evidence })).isError).toBe(true);
+    expect((await app.call({ op: "done", task: target })).isError).toBe(true);
     expect(app.calls.some(a => a[0] === "show" && a[1] === target)).toBe(false);
   }
 });
@@ -281,15 +281,17 @@ test("an automatic parent an earlier version created under a default priority is
   const result = await app.call({ op: "init", items: ["Adopt me"] });
   expect(result.isError, result.content?.[0]?.text).toBeUndefined();
   expect(earlier.made.issue?.priority).toBe(2);
-  expect(result.details.kata.parent).toBe(`v2test#${earlier.made.issue?.short_id}`);
-  expect(await sessionParents(sid)).toHaveLength(1);
+  const parents = await sessionParents(sid);
+  expect(parents.map((p: any) => p.short_id)).toEqual([earlier.made.issue?.short_id]);
 }));
 
-test("omp reports an old Kata as an upgrade error, never a local plan", async () => {
+test("omp reports an old Kata as an upgrade notice, never a local plan", async () => {
   const app = host({ before: (args: string[]) => args[0] === "version" ? { code: 0, stdout: '{"kata_api_version":1,"version":"0.22.9"}' } : undefined });
   await app.event("session_start");
   const result = await app.call({ op: "init", items: ["Must upgrade first"] });
-  expect(result.isError).toBe(true);
-  expect(result.content[0].text).toContain("requires Kata >=0.23.0");
+  expect(result.isError).toBeUndefined();
+  expect(JSON.stringify(app.notices)).toContain("requires Kata >=0.23.0");
+  expect(await sessionParents(app.sid)).toEqual([]);
+  expect(app.list()[0].tasks.map(t => t.content)).toEqual(["Must upgrade first"]);
   await app.event("session_shutdown");
 });

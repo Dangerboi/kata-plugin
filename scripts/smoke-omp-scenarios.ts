@@ -1,5 +1,10 @@
 // Scenarios for the real-omp smoke test (scripts/smoke-omp.ts). A scenario is
 // data: scripted turns per agent plus assertions over the throwaway Kata store.
+// omp runs its own native `todo` tool; the plugin mirrors that list into Kata through
+// the `kata` todo backend (the driver selects it for every run) and refuses `todo`
+// calls Kata's rules forbid. Scripts therefore send native params only, and they close
+// a plan task with a `kata close` bash call before `todo done`. Assertions read the
+// store, or the tool results a request carried, never a todo result's details.
 // Add a scenario by appending an entry to SCENARIOS. The driver and the scripted
 // provider need changes only for a scenario that restarts omp (`restart`: kill and
 // `--resume`), needs a new RPC command, or needs a model call that hangs (`{ hang: true }`).
@@ -17,7 +22,7 @@ export type TurnContext = SmokeContext & {
 export type Turn = SmokeTurn<TurnContext>;
 
 /** One model request as the scripted provider saw it. */
-export type Request = { agent: string; system: string; /** Text of every user-role message in the request. */ users: string[]; /** Role of every message in the request, in order. */ roles: string[] };
+export type Request = { agent: string; system: string; /** Text of every user-role message in the request. */ users: string[]; /** Role of every message in the request, in order. */ roles: string[]; /** Text of every tool-result message in the request: what the agent was told about its tool calls, refusals included. */ results: string[] };
 /** One agent prompt: the system prompt the plugin left, and whether the agent ran on omp's main thread. */
 export type Prompt = { agent: string; system: string; mainThread: boolean };
 /** One finished tool call of an agent; `op` is a todo call's operation. */
@@ -61,7 +66,7 @@ export type Scenario = {
 	drive?(session: Session): Promise<Check[]>;
 	/** Keeps the session file on disk (omp's `--no-session` is dropped); RPC `fork` needs one. */
 	persist?: boolean;
-	/** omp settings for this run, in config.yml form, passed as a `--config` overlay. */
+	/** omp settings for this run, in config.yml form, appended to the driver's own `todo.backend: kata` in the `--config` overlay. */
 	ompConfig?: string;
 	/** Environment for the omp child. */
 	env?: Record<string, string>;
@@ -105,16 +110,49 @@ const evidence = "test:bun smoke scenario ran";
 const recorded = { type: "test", command: "bun smoke scenario ran" }; // how Kata stores it
 const message = "Verified the smoke scenario by running it end to end against a real omp and a real Kata daemon.";
 
+const PROJECT = "omp-smoke";
+// A plan task is mirrored into Kata after omp's own todo call returns, and that mirror needs the omp process's event loop,
+// so a scripted turn never waits for it itself. It hands omp's bash tool a bun script instead: the script polls `kata list`
+// until the plan task's child issue exists, then runs `run` with `ref` (qualified) and `kata(...)` in scope.
+const onChild = (title: string, run: string) => `bun -e '${[
+	'const { execFileSync: x } = require("node:child_process");',
+	'const kata = (...a) => x("kata", a, { encoding: "utf8" });',
+	"for (let n = 0; n < 150; n++) {",
+	`	const hit = JSON.parse(kata("list", "--status", "all", "--limit", "0", "--json")).issues.find(i => i.title === ${JSON.stringify(title)} && i.metadata?.["todo.phase"]);`,
+	`	if (hit) { const ref = "${PROJECT}#" + hit.short_id; ${run} process.exit(0); }`,
+	"	Bun.sleepSync(200);",
+	"}",
+	"process.exit(1);",
+].join("\n")}'`;
+const closeChild = (title: string, test: string) => onChild(title, `kata("close", ref, "--done", "--message", ${JSON.stringify(message)}, "--test", ${JSON.stringify(test)}); console.log("closed " + ref);`);
+const showChild = (title: string) => onChild(title, `console.log("child-state " + ref + " " + JSON.parse(kata("show", ref, "--json")).issue.status);`);
+const closeIssue = (ref: string, test: string) => `kata close ${ref} --done --message '${message}' --test '${test}'`;
+// Waits in omp's bash tool (not in the provider) until the resumed lead has settled both cut delegates.
+const waitSettled = (handBack: string, rollBack: string) => `bun -e '${[
+	'const { execFileSync: x } = require("node:child_process");',
+	"for (let n = 0; n < 160; n++) {",
+	'	const issues = JSON.parse(x("kata", ["list", "--status", "all", "--limit", "0", "--json"], { encoding: "utf8" })).issues;',
+	`	const hand = issues.find(i => i.title === ${JSON.stringify(handBack)}), roll = issues.find(i => i.title === ${JSON.stringify(rollBack)});`,
+	'	if (hand?.metadata?.["omp.status"] === "aborted" && roll && !roll.metadata?.["omp.subagent_id"]) break;',
+	"	Bun.sleepSync(250);",
+	"}",
+	'console.log("settled");',
+].join("\n")}'`;
+
 export const SCENARIOS: Scenario[] = [{
 	name: "default",
 	setup: create => ({ bashClosed: create("Close from the main agent's bash") }),
 	prompt: `${MAIN} Plan the parser work, delegate the first item, close the second, then stop.`,
-	livePrompt: () => `Use the todo tool to plan two items, 'Implement parser module' and 'Write parser tests'. Delegate 'Implement parser module' to a task subagent (name it ImplementParser) and tell it to close its Kata issue with evidence ${evidence} and a 40+ character message. Then mark 'Write parser tests' done through the todo tool with evidence ${evidence} and a 40+ character message. Change no files. Stop when both are closed.`,
+	livePrompt: () => `Use the todo tool to plan two items, 'Implement parser module' and 'Write parser tests'. Delegate 'Implement parser module' to a task subagent (name it ImplementParser) and tell it to close its Kata issue with evidence ${evidence} and a 40+ character message. Then finish 'Write parser tests': the todo tool refuses 'done' while its Kata issue is open, so close that issue first with kata close <ref> --done --message '<40+ characters>' --test 'bun smoke scenario ran' (its ref is in the Kata todo section of your prompt, or in kata list), then mark it done through the todo tool. Change no files. Stop when both are closed.`,
 	scripts: {
 		[MAIN]: [
-			[{ tool: "todo", args: { op: "init", list: [{ phase: "Parser", items: ["Implement parser module", "Write parser tests"] }], message: "Smoke parser session" } }],
+			[{ tool: "todo", args: { op: "init", list: [{ phase: "Parser", items: ["Implement parser module", "Write parser tests"] }] } }],
 			[{ tool: "task", args: { name: "ImplementParser", agent: "task", task: `${SUB} Implement parser module`, solutionSpace: "one fix: nothing to change, just close the issue" } }],
-			[{ tool: "todo", args: { op: "done", task: "Write parser tests", message, evidence: [evidence] } }],
+			// The task's Kata child is still open, so the plugin refuses the call and the model is told which issue to close.
+			[{ tool: "todo", args: { op: "done", task: "Write parser tests" } }],
+			[{ tool: "bash", args: { command: showChild("Write parser tests") } }],
+			[{ tool: "bash", args: { command: closeChild("Write parser tests", "bun smoke scenario ran") } }],
+			[{ tool: "todo", args: { op: "done", task: "Write parser tests" } }],
 			[{ tool: "bash", args: { command: `kata close ${vars().bashClosed} --done --message '${message}' --evidence '${evidence}'` } }],
 			["All parser work is finished."],
 			// omp wakes the lead when the background delegate reports back.
@@ -144,17 +182,24 @@ export const SCENARIOS: Scenario[] = [{
 		// its closed issue goes back to the lead's teammate, so its own comments are those under the teammate the issue
 		// carried when it closed; the plugin's report and the lead's notes do not count.
 		const delegateNote = store.live ? [{ name: "the delegate commented what it did on its own task", ok: commentPayloads(parser).some(p => ownComment(p, closingTeammate(parser))), detail: comments(parser).join(" | ") }] : [];
+		const results = store.requests().filter(r => r.agent === MAIN).flatMap(r => r.results);
+		// Scripted turns echo the child's state right after the refusal; a live model has no such step.
+		const scripted = store.live ? [] : [
+			{ name: "after the refusal the plan task's Kata child was still open", ok: !!tests && results.some(t => t.includes(`child-state ${PROJECT}#${tests.ref} open`)), detail: results.filter(t => t.includes("child-state")).join(" | ") },
+		];
 		return [
 			...delegateNote,
-			{ name: "todo done also comments its message and evidence", ok: comments(tests).some(c => c.includes(store.live ? "Done: " : `Done: ${message}`) && c.includes(evidence)), detail: comments(tests).join(" | ") },
-			{ name: "todo init creates the automatic parent", ok: !!parent, detail: parent?.title },
-			{ name: "todo init creates both plan tasks", ok: children.length === 2 && !!parser && !!tests, detail: children.map(c => c.title).join(", ") },
+			...scripted,
+			{ name: "todo done on a task whose Kata child is open is refused, with a reason naming the child's ref", ok: !!tests && results.some(t => t.includes("is open in Kata as") && t.includes(tests.ref)), detail: results.filter(t => t.includes("open in Kata")).join(" | ") || `${results.length} tool results, none refusing` },
+			{ name: "todo done went through once the child was closed", ok: store.tools().some(t => t.tool === "todo" && t.op === "done" && !t.isError), detail: JSON.stringify(store.tools().filter(t => t.tool === "todo").map(t => [t.op, t.isError])) },
+			{ name: "the first todo init mirrors into an automatic parent", ok: !!parent, detail: parent?.title },
+			{ name: "the mirror creates both plan tasks", ok: children.length === 2 && !!parser && !!tests, detail: children.map(c => c.title).join(", ") },
 			{ name: "task delegation binds to its plan task and, closed, returns it to the lead (omp.session_id, omp.status completed, no omp.subagent_id)", ok: returnedToLead(parser), detail: JSON.stringify(parser?.metadata) },
 			{ name: "no stray issue was created for the delegation", ok: issues.length === 4, detail: `${issues.length} issues` },
-			{ name: "todo done closes with the evidence", ok: tests?.status === "closed" && closeEvidence(tests).some(hasRecorded), detail: `${tests?.status} ${JSON.stringify(closeEvidence(tests))}` },
+			{ name: "the main agent's kata close of the plan task records the evidence", ok: tests?.status === "closed" && closeEvidence(tests).some(hasRecorded), detail: `${tests?.status} ${JSON.stringify(closeEvidence(tests))}` },
 			{ name: "delegate closed its own task with evidence", ok: parser?.status === "closed" && closeEvidence(parser).some(hasRecorded), detail: `${parser?.status} ${JSON.stringify(closeEvidence(parser))}` },
-			{ name: "the plugin's todo done close records the omp session", ok: closeTranscript(tests)?.agent === "omp" && !!closeTranscript(tests)?.session_id, detail: JSON.stringify(closeTranscript(tests)) },
-			{ name: "the automatic parent's close records the same omp session as todo done", ok: closeTranscript(parent)?.agent === "omp" && closeTranscript(parent)?.session_id === closeTranscript(tests)?.session_id, detail: JSON.stringify(closeTranscript(parent)) },
+			{ name: "the main agent's kata close of the plan task records the omp session", ok: closeTranscript(tests)?.agent === "omp" && !!closeTranscript(tests)?.session_id, detail: JSON.stringify(closeTranscript(tests)) },
+			{ name: "the automatic parent's close records the same omp session as the plan task's kata close", ok: closeTranscript(parent)?.agent === "omp" && closeTranscript(parent)?.session_id === closeTranscript(tests)?.session_id, detail: JSON.stringify(closeTranscript(parent)) },
 			{ name: "the main agent's bash close inherits the omp session", ok: bashClosed?.status === "closed" && closeTranscript(bashClosed)?.agent === "omp" && closeTranscript(bashClosed)?.session_id === closeTranscript(tests)?.session_id, detail: `${bashClosed?.status} ${JSON.stringify(closeTranscript(bashClosed))}` },
 			{ name: "the delegate's bash close records the omp session of the delegate, not the lead's", ok: closeTranscript(parser)?.agent === "omp" && !!closeTranscript(parser)?.session_id && closeTranscript(parser)?.session_id !== closeTranscript(tests)?.session_id, detail: JSON.stringify(closeTranscript(parser)) },
 			{ name: "session shutdown closed the automatic parent", ok: parent?.status === "closed", detail: parent?.status },
@@ -255,7 +300,7 @@ export const SCENARIOS: Scenario[] = [{
 }, {
 	name: "fork",
 	persist: true,
-	// Stop reminders re-prompt the agent, so a turn chooses by what it was last told rather than by its position.
+	// Which turn runs is chosen by what the agent was last told rather than by its position, so a wake-up cannot shift the script.
 	scripts: { [MAIN]: [
 		[{ tool: "todo", args: { op: "init", items: ["Shared plan item one", "Shared plan item two"] } }],
 		...Array.from({ length: 12 }, () => (ctx: TurnContext) => ctx.texts.at(-1)?.includes("extend the plan")
@@ -277,13 +322,13 @@ export const SCENARIOS: Scenario[] = [{
 	name: "tickets",
 	prompt: `${MAIN} Work the existing tickets through the todo plan, then stop.`,
 	livePrompt: ({ a, b, c }) => [
-		`Kata tickets omp-smoke#${a}, omp-smoke#${b} and omp-smoke#${c} already exist. Change no files; use the todo tool and one task subagent, in this order:`,
+		`Kata tickets omp-smoke#${a}, omp-smoke#${b} and omp-smoke#${c} already exist. Change no files; use the todo tool and one task subagent, in this order. The todo tool refuses 'done' on the last open plan item of a ticket until the ticket itself is closed (kata close <ref> --done --message '<40+ characters>' --test '<command>'); close it, then call done again.`,
 		`1. init a plan with phase Alpha items 'omp-smoke#${a}: write the parser' and 'omp-smoke#${a}: bump the docs', and phase Beta item 'omp-smoke#${b}: fetch the inbox data'.`,
-		`2. Mark 'omp-smoke#${a}: write the parser' done with evidence test:bun smoke scenario first, then 'omp-smoke#${a}: bump the docs' done with evidence test:bun smoke scenario second, each with a 40+ character message.`,
-		`3. Append 'omp-smoke#zzzz: ghost work' to phase Beta. It is expected to fail; do not retry it.`,
-		`4. Drop 'omp-smoke#${b}: fetch the inbox data' with a reason.`,
+		`2. Mark 'omp-smoke#${a}: write the parser' done. Then close omp-smoke#${a} with --test 'bun smoke scenario second' and mark 'omp-smoke#${a}: bump the docs' done.`,
+		`3. Append 'omp-smoke#zzzz: ghost work' to phase Beta. It names no ticket, so nothing is created for it; do not retry it.`,
+		`4. Drop 'omp-smoke#${b}: fetch the inbox data'.`,
 		`5. Append 'omp-smoke#${c}: write the widget parser' to phase Gamma and delegate exactly that item to a task subagent named WidgetParser, telling it to close its Kata issue with evidence ${evidence} and a 40+ character message.`,
-		`6. Append 'update CHANGELOG' to phase Gamma and mark it done with evidence ${evidence} and a 40+ character message.`,
+		`6. Append 'update CHANGELOG' to phase Gamma, close its Kata issue (kata close <ref> --done --message '<40+ characters>' --test '${evidence}'; find the ref with kata list) and mark it done.`,
 	].join("\n"),
 	setup: create => ({ a: create("Ticket alpha"), b: create("Ticket beta"), c: create("Ticket gamma") }),
 	scripts: {
@@ -295,14 +340,20 @@ export const SCENARIOS: Scenario[] = [{
 					{ phase: "Beta", items: [`omp-smoke#${b}: fetch the inbox data`] },
 				] } }];
 			},
-			() => [{ tool: "todo", args: { op: "done", task: `omp-smoke#${vars().a}: write the parser`, message, evidence: ["test:bun smoke scenario first"] } }],
-			() => [{ tool: "todo", args: { op: "done", task: `omp-smoke#${vars().a}: bump the docs`, message, evidence: ["test:bun smoke scenario second"] } }],
+			// Not the ticket's last open plan item, so it goes through; the mirror comments on the open ticket.
+			() => [{ tool: "todo", args: { op: "done", task: `omp-smoke#${vars().a}: write the parser` } }],
+			// The last open plan item of an open ticket: refused until the ticket is closed.
+			() => [{ tool: "todo", args: { op: "done", task: `omp-smoke#${vars().a}: bump the docs` } }],
+			() => [{ tool: "bash", args: { command: closeIssue(`omp-smoke#${vars().a}`, "bun smoke scenario second") } }],
+			() => [{ tool: "todo", args: { op: "done", task: `omp-smoke#${vars().a}: bump the docs` } }],
+			// omp's native list accepts the ghost; the mirror finds no ticket for it and creates nothing.
 			() => [{ tool: "todo", args: { op: "append", items: ["omp-smoke#zzzz: ghost work"], phase: "Beta" } }],
-			() => [{ tool: "todo", args: { op: "drop", task: `omp-smoke#${vars().b}: fetch the inbox data`, message: "The inbox fetch moved to another plan." } }],
+			() => [{ tool: "todo", args: { op: "drop", task: `omp-smoke#${vars().b}: fetch the inbox data` } }],
 			() => [{ tool: "todo", args: { op: "append", items: [`omp-smoke#${vars().c}: write the widget parser`], phase: "Gamma" } }],
 			() => [{ tool: "task", args: { name: "WidgetParser", agent: "task", task: `${SUB} Write the widget parser (omp-smoke#${vars().c}) and close its ticket.`, solutionSpace: "one fix: nothing to change, just close the ticket" } }],
 			[{ tool: "todo", args: { op: "append", items: ["update CHANGELOG"], phase: "Gamma" } }],
-			[{ tool: "todo", args: { op: "done", task: "update CHANGELOG", message, evidence: [evidence] } }],
+			[{ tool: "bash", args: { command: closeChild("update CHANGELOG", "bun smoke scenario ran") } }],
+			[{ tool: "todo", args: { op: "done", task: "update CHANGELOG" } }],
 			["The tickets are worked."],
 			["The delegate has reported back."],
 			["Nothing else to do."],
@@ -326,33 +377,40 @@ export const SCENARIOS: Scenario[] = [{
 		const closed = eventsOf(alpha, "issue.closed");
 		const parents = issues.filter(i => i.metadata["omp.auto_parent"] === true);
 		const changelog = issues.find(i => i.title === "update CHANGELOG");
+		const results = store.requests().filter(r => r.agent === MAIN).flatMap(r => r.results);
 		return [
 			{ name: "items naming tickets create no issue; only the plain item and its parent are new", ok: issues.length === 5 && parents.length === 1 && !!changelog, detail: issues.map(i => i.title).join(", ") },
 			{ name: "the plain item is a child of the automatic parent", ok: !!changelog?.metadata["todo.phase"] && parents.length === 1, detail: JSON.stringify(changelog?.metadata) },
 			{ name: "named tickets never join a plan (no todo.phase)", ok: [alpha, beta, gamma].every(i => !i?.metadata["todo.phase"]), detail: JSON.stringify([alpha, beta, gamma].map(i => i?.metadata)) },
-			{ name: "finishing every item closes the ticket once with the last item's evidence", ok: alpha?.status === "closed" && closed.length === 1 && JSON.stringify(closed[0].payload.evidence) === JSON.stringify([{ type: "test", command: "bun smoke scenario second" }]), detail: JSON.stringify(closed) },
-			{ name: "each finished item left a comment", ok: comments(alpha).length === 2, detail: `${comments(alpha).length} comments` },
-			{ name: "drop comments and leaves the ticket open", ok: beta?.status === "open" && comments(beta).length === 1 && closeCount(beta) === 0, detail: `${beta?.status} ${comments(beta).length} comments` },
+			{ name: "todo done on the ticket's last open plan item was refused until the ticket was closed", ok: results.some(t => t.includes(a) && t.includes("kata close")), detail: results.filter(t => t.includes(a)).join(" | ") || `${results.length} tool results, none naming the ticket` },
+			{ name: "the ticket's own kata close is its only close, with that evidence", ok: alpha?.status === "closed" && closed.length === 1 && JSON.stringify(closed[0].payload.evidence) === JSON.stringify([{ type: "test", command: "bun smoke scenario second" }]), detail: JSON.stringify(closed) },
+			{ name: "completing the first item left a comment on the ticket", ok: comments(alpha).length >= 1, detail: `${comments(alpha).length} comments` },
+			// Dropping a ticket item is not specified by the mirror's rules beyond "not closed", so its comment count is not asserted.
+			{ name: "dropping a ticket item leaves the ticket open", ok: beta?.status === "open" && closeCount(beta) === 0, detail: `${beta?.status} ${comments(beta).length} comments` },
 			{ name: "an unresolvable ref created nothing", ok: !issues.some(i => /ghost/.test(i.title)) },
 			{ name: "a delegate bound the ticket its item names, closed it and returned it to the lead", ok: returnedToLead(gamma) && gamma?.status === "closed" && !issues.some(i => i.title.startsWith("Subagent")), detail: `${gamma?.status} ${JSON.stringify(gamma?.metadata)}` },
+			{ name: "the plain item closed through kata close", ok: changelog?.status === "closed" && closeEvidence(changelog).some(e => e.type === "test"), detail: `${changelog?.status} ${JSON.stringify(closeEvidence(changelog))}` },
 		];
 	},
 }, {
 	name: "claimed",
 	prompt: `${MAIN} Claim the ticket, plan it through the todo tool, then stop.`,
 	livePrompt: ({ t }) => [
-		`Kata ticket omp-smoke#${t} already exists. Change no files. As Kata's contract says, claim it first with bash (kata claim omp-smoke#${t}), then use the todo tool in this order:`,
+		`Kata ticket omp-smoke#${t} already exists. Change no files. As Kata's contract says, claim it first with bash (kata claim omp-smoke#${t}); that makes it the plan's parent. The todo tool refuses 'done' on a task whose Kata issue is open, so close issues first with kata close <ref> --done --message '<40+ characters>' --test '<command>' (refs: kata list). Use the todo tool in this order:`,
 		`1. init a plan with the items 'omp-smoke#${t}: write the greeting' and 'Add the ignore file'.`,
-		`2. Mark 'omp-smoke#${t}: write the greeting' done with evidence test:bun smoke scenario ticket item and a 40+ character message.`,
-		`3. Mark 'Add the ignore file' done with evidence ${evidence} and a 40+ character message. Do not close the ticket yourself.`,
+		`2. Close 'Add the ignore file' (kata close with --test '${evidence}'), then close omp-smoke#${t} itself with --test 'bun smoke scenario ticket item'.`,
+		`3. Mark both items done through the todo tool.`,
 	].join("\n"),
 	setup: create => ({ t: create("Ticket claimed first") }),
 	scripts: {
 		[MAIN]: [
 			() => [{ tool: "bash", args: { command: `kata claim omp-smoke#${vars().t}` } }],
 			() => [{ tool: "todo", args: { op: "init", items: [`omp-smoke#${vars().t}: write the greeting`, "Add the ignore file"] } }],
-			() => [{ tool: "todo", args: { op: "done", task: `omp-smoke#${vars().t}: write the greeting`, message, evidence: ["test:bun smoke scenario ticket item"] } }],
-			[{ tool: "todo", args: { op: "done", task: "Add the ignore file", message, evidence: [evidence] } }],
+			// The ticket cannot close while its plan child is open, so the child closes first.
+			[{ tool: "bash", args: { command: closeChild("Add the ignore file", "bun smoke scenario ran") } }],
+			() => [{ tool: "bash", args: { command: closeIssue(`omp-smoke#${vars().t}`, "bun smoke scenario ticket item") } }],
+			() => [{ tool: "todo", args: { op: "done", task: `omp-smoke#${vars().t}: write the greeting` } }],
+			[{ tool: "todo", args: { op: "done", task: "Add the ignore file" } }],
 			["The ticket is worked."],
 			["Nothing else to do."],
 			["Nothing else to do."],
@@ -362,24 +420,27 @@ export const SCENARIOS: Scenario[] = [{
 		const issues = await store.issues();
 		const ticket = issues.find(i => i.ref === t);
 		const closed = eventsOf(ticket, "issue.closed");
-		const blocking = eventsOf(ticket, "issue.commented").filter(e => /open child/.test(JSON.stringify(e.payload)));
+		// The old "refused close left one blocking comment" check is gone: the plugin no longer closes the ticket, so it has no close to refuse.
 		return [
 			{ name: "the claimed ticket is the plan parent: the plain item is its child", ok: issues.some(i => i.title === "Add the ignore file" && i.status === "closed"), detail: issues.map(i => `${i.title}:${i.status}`).join(", ") },
-			{ name: "the ticket closes once its plan children close, with the ticket item's evidence", ok: ticket?.status === "closed" && closed.length === 1 && JSON.stringify(closed[0].payload.evidence) === JSON.stringify([{ type: "test", command: "bun smoke scenario ticket item" }]), detail: `${ticket?.status} ${JSON.stringify(closed)}` },
-			{ name: "the refused close left exactly one blocking comment", ok: blocking.length === 1, detail: `${blocking.length} comments` },
+			{ name: "the ticket closed once, through the agent's kata close with the ticket item's evidence", ok: ticket?.status === "closed" && closed.length === 1 && JSON.stringify(closed[0].payload.evidence) === JSON.stringify([{ type: "test", command: "bun smoke scenario ticket item" }]), detail: `${ticket?.status} ${JSON.stringify(closed)}` },
 		];
 	},
 }, {
 	name: "untracked",
 	prompt: `${MAIN} Plan the docs work, send a scout to survey the repo, close both items, then stop.`,
-	livePrompt: () => `Use the todo tool to plan two items, 'Write migration guide' and 'Refresh release notes'. Then use the task tool to send one subagent with agent "scout" to list the top-level directories of this repository and report them. After it reports, mark both items done through the todo tool with evidence ${evidence} and a 40+ character message. Change no files. Stop when both are closed.`,
+	livePrompt: () => `Use the todo tool to plan two items, 'Write migration guide' and 'Refresh release notes'. Then use the task tool to send one subagent with agent "scout" to list the top-level directories of this repository and report them. After it reports, close each item's Kata issue (kata close <ref> --done --message '<40+ characters>' --test '${evidence}'; refs: kata list) and mark it done through the todo tool; the todo tool refuses 'done' while the issue is open. Change no files. Stop when both are closed.`,
 	scripts: {
 		[MAIN]: [
-			[{ tool: "todo", args: { op: "init", list: [{ phase: "Docs", items: ["Write migration guide", "Refresh release notes"] }], message: "Smoke untracked session" } }],
+			[{ tool: "todo", args: { op: "init", list: [{ phase: "Docs", items: ["Write migration guide", "Refresh release notes"] }] } }],
 			// No bash for this agent, and nothing in the prompt matches a plan item or names a ticket.
 			[{ tool: "task", args: { name: "Survey", agent: "scout", task: `${SCOUT} Survey the repository layout and report the top-level directories.`, solutionSpace: "one answer: a plain text report" } }],
-			[{ tool: "todo", args: { op: "done", task: "Write migration guide", message, evidence: ["test:bun smoke scenario first"] } }],
-			[{ tool: "todo", args: { op: "done", task: "Refresh release notes", message, evidence: ["test:bun smoke scenario second"] } }],
+			// Close and done are separate turns: omp runs every tool_call handler of a message before any of its calls executes, so
+			// the plugin would refuse a done that shares a message with its close.
+			[{ tool: "bash", args: { command: closeChild("Write migration guide", "bun smoke scenario first") } }],
+			[{ tool: "todo", args: { op: "done", task: "Write migration guide" } }],
+			[{ tool: "bash", args: { command: closeChild("Refresh release notes", "bun smoke scenario second") } }],
+			[{ tool: "todo", args: { op: "done", task: "Refresh release notes" } }],
 			["All docs work is finished."],
 			["The scout has reported back."],
 			["Nothing else to do."],
@@ -408,7 +469,7 @@ export const SCENARIOS: Scenario[] = [{
 	name: "workers",
 	// omp strips its todo tool from subagents unless prewalk is armed for their agent; a prewalk target lets delegates
 	// call todo. It hands off at a delegate's first edit; the target is a subscription model, and must differ from the
-	// --model of a live run in model or thinking level, or omp skips prewalk. Scripted runs skip it: no login.
+	// --model of a live run in model or thinking level, or omp skips prewalk. Scripted runs skip it: no login. The driver adds `todo.backend: kata` ahead of this.
 	ompConfig: "task:\n  agentPrewalk:\n    task: anthropic/claude-haiku-5-5:low\n",
 	prompt: `${MAIN} Plan the ports, delegate all of them at once, then stop.`,
 	// Live: odd delegates plan one step under their own issue with the todo tool, finish it, then close their issue; even
@@ -416,13 +477,13 @@ export const SCENARIOS: Scenario[] = [{
 	livePrompt: () => [
 		`Use the todo tool to plan these items in one phase: ${PORTS.map(p => `'${p}'`).join(", ")}.`,
 		`Then delegate all of them in ONE task call with exactly ${PORTS.length} tasks, named Port1 to Port${PORTS.length} in that order, task N working item N. Copy each task's instructions exactly, with <item> replaced by its item:`,
-		`- Port1, Port3, Port5 and every other odd-numbered task: "Work '<item>'. Change no files. First call the todo tool with op init and items ['Verify <item>']. Then call the todo tool with op done, task 'Verify <item>', evidence ['${evidence}'] and a message of at least 40 characters. Then close your own Kata issue with the kata close command your Kata binding gives, with evidence '${evidence}'. Do nothing else: no exploring, no tests, no other todo items or files. If a step fails twice, report the error and stop."`,
+		`- Port1, Port3, Port5 and every other odd-numbered task: "Work '<item>'. Change no files. First call the todo tool with op init and items ['Verify <item>']. Then close that step's Kata issue: kata close <ref> --done --message '<40+ characters>' --test '${evidence}' (its ref is in the Kata todo section of your prompt, or in kata list); the todo tool refuses done while it is open. Then call the todo tool with op done and task 'Verify <item>'. Then close your own Kata issue with the kata close command your Kata binding gives, with evidence '${evidence}'. Do nothing else: no exploring, no tests, no other todo items or files. If a step fails twice, report the error and stop."`,
 		`- Port2, Port4, Port6 and every other even-numbered task: "Work '<item>'. Change no files. Run the bash command ls exactly once, then stop. Do nothing else: do not close or change your Kata issue, do not call the todo tool, do not run tests."`,
-		`After the task call, do not close, change or re-plan any task yourself, even when reminded; just stop.`,
+		`After the task call, do not close, change or re-plan any task yourself; just stop.`,
 	].join("\n"),
 	scripts: {
 		[MAIN]: [
-			[{ tool: "todo", args: { op: "init", list: [{ phase: "Ports", items: PORTS }], message: "Smoke worker-thread session" } }],
+			[{ tool: "todo", args: { op: "init", list: [{ phase: "Ports", items: PORTS }] } }],
 			[{ tool: "task", args: { context: "Smoke port work: nothing to change, just close your Kata issue.", tasks: PORTS.map((port, i) => ({ name: `Port${i + 1}`, agent: "task", task: `${WORKER} ${port}`, solutionSpace: "one fix: nothing to change, just close the issue" })) } }],
 			["The ports are delegated."],
 			// omp wakes the lead as background delegates report back. Each turn only acknowledges; the end of the turn
@@ -508,16 +569,16 @@ export const SCENARIOS: Scenario[] = [{
 	persist: true,
 	scripts: {
 		[MAIN]: [
-			[{ tool: "todo", args: { op: "init", list: [{ phase: "Resume", items: [RESUME_HAND_BACK, RESUME_ROLL_BACK] }], message: "Smoke resumed session" } }],
+			[{ tool: "todo", args: { op: "init", list: [{ phase: "Resume", items: [RESUME_HAND_BACK, RESUME_ROLL_BACK] }] } }],
 			[{ tool: "task", args: { context: "Smoke resume work: nothing to change.", tasks: [
 				{ name: "ResumeOne", agent: "task", task: `${CUT} ${RESUME_HAND_BACK}`, solutionSpace: "one fix: nothing to change" },
 				{ name: "ResumeTwo", agent: "task", task: `${IDLE} ${RESUME_ROLL_BACK}`, solutionSpace: "one fix: nothing to change" },
 			] } }],
-			// Stop reminders and delegate wake-ups re-prompt the lead, and the resumed run continues this script after the
-			// first run's assistant messages, so a turn chooses by what it was last told rather than by its position.
-			// The resumed lead's `todo view` runs behind the background settle in the plugin's serial queue, so its result
-			// (and the turn that follows) only arrives once the hand back and rollback are written.
-			...Array.from({ length: 24 }, () => (ctx: TurnContext) => ctx.texts.at(-1)?.includes(RESUMED) ? [{ tool: "todo", args: { op: "view" } }] : ["Noted."]),
+			// Delegate wake-ups re-prompt the lead, and the resumed run continues this script after the first run's assistant
+			// messages, so a turn chooses by what it was last told rather than by its position. The resumed lead's turn waits in
+			// omp's bash tool until the background settle has written the hand back and the rollback: a native `todo view` no
+			// longer passes through the plugin, so it cannot be used to wait for the settle.
+			...Array.from({ length: 24 }, () => (ctx: TurnContext) => ctx.texts.at(-1)?.includes(RESUMED) ? [{ tool: "bash", args: { command: waitSettled(RESUME_HAND_BACK, RESUME_ROLL_BACK) } }] : ["Noted."]),
 		],
 		// ResumeOne: one finished tool, then a bash call that outlives the process. ResumeTwo: its model call never answers,
 		// because the plugin counts a delegate's tool call (not its result) as a tool run, which would hand it back.

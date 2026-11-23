@@ -1,6 +1,6 @@
 // Generated from core/todo-list.ts; edit there.
-// Pure diff between the whole todo list a model sends and the Kata plan: no Kata, no host, no I/O.
-import { proofProblem, OPEN, type Status } from "./model";
+// Pure diffs between a whole todo list and the Kata plan: no Kata, no host, no I/O.
+import { proofProblem, OPEN, type Status, type Task } from "./model";
 
 export const LIST_STATUSES = ["pending", "in_progress", "completed", "cancelled"] as const;
 export type ListStatus = (typeof LIST_STATUSES)[number];
@@ -21,14 +21,14 @@ const LISTED: Record<Status, ListStatus> = { pending: "pending", in_progress: "i
 // The plan task a list item stands for. Core identity is phase+content, so one content can have several tasks: they are one
 // list item. Open copies stand in front of closed ones; among open ones an in_progress copy, then a paused one, then a
 // pending one, so the item never reads as pending while a copy is in progress.
-function representative(copies: readonly PlanItem[]): PlanItem {
+function representative<T extends PlanItem>(copies: readonly T[]): T {
 	const open = copies.filter(t => OPEN.has(t.status));
 	if (open.length) return open.find(t => t.status === "in_progress") ?? open.find(t => t.status === "blocked") ?? open[0];
 	return copies.find(t => t.status === "completed") ?? copies[0];
 }
 
-function groupsOf(plan: readonly PlanItem[]): Map<string, PlanItem[]> {
-	const groups = new Map<string, PlanItem[]>();
+function groupsOf<T extends PlanItem>(plan: readonly T[]): Map<string, T[]> {
+	const groups = new Map<string, T[]>();
 	for (const t of plan) {
 		const copies = groups.get(t.content);
 		if (copies) copies.push(t); else groups.set(t.content, [t]);
@@ -137,4 +137,88 @@ export function diffTodoList(plan: readonly PlanItem[], accepted: ReadonlySet<st
 		return { refusal, problems };
 	}
 	return { ops: [...(appended.length ? [{ op: "append", items: appended } as ListOp] : []), ...closes, ...unblocks, ...blocks, ...starts] };
+}
+
+// ------------------------------------------------------------------------------------------------ omp's native list
+
+export type NativeStatus = "pending" | "in_progress" | "completed" | "abandoned";
+export type NativePhase = { name: string; tasks: { content: string; status: NativeStatus }[] };
+export type NativeItem = { phase: string; content: string; status: NativeStatus };
+// What the Kata plan must do to follow omp's list, in the order to do it: removals and settlements first (so two tasks are never
+// started at once), then new tasks, then starts.
+export type NativeStep =
+	| { step: "rm" | "drop" | "pause" | "start" | "cleared"; task: Task }
+	// `lastOfTicket`: the task is an item naming a ticket, and no other item of that ticket is still open in omp's list.
+	| { step: "flag"; task: Task; lastOfTicket: boolean }
+	// A task omp's list has and the plan lacks, or a closed one omp's list wants open again (named by the plan's phase).
+	// `start`: omp's list has it in progress, so it is started once appended.
+	| { step: "append"; phase: string; content: string; start?: boolean };
+
+const nativeOpen = (status: NativeStatus | undefined) => status === "pending" || status === "in_progress";
+
+// The plan follows what CHANGED in omp's list, not every difference from Kata: a Kata-side change (an agent's `kata close`, a delegate's close,
+// a hand-back) stands while omp's status for that task is the one it had at the last mirror.
+// `prev`: content -> status of the last list mirrored for the session. `led`: the plan task is this session's to change (not delegated, not
+// held by another session); the others are left alone. Tasks are keyed by content: omp keeps one task per content across all phases, so a
+// phase change of a known task is ignored.
+export function diffNativeList(tasks: readonly Task[], prev: ReadonlyMap<string, NativeStatus>, next: readonly NativeItem[], led: (task: Task) => boolean): NativeStep[] {
+	const status = new Map<string, NativeStatus>();
+	for (const item of next) if (!status.has(item.content)) status.set(item.content, item.status);
+	const copies = groupsOf(tasks);
+	const removals: NativeStep[] = [], settles: NativeStep[] = [], adds: NativeStep[] = [], starts: NativeStep[] = [];
+	for (const task of tasks) if (OPEN.has(task.status) && !status.has(task.content) && prev.has(task.content) && led(task)) removals.push({ step: "rm", task });
+	for (const [content, wanted] of status) {
+		const item = next.find(n => n.content === content)!;
+		const group = copies.get(content);
+		const task = group && representative(group);
+		if (!task) { if (nativeOpen(wanted)) adds.push({ step: "append", phase: item.phase, content, start: wanted === "in_progress" }); continue; }
+		const before = prev.get(content);
+		if (before === wanted || !led(task)) continue;
+		const open = OPEN.has(task.status);
+		if (wanted === "abandoned") { if (open) settles.push({ step: "drop", task }); }
+		else if (wanted === "completed") {
+			const lastOfTicket = !!task.ticket && !tasks.some(other => other !== task && other.ticket === task.ticket && OPEN.has(other.status) && nativeOpen(status.get(other.content)));
+			// Already closed in Kata (the agent closed it before marking it done): only the completed bookkeeping is left, e.g. a stale needs-review.
+			if (open) settles.push({ step: "flag", task, lastOfTicket }); else if (!task.ticket) settles.push({ step: "cleared", task });
+		}
+		// A task closed in Kata that omp's list wants open: reopened only when omp had it finished (or never listed it). One omp had open
+		// was closed in Kata on purpose.
+		else if (!open) {
+			// A ticket item still starts, so that the plugin says the ticket is closed and never reopened.
+			if (before !== undefined && nativeOpen(before) && !(task.ticket && wanted === "in_progress")) continue;
+			if (wanted === "pending") adds.push({ step: "append", phase: task.phase, content }); else starts.push({ step: "start", task });
+		}
+		// A task Kata has in progress that omp's list just started: its session released it (or never held it), so the start marks it for this one.
+		else if (wanted === "in_progress") { if (task.status === "pending" || task.released) starts.push({ step: "start", task }); }
+		else if (task.status === "in_progress" && before === "in_progress") settles.push({ step: "pause", task });
+	}
+	return [...removals, ...settles, ...adds, ...starts];
+}
+
+// omp's `todo` tool takes a `task` that may name several tasks in one string; the same split it makes (packages/tui/src/tools/todo.ts
+// `todoTaskTargets`, omp 19.1.1): a string naming a task verbatim is one target, else the first delimiter whose parts all name a task wins.
+const TASK_LIST_DELIMITERS: readonly { pattern: RegExp; partial: boolean }[] = [
+	{ pattern: /\r?\n/, partial: true },
+	{ pattern: /;/, partial: true },
+	{ pattern: /,/, partial: true },
+	{ pattern: /\s+/, partial: false },
+	{ pattern: /[\s,;]+/, partial: false },
+];
+const normalizeTaskPart = (part: string) => {
+	const trimmed = part.trim();
+	return /^(["'`])(.*)\1$/s.exec(trimmed)?.[2].trim() ?? trimmed;
+};
+export function nativeTargets(known: ReadonlySet<string>, task: string | readonly string[] | undefined): string[] {
+	if (task === undefined || task === "") return [];
+	return (typeof task === "string" ? [task] : task).flatMap(content => {
+		if (known.has(content)) return [content];
+		let partial: string[] | undefined;
+		for (const delimiter of TASK_LIST_DELIMITERS) {
+			const parts = content.split(delimiter.pattern).map(normalizeTaskPart).filter(part => part.length > 0);
+			const named = parts.filter(part => known.has(part)).length;
+			if (named > 0 && named === parts.length) return parts;
+			if (!partial && delimiter.partial && named > 0 && parts.length > 1) partial = parts;
+		}
+		return partial ?? [content];
+	});
 }

@@ -8,8 +8,9 @@ export const OPEN: ReadonlySet<Status> = new Set(["pending", "in_progress", "blo
 export const WORKING: ReadonlySet<Status> = new Set(["in_progress", "blocked"]);
 const openTaskStatus = (value: unknown): Status => value === "in_progress" || value === "blocked" ? value : "pending";
 export const closedTaskStatus = (closedReason?: string): "completed" | "abandoned" => closedReason === "wontfix" ? "abandoned" : "completed";
+// `released`: started in Kata but marked by no session (its session released it).
 // `holder`: another lead session that started this plan task and has not released it (see heldBySession).
-export type Task = { ref: string; content: string; phase: string; status: Status; ticket?: string; at?: number; blocker?: string; delegated?: boolean; holder?: string; review?: boolean; revision?: number; proof?: { message?: string; evidence?: string[] } };
+export type Task = { ref: string; content: string; phase: string; status: Status; ticket?: string; at?: number; blocker?: string; delegated?: boolean; holder?: string; released?: boolean; review?: boolean; revision?: number; proof?: { message?: string; evidence?: string[] } };
 export type Binding = { parent: string; workspace: string; sessionId?: string; auto?: boolean; label?: string };
 export type Plan = Partial<Binding> & { workspace: string; tasks: Task[]; local?: boolean; error?: string };
 export type Change = { message?: string; evidence?: string[]; reason?: string; remove?: boolean };
@@ -67,6 +68,7 @@ export function tasksOf(children: readonly KataIssue[], parent: string, rule: { 
 				at: Date.parse(c.created_at),
 				delegated: rule.delegated(c),
 				holder: rule.holder(c),
+				released: status === "in_progress" && !meta[SESSION_KEY] ? true : undefined,
 				review: (c.labels ?? []).some(l => (typeof l === "string" ? l : l?.label) === "needs-review"),
 				status,
 				blocker: status === "blocked" ? meta["work.attention_msg"] as string | undefined : undefined,
