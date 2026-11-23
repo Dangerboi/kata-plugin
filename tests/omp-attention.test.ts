@@ -46,7 +46,8 @@ test("switch selects the previous baseline after pending startup", async () => {
   process.env.KATA_REF = await issue();
   const { app, held } = heldBind();
   const start = app.event("session_start"); await held.entered;
-  const next = { ...app.ctx, sessionManager: { ...app.ctx.sessionManager, getSessionId: () => "attention-switched" } };
+  const sm = app.ctx.sessionManager;
+  const next = { ...app.ctx, sessionManager: { getSessionFile: () => sm.getSessionFile(), getEntries: () => sm.getEntries(), getBranch: () => sm.getBranch(), getHeader: () => sm.getHeader(), getSessionId: () => "attention-switched" } };
   const switching = app.event("session_switch", {}, next); held.release(); await Promise.all([start, switching]);
   expect(app.calls.filter(a => a[1] === "attention-native").map(a => a[3])).toEqual(["start", "end", "start"]);
 });

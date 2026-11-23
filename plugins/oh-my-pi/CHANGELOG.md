@@ -4,6 +4,65 @@ All notable changes to `@dangerboi/kata-omp` are listed here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+#### Plans
+
+- `/todo ref <ref>` makes an issue the plan parent at once and loads its open children.
+  - Naming the current automatic parent makes it explicit, so it no longer closes itself.
+  - A plan that already has another parent keeps it, and with `KATA_REF` set the ref is not used.
+
+### Changed
+
+#### Requirements
+
+- **Breaking:** the plugin requires oh-my-pi 19.1.1 or later, and Kata tracks omp's todo list only once you pick Kata as omp's todo backend.
+  - Upgrade omp, then open `/settings` → Tools → Todos → Todo Backend and pick Kata (`todo.backend: kata` in omp's config). The plugin never sets it.
+  - Until then todos stay omp's own: nothing reaches Kata, no `todo` call is refused, and each session shows one notice naming the setting. Kata 0.23.0 is still required.
+
+#### Plans
+
+- omp's own `todo` tool, `/todo`, HUD, reminders and nudges run, and the plugin's `kata` todo backend mirrors the list into Kata after omp saves each change.
+  - An added task creates a child issue, starting it claims it, and dropping or removing it closes it as wontfix.
+  - Changes made in Kata stand: the mirror follows what changed in omp's list, so an agent's `kata close`, a delegate's close or a hand back is not undone (except when Kata answers slower than omp's 30 s backend timeout across a `/tree` or fork; see limits).
+  - A task the user marks completed through `/todo` or RPC `set_todos` while its issue is open stays open, labeled `needs-review` with one comment.
+  - A task that was never in omp's list (from an adopted parent, `KATA_REF` or a claimed ticket) is never removed. Tasks are matched by text, and moving one to another phase is not mirrored.
+  - While Kata is unreachable the plan is kept in the session and replays when Kata returns; omp's list is never held up by Kata.
+- omp shows a warning when the mirror cannot reach Kata or Kata refuses a change.
+  - "Kata did not take…" means Kata was unreachable; the next change to the list sends the whole list again.
+  - "Kata refused…" names the refused tasks, if any, and comes once per distinct error and task until a change goes through. A refused removal leaves the task open in Kata.
+- `todo done` on a task whose Kata issue is still open is refused, naming the issue and the `kata close <ref> --done --message '<40+ characters>' --test '<command>'` command (or `--commit`, `--pr`, `--reviewed-paths`). The agent closes the issue in its shell, then calls `done` again.
+  - A ticket item's `done` that is not the ticket's last open item goes through with a plain comment on the ticket. The last open item is refused until the ticket is closed.
+  - `done` on a delegated task is refused: its delegate closes it.
+  - A `kata close` and a `todo done` sent in one message get the `done` refused, because omp checks every call of a message before running any; the agent retries `done` on its next turn.
+- An `init` whose list leaves out open tasks is refused and lists them, also an empty list (`list: []`) and an `init` with `op` left out.
+  - Tasks omp's list held: drop them first with `todo drop`, which closes them as wontfix, then `init`.
+  - Tasks omp's list never held (from an adopted parent, `KATA_REF` or a claimed ticket): keep them in the list, or `append` them and then drop them.
+- The plan parent comes from `KATA_REF`, a ticket the session claimed with `kata claim <ref>`, the user's `/todo ref <ref>`, or the session's existing parent; otherwise the plugin makes an automatic parent.
+- An op on a task another session holds is refused and tells the model to ask the user, who runs `/todo takeover <task>`.
+
+#### Development
+
+- `smoke:omp` selects the `kata` todo backend for every run, scripts omp's own `todo` params, closes each plan task with `kata close` before its `done`, and checks the refusals the model is sent.
+
+### Removed
+
+#### Plans
+
+- The plugin's own `todo` tool, and with it the `message`, `evidence`, `ref`, `replace` and `takeover` params; evidence goes on the agent's `kata close`.
+- `block` and `unblock`: omp has had no `blocked` status since 18.20.0. Record a wait with `kata comment`; omp's own stop reminder still fires while tasks are open.
+- The plugin's own stop reminder, and its handling of `/todo` subcommands other than `takeover` and `ref`; omp's own `/todo` handles them. The stop hook stays and settles the turn.
+
+#### Display
+
+- The plugin's Tern todo card, dock pill and progress widget. omp draws its own list.
+
+### Fixed
+
+#### Plans
+
+- Restarting a closed task you own reopens it, instead of failing with "no longer owned" when Kata cleared the owner on close.
+
 ## [2.12.1] - 2026-11-18
 
 ### Fixed

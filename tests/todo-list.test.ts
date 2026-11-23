@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import fc from "fast-check";
-import { diffTodoList, listOf, type ListItem, type ListOp, type ListStatus, type PlanItem } from "../core/todo-list";
+import { diffNativeList, diffTodoList, listOf, nativeTargets, type ListItem, type ListOp, type ListStatus, type NativeItem, type NativeStatus, type NativeStep, type PlanItem } from "../core/todo-list";
+import type { Task } from "../core/model";
 
 const LONG = "Changed the parser and verified it with the unit tests";
 const none = new Set<string>();
@@ -269,5 +270,166 @@ describe("diffTodoList properties", () => {
 			const todos = JSON.parse(result.refusal.split("\n").pop()!).todos;
 			expect(diffTodoList(plan, accepted, todos)).toEqual({ ops: [] });
 		}));
+	});
+});
+
+const task = (ref: string, content: string, status: Task["status"], extra: Partial<Task> = {}): Task => ({ ref, content, phase: "P", status, ...extra });
+const item = (content: string, status: NativeStatus): NativeItem => ({ phase: "P", content, status });
+const prevOf = (entries: Record<string, NativeStatus>) => new Map(Object.entries(entries));
+const led = () => true;
+const steps = (list: NativeStep[]) => list.map(s => s.step === "append" ? `append:${s.content}${s.start ? "+start" : ""}` : `${s.step}:${s.task.ref}`);
+
+describe("diffNativeList", () => {
+	const ticketPair = [task("t#1", "x", "pending", { ticket: "k#1" }), task("t#2", "y", "pending", { ticket: "k#1" })];
+
+	test("a ticket item omp never listed still counts as open for the last-of-ticket flag", () => {
+		const out = diffNativeList(ticketPair, prevOf({ x: "pending" }), [item("x", "completed")], led);
+		expect(out).toEqual([{ step: "flag", task: ticketPair[0], lastOfTicket: false }]);
+	});
+
+	test("a ticket sibling omp listed and then removed does not keep the ticket open", () => {
+		const out = diffNativeList(ticketPair, prevOf({ x: "pending", y: "pending" }), [item("x", "completed")], led);
+		expect(steps(out)).toEqual(["rm:t#2", "flag:t#1"]);
+		expect(out[1]).toMatchObject({ lastOfTicket: true });
+	});
+
+	test("a ticket sibling this session does not lead keeps the ticket open", () => {
+		const out = diffNativeList(ticketPair, prevOf({ x: "pending", y: "pending" }), [item("x", "completed")], t => t.ref !== "t#2");
+		expect(out).toEqual([{ step: "flag", task: ticketPair[0], lastOfTicket: false }]);
+	});
+
+	test("a ticket sibling omp has completed or abandoned counts as closed", () => {
+		for (const done of ["completed", "abandoned"] as const) {
+			const out = diffNativeList(ticketPair, prevOf({ x: "pending", y: "pending" }), [item("x", "completed"), item("y", done)], led);
+			expect(out.find(s => s.step === "flag")).toMatchObject({ task: ticketPair[0], lastOfTicket: true });
+		}
+	});
+
+	test("an item without a ticket is never the last of a ticket", () => {
+		const plain = task("t#1", "x", "pending");
+		expect(diffNativeList([plain], prevOf({ x: "pending" }), [item("x", "completed")], led)).toEqual([{ step: "flag", task: plain, lastOfTicket: false }]);
+	});
+
+	describe("one content in several plan tasks", () => {
+		const copies = (status: Task["status"]) => [task("p#1", "a", status, { phase: "One" }), task("p#2", "a", status, { phase: "Two" })];
+
+		test("drop reaches every open copy", () => {
+			expect(steps(diffNativeList(copies("pending"), prevOf({ a: "pending" }), [item("a", "abandoned")], led))).toEqual(["drop:p#1", "drop:p#2"]);
+		});
+
+		test("flag reaches every open copy", () => {
+			expect(steps(diffNativeList(copies("pending"), prevOf({ a: "pending" }), [item("a", "completed")], led))).toEqual(["flag:p#1", "flag:p#2"]);
+		});
+
+		test("start reaches every pending copy", () => {
+			expect(steps(diffNativeList(copies("pending"), prevOf({ a: "pending" }), [item("a", "in_progress")], led))).toEqual(["start:p#1", "start:p#2"]);
+		});
+
+		test("a copy this session does not lead is left alone", () => {
+			const out = diffNativeList(copies("pending"), prevOf({ a: "pending" }), [item("a", "abandoned")], t => t.ref === "p#1");
+			expect(steps(out)).toEqual(["drop:p#1"]);
+		});
+
+		test("a led copy still gets its step when the first copy is not led", () => {
+			const out = diffNativeList(copies("pending"), prevOf({ a: "pending" }), [item("a", "abandoned")], t => t.ref === "p#2");
+			expect(steps(out)).toEqual(["drop:p#2"]);
+			expect(steps(diffNativeList(copies("pending"), prevOf({ a: "pending" }), [item("a", "completed")], t => t.ref === "p#2"))).toEqual(["flag:p#2"]);
+			expect(steps(diffNativeList(copies("pending"), prevOf({ a: "pending" }), [item("a", "in_progress")], t => t.ref === "p#2"))).toEqual(["start:p#2"]);
+		});
+
+		test("an already closed copy is not dropped again", () => {
+			const mixed = [task("p#1", "a", "completed"), task("p#2", "a", "pending")];
+			expect(steps(diffNativeList(mixed, prevOf({ a: "pending" }), [item("a", "abandoned")], led))).toEqual(["drop:p#2"]);
+		});
+	});
+
+	test("an unchanged status gives no step, so a Kata-side close stands", () => {
+		const closed = [task("t#1", "a", "completed"), task("t#2", "b", "abandoned")];
+		const out = diffNativeList(closed, prevOf({ a: "pending", b: "in_progress" }), [item("a", "pending"), item("b", "in_progress")], led);
+		expect(out).toEqual([]);
+	});
+
+	test("a pause happens only from a previous in_progress", () => {
+		const running = [task("t#1", "a", "in_progress")];
+		expect(steps(diffNativeList(running, prevOf({ a: "in_progress" }), [item("a", "pending")], led))).toEqual(["pause:t#1"]);
+		expect(diffNativeList(running, prevOf({ a: "completed" }), [item("a", "pending")], led)).toEqual([]);
+		expect(diffNativeList(running, prevOf({}), [item("a", "pending")], led)).toEqual([]);
+	});
+
+	test("a pause skips a copy that Kata does not have in progress", () => {
+		const copies = [task("p#1", "a", "in_progress"), task("p#2", "a", "pending")];
+		expect(steps(diffNativeList(copies, prevOf({ a: "in_progress" }), [item("a", "pending")], led))).toEqual(["pause:p#1"]);
+	});
+
+	test("a closed task is not reopened when omp had it open", () => {
+		const closed = [task("t#1", "a", "completed")];
+		expect(diffNativeList(closed, prevOf({ a: "pending" }), [item("a", "in_progress")], led)).toEqual([]);
+		expect(diffNativeList(closed, prevOf({ a: "in_progress" }), [item("a", "pending")], led)).toEqual([]);
+	});
+
+	test("a closed task is reopened when omp had it finished or never listed it", () => {
+		const closed = [task("t#1", "a", "completed")];
+		expect(steps(diffNativeList(closed, prevOf({ a: "completed" }), [item("a", "in_progress")], led))).toEqual(["start:t#1"]);
+		expect(steps(diffNativeList(closed, prevOf({}), [item("a", "in_progress")], led))).toEqual(["start:t#1"]);
+		expect(steps(diffNativeList(closed, prevOf({ a: "completed" }), [item("a", "pending")], led))).toEqual(["append:a"]);
+	});
+
+	test("an unseen item creates a task only when omp lists it open", () => {
+		expect(diffNativeList([], prevOf({}), [item("a", "completed")], led)).toEqual([]);
+		expect(diffNativeList([], prevOf({}), [item("a", "abandoned")], led)).toEqual([]);
+		expect(steps(diffNativeList([], prevOf({}), [item("a", "pending"), item("b", "in_progress")], led))).toEqual(["append:a", "append:b+start"]);
+	});
+
+	test("a task is removed only when it is in the previous list, open and led", () => {
+		const open = [task("t#1", "a", "pending")];
+		expect(steps(diffNativeList(open, prevOf({ a: "pending" }), [], led))).toEqual(["rm:t#1"]);
+		expect(diffNativeList(open, prevOf({}), [], led)).toEqual([]);
+		expect(diffNativeList(open, prevOf({ a: "pending" }), [], () => false)).toEqual([]);
+		expect(diffNativeList([task("t#1", "a", "completed")], prevOf({ a: "pending" }), [], led)).toEqual([]);
+	});
+
+	test("removals and settlements come before appends and starts", () => {
+		const plan = [task("t#1", "gone", "pending"), task("t#2", "done", "pending"), task("t#3", "next", "pending")];
+		const out = diffNativeList(plan, prevOf({ gone: "pending", done: "pending", next: "pending" }), [item("done", "completed"), item("next", "in_progress"), item("new", "pending")], led);
+		expect(steps(out)).toEqual(["rm:t#1", "flag:t#2", "append:new", "start:t#3"]);
+	});
+});
+
+describe("nativeTargets", () => {
+	const known = new Set(["Fix parser", "Write tests", "a, b", "x"]);
+
+	test("nothing names no target", () => {
+		expect(nativeTargets(known, undefined)).toEqual([]);
+		expect(nativeTargets(known, "")).toEqual([]);
+	});
+
+	test("a verbatim task name is one target even when it holds a delimiter", () => {
+		expect(nativeTargets(known, "a, b")).toEqual(["a, b"]);
+		expect(nativeTargets(known, "Fix parser")).toEqual(["Fix parser"]);
+	});
+
+	test("a delimiter splits when every part names a task", () => {
+		expect(nativeTargets(known, "Fix parser;Write tests")).toEqual(["Fix parser", "Write tests"]);
+		expect(nativeTargets(known, "Fix parser\nWrite tests")).toEqual(["Fix parser", "Write tests"]);
+		expect(nativeTargets(known, "Fix parser, Write tests")).toEqual(["Fix parser", "Write tests"]);
+	});
+
+	test("whitespace splits only when every part names a task", () => {
+		const words = new Set(["x", "y"]);
+		expect(nativeTargets(words, "x y")).toEqual(["x", "y"]);
+		expect(nativeTargets(words, "x z")).toEqual(["x z"]);
+	});
+
+	test("quotes around a part are stripped", () => {
+		expect(nativeTargets(known, `"Fix parser", 'Write tests'`)).toEqual(["Fix parser", "Write tests"]);
+		expect(nativeTargets(known, "`Fix parser`;Write tests")).toEqual(["Fix parser", "Write tests"]);
+	});
+
+	test("a string naming no task stays one target", () => {
+		expect(nativeTargets(known, "nothing here; or here")).toEqual(["nothing here; or here"]);
+	});
+
+	test("an array is split per entry", () => {
+		expect(nativeTargets(known, ["x", "Fix parser;Write tests"])).toEqual(["x", "Fix parser", "Write tests"]);
 	});
 });

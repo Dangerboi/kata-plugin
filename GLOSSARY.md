@@ -61,7 +61,7 @@ A plan parent the plugin created for one session; it closes itself once its chil
 _Avoid_: auto parent, session issue
 
 **Explicit parent**:
-A plan parent the user or agent chose (`KATA_REF`, an init `ref`, or an adopted issue); it never closes itself.
+A plan parent the user or agent chose (`KATA_REF`, an init `ref`, omp's `/todo ref`, a claimed ticket, or an adopted issue); it never closes itself.
 _Avoid_: bound parent, claimed parent
 
 **Plan task**:

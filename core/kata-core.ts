@@ -5,7 +5,11 @@ import { createSettlement, MAX_FAILURES, openChildren, type PendingClose, type S
 import { createKata, debugTo, type CORE_ENV, isKataCode, isUnusable, KataError, NO_JOB, waitAtMost, type Batch, type Exec, type Job, type PathOps, type Platform, type Timers } from "./kata-cli";
 import { createTicketCompletion } from "./autocomplete";
 import { kataCommands, quote, shellOptions } from "./shell";
-import { closedTaskStatus, digest, FULL_ID_REF, heldBySession, heldMessage, itemTicket, OPEN, PROOF_MIN, projectOf, proofProblem, QUALIFIED_REF_ONLY, qualifiedRef, SESSION_KEY, sessionParentKeys, slug, tasksOf, textOf, TITLE_MAX, TODO_WORDING, WORKING, type Binding, type Change, type KataIssue, type KataShow, type Plan, type Status, type Task, type ToolWording } from "./model";
+import { closedTaskStatus, digest, FULL_ID_REF, hasLabel, heldBySession, heldMessage, itemTicket, NATIVE_WORDING, OPEN, PROOF_MIN, projectOf, proofProblem, QUALIFIED_REF_ONLY, qualifiedRef, SESSION_KEY, sessionParentKeys, slug, tasksOf, textOf, TITLE_MAX, TODO_WORDING, WONTFIX_MIN, WORKING, type Binding, type Change, type KataIssue, type KataShow, type Plan, type Status, type Task, type ToolWording } from "./model";
+import { diffNativeList, nativeOpen, nativeTargets, type NativeItem, type NativePhase, type NativeStatus } from "./todo-list";
+
+// What omp's own todo list holds, as `todo.mirror` takes it.
+export type { NativePhase, NativeStatus } from "./todo-list";
 
 // Canonical shared source. scripts/vendor-core.ts copies it, and the core modules it imports, into each self-contained
 // plugin; host adapters own their event/schema/identity APIs.
@@ -17,8 +21,10 @@ export interface HostContext {
 	agent?: { kind?: string; id?: string };
 	sessionManager?: {
 		getSessionId?(): string | undefined;
-		// The session's entries, oldest first: the core reads back the ones the host's `appendEntry` added (`type: "custom"`).
+		// The current branch of the session, oldest first: the core reads back the ones the host's `appendEntry` added (`type: "custom"`).
 		getBranch?(): readonly unknown[];
+		// Every entry of the session, on any branch, in the order they were added; the last one is the newest. Read to tell which entries are new.
+		getEntries?(): readonly unknown[];
 		// omp: `parentSession` names the session this one was forked from.
 		getHeader?(): { parentSession?: unknown } | null | undefined;
 	};
@@ -60,7 +66,7 @@ interface CoreOptions {
 	// Start the contract and inbox reads at session start, not at the first prompt (a host whose context another extension may supply waits for the prompt).
 	prefetch?: boolean;
 	// The progress widget's content for this host and the event's context. Absent: the summary line alone.
-	widget?(line: string, view: PlanView, ctx: any): unknown;
+	widget?: ((line: string, view: PlanView, ctx: any) => unknown);
 	// false: the core never starts a pending task on its own after a change (OpenCode's todowrite list says what is in progress).
 	autoStart?: boolean;
 	// Where the settings a host keeps per session live (KATA_REF, KATA_TEAMMATE, KATA_AUTHOR, KATA_DEFAULT_PROJECT, KATA_INBOX_USER, USER): asked first, then the platform environment.
@@ -68,8 +74,12 @@ interface CoreOptions {
 	env?(name: string): string | undefined;
 	// "shutdown": the automatic parent closes only when the lead's session ends (shutdown without `continues`/`forking`), never in a turn's settle or a drain. Default "drain".
 	closeParent?: "drain" | "shutdown";
-	// How the host's todo tool is named and used, for the advice in the core's messages. Default: the `todo` tool's.
+	// How the host's todo tool is named and used, for the advice in the core's messages. Default: the `todo` tool's, or omp's own tool's (NATIVE_WORDING) when `native`.
 	wording?: ToolWording;
+	// true: the host's own todo list is mirrored into Kata (omp's native todo through `todo.mirror`), and `todo.guard` refuses what Kata's
+	// rules forbid. The plan follows that list, so the core never starts a task on its own, and the prompt carries the rules even before a plan exists.
+	// The host's own list shows the plan, so the core sets no widget; `/todo ref` is routed to `todo.command`.
+	native?: true;
 }
 
 // Where the session's plan lives: the host hands it to child processes it starts.
@@ -86,7 +96,7 @@ export const PROMPT_TAGS = { contract: "kata_contract", inbox: "kata_inbox", ass
 export const tagged = (name: keyof PromptSections, text: string) => `<${PROMPT_TAGS[name]}>\n${text}\n</${PROMPT_TAGS[name]}>`;
 // The session entry the core saves its state in: appended after each change, and the session's latest is read at the next bind.
 export const snapshotEntry = (namespace: string) => `io.kata.${namespace}.state`;
-export type Snapshot = SettlementSnapshot & { version: number; sessionId: string; ownSessions?: string[]; plan: Plan; delegates?: SavedDelegate[]; named?: Task[]; deletedParent?: string };
+export type Snapshot = SettlementSnapshot & { version: number; sessionId: string; ownSessions?: string[]; plan: Plan; delegates?: SavedDelegate[]; named?: Task[]; deletedParent?: string; native?: { prev: Record<string, NativeStatus>; phase: Record<string, string>; listed?: true; leaf?: string } };
 // Whether a saved session left work a later instance must finish: a pending close (a task's or a ticket's) or an unfinished
 // delegate. The automatic parent's close is not counted: a session owes it only once it ends (see session.end).
 export function owes(snapshot: Partial<Snapshot> | undefined): boolean {
@@ -175,13 +185,16 @@ export const RULES = {
 	named: (text: string, title: string) => `only when its ${text} names that item: its exact ${title} in quotes, its ref, or for a ticket item its ticket's ref. Naming a ticket outside the plan by qualified ref binds it to that ticket.`,
 	untracked: "gets no issue to work, the plugin records its run and report as a closed child issue of the plan parent",
 	ownClose: (text: string) => `that issue itself, with its own evidence, once its work is verified, unless its ${text} says to leave the issue open`,
-	takeover: (repeat: string) => `If that session crashed or was killed (or the user says so), ${repeat} with \`takeover: true\`; never take over work another session may still be doing.`,
+	// `how` follows the clause: a host whose tool has no `takeover` parameter gives "" and names the user's command in `repeat`.
+	takeover: (repeat: string, how = " with `takeover: true`") => `If that session crashed or was killed (or the user says so), ${repeat}${how}; never take over work another session may still be doing.`,
 };
 
 // The todo tool's ops and parameter descriptions; each host builds its schema from them.
 export const TODO_OPS = ["init", "start", "done", "rm", "drop", "block", "unblock", "append", "view"] as const;
 // The subcommands `/todo` accepts after the bare form (the op names are `TODO_OPS`).
 export const TODO_COMMANDS = ["start", "done", "drop", "rm", "append", "block", "unblock", "takeover"] as const;
+// The `/todo` subcommands a native host routes to `todo.command`; its own `/todo` handles the rest.
+export const NATIVE_TODO_COMMANDS = ["takeover", "ref"] as const;
 export const TODO_PARAMS = {
 	list: "phases for init",
 	task: "verbatim task content or Kata ref",
@@ -205,11 +218,25 @@ Kata specifics:
 - Every other task is a Kata child issue of one parent issue. On init pass \`ref\` with the Kata issue this plan serves (${RULES.search}); an explicit KATA_REF or a delegate's assignment must match it. Without a ref, use that issue, the session's existing parent, or a new parent titled by \`message\`.
 - done closes the issue (an item naming a ticket: see above). Kata requires \`evidence\` (${RULES.evidence}) and a \`message\` of ${PROOF_MIN}+ characters saying what changed and how it was verified. Unverified work: block it instead.
 - The tool does the Kata bookkeeping for its tasks and ticket items: it claims them, sets \`work.attention\` (block: stuck with the reason; start/unblock: ok) and closes them on done. ${RULES.bookkeeping("a plan item")}
-- A delegate (an omp \`task\` subagent, or a pi started from this session) is bound to a plan item ${RULES.named("task text", "title")} A delegate whose text names neither is untracked: it ${RULES.untracked}, and you finish the item yourself with done. A bound delegate is told to close ${RULES.ownClose("task text")}. That close is expected: the item then shows done without your \`done\`, and a later \`done\` on it changes nothing. To close it yourself after your own checks, write "leave the Kata issue open" in the delegate's task text. A delegate that exits with its issue still open hands it back to you, labeled \`needs-review\`.
+- A delegate (a pi started from this session, or a Claude Code \`Agent\`) is bound to a plan item ${RULES.named("task text", "title")} A delegate whose text names neither is untracked: it ${RULES.untracked}, and you finish the item yourself with done. A bound delegate is told to close ${RULES.ownClose("task text")}. That close is expected: the item then shows done without your \`done\`, and a later \`done\` on it changes nothing. To close it yourself after your own checks, write "leave the Kata issue open" in the delegate's task text. A delegate that exits with its issue still open hands it back to you, labeled \`needs-review\`.
 - init whose new list leaves out open tasks changes nothing and returns an error listing the missing ones; pass \`replace: true\` only to deliberately drop them (they close as wontfix).
 - A task another session started stays that session's until it ends; a session that ends normally releases its tasks. Ops on a held task are refused. ${RULES.takeover("repeat the op naming the task")}
 - drop/rm take the reason in \`message\`.
 - drop and rm close those tasks as wontfix (Kata never deletes). Automatic session parents close from their children’s Kata-recorded evidence once all work has settled. Explicit/claimed parents remain yours to close. Folders with no Kata project use KATA_DEFAULT_PROJECT (labeled with the repo) or register their inferred project; the plan is session-local only while Kata is unreachable and replays when it returns.`;
+
+// The command that closes a Kata issue with its evidence, as the model reads it.
+const closeCommand = (ref: string) => `kata close ${ref} --done --message '<what changed and how it was verified, ${PROOF_MIN}+ characters>' --test '<command>' (or --commit/--pr/--reviewed-paths)`;
+
+// The prompt section of a host whose own todo list is mirrored into Kata: the rules `todo.guard` enforces, so the model meets them before a refusal.
+const NATIVE_TODO_RULES = [
+	"Your todo list is mirrored into Kata: each task is a Kata issue under one parent issue, and the plugin keeps them in step with your list.",
+	`- Close before done: close a task's issue yourself, with its evidence, then mark it done. Run ${closeCommand("<ref>")}, then call todo done. todo done on a task still open in Kata is refused, except a task delegated to a subagent: its subagent closes it. An item that names a ticket (\`<project>#<id>: <action>\`) works the same: the ticket's last open item needs the ticket closed first.`,
+	"- Leave no open task out of an init. A task your list holds: todo drop it first, in an earlier call, then init. A task your list never held (it came from Kata): keep it in the list, or todo append it and then todo drop it, in earlier calls. An init that leaves open Kata tasks out is refused.",
+	"- Set the plan parent before the first init: run `kata claim <ref>` on the issue this plan serves, or ask the user to run `/todo ref <ref>`. Without one the plugin makes a parent issue for this session.",
+	`- A subagent you start with the task tool is bound to a plan item ${RULES.named("task text", "title")} A subagent whose text names neither is untracked: it ${RULES.untracked}, and you finish the item yourself with done. A bound subagent is told to close ${RULES.ownClose("task text")}. That close is expected: the item then shows done in Kata, so mark it done in your list without a close of your own. To close it yourself after your own checks, write "leave the Kata issue open" in the task text. A subagent that exits with its issue still open hands it back to you, labeled \`needs-review\`.`,
+	"- A task another session started stays that session's: ops on it are refused, and only the user's `/todo takeover <task>` moves it here.",
+	"- There is no blocked status. Record a wait with `kata comment <ref> --body '<what you wait for>'` and leave the task as it is.",
+].join("\n");
 
 function delegateContext(executable: string, name: string, ref: string, teammate: string, binding: Binding): string {
 	const command = `${quote(executable)} --workspace ${quote(binding.workspace)} --project ${quote(projectOf(binding.parent))} --teammate ${quote(teammate)}`;
@@ -261,7 +288,7 @@ function render(plan: Plan, wording: ToolWording = TODO_WORDING): string {
 function delegateHost(host: CoreHost, id: string): CoreHost {
 	const lead = host.delegateStore;
 	return { ...host, isMain: () => false, appendEntry: () => {},
-		delegateStore: { records: () => [], get: key => key === id ? lead.get(key) : undefined, put: record => lead.put(record), of: () => lead.get(id) } };
+		delegateStore: { records: () => [], get: key => key === id ? lead.get(key) : undefined, put: record => lead.put(record), of: ctx => { const own = lead.of(ctx); return own?.id === id ? own : lead.get(id); } } };
 }
 
 export type KataCore = ReturnType<typeof buildCore> & {
@@ -281,10 +308,57 @@ export function createKataCore(host: CoreHost, options: CoreOptions): KataCore {
 	};
 }
 
+// A native `todo` call as omp receives it. omp infers a missing `op` (inferTodoOp): a non-empty `list` is init, `items` with a phase is
+// append, and `items` alone is init while omp's list has no phases (`listed` false).
+type NativeCall = { op?: unknown; task?: unknown; phase?: unknown; items?: unknown; list?: unknown };
+const GUARDED_OPS: readonly string[] = ["init", "start", "done", "drop", "rm"];
+function inferNativeOp(call: NativeCall, listed: boolean): string | undefined {
+	if (typeof call.op === "string") return call.op;
+	if (Array.isArray(call.list) && call.list.length) return "init";
+	if (Array.isArray(call.items) && call.items.length) {
+		if (typeof call.phase === "string" && call.phase) return "append";
+		if (!listed) return "init";
+	}
+	return undefined;
+}
+// Whether the guard checks this call: init, start, done, drop or rm, with the op omp would infer. Conservative: a call with only `items`
+// and no `phase` counts as init, since whether omp's list has phases is known only inside the guard.
+function guardedNativeCall(input: unknown): boolean {
+	if (!input || typeof input !== "object") return false;
+	const op = inferNativeOp(input as NativeCall, false);
+	return !!op && GUARDED_OPS.includes(op);
+}
+// A failure of a mirror pass: `outage` is Kata being out of reach (the next change tries again), anything else a refusal.
+// `task` is the task whose step Kata refused (none: a refused setup, init or parent mark); `removed` marks a refused removal (of a plain
+// task, or of a ticket item), whose item has left omp's list, so it is worded apart from the other steps.
+type MirrorFailure = { error: unknown; outage: boolean; task?: { content: string; ref?: string }; removed?: "task" | "ticket" };
+// An error that is, or was caused by, Kata being unreachable.
+const outageOf = (error: unknown): boolean => isUnusable(error) || (error instanceof Error && error.cause !== undefined && outageOf(error.cause));
+const messageOf = (error: unknown): string => (error as Error)?.message ?? String(error);
+const mapOf = <T>(value: unknown) => new Map<string, T>(Object.entries(typeof value === "object" && value ? value as Record<string, T> : {}));
+// What the core last mirrored of omp's list, for the branch whose last entry is `leaf`.
+type NativeMemory = {
+	prev: Map<string, NativeStatus>;
+	// omp's phase per content at the same mirror: a `{phase}` target of a todo call names omp's phases, which Kata's `todo.phase` may no longer match.
+	phase: Map<string, string>;
+	// Whether omp's list had phases (an emptied list still has them), as omp's own check of `todo` calls without an op reads it.
+	listed: boolean;
+	leaf?: string;
+};
+// The saved form of the memory; `leaf` goes in only when asked, as the comparison of snapshots leaves it out.
+const savedNative = (memory: NativeMemory, withLeaf = false): Snapshot["native"] => {
+	const leaf = withLeaf ? memory.leaf : undefined;
+	return memory.prev.size || memory.phase.size || memory.listed || leaf
+		? { prev: Object.fromEntries(memory.prev), phase: Object.fromEntries(memory.phase), ...(memory.listed ? { listed: true as const } : {}), ...(leaf ? { leaf } : {}) } : undefined;
+};
+const nativeMemory = (saved: Snapshot["native"], leaf?: string): NativeMemory => ({ prev: mapOf<NativeStatus>(saved?.prev), phase: mapOf<string>(saved?.phase), listed: saved?.listed === true, leaf });
+const tipOf = (branch: readonly any[]): string | undefined => branch[branch.length - 1]?.id;
+
 // `newSession` runs after the host's `switched`, when a bind makes a different session the core's.
 function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void) {
 	const namespace = options.namespace;
-	const wording = options.wording ?? TODO_WORDING;
+	const wording = options.wording ?? (options.native ? NATIVE_WORDING : TODO_WORDING);
+	const listName = wording.list ?? "the todo list";
 	const platform = host.platform, path = platform.path;
 	const debug = debugTo(options.debugFile, platform.appendFile);
 	const bounded = <T>(promise: Promise<T>, ms = 250) => waitAtMost(promise, ms, debug, platform);
@@ -314,6 +388,15 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 	const configuredRef = () => options.explicitRef?.() ?? setting("KATA_REF");
 	const aliases = new Set<string>(); // refs the plan's parent was rehomed from: they still name it
 	let requestedRef: string | undefined;
+	// A native host's list says what is in progress, so the core never starts a pending task itself (see nextTask).
+	const autoStart = options.autoStart !== false && !options.native;
+	// The state of `todo.mirror`: its newest call per session, and the notices already shown (see report).
+	const mirrorStamps = new Map<string, number>(), shown = new Set<string>();
+	// What this core last mirrored of omp's list for the session (see diffNativeList), saved in the session snapshot.
+	let native = nativeMemory(undefined);
+	// The ids of the entries this core has read: the branch at a bind, a reload or a mirror pass, and every `getEntries` id at a bind or a reload.
+	const seenIds = new Set<unknown>();
+	const flagged = new Set<string>();
 	let sessionTeammate: string | undefined;
 	const ownTeammate = () => sessionTeammate ?? setting("KATA_TEAMMATE") ?? "";
 	// A ticket item's ticket keeps the actor and teammate rule alone: it is not this plan's task, whoever's plan holds it.
@@ -372,17 +455,23 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 		retryLater: () => settlement.schedule(),
 		debug,
 	});
-	function persist(job: Job) {
-		if (!currentId || !isLeadCall(job)) return;
+	function persist(job: Job): boolean {
+		if (!currentId || !isLeadCall(job)) return false;
 		const kept = delegates.saved();
+		const memory = savedNative(native);
 		const data = { version: 1, sessionId: currentId, ...(ownSessions.length ? { ownSessions: [...ownSessions] } : {}),
 			plan: structuredClone({ ...plan, tasks: plan.tasks.filter(t => !t.ticket) }), ...settlement.snapshot(),
 			...(kept.length ? { delegates: structuredClone(kept) } : {}),
-			...(named.length ? { named: structuredClone(named) } : {}), ...(deletedParent ? { deletedParent } : {}) };
+			...(named.length ? { named: structuredClone(named) } : {}), ...(deletedParent ? { deletedParent } : {}),
+			...(memory ? { native: memory } : {}) };
 		const encoded = JSON.stringify(data);
-		if (encoded === lastSnapshot) return;
-		host.appendEntry(SNAPSHOT_ENTRY, data satisfies Snapshot);
+		if (encoded === lastSnapshot) return false;
+		// `leaf` is the entry whose branch the mirror memory describes; a reload takes only snapshots whose leaf is on its branch. It moves
+		// without the plan, so it is left out of the comparison above.
+		const stamped = savedNative(native, true);
+		host.appendEntry(SNAPSHOT_ENTRY, { ...data, ...(stamped ? { native: stamped } : {}) } satisfies Snapshot);
 		lastSnapshot = encoded;
+		return true;
 	}
 
 	// Serialize every plan mutation: tool calls, /todo, session reloads and delegate events. Each job is one Kata operation
@@ -463,7 +552,7 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 			// Read the issue again, not the one claim prints: a delegate marker another writer added right after the claim
 			// must stop this call before it changes any other task.
 			issue = (await kata.show(job, ref, cwd)).issue;
-			if (issue.status !== "open" || issue.owner !== currentActor) throw new Error(`Kata issue ${ref} is no longer owned by ${currentActor}; no work metadata was written.`);
+			if ((issue.status !== "open" && !(allowClosed && issue.status === "closed")) || issue.owner !== currentActor) throw new Error(`Kata issue ${ref} is no longer owned by ${currentActor}; no work metadata was written.`);
 			if (teammate && !issue.metadata?.teammate) {
 				await kata.run(job, ["meta", "set", ref, "teammate", teammate, "--if-absent", "--if-match", String(issue.revision)], cwd);
 				issue = (await kata.show(job, ref, cwd)).issue;
@@ -582,6 +671,7 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 	}
 
 	function refresh(ctx: HostContext) {
+		if (options.native) return;
 		const ui = uiOf(ctx);
 		if (!ui?.setWidget) return;
 		if (plan.error) { ui.setWidget(WIDGET, [render(plan, wording)]); return; }
@@ -658,11 +748,17 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 				const task = plan.tasks.find(x => itemKey(x) === itemKey(t));
 				if (!task || t.status === "pending") continue;
 				try {
-					if (t.status === "completed" && proofProblem(t.proof ?? {})) await transition(job, task, "blocked", { reason: "Completed while Kata was unreachable; add evidence and close it." }, cwd);
-					else await transition(job, task, t.status, { ...t.proof, reason: t.blocker }, cwd);
+					if (t.status === "completed" && proofProblem(t.proof ?? {})) {
+						// omp's list marked it completed with no Kata close and has no blocked status: flag it for review, as the mirror does.
+						if (options.native) await flagCompleted(job, task, false, cwd);
+						else await transition(job, task, "blocked", { reason: "Completed while Kata was unreachable; add evidence and close it." }, cwd);
+					} else await transition(job, task, t.status, { ...t.proof, reason: t.blocker }, cwd);
 				} catch (error) {
 					debug(error);
-					await transition(job, task, "blocked", { reason: `Replaying "${t.status}" from the local plan failed: ${(error as Error).message}` }, cwd).catch(debug);
+					const reason = `Replaying "${t.status}" from the local plan failed: ${(error as Error).message}`;
+					// omp's list has no blocked status and nothing unblocks a task there: the task is flagged for review with one comment instead.
+					if (options.native) await flagForReview(job, task, `${namespace}-native-replay:${digest(task.ref)}`, `${reason}\nThe task stays open: check it, then set it in ${listName}.`, cwd).catch(debug);
+					else await transition(job, task, "blocked", { reason }, cwd).catch(debug);
 				}
 			}
 			await advance(job, cwd).catch(debug);
@@ -719,23 +815,17 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 		// Only a bind that starts a session this core did not already hold restores delegates: /tree and a branch switch keep the same one.
 		const isNew = currentId !== id;
 		currentId = id;
-		if (isNew && main(ctx)) { host.switched?.(ctx); newSession(); }
+		if (isNew && main(ctx)) { host.switched?.(ctx); newSession(); shown.clear(); }
 		lastSnapshot = undefined;
 		currentCtx = ctx;
 		plan = { tasks: [], workspace: path.resolve(ctx.cwd) }; named = []; aliases.clear(); deletedParent = undefined;
 		scope = "unknown"; refusal = undefined; outage = "";
 		// A delegate restores nothing from the session's saved entries: they are its lead's.
 		const branch: readonly any[] = main(ctx) ? ctx.sessionManager?.getBranch?.() ?? [] : [];
-		const snapshotOf = (owner: unknown) => [...branch].reverse().find((entry: any) => entry?.type === "custom" && entry.customType === SNAPSHOT_ENTRY && entry.data?.version === 1 && entry.data.sessionId === owner)?.data;
-		let snapshot = snapshotOf(id);
 		// A fork gets a new session id and copies the source's entries. It shares the source's work:
 		// adopt its parent and ticket items, but not its retries (the source still owns those closes)
 		// nor its local plan (replaying that would make a second automatic parent).
-		let source: string | undefined;
-		if (!snapshot && id && main(ctx)) {
-			source = forkSource(ctx);
-			snapshot = source && snapshotOf(source);
-		}
+		const { snapshot, source } = savedSnapshot(ctx, branch, id, onBranch(branch));
 		// A forked session keeps the source id as the parent's owner: the parent's session_id metadata names it.
 		const parentOwner = source ?? id;
 		// A resumed lead keeps its saved sessions; a fork adds itself to its source's, so it works on what its source started.
@@ -753,6 +843,8 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 			// A deletion noticed without a todo result (shutdown, a drain, a pi launch) is still reported after a resume.
 			if (typeof snapshot.deletedParent === "string") deletedParent = snapshot.deletedParent;
 		}
+		// The mirror continues from the list this branch's snapshot last mirrored, or from none: a tree move or a branch switch must not carry the old branch's.
+		if (main(ctx) && options.native) { seenIds.clear(); native = loadNative(ctx, snapshot, branch); }
 		let stored: any = snapshot?.plan?.parent ? snapshot.plan : undefined;
 		for (const entry of branch) {
 			if (entry?.type !== "custom" || entry.customType !== PARENT_ENTRY || (entry.data?.sessionId && entry.data.sessionId !== parentOwner)) continue;
@@ -1011,11 +1103,11 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 			if (!ticket) {
 				let shown: KataIssue;
 				try { shown = (await kata.show(job, ref, cwd)).issue; }
-				catch (error) { throw new Error(`Todo item "${item.content}" names ${ref}, which Kata cannot resolve: ${(error as Error).message}. Nothing was created.`); }
+				catch (error) { throw new Error(`Todo item "${item.content}" names ${ref}, which Kata cannot resolve: ${(error as Error).message}. Nothing was created.`, { cause: error }); }
 				if (shown.status !== "open") throw new Error(`Todo item "${item.content}" names ${ref}, which is already closed; the plugin never reopens a ticket. Nothing was created.`);
 				ticket = await kata.qualify(job, shown, cwd, ref);
 				try { await owned(job, ticket, cwd, "check", false, undefined, TICKET); }
-				catch (error) { throw new Error(`Todo item "${item.content}" cannot work ${ticket}: ${(error as Error).message} Nothing was created.`); }
+				catch (error) { throw new Error(`Todo item "${item.content}" cannot work ${ticket}: ${(error as Error).message} Nothing was created.`, { cause: error }); }
 				checked.set(ref, ticket);
 			}
 			tickets.set(itemKey(item), ticket);
@@ -1054,7 +1146,7 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 		}
 	}
 
-	// Kata wants 60+ characters for wontfix; the task and plan context supply that around the caller's reason. The ref
+	// Kata wants WONTFIX_MIN characters for wontfix; the task and plan context supply that around the caller's reason. The ref
 	// tells two tasks of one title apart: with Kata's close throttle on, a close that repeats a sibling's message is
 	// refused (`duplicate_message`).
 	function wontfix(verb: string, task: Task, change: Change): string {
@@ -1083,7 +1175,7 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 
 	// The pending task the core starts when no task is active, unless the host's list says what is in progress (autoStart: false).
 	function nextTask(tasks: Task[]): Task | undefined {
-		if (options.autoStart === false || tasks.some(t => t.status === "in_progress" && leads(t))) return;
+		if (!autoStart || tasks.some(t => t.status === "in_progress" && leads(t))) return;
 		return phasesOf(tasks).flatMap(p => p.tasks).find(t => t.status === "pending" && leads(t));
 	}
 
@@ -1316,13 +1408,56 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 	// Tasks a pi source left for the fork that replaces it, by source session id: the fork runs in a new plugin instance.
 	const forkSources = ((globalThis as Record<symbol, unknown>)[Symbol.for(`kata.${namespace}.forkSources`)] ??= new Map<string, Leaving>()) as Map<string, Leaving>;
 
-	async function apply(job: Job, params: any, ctx: HostContext): Promise<string> {
-		if (!bound || currentId !== sid(ctx)) await bind(job, ctx, params.op === "view", params.ref ?? (!bound ? requestedRef : undefined));
+	// A main session starts: the session it replaces ends (its attention, its tasks) or hands its tasks to this fork, then this one binds and its attention
+	// starts. `session.start` runs it, and so does every other entry of a native host that finds a new main session first (a mirrored list, a guarded call,
+	// `/todo ref`, a prompt: omp may deliver any of them before `session_start`), so the switch is handled once, whichever comes first.
+	async function enterSession(job: Job, ctx: HostContext, begin: { forked?: boolean } = {}, replay = true, initRef?: string): Promise<void> {
+		const id = sid(ctx), explicit = configuredRef();
+		// A switch away from a bound lead ends it; a switch to its own fork hands its tasks on (settleFork).
+		const forkOf = forkSource(ctx);
+		const switchedToFork = !!currentId && forkOf === currentId && bound;
+		const ending = currentId && id && currentId !== id && bound && !switchedToFork ? leaving() : undefined;
+		let source: Leaving | undefined;
+		if (switchedToFork) source = leaving();
+		// pi: the source's instance left its tasks at its fork shutdown (read below, after bind, if it did not).
+		else if (begin.forked && forkOf) { source = forkSources.get(forkOf); forkSources.delete(forkOf); }
+		// The previous session ended whether or not this one binds: its attention, its tasks and its fork's share go either way.
+		const unbound = await bind(job, ctx, replay, initRef).then(() => undefined, (error: unknown) => ({ error }));
+		reminders = 0;
+		const previous = attentionSession;
+		if (options.attentionHarness && id && previous?.id !== id) {
+			if (previous) await attention(job, "end", previous);
+			attentionSession = { id, cwd: plan.workspace, ref: explicit && plan.parent, hostCwd: path.resolve(ctx.cwd), hostRef: explicit };
+			await attention(job, "start", attentionSession);
+		}
+		await moveMarks(job, ending, undefined);
+		// No tasks left by a pi source: the fork's own view of the tasks the source holds in the plan it bound.
+		if (!source && begin.forked && forkOf && forkOf !== id) source = leaving(forkOf);
+		await settleFork(job, source, unbound ? undefined : id);
+		if (unbound) throw unbound.error;
+		// The plan was loaded while the previous session still held its tasks: show them as they are now.
+		if (ending || source) { await load(job, plan.workspace).catch(debug); refresh(ctx); }
+	}
+	// Binds the main session a native host's entry found, through the switch above when it is a new one; any other bind is `bind`.
+	const enter = (job: Job, ctx: HostContext, replay = true, initRef?: string): Promise<void> =>
+		options.native && main(ctx) && currentId !== sid(ctx) ? enterSession(job, ctx, {}, replay, initRef) : bind(job, ctx, replay, initRef);
+	const ensureBound = async (job: Job, ctx: HostContext, replay = true, initRef?: string): Promise<void> => {
+		if (!bound || currentId !== sid(ctx)) await enter(job, ctx, replay, initRef);
+	};
+
+	// The start of every plan operation: bound to the ctx's session, with the mirror memory of the ctx's branch (a no-op on hosts without a mirror).
+	async function enterPlan(job: Job, ctx: HostContext, replay = true, initRef?: string): Promise<void> {
+		await ensureBound(job, ctx, replay, initRef);
 		currentCtx = ctx;
+		nativeFromBranch(ctx);
 		currentId ||= sid(ctx);
+	}
+
+	async function apply(job: Job, params: any, ctx: HostContext): Promise<string> {
+		await enterPlan(job, ctx, params.op === "view", params.ref ?? (!bound ? requestedRef : undefined));
 		if (plan.local) {
 			try { await replayLocal(job, ctx); }
-			catch (error) { if (params.op !== "view") throw new Error(`Kata is reachable again, but the local plan could not be replayed into it: ${(error as Error).message}`); }
+			catch (error) { if (params.op !== "view") throw new Error(`Kata is reachable again, but the local plan could not be replayed into it: ${(error as Error).message}`, { cause: error }); }
 		}
 		let cwd = plan.workspace;
 		const change: Change = { message: params.message?.trim() || undefined, evidence: params.evidence?.filter((e: string) => e.trim()), reason: params.reason?.trim() || undefined };
@@ -1440,7 +1575,7 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 				if (decision) { task.revision = decision.revision; task.delegated = false; }
 				if (!OPEN.has(task.status) && !task.ticket) await reopenParent(job);
 				// A host whose list says what is in progress (autoStart: false) may have several tasks started.
-				if (options.autoStart !== false) for (const other of plan.tasks) if (other !== task && other.status === "in_progress" && leads(other) && !settlement.hasTaskClose(other.ref)) await transition(job, other, "pending", {}, cwd);
+				if (autoStart) for (const other of plan.tasks) if (other !== task && other.status === "in_progress" && leads(other) && !settlement.hasTaskClose(other.ref)) await transition(job, other, "pending", {}, cwd);
 				await transition(job, task, "in_progress", change, cwd, decision);
 				settlement.cancelTaskClose(task.ref);
 				break;
@@ -1483,8 +1618,8 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 
 	// `notice` is the result text before the plan: an error, a pending close or a deleted parent.
 	function details(op: string, notice: string) {
-		// Not a top-level `phases`: omp's native todo tracker reads that key from
-		// any result named `todo` and would add its own reminders, nudges and HUD.
+		// The plan sits under `kata`, not a top-level `phases`: a host that tracks its own todo list reads that key from
+		// any result named `todo` and would take the plan for its list.
 		return { op, kata: { ...view(), ...(notice ? { notice } : {}) } };
 	}
 	const noticeOf = (text: string, planText: string) => text.slice(0, text.length - planText.length).trim();
@@ -1534,10 +1669,376 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 		};
 	}
 
+	// ------------------------------------------------------ omp's native todo list
+
+	const nativeItems = (phases: NativePhase[]): NativeItem[] => phases.flatMap(p => p.tasks.map(t => ({ phase: p.name || "Tasks", content: t.content, status: t.status })));
+
+	// omp's list stays the truth when Kata cannot take a change, and the next change repeats it all. An outage is shown once, until a pass has none. A refused
+	// parent setup, init or parent mark is tried again on the next change; a refused step of a task is sent to Kata again only when that task changes in the
+	// list, and a refused removal never is, as the item has left the list. Each distinct refusal (message, kind and task) is shown once, until a pass has no
+	// failure at all; a step refused with a message the setup already showed is not shown again, and one notice names every task refused with the same message.
+	const OUTAGE = "outage";
+	const kindOf = (f: Pick<MirrorFailure, "task" | "removed">) => f.task === undefined ? "setup" : f.removed ? `rm-${f.removed}` : "step";
+	const shownKey = (f: Pick<MirrorFailure, "error" | "task" | "removed">) => JSON.stringify([messageOf(f.error), kindOf(f), f.task?.content]);
+
+	function report(ctx: HostContext, failures: MirrorFailure[]) {
+		if (!failures.length) { shown.clear(); return; }
+		const down = failures.find(f => f.outage);
+		if (!down) shown.delete(OUTAGE);
+		else if (outageOf(down.error)) wentDown(down.error);
+		const groups = new Map<string, MirrorFailure[]>();
+		for (const f of failures) {
+			if (f.outage ? shown.has(OUTAGE) : shown.has(shownKey(f)) || (f.task !== undefined && shown.has(shownKey({ error: f.error })))) continue;
+			const group = f.outage ? OUTAGE : JSON.stringify([messageOf(f.error), kindOf(f)]);
+			groups.set(group, [...(groups.get(group) ?? []), f]);
+		}
+		for (const [group, members] of groups) {
+			const { error, removed } = members[0], message = messageOf(error);
+			debug(error);
+			if (group === OUTAGE) {
+				shown.add(OUTAGE);
+				uiOf(ctx)?.notify?.(`Kata did not take the latest change to the todo list (${message}). The change stays in ${listName}; the next change tries again.`, "warning");
+				continue;
+			}
+			for (const f of members) shown.add(shownKey(f));
+			const tasks = [...new Map(members.flatMap(f => f.task ? [[f.task.content, f.task] as const] : [])).values()];
+			const names = tasks.map(t => `"${t.content}"`).join(", "), many = tasks.length > 1;
+			const closes = tasks.map(t => `\`kata close ${t.ref} --wontfix --message '<${WONTFIX_MIN}+ characters>'\``).join(", ");
+			const stays = !tasks.length
+				? `The change stays in ${listName}; the next change tries again.`
+				: removed === "ticket"
+					? `${names} ${many ? "are ticket items" : "is a ticket item"}. Kata refused part of removing ${many ? "them" : "it"} from the plan; ${many ? "the tickets stay" : "the ticket stays"} open and ${many ? "need" : "needs"} no close, and if ${many ? "one was" : "it was"} in progress or blocked, Kata may still show it so.`
+					: removed
+						? `${names} ${many ? "stay" : "stays"} open in Kata; close ${many ? "them" : "it"} there with ${closes}.`
+						: `${names} ${many ? "stay" : "stays"} in ${listName}. ${many ? "Each is" : "It is"} sent to Kata again only when ${many ? "it" : "that task"} changes in the list.`;
+			uiOf(ctx)?.notify?.(`Kata refused the latest change to the todo list (${message}). ${stays}`, "warning");
+		}
+	}
+
+	// An outage, or any failure while the plan is local, or a refusal.
+	function failureOf(error: unknown, task?: MirrorFailure["task"], removed?: MirrorFailure["removed"]): MirrorFailure {
+		return outageOf(error) || plan.local ? { error, outage: true } : { error, outage: false, task, removed };
+	}
+
+	// A task omp's list marks completed while Kata still has it open: the agent skipped the close. The task stays open and is labeled
+	// needs-review, with one comment saying why. A ticket item comments on its ticket instead, and the ticket is labeled when that was
+	// the ticket's last open item. The comment's key makes it once-only; the label comes after it, so a retry never labels without the comment.
+	async function flagForReview(job: Job, task: Task, key: string, body: string, cwd: string): Promise<void> {
+		await kata.run(job, ["comment", task.ref, "--idempotency-key", key, "--body", body], cwd);
+		await kata.run(job, ["label", "add", task.ref, "needs-review"], cwd);
+		task.review = true;
+	}
+
+	async function flagCompleted(job: Job, task: Task, lastOfTicket: boolean, cwd: string): Promise<void> {
+		const key = task.ticket ? noteKey(task, "native-done") : `${namespace}-native-done:${digest(task.ref)}`;
+		const flag = `${key}:${lastOfTicket}`;
+		if (flagged.has(flag) || (!task.ticket && task.review)) return;
+		if (!task.ticket) {
+			await flagForReview(job, task, key, `"${task.content}" was marked completed in ${listName} without a Kata close, so it stays open. Close it with its evidence, or set it back to pending in ${listName}.`, cwd);
+		} else if (lastOfTicket) {
+			await note(job, task, "native-done", `Todo item "${task.content}" was marked completed in ${listName} without a Kata close, so the ticket stays open.`, cwd);
+			if (!delegates.holds(task.ticket)) {
+				const shown: KataIssue = (await kata.show(job, task.ticket, cwd)).issue;
+				if (shown.status === "open" && !hasLabel(shown, "needs-review")) await kata.run(job, ["label", "add", task.ticket, "needs-review"], cwd);
+			}
+		} else {
+			// An earlier item of a ticket that still has open items: a plain done comment, and the plan has it done, so the last one is seen as last.
+			await note(job, task, "native-done", `Todo item done: "${task.content}"\nMarked completed in ${listName}; the ticket stays open while other items of it are open.`, cwd);
+			if (WORKING.has(task.status)) await settleTicket(job, task, cwd);
+			task.status = "completed";
+			task.blocker = undefined;
+		}
+		flagged.add(flag);
+	}
+
+	// One mirror pass: starts the plan from omp's list when there is none, then brings each plan task in line with it (see diffNativeList). One
+	// task's failure does not stop the others; each distinct failure is returned.
+	async function mirrorList(job: Job, ctx: HostContext, phases: NativePhase[]): Promise<MirrorFailure[]> {
+		// The list just mirrored becomes `prev`, with each task's phase; a task whose step failed keeps its old entries, so the next mirror sees the change again.
+		const remember = (items: NativeItem[], failed: ReadonlySet<string> = new Set()) => {
+			const next = new Map<string, NativeStatus>(), phaseOf = new Map<string, string>();
+			for (const item of items) if (!next.has(item.content)) { next.set(item.content, item.status); phaseOf.set(item.content, item.phase); }
+			for (const content of failed) {
+				const old = native.prev.get(content), oldPhase = native.phase.get(content);
+				if (old === undefined) next.delete(content); else next.set(content, old);
+				if (oldPhase === undefined) phaseOf.delete(content); else phaseOf.set(content, oldPhase);
+			}
+			const own: readonly any[] = main(ctx) ? ctx.sessionManager?.getBranch?.() ?? [] : [];
+			native = { prev: next, phase: phaseOf, listed: phases.length > 0, leaf: tipOf(own) };
+			markSeen(own);
+		};
+		if (boundAgent && boundAgent !== agentKey(ctx)) return [];
+		// A delegate with no assignment has no plan to mirror into.
+		if (!main(ctx) && !delegates.assignment(ctx)) return [];
+		await enterPlan(job, ctx, false);
+		if (plan.local) await replayLocal(job, ctx).catch(debug);
+		const items = nativeItems(phases).filter(item => item.content.trim());
+		await load(job, plan.workspace);
+		// A local plan with no task yet (Kata was down when the session bound) starts from omp's list the same way: init builds it locally.
+		if (!plan.parent && !named.length && (!plan.local || !plan.tasks.length)) {
+			const open = items.filter(item => nativeOpen(item.status));
+			if (!open.length) { remember(items); return []; }
+			const list: { phase: string; items: string[] }[] = [];
+			for (const item of open) {
+				const phase = list.find(p => p.phase === item.phase) ?? list[list.push({ phase: item.phase, items: [] }) - 1];
+				phase.items.push(item.content);
+			}
+			// A parent this plan lands in (adopted, KATA_REF, a restored session's) may hold open tasks omp's list never had: they stay open.
+			// So the parent is established first and the diff below appends what it lacks; an init would refuse to leave them out.
+			try {
+				if (needsParent(open.map(item => item.content)) || (await decidePlanParent(planParentSources({}, ctx))).parent) {
+					await ensureParent(job, { list }, ctx);
+					// Kata is unreachable: the plan is local, so it takes omp's open items itself, as init does, for the replay to create later. A ticket item
+					// waits: Kata alone can resolve it, so the next mirror once Kata is back appends it (a plain local task would lose its ticket).
+					if (plan.local) for (const { phase, content } of open) { if (!itemTicket(content) && !plan.tasks.some(t => itemKey(t) === itemKey({ phase, content }))) plan.tasks.push({ phase, content, ref: `local-${digest(phase, content)}`, status: "pending", at: nextStamp() }); }
+					else await load(job, plan.workspace);
+				} else await apply(job, { op: "init", list }, ctx);
+			} catch (error) {
+				// A refusal (not an outage) leaves no parent: the list is not remembered, so the next mirror after a parent exists appends every open item.
+				const refused = failureOf(error);
+				if (refused.outage) throw error;
+				return [refused];
+			}
+		}
+		const failures: MirrorFailure[] = [];
+		// An automatic parent a restored session found (its claim never marked it) is marked now, as ensureParent does for a new one.
+		if (plan.parent && plan.auto && !plan.local && items.some(item => nativeOpen(item.status))) {
+			try {
+				const shown: KataIssue = (await kata.show(job, plan.parent, plan.workspace)).issue;
+				if (shown.metadata?.[keys.auto] === undefined) {
+					const decision = await reopenParent(job);
+					if (decision) await markAutomaticParent(job, plan.parent, plan.workspace, decision);
+				}
+			} catch (error) { debug(error); failures.push(failureOf(error)); }
+		}
+		const failed = new Set<string>();
+		const steps = diffNativeList(plan.tasks, native.prev, items, leads);
+		for (const step of steps) {
+			try {
+				const cwd = plan.workspace;
+				// `apply` reloads the plan, so a step names its task by ref; the task object may be stale.
+				const current = () => plan.tasks.find(t => "task" in step && t.ref === step.task.ref);
+				switch (step.step) {
+					case "rm": await apply(job, { op: "rm", task: step.task.ref, message: `removed from ${listName}` }, ctx); break;
+					case "drop": await apply(job, { op: "drop", task: step.task.ref, message: `dropped in ${listName}` }, ctx); break;
+					case "start": await apply(job, { op: "start", task: step.task.ref }, ctx); break;
+					case "append": {
+						await apply(job, { op: "append", items: [step.content], phase: step.phase }, ctx);
+						const added = step.start && plan.tasks.find(t => t.content === step.content && OPEN.has(t.status));
+						if (added && added.status === "pending") await apply(job, { op: "start", task: added.ref }, ctx);
+						break;
+					}
+					case "cleared": {
+						// Closed in Kata before omp's list said completed: the completed transition's bookkeeping, without closing again.
+						const task = current();
+						if (task?.review && !plan.local) {
+							await owned(job, task.ref, cwd, "check", true);
+							await kata.run(job, ["label", "rm", task.ref, "needs-review"], cwd);
+							task.review = false;
+						}
+						break;
+					}
+					case "pause": { const task = current(); if (task) await transition(job, task, "pending", {}, cwd); break; }
+					case "flag": {
+						const task = current();
+						if (!task) break;
+						// A local plan has no issue to label: it keeps the completion, and the replay flags the task for want of evidence.
+						if (plan.local) await transition(job, task, "completed", {}, cwd);
+						else await flagCompleted(job, task, step.lastOfTicket, cwd);
+						break;
+					}
+				}
+			} catch (error) {
+				debug(error);
+				const task = step.step === "append" ? { content: step.content } : { content: step.task.content, ref: step.task.ref };
+				const next = failureOf(error, task, step.step === "rm" ? (step.task.ticket ? "ticket" : "task") : undefined);
+				// An outage is what the next mirror repeats, so the step stays unmirrored. A refusal fails the same way next time: it counts as applied
+				// (the list is remembered with it, and the diff asks for it again only when its status changes).
+				if (next.outage) failed.add(task.content);
+				failures.push(next);
+			}
+		}
+		remember(items, failed);
+		return failures;
+	}
+
+	const snapshotOf = (entry: any, session: unknown): Snapshot | undefined =>
+		entry?.type === "custom" && entry.customType === SNAPSHOT_ENTRY && entry.data?.version === 1 && entry.data.sessionId === session ? entry.data : undefined;
+
+	function markSeen(entries: readonly any[]) {
+		for (const entry of entries) seenIds.add(entry?.id);
+	}
+	const markAllSeen = (ctx: HostContext) => { markSeen(ctx.sessionManager?.getBranch?.() ?? []); markSeen(ctx.sessionManager?.getEntries?.() ?? []); };
+
+	// The mirror memory a snapshot saved, on `branch`; every entry of the session as it is now counts as read.
+	function loadNative(ctx: HostContext, snapshot: Snapshot | undefined, branch: readonly any[]): NativeMemory {
+		markAllSeen(ctx);
+		return nativeMemory(snapshot?.native, tipOf(branch));
+	}
+
+	// A snapshot saved under another branch's tip (its `leaf` is not on `branch`) is not this branch's memory.
+	const onBranch = (branch: readonly any[]) => (data: Snapshot) => data.native?.leaf === undefined || branch.some(entry => entry?.id === data.native!.leaf);
+
+	// The snapshot of the session's current branch; a branch with no snapshot of its own starts from its fork source's, named as `source`.
+	// `accept` filters the candidates: the latest one it accepts is taken.
+	function savedSnapshot(ctx: HostContext, branch: readonly any[], id: string | undefined, accept: (data: Snapshot) => boolean = () => true): { snapshot?: Snapshot; source?: string } {
+		const find = (session: unknown): Snapshot | undefined => [...branch].reverse().map(entry => snapshotOf(entry, session)).find(data => !!data && accept(data));
+		const own = find(id);
+		if (own || !id || !main(ctx)) return { snapshot: own };
+		const source = forkSource(ctx);
+		return { snapshot: source ? find(source) : undefined, source };
+	}
+
+	// The mirror's memory belongs to the branch whose last entry is `native.leaf`. It is kept while that entry is on the ctx's branch and none of the
+	// entries after it was read before: they are new since the memory was made (messages, tool results, snapshots this core or a delegate saved), so only a
+	// mirror pass, a reload or a bind moves `leaf` and `seenIds`. Otherwise the branch moved (a `/tree` to a sibling, back, forward to entries read before):
+	// the memory is reloaded from the branch's latest snapshot of this session or of its direct fork source (not the source's own source) that is on the
+	// branch, or starts from none.
+	function nativeFromBranch(ctx: HostContext) {
+		if (!options.native || !main(ctx)) return;
+		const branch: readonly any[] = ctx.sessionManager?.getBranch?.() ?? [];
+		const at = native.leaf === undefined ? -1 : branch.findIndex(entry => entry?.id === native.leaf);
+		if (at >= 0 && !branch.slice(at + 1).some(entry => seenIds.has(entry?.id))) return;
+		// Every entry of the session as it is now was read: a later `/tree` forward to one of them reloads.
+		const saved = loadNative(ctx, savedSnapshot(ctx, branch, sid(ctx), onBranch(branch)).snapshot, branch);
+		// The branch moved: the next snapshot is written even when it equals the last one this core wrote on the other branch.
+		if (JSON.stringify(savedNative(saved)) !== JSON.stringify(savedNative(native))) lastSnapshot = undefined;
+		native = saved;
+	}
+
+	// The snapshot a mirror pass just saved is the last entry of the branch its memory belongs to when it was appended under that branch's tip: the host's newest
+	// entry is that snapshot, with the tip as its parent. One that landed under another branch's tip (a pass held across a `/tree`) leaves `native.leaf` alone.
+	function ownSnapshotLanded(ctx: HostContext) {
+		if (!options.native || !main(ctx)) return;
+		const branch: readonly any[] = ctx.sessionManager?.getBranch?.() ?? [];
+		const entries: readonly any[] = ctx.sessionManager?.getEntries?.() ?? [];
+		const last = entries[entries.length - 1];
+		if (last?.type !== "custom" || last.customType !== SNAPSHOT_ENTRY || (last.parentId ?? undefined) !== branch[branch.length - 1]?.id) return;
+		native.leaf = last.id;
+		seenIds.add(last.id);
+	}
+
+	// omp calls this after it saved its list, with the whole list. Newest wins: a mirror still queued when a newer one of the SAME session
+	// arrives does nothing, since the newer one carries everything; a list of a session left behind still lands. Never rejects.
+	function mirror(ctx: HostContext, phases: NativePhase[]): Promise<void> {
+		const session = sid(ctx) ?? "", mine = (mirrorStamps.get(session) ?? 0) + 1;
+		mirrorStamps.set(session, mine);
+		return serial(async job => {
+			if (mine !== mirrorStamps.get(session)) return;
+			let failures: MirrorFailure[];
+			try { failures = await mirrorList(job, ctx, phases); }
+			catch (error) { failures = [failureOf(error)]; }
+			finally { if (persist(job)) ownSnapshotLanded(ctx); }
+			report(ctx, failures);
+		}, { ctx }).catch(debug);
+	}
+
+	// How long a todo call waits for the guard's Kata reads: past it the call goes through unchecked.
+	const GUARD_MS = 10_000;
+	const texts = (value: unknown): string[] => Array.isArray(value) ? value.filter((v): v is string => typeof v === "string") : [];
+
+	async function guardText(job: Job, ctx: HostContext, call: NativeCall): Promise<string | undefined> {
+		await enterPlan(job, ctx, false);
+		// Inferred here: whether omp's list had phases is the branch's, known only after the sync above.
+		const op = inferNativeOp(call, native.listed);
+		if (!op || !GUARDED_OPS.includes(op)) return;
+		if (plan.local) return;
+		// What the agent closed in its shell since the last operation counts: every read here reaches Kata.
+		await load(kata.fresh(job), plan.workspace);
+		if (!plan.parent && !named.length) return;
+		const cwd = plan.workspace;
+		const held = (t: Task) => `"${t.content}": ${heldMessage(t.ref, t.holder!)}. Do not work around it. ${RULES.takeover(wording.takeOverFirst, "")}`;
+		const delegated = (t: Task) => t.delegated || delegates.holds(t.ticket ?? t.ref);
+		const open = plan.tasks.filter(t => OPEN.has(t.status));
+		if (op === "init") {
+			// No list and no items is no plan: omp refuses it itself. An empty list leaves every open task out.
+			if (!Array.isArray(call.list) && !Array.isArray(call.items)) return;
+			const list = Array.isArray(call.list) && call.list.length ? call.list.flatMap((p: unknown) => p && typeof p === "object" && "items" in p ? texts(p.items) : []) : texts(call.items);
+			const left = open.filter(t => !t.ticket && !list.includes(t.content) && !delegated(t));
+			const lines = left.filter(t => t.holder).map(held);
+			const free = left.filter(t => !t.holder);
+			// A task omp's list held can be dropped there; one it never held (it came from Kata) must be appended first, or omp's drop finds nothing.
+			const listed = (tasks: Task[]) => tasks.map(t => `- "${t.content}" (${t.ref})`).join("\n");
+			const inList = free.filter(t => native.prev.has(t.content)), notInList = free.filter(t => !native.prev.has(t.content));
+			if (inList.length) lines.push(`The new list leaves out tasks that are still open in Kata:\n${listed(inList)}\nCall todo drop for them first, in an earlier call, then init again; or keep them in the list.`);
+			if (notInList.length) lines.push(`The new list leaves out tasks that are open in Kata but were never in your list:\n${listed(notInList)}\nKeep them in the list; or call todo append for them and then todo drop, in earlier calls, then init again.`);
+			return lines.join("\n") || undefined;
+		}
+		const known = new Set(plan.tasks.map(t => t.content));
+		let contents = nativeTargets(known, call.task as string | string[] | undefined);
+		if (op === "start") { if (contents.length !== 1) return; }
+		else if (!contents.length) contents = texts(call.items);
+		// A `{phase}` target names omp's phase, as of the last mirrored list; Kata's own phase is the answer only for a task omp's list never held.
+		if (!contents.length && typeof call.phase === "string") contents = plan.tasks.filter(t => (native.phase.get(t.content) ?? t.phase) === call.phase).map(t => t.content);
+		const targets = open.filter(t => contents.includes(t.content));
+		const lines = targets.filter(t => t.holder).map(held);
+		if (op === "done") {
+			const own = targets.filter(t => !t.holder);
+			const closes: string[] = [];
+			for (const t of own.filter(t => !t.ticket)) {
+				if (delegated(t)) lines.push(`"${t.content}" is delegated as ${t.ref}: its subagent closes it. Leave it, or wait for the subagent to finish.`);
+				else closes.push(`"${t.content}" is open in Kata as ${t.ref}. Close it first: ${closeCommand(t.ref)}.`);
+			}
+			for (const ticket of new Set(own.filter(t => t.ticket).map(t => t.ticket!))) {
+				const item = own.find(t => t.ticket === ticket)!;
+				if (delegated(item)) { lines.push(`"${item.content}" works ticket ${ticket}, which is delegated: its subagent closes it. Leave it, or wait for the subagent to finish.`); continue; }
+				// Only the ticket's last open item closes it; an earlier one just comments.
+				if (open.some(t => t.ticket === ticket && !own.includes(t))) continue;
+				try {
+					if ((await kata.show(kata.fresh(job), ticket, cwd)).issue.status === "open") closes.push(`"${item.content}" is the last open item of ticket ${ticket}, which is open in Kata. Close the ticket first: ${closeCommand(ticket)}.`);
+				} catch (error) { debug(error); }
+			}
+			if (closes.length) lines.push(...closes, "Then call todo done again.");
+		}
+		return lines.join("\n") || undefined;
+	}
+
+	// Called before omp runs a `todo` call: the text that refuses it, or undefined to let it run. It reads Kata fresh, and never rejects: a failed
+	// read, input that is no todo call or a context that is no lead's lets the call through. `after` (a delegate's queued work on the plan) is waited for
+	// first, within the same GUARD_MS bound.
+	function guard(ctx: HostContext, input: unknown, after?: Promise<unknown>): Promise<string | undefined> {
+		const call = input as NativeCall | null;
+		if (!call || typeof call !== "object" || !guardedNativeCall(call)) return Promise.resolve(undefined);
+		// A delegate's own core is never main, so it is guarded when it has an assignment, which its queued next use (`after`) may give it: it is
+		// checked once that has run. A lead's context that is no lead's is not guarded.
+		return bounded((async () => { await after?.catch(debug); if (!main(ctx) && !delegates.assignment(ctx)) return undefined; return serial(job => guardText(job, ctx, call), { ctx }); })(), GUARD_MS);
+	}
+
+	// `/todo ref <id>`: makes the Kata issue the plan's parent at once, loading its open children. A plan that already has a parent keeps it.
+	function pinRef(ctx: HostContext, ref: string | undefined): Promise<string> {
+		if (!ref) return Promise.resolve("/todo ref needs the Kata issue the todo plan serves: /todo ref <project>#<id>.");
+		if (!main(ctx)) return Promise.resolve("/todo ref sets the main session's plan parent.");
+		return serial(async job => {
+			try {
+				await enterPlan(job, ctx, false);
+				const pinned = await kata.pin(job, ref, path.resolve(ctx.cwd));
+				const explicit = configuredRef();
+				if (explicit && await kata.pin(job, explicit, path.resolve(ctx.cwd)) !== pinned) return `KATA_REF is set to ${explicit}, which fixes the plan parent; ${ref} is not used.`;
+				if (plan.parent) {
+					if (!namesPlanParent(plan.parent, aliases, pinned)) return `This plan's parent is ${plan.parent}; it is not changed.`;
+					if (!plan.auto) return `${plan.parent} is already this plan's parent.`;
+					// Naming the automatic parent makes it explicit: it no longer closes by itself, and the plan keeps it.
+					requestedRef = plan.parent;
+					await adopt(job, plan.parent, ctx);
+					persist(job);
+					return `${plan.parent} is now this plan's parent, and it will not close automatically.`;
+				}
+				requestedRef = pinned;
+				await adopt(job, pinned, ctx);
+				persist(job);
+				return `${pinned} is now this plan's parent.`;
+			} catch (error) {
+				debug(error);
+				return `/todo ref ${ref} failed: ${(error as Error).message}`;
+			}
+		}, { ctx });
+	}
+
 	async function command(ctx: HostContext, args: string): Promise<string> {
 		const match = /^(\S+)?(?:\s+([\s\S]*))?$/.exec(args.trim());
 		const sub = match?.[1] ?? "";
 		const arg = match?.[2]?.trim() || undefined;
+		if (sub === "ref" && options.native) return pinRef(ctx, arg);
 		const user = setting("USER") || "user";
 		const supported: Record<"" | (typeof TODO_COMMANDS)[number], any> = {
 			"": { op: "view" },
@@ -1553,7 +2054,7 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 		};
 		if (sub !== "" && !(TODO_COMMANDS as readonly string[]).includes(sub)) return `/todo ${sub} is not available with Kata. Use /todo [${TODO_COMMANDS.join("|")}], or kata tui.`;
 		const params = supported[sub as keyof typeof supported];
-		// The widget shows the plan, so a failed command reports its message alone.
+		// A failed command reports its notice alone; the text of a successful one carries the plan.
 		const { text, notice, failed } = await todoCall(params, ctx, NO_JOB);
 		return failed ? notice : text;
 	}
@@ -1737,7 +2238,7 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 	const see = (ctx: HostContext) => { if (main(ctx) || !currentCtx || !main(currentCtx)) currentCtx = ctx; };
 	const rebind = async (ctx: HostContext): Promise<Lead> => {
 		see(ctx);
-		if (main(ctx)) await bounded(serial(job => bind(job, ctx)));
+		if (main(ctx)) await bounded(serial(job => enter(job, ctx)));
 		return lead();
 	};
 	const warmFor = (ctx: HostContext) => warm(ctx, delegates.assignment(ctx)?.workspace || ctx.cwd, !(main(ctx) && liveInbox !== undefined));
@@ -1858,32 +2359,7 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 				if (live) liveInbox = "";
 				prefetch(ctx);
 				if (live) startFollower(ctx, user!);
-				const switching = serial(async job => {
-					// A switch away from a bound lead ends it; a switch to its own fork hands its tasks on (settleFork).
-					const forkOf = forkSource(ctx);
-					const switchedToFork = !!currentId && forkOf === currentId && bound;
-					const ending = currentId && id && currentId !== id && bound && !switchedToFork ? leaving() : undefined;
-					let source: Leaving | undefined;
-					if (switchedToFork) source = leaving();
-					// pi: the source's instance left its tasks at its fork shutdown (read below, after bind, if it did not).
-					else if (begin.forked && forkOf) { source = forkSources.get(forkOf); forkSources.delete(forkOf); }
-					// The previous session ended whether or not this one binds: its attention, its tasks and its fork's share go either way.
-					const unbound = await bind(job, ctx).then(() => undefined, (error: unknown) => ({ error }));
-					reminders = 0;
-					const previous = attentionSession;
-					if (options.attentionHarness && id && previous?.id !== id) {
-						if (previous) await attention(job, "end", previous);
-						attentionSession = { id, cwd: plan.workspace, ref: explicit && plan.parent, hostCwd: path.resolve(ctx.cwd), hostRef: explicit };
-						await attention(job, "start", attentionSession);
-					}
-					await moveMarks(job, ending, undefined);
-					// No tasks left by a pi source: the fork's own view of the tasks the source holds in the plan it bound.
-					if (!source && begin.forked && forkOf && forkOf !== id) source = leaving(forkOf);
-					await settleFork(job, source, unbound ? undefined : id);
-					if (unbound) throw unbound.error;
-					// The plan was loaded while the previous session still held its tasks: show them as they are now.
-					if (ending || source) { await load(job, plan.workspace).catch(debug); refresh(ctx); }
-				});
+				const switching = serial(job => enterSession(job, ctx, begin));
 				// OMP snapshots the bash environment after this handler returns.
 				await bounded(switching, explicit && options.attentionHarness && id ? ATTENTION_START_MS : begin.wait);
 				return lead();
@@ -1919,7 +2395,7 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 				// contract and inbox reads keep their usual budget; a slower read lands in the cache for the next turn.
 				if (!main(ctx)) await bounded(Promise.resolve(prompt.after), DELEGATE_BIND_MS);
 				await bounded(Promise.all([
-					main(ctx) && currentId !== sid(ctx) ? serial(job => bind(job, ctx)) : undefined,
+					main(ctx) && currentId !== sid(ctx) ? serial(job => enter(job, ctx)) : undefined,
 					context ? warmFor(ctx) : undefined,
 				]), main(ctx) ? 250 : DELEGATE_PROMPT_MS);
 				const sections: PromptSections = {};
@@ -1932,7 +2408,8 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 				const assigned = record ? delegates.assignment(ctx) : undefined;
 				if (record && assigned) sections.assignment = delegateContext(options.executable, nameOf(record), assigned.ref, assigned.teammate, assigned.binding);
 				else if (isUntracked(record)) sections.assignment = untrackedDelegateContext(nameOf(record));
-				if (plan.parent || plan.tasks.some(t => t.ticket)) sections.todo = `The ${wording.tool} tool is backed by Kata. Current plan:\n${render(plan, wording)}`;
+				if (options.native) sections.todo = plan.parent || plan.local || plan.tasks.some(t => t.ticket) ? `${NATIVE_TODO_RULES}\nCurrent plan (refs in parentheses):\n${render(plan, wording)}` : NATIVE_TODO_RULES;
+				else if (plan.parent || plan.tasks.some(t => t.ticket)) sections.todo = `The ${wording.tool} tool is backed by Kata. Current plan:\n${render(plan, wording)}`;
 				return { sections, lead: lead() };
 			},
 		},
@@ -1957,6 +2434,8 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 			// call is several todo calls (OpenCode's todowrite).
 			batch,
 			command,
+			mirror,
+			guard,
 		},
 		delegates: {
 			apply: delegates.apply,

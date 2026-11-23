@@ -14,12 +14,21 @@ Plain `go build`, `go install …@latest` and tagless clones can report `dev` or
 
 ## Oh-my-pi
 
+Requires oh-my-pi 19.1.1 or later: the plugin registers a todo backend, which older omp releases cannot load.
+
 ```sh
 omp plugin marketplace add /path/to/kata-plugin
 omp plugin install kata@kata-plugin
 ```
 
-Restart omp. There is no `todo.enabled` step: the plugin's `todo` replaces the built-in one, and omp's own todo reminders, nudges and HUD have nothing to track. A `todo.enabled: false` you set earlier keeps working.
+Restart omp, then select Kata as omp's todo backend: open `/settings`, go to Tools → Todos → Todo Backend and pick Kata. The setting is `todo.backend` in omp's `config.yml` (default `native`), so you can also set it there:
+
+```yaml
+todo:
+  backend: kata
+```
+
+The plugin does not change the setting itself. Until Kata is selected, omp's todo works as it does without the plugin: nothing reaches Kata, no `todo` call is refused, and each session shows one notice naming the setting. omp's own todo tool, `/todo`, HUD and reminders keep running either way, so leave omp's todo tool on (`todo.enabled`, the default).
 
 To update, refresh the marketplace first: `upgrade` reads plugin versions from omp's cached copy of the marketplace, which it does not fetch, so without the first line it reports the version you already have.
 
@@ -55,7 +64,7 @@ To try it without installing:
 omp --no-extensions -e /path/to/kata-plugin/plugins/oh-my-pi/kata.ts
 ```
 
-Tested with oh-my-pi 18.20.2. To check another omp release, run `bun run smoke:omp` from a checkout (see [development](../development.md#smoke-test-against-a-real-omp)).
+Tested with oh-my-pi 19.1.1. To check another omp release, run `bun run smoke:omp` from a checkout (see [development](../development.md#smoke-test-against-a-real-omp)).
 
 ## Pi
 

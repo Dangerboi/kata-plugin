@@ -165,18 +165,19 @@ export interface FakeHostOptions {
  * members to both before it loads its adapter. `answered(verb)` settles once Kata answered an exec of that verb.
  */
 export function fakeHost(options: FakeHostOptions) {
-  let tool: any;
+  let tool: any, todoBackend: any;
   const handlers = registry();
   const entries: any[] = options.entries || [], calls: string[][] = [], notices: any[] = [], widgets: any[] = [];
   const answers = new Map<string, PromiseWithResolvers<void>>();
   const answer = (verb: string) => answers.get(verb) ?? answers.set(verb, Promise.withResolvers<void>()).get(verb)!;
   const ctx: any = {
     cwd: options.cwd,
-    sessionManager: { getSessionId: () => options.sid, getBranch: () => entries, getHeader: () => options.header },
+    sessionManager: { getSessionId: () => options.sid, getBranch: () => entries, getEntries: () => entries, getHeader: () => options.header },
     ui: { notify: (...args: any[]) => notices.push(args), setWidget: (...args: any[]) => widgets.push(args) },
   };
   const api: any = {
     registerTool: (value: any) => tool = value,
+    registerTodoBackend: (value: any) => { todoBackend = value; },
     appendEntry: (customType: string, data: any) => entries.push({ type: "custom", customType, data }),
     on: handlers.on,
     async exec(file: string, args: string[], opts: any) {
@@ -190,6 +191,8 @@ export function fakeHost(options: FakeHostOptions) {
   const call = (params: any, context: any = ctx, callId = "fixture") => tool.execute(callId, params, undefined, undefined, context);
   return { api, ctx, sid: options.sid, entries, calls, notices, widgets, handlers: handlers.callbacks,
     get tool() { return tool; },
+    /** The todo backend the adapter registered, if any. */
+    get todoBackend() { return todoBackend; },
     answered: (verb: string) => answer(verb).promise,
     event: (name: string, data: any = {}, context: any = ctx) => handlers.fire(name, data, context),
     call,

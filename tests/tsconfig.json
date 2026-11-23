@@ -6,6 +6,7 @@
   },
   "include": [
     "*.ts",
-    "../plugins/claude-code/types"
+    "../plugins/claude-code/types",
+    "../plugins/oh-my-pi/omp-registry.d.ts"
   ]
 }

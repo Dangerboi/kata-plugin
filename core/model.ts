@@ -7,13 +7,16 @@ export const OPEN: ReadonlySet<Status> = new Set(["pending", "in_progress", "blo
 export const WORKING: ReadonlySet<Status> = new Set(["in_progress", "blocked"]);
 const openTaskStatus = (value: unknown): Status => value === "in_progress" || value === "blocked" ? value : "pending";
 export const closedTaskStatus = (closedReason?: string): "completed" | "abandoned" => closedReason === "wontfix" ? "abandoned" : "completed";
+// `released`: started in Kata but marked by no session (its session released it).
 // `holder`: another lead session that started this plan task and has not released it (see heldBySession).
-export type Task = { ref: string; content: string; phase: string; status: Status; ticket?: string; at?: number; blocker?: string; delegated?: boolean; holder?: string; review?: boolean; revision?: number; proof?: { message?: string; evidence?: string[] } };
+export type Task = { ref: string; content: string; phase: string; status: Status; ticket?: string; at?: number; blocker?: string; delegated?: boolean; holder?: string; released?: boolean; review?: boolean; revision?: number; proof?: { message?: string; evidence?: string[] } };
 export type Binding = { parent: string; workspace: string; sessionId?: string; auto?: boolean; label?: string };
 export type Plan = Partial<Binding> & { workspace: string; tasks: Task[]; local?: boolean; error?: string };
 export type Change = { message?: string; evidence?: string[]; reason?: string; remove?: boolean };
 // What Kata's close as done needs: evidence, and a message of PROOF_MIN characters (whitespace runs count as one).
 export const PROOF_MIN = 40;
+// What Kata's close as wontfix needs: a message of WONTFIX_MIN characters.
+export const WONTFIX_MIN = 60;
 // What `change` lacks of that, as the clause that finishes "cannot be completed without"; undefined when it has proof.
 export function proofProblem(change: { message?: string; evidence?: string[] }): string | undefined {
 	const message = (change.message || "").replace(/\s+/g, " ").trim().length < PROOF_MIN;
@@ -47,6 +50,9 @@ export function heldBySession(issue: Pick<KataIssue, "status" | "metadata">, own
 // The start of every refusal for a plan task another session holds.
 export const heldMessage = (ref: string, holder: string) => `Plan task ${ref} was started by another session (${holder}), which has not released it`;
 
+// Whether an issue carries `label`; Kata lists labels as strings or as `{ label }` objects.
+export const hasLabel = (issue: Pick<KataIssue, "labels">, label: string) => (issue.labels ?? []).some(l => (typeof l === "string" ? l : l?.label) === label);
+
 // Kata children as plan tasks, oldest first. Which children are plan tasks is the caller's choice (a lead's plan holds those with
 // a phase; a pi child may also name any other open child). What only the asker knows is its own: whether a delegate of another
 // teammate holds a task, and which session started it.
@@ -66,7 +72,8 @@ export function tasksOf(children: readonly KataIssue[], parent: string, rule: { 
 				at: Date.parse(c.created_at),
 				delegated: rule.delegated(c),
 				holder: rule.holder(c),
-				review: (c.labels ?? []).some(l => (typeof l === "string" ? l : l?.label) === "needs-review"),
+				released: status === "in_progress" && !meta[SESSION_KEY] ? true : undefined,
+				review: hasLabel(c, "needs-review"),
 				status,
 				blocker: status === "blocked" ? meta["work.attention_msg"] as string | undefined : undefined,
 			};
@@ -110,8 +117,10 @@ export interface ToolWording {
 	retryTakeover: string;
 	takeOverFirst: string;
 	planUnder(ticket: string): string;
+	// What the host calls its own todo list in the notes and comments the core writes when it mirrors that list; absent: "the todo list".
+	list?: string;
 }
-// The `todo` tool of omp and pi, which takes ops.
+// The `todo` tool of pi, which takes ops. (omp's own tool takes the same ops, but has no takeover or ref parameter: see NATIVE_WORDING.)
 export const TODO_WORDING: ToolWording = {
 	tool: "todo",
 	refresh: "Use todo op=view to refresh.",
@@ -121,6 +130,18 @@ export const TODO_WORDING: ToolWording = {
 	retryTakeover: "repeat the call with takeover: true",
 	takeOverFirst: "todo start with takeover: true",
 	planUnder: ticket => `todo init with ref ${ticket}`,
+};
+
+// omp's own todo tool, whose list is mirrored into Kata. It has no `replace`, `takeover` or `ref` parameter: a held task is taken over by
+// the user's `/todo takeover`, and the plan parent is set by `kata claim` or `/todo ref`.
+export const NATIVE_WORDING: ToolWording = {
+	...TODO_WORDING,
+	leftOut: "Keep them in the list, or todo drop them first (todo append any that omp's list lacks), then call init again.",
+	retryTakeover: "ask the user to run /todo takeover with the task's text",
+	takeOverFirst: "ask the user to run /todo takeover with the task's text",
+	// The plan already has its parent when this is read, and a parent never changes: work several items share is split into child issues of the ticket.
+	planUnder: ticket => `create each one with kata create --parent ${ticket}`,
+	list: "omp's todo list",
 };
 
 export const projectOf = (ref: string) => ref.split("#")[0];

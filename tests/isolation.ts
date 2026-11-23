@@ -20,7 +20,7 @@ export function assertIsolated(env: NodeJS.ProcessEnv = process.env) {
 // actor. Only actors and project names count: real sessions write to the default store during a run, and their free
 // text (task titles, comments) can name any fixture.
 export const FIXTURE_ACTORS = new Set(["actor-a", "actor-b", "lead-actor", "mallory", "someone-else", "token-actor", "v2-builder", "revision-a", "revision-b", "pi-builder", "opencode-builder", "claude-builder", "configured-author"]);
-export const FIXTURE_PROJECT = /^(?:authenticated-fixture|omptest|ompshell|v2test|v2other|v2alpha|v2evidence|v2moved[0-9]+x?|pitest|pimoved|pi-port-[a-z0-9_-]+|revision-conformance|omp-v2-[a-z0-9_-]+|delegates-test|settlement-test|reliability-test|local-reliability|takeover-home|takeinit|contractrepo)$/i;
+export const FIXTURE_PROJECT = /^(?:authenticated-fixture|omptest|ompshell|v2test|v2other|v2alpha|v2evidence|v2moved[0-9]+x?|pitest|pialpha|pimoved|pi-port-[a-z0-9_-]+|revision-conformance|omp-v2-[a-z0-9_-]+|delegates-test|settlement-test|reliability-test|local-reliability|takeover-home|takeinit|contractrepo)$/i;
 type Snapshot = { present: boolean; schema?: string; projects: string[]; forbidden: string[] };
 
 function stamp(file: string): string {

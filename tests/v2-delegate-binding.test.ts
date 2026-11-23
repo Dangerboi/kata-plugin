@@ -1,11 +1,19 @@
 import { expect, test } from "bun:test";
+import { execFile } from "node:child_process";
 import { writeFileSync } from "node:fs";
-import { later } from "./kata-fixture";
+import { promisify } from "node:util";
+import { eventually, later } from "./kata-fixture";
 import { siblingThrottle } from "./kata-errors";
 import { v2Fixture } from "./v2-fixture";
 
-// The omp adapter against a real Kata: binding task delegations to plan items, untracked delegates and hand-backs.
-const { scratch, outside, kata, show, issue, host, down, evidence, message, ran, closeSessions, total, commentsOf, sessionParents, closesOf } = v2Fixture();
+// The omp adapter against a real Kata, with omp's native todo: binding task delegations to plan items, untracked delegates and hand-backs.
+// Lead tasks finish through `app.done` (a Kata close, then the native done); a delegate's own list reaches Kata through the delegate mirror.
+const exec = promisify(execFile);
+const { binary, cwd, env, scratch, outside, kata, show, issue, host, down, message, ran, closeSessions, total, commentsOf, sessionParents, closesOf } = v2Fixture();
+const boundTo = async (ref: string, title: string) => (await show(ref)).children.find((c: any) => c.title === title)?.metadata?.["omp.subagent_id"];
+const issueBoundTo = async (ref: string) => (await show(ref)).issue.metadata?.["omp.subagent_id"];
+const missionOf = async (ref: string) => (await show(ref)).children.find((c: any) => c.metadata?.["omp.mission"] === "true");
+const needsReview = async (ref: string) => (await show(ref)).labels.some((l: any) => l.label === "needs-review");
 
 test("batch delegates bind named plan tasks by spawn index without duplicates", async () => {
   const app = host(); await app.event("session_start");
@@ -13,7 +21,7 @@ test("batch delegates bind named plan tasks by spawn index without duplicates", 
   const tasks = (await show(ref)).children;
   await app.event("tool_call", { toolName: "task", toolCallId: "batch-binding", input: { tasks: [{ task: 'Finish "Build beta"' }, { task: 'Finish "Build alpha"' }] } });
   for (const [index, id] of ["batch-beta", "batch-alpha"].entries()) app.emit("task:subagent:lifecycle", { id, status: "started", sessionFile: `${scratch}/${id}.jsonl`, parentToolCallId: "batch-binding", index });
-  await app.call({ op: "view" });
+  await eventually(async () => (await show(ref)).children.map((c: any) => c.metadata?.["omp.subagent_id"]).sort(), ["batch-alpha", "batch-beta"]);
   const children = (await show(ref)).children;
   expect(children).toHaveLength(2);
   for (const [title, id] of [["Build alpha", "batch-alpha"], ["Build beta", "batch-beta"]]) {
@@ -37,7 +45,7 @@ test("a task prompt naming a plan item by ref binds it though the text describes
   const target = children0.find((c: any) => c.title === "Implement widget"), other = children0.find((c: any) => c.title === "Write widget tests");
   await app.event("tool_call", { toolName: "task", toolCallId: "ref-wins", input: { name: "WriteTests", task: `Write the widget tests; the work is v2test#${target.short_id}.` } });
   app.emit("task:subagent:lifecycle", { id: "ref-wins", status: "started", sessionFile: `${scratch}/ref-wins.jsonl`, parentToolCallId: "ref-wins", index: 0 });
-  await app.call({ op: "view" });
+  await eventually(() => issueBoundTo(`v2test#${target.short_id}`), "ref-wins");
   const children = (await show(ref)).children;
   expect(children).toHaveLength(2);
   expect(children.find((c: any) => c.short_id === target.short_id).metadata["omp.subagent_id"]).toBe("ref-wins");
@@ -50,7 +58,7 @@ test("a task prompt naming a plan item by short id binds it without a new issue"
   const named = (await show(ref)).children[0];
   await app.event("tool_call", { toolName: "task", toolCallId: "short-id", input: { task: `read issue ${named.short_id} and write the tests` } });
   app.emit("task:subagent:lifecycle", { id: "short-id", status: "started", sessionFile: `${scratch}/short-id.jsonl`, parentToolCallId: "short-id", index: 0 });
-  await app.call({ op: "view" });
+  await eventually(async () => (await show(ref)).children[0].metadata?.["omp.subagent_id"], "short-id");
   const children = (await show(ref)).children;
   expect(children).toHaveLength(1);
   expect(children[0].metadata["omp.subagent_id"]).toBe("short-id");
@@ -75,7 +83,7 @@ for (const planned of [true, false]) test(`a task prompt naming a ticket outside
   const ticket = await issue("Existing work");
   await app.event("tool_call", { toolName: "task", toolCallId: `ticket-${planned}`, input: { name: "Anything", task: `Finish v2test#${ticket}: make the change and close it.` } });
   app.emit("task:subagent:lifecycle", { id: `ticket-${planned}`, status: "started", sessionFile: `${scratch}/ticket-${planned}.jsonl`, parentToolCallId: `ticket-${planned}`, index: 0 });
-  await app.call({ op: "view" });
+  await eventually(() => issueBoundTo(`v2test#${ticket}`), `ticket-${planned}`);
   const bound = (await show(`v2test#${ticket}`)).issue;
   expect(bound.metadata["omp.subagent_id"]).toBe(`ticket-${planned}`);
   expect(bound.owner).toBe("v2-builder");
@@ -125,23 +133,24 @@ test("a file anchor is plain text in a task prompt; a ref in a registered projec
   expect(await spawn("Do v2test#zzzz and README.md#tasks", "registered-missing")).toMatchObject({ block: true });
 });
 
-test("local plan and blockers survive extension recreation through session entries", async () => {
+test("a local plan survives extension recreation through session entries", async () => {
   const app = host({ cwd: outside, before: down }); await app.event("session_start");
-  await app.init(["Durable local first", "Durable local second"]);
-  await app.call({ op: "block", reason: "Waiting on a durable dependency" });
+  expect((await app.call({ op: "init", items: ["Durable local first", "Durable local second"] })).isError).toBeUndefined();
   const entries = JSON.parse(JSON.stringify(app.entries));
+  const promptOf = async (a: ReturnType<typeof host>) => ((await a.event("before_agent_start", { systemPrompt: ["base"] }))?.systemPrompt ?? []).join("\n");
   const resumed = host({ cwd: outside, before: down, sid: app.sid, entries }); await resumed.event("session_start");
-  const view = await resumed.call({ op: "view" });
-  expect(view.content[0].text).toContain("Waiting on a durable dependency");
-  expect(view.details.kata.phases[0].tasks.map((t: any) => t.status)).toEqual(["blocked", "in_progress"]);
+  const prompt = await promptOf(resumed);
+  expect(prompt).toContain("Durable local first");
+  expect(prompt).toContain("Durable local second");
   const other = host({ cwd: outside, before: down, entries }); await other.event("session_start");
-  expect((await other.call({ op: "view" })).content[0].text).toContain("No todo plan");
+  expect(await promptOf(other)).not.toContain("Durable local first");
 });
 
 test("queued close survives extension recreation and retries only after its deadline", async () => {
   const app = host({ before: (a: string[]) => a[0] === "close" ? siblingThrottle() : undefined });
+  await app.event("session_start");
   const parent = await app.init(["Durable queued close"]);
-  await app.call({ op: "done", message, evidence });
+  await app.done("Durable queued close");
   const entries = JSON.parse(JSON.stringify(app.entries));
   const resumed = host({ sid: app.sid, entries }); await resumed.event("session_start");
   expect(resumed.calls.some(a => a[0] === "close")).toBe(false);
@@ -159,15 +168,17 @@ test("a delegation spawned in the same batch as todo init binds its plan task", 
   const ref = await app.init(evalPlan);
   await hook;
   app.emit("task:subagent:lifecycle", { id: "WriteTests", agent: "task", status: "started", sessionFile: `${scratch}/eval-batch.jsonl`, parentToolCallId: "eval-batch", index: 0 });
-  await app.call({ op: "view" });
+  await eventually(() => boundTo(ref, evalPlan[1]), "WriteTests");
   let children = (await show(ref)).children;
   expect(children).toHaveLength(4);
   expect(children.find((c: any) => c.title === evalPlan[1]).metadata["omp.subagent_id"]).toBe("WriteTests");
   expect(children.find((c: any) => c.title === evalPlan[0]).metadata["omp.subagent_id"]).toBeUndefined();
-  // The delegated task never occupies the lead's slot: finishing its own task starts the next one.
-  expect((await app.call({ op: "done", task: evalPlan[0], message, evidence })).isError).toBeUndefined();
+  // The delegated task never occupies the lead's slot: the lead finishes its own task and starts the next one itself.
+  expect((await app.done(evalPlan[0])).isError).toBeUndefined();
+  expect((await app.call({ op: "start", task: evalPlan[2] })).isError).toBeUndefined();
   children = (await show(ref)).children;
   expect(children.find((c: any) => c.title === evalPlan[2]).metadata["todo.status"]).toBe("in_progress");
+  expect(children.find((c: any) => c.title === evalPlan[1]).metadata["omp.subagent_id"]).toBe("WriteTests");
 });
 
 test("an unrelated delegation never takes the lead's active task and creates nothing", async () => {
@@ -177,6 +188,7 @@ test("an unrelated delegation never takes the lead's active task and creates not
   const sessionFile = `${scratch}/probe-agent.jsonl`;
   app.emit("task:subagent:lifecycle", { id: "probe-agent", status: "started", sessionFile, parentToolCallId: "probe", index: 0 });
   await app.call({ op: "view" });
+  await eventually(async () => (await show(ref)).children.find((c: any) => c.title === "Implement widget").metadata?.["todo.status"], "in_progress");
   let children = (await show(ref)).children;
   expect(children).toHaveLength(2);
   expect(children.some((c: any) => c.metadata?.["omp.subagent_id"])).toBe(false);
@@ -191,9 +203,11 @@ test("an unrelated delegation never takes the lead's active task and creates not
   expect((await show(ref)).labels.some((l: any) => l.label === "needs-review")).toBe(false);
   expect((await kata(["inbox", "--for", "v2-builder", "--json"])).requests.some((r: any) => [ref, ...children.map((c: any) => `v2test#${c.short_id}`)].includes(r.ref))).toBe(false);
   // Only the plan's own items keep the automatic parent open.
-  expect((await app.call({ op: "done", task: "Implement widget", message, evidence })).isError).toBeUndefined();
+  expect((await app.done("Implement widget")).isError).toBeUndefined();
   expect((await show(ref)).issue.status).toBe("open");
-  expect((await app.call({ op: "done", task: "Write widget tests", message, evidence })).isError).toBeUndefined();
+  expect((await app.done("Write widget tests")).isError).toBeUndefined();
+  // The automatic parent closes when the turn settles, not on the lead's native done.
+  await app.event("session_stop");
   expect((await show(ref)).issue.status).toBe("closed");
 });
 
@@ -206,7 +220,7 @@ test("an untracked scout's run is recorded as a closed mission with its agent an
   await app.call({ op: "view" });
   app.emit("task:subagent:event", { id: "Survey", event: { type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "Top level: core, docs, plugins." }] } } });
   app.emit("task:subagent:lifecycle", { id: "Survey", agent: "scout", status: "completed", sessionFile });
-  await app.call({ op: "view" });
+  await eventually(async () => (await missionOf(ref))?.status, "closed");
   const mission = (await show(ref)).children.find((c: any) => c.metadata["omp.mission"] === "true");
   expect(mission).toMatchObject({ status: "closed", closed_reason: "audit-no-change", metadata: { "omp.mission_subagent_id": "Survey", "omp.mission_agent": "scout" } });
   expect(mission.title).toBe("Subagent Survey: Survey the repository layout and report the top-level directories.");
@@ -220,10 +234,10 @@ test("a cancelled subagent lifecycle ends its delegate as aborted, like a cancel
   await app.event("tool_call", { toolName: "task", toolCallId: "cancelled", input: { name: "Widget", task: `Implement the widget; the work is ${key}.` } });
   const sessionFile = `${scratch}/cancelled.jsonl`;
   app.emit("task:subagent:lifecycle", { id: "cancelled", status: "started", sessionFile, parentToolCallId: "cancelled", index: 0 });
-  await app.call({ op: "view" });
+  await eventually(() => issueBoundTo(key), "cancelled");
   expect((await show(key)).issue.metadata["omp.subagent_id"]).toBe("cancelled");
   app.emit("task:subagent:lifecycle", { id: "cancelled", status: "cancelled", sessionFile });
-  await app.call({ op: "view" });
+  await eventually(() => issueBoundTo(key), undefined);
   // The delegate never ran a tool, so its assignment is rolled back.
   expect((await show(key)).issue.metadata["omp.subagent_id"]).toBeUndefined();
 });
@@ -239,23 +253,12 @@ async function untrackedDelegate(id: string, options: any = {}) {
   return { lead, ref, worker };
 }
 
-test("an untracked delegate's todo uses omp's native list and makes no Kata calls", async () => {
+test("an untracked delegate's todo is omp's own: it keeps its list and makes no Kata calls", async () => {
   const { worker } = await untrackedDelegate("untracked-native");
-  const received: any[] = [];
-  const native = { content: [{ type: "text", text: "native list" }], details: { phases: [] } };
-  const params = { op: "init", list: [{ phase: "Scout", items: ["Read the tree"] }] };
-  const result = await worker.call(params, { ...worker.ctx, invokeTool: async (p: any) => { received.push(p); return native; } });
-  expect(result).toBe(native);
-  expect(received).toEqual([params]);
+  const result = await worker.call({ op: "init", list: [{ phase: "Scout", items: ["Read the tree"] }] });
+  expect(result.isError).toBeUndefined();
+  expect(worker.list()).toEqual([{ name: "Scout", tasks: [{ content: "Read the tree", status: "in_progress" }] }]);
   expect(worker.calls.some(a => ["create", "meta", "claim", "close", "comment"].includes(a[0]))).toBe(false);
-});
-
-test("an untracked delegate's todo on an omp without invokeTool says it has no Kata issue", async () => {
-  const { worker } = await untrackedDelegate("untracked-no-native");
-  const result = await worker.call({ op: "view" });
-  expect(result.isError).toBe(true);
-  expect(result.content[0].text).toContain("matched no plan item or ticket");
-  expect(result.content[0].text).not.toContain("binding");
 });
 
 test("another lead's spawn keeps a running untracked delegate's identity", async () => {
@@ -263,8 +266,9 @@ test("another lead's spawn keeps a running untracked delegate's identity", async
   const other = host(); await other.event("session_start"); await other.init(["Unrelated plan"]);
   other.emit("task:subagent:lifecycle", { id: "other-child", agent: "scout", status: "started", sessionFile: `${scratch}/other-child.jsonl`, description: "Unrelated work" });
   await other.call({ op: "view" });
-  const native = { content: [{ type: "text", text: "native list" }], details: { phases: [] } };
-  expect(await worker.call({ op: "view" }, { ...worker.ctx, invokeTool: async () => native })).toBe(native);
+  await worker.event("session_start");
+  const prompt = ((await worker.event("before_agent_start", { systemPrompt: ["base"] }))?.systemPrompt ?? []).join("\n");
+  expect(prompt).toContain("you have no Kata issue");
 });
 
 test("an untracked delegate's system prompt has the note, not an issue binding", async () => {
@@ -291,17 +295,14 @@ test("a spawn in a session with no plan creates nothing", async () => {
 
 test("while the plan is local, a delegate matching a local item is not untracked", async () => {
   const lead = host({ cwd: outside, before: down }); await lead.event("session_start");
-  await lead.init(["Draft the local notes", "Review the local notes"]);
+  expect((await lead.call({ op: "init", items: ["Draft the local notes", "Review the local notes"] })).isError).toBeUndefined();
   const sessionFile = `${scratch}/local-match.jsonl`;
   lead.emit("task:subagent:lifecycle", { id: "local-match", status: "started", sessionFile, description: "Draft the local notes" });
   await lead.call({ op: "view" });
   const worker = host({ cwd: outside, sessionFile, agent: { kind: "sub", id: "local-match", parentId: lead.ctx.agent.id } });
-  let native = 0;
-  const result = await worker.call({ op: "view" }, { ...worker.ctx, invokeTool: async () => { native++; return { content: [], details: {} }; } });
-  expect(native).toBe(0);
-  expect(result.isError).toBe(true);
-  expect(result.content[0].text).toContain("Kata assignment");
-  expect(result.content[0].text).not.toContain("matched no plan item");
+  const prompt = ((await worker.event("before_agent_start", { systemPrompt: ["base"] }))?.systemPrompt ?? []).join("\n");
+  expect(prompt).not.toContain("you have no Kata issue");
+  expect((await worker.call({ op: "view" })).isError).toBeUndefined();
 });
 
 test("a finished delegate that leaves its plan task open hands it back for review", async () => {
@@ -311,19 +312,19 @@ test("a finished delegate that leaves its plan task open hands it back for revie
   await app.event("tool_call", { toolName: "task", toolCallId: "handback", input: { name: "WriteTests", task: 'Complete "Write widget tests"' } });
   const sessionFile = `${scratch}/handback.jsonl`;
   app.emit("task:subagent:lifecycle", { id: "handback", status: "started", sessionFile, parentToolCallId: "handback", index: 0 });
-  await app.call({ op: "view" });
+  await eventually(() => boundTo(ref, "Write widget tests"), "handback");
   const task = (await show(ref)).children.find((c: any) => c.title === "Write widget tests");
   expect(task.metadata["omp.subagent_id"]).toBe("handback");
-  expect((await app.call({ op: "done", task: "Write widget tests", message, evidence })).isError).toBe(true);
+  expect((await app.call({ op: "done", task: "Write widget tests" })).isError).toBe(true);
   await ran(app, "handback", sessionFile);
   app.emit("task:subagent:lifecycle", { id: "handback", status: "completed", sessionFile });
-  await app.call({ op: "view" });
+  await eventually(async () => needsReview(`v2test#${(await show(ref)).children.find((c: any) => c.title === "Write widget tests").short_id}`), true);
   const settled = await show(`v2test#${task.short_id}`);
   expect(settled.labels.some((l: any) => l.label === "needs-review")).toBe(true);
   expect(settled.issue.metadata.teammate).toBe("lead-mate");
   expect(settled.issue.metadata["todo.status"]).toBe("pending");
   expect((await kata(["inbox", "--for", "v2-builder/lead-mate", "--json"])).requests.some((r: any) => r.ref.endsWith(task.short_id))).toBe(true);
-  expect((await app.call({ op: "done", task: "Write widget tests", message, evidence })).isError).toBeUndefined();
+  expect((await app.done("Write widget tests")).isError).toBeUndefined();
   const closed = await show(`v2test#${task.short_id}`);
   expect(closed.issue.status).toBe("closed");
   expect(closed.labels.some((l: any) => l.label === "needs-review")).toBe(false);
@@ -338,21 +339,22 @@ test("a delegate whose assignment failed is handed back when it exits, and the a
   app.emit("task:subagent:lifecycle", { id: "binding-failed", status: "started", sessionFile, description: "Delegated plan task" });
   await app.call({ op: "view" });
   app.emit("task:subagent:lifecycle", { id: "binding-failed", status: "completed", sessionFile });
-  await app.call({ op: "view" });
+  await eventually(async () => needsReview(`v2test#${(await show(ref)).children.find((c: any) => c.title === "Delegated plan task").short_id}`), true);
   const task = (await show(ref)).children.find((c: any) => c.title === "Delegated plan task");
   const settled = await show(`v2test#${task.short_id}`);
   expect(settled.labels.some((l: any) => l.label === "needs-review")).toBe(true);
   expect(settled.issue.metadata.teammate).toBe("lead-mate");
   expect((await kata(["inbox", "--for", "v2-builder/lead-mate", "--json"])).requests.some((r: any) => r.ref.endsWith(task.short_id))).toBe(true);
-  expect((await app.call({ op: "done", task: "Delegated plan task", message, evidence })).isError).toBeUndefined();
-  expect((await app.call({ op: "done", task: "Lead step", message, evidence })).isError).toBeUndefined();
-  await app.call({ op: "view" });
+  expect((await app.done("Delegated plan task")).isError).toBeUndefined();
+  expect((await app.done("Lead step")).isError).toBeUndefined();
+  await app.event("session_stop");
   expect((await show(ref)).issue.status).toBe("closed");
 });
 
 // A lead assigns one delegate, whose session header names `<name>-delegate`; with close transcripts on, the delegate plans
-// one step and closes it through `todo done`. `midCall` runs once, inside the first Kata call of that done. Returns the
-// sessions the step's closes recorded.
+// one step and closes it with a shell `kata close`, which the plugin rewrites to carry the delegate's session. The rewritten
+// command runs where the lead's pair is exported, as it does in the lead's process. `midCall` runs once, while the delegate's
+// close event is in flight. Returns the sessions the step's closes recorded.
 async function delegateStepCloseSessions(name: string, midCall?: (delegate: ReturnType<typeof host>) => void) {
   const lead = host({ sid: `${name}-lead`, transcript: true });
   await lead.event("session_start");
@@ -360,27 +362,25 @@ async function delegateStepCloseSessions(name: string, midCall?: (delegate: Retu
   const sessionFile = `${scratch}/delegate-${name}.jsonl`, id = `${name}.Delegate`;
   writeFileSync(sessionFile, `{"type":"session","version":3,"id":"${name}-delegate"}\n`);
   lead.emit("task:subagent:lifecycle", { id, status: "started", sessionFile, description: `Delegated ${name} task` });
-  await lead.call({ op: "view" });
+  await eventually(async () => (await show(ref)).children.some((c: any) => c.metadata?.["omp.subagent_id"] === id), true);
   const assigned = (await show(ref)).children.find((c: any) => c.metadata?.["omp.subagent_id"] === id);
-  let armed = false;
-  const delegate: ReturnType<typeof host> = host({ sessionFile, agent: { kind: "sub", id, parentId: lead.ctx.agent.id }, transcript: true,
-    before: () => { if (armed) { armed = false; midCall?.(delegate); } } });
+  const delegate: ReturnType<typeof host> = host({ sessionFile, agent: { kind: "sub", id, parentId: lead.ctx.agent.id }, transcript: true });
   await delegate.event("session_start");
   expect((await delegate.call({ op: "init", items: [`Delegate ${name} step`] })).isError).toBeUndefined();
-  armed = true;
-  const done = await delegate.call({ op: "done", task: `Delegate ${name} step`, message, evidence });
-  expect(done.isError, done.content?.[0]?.text).toBeUndefined();
-  expect(armed).toBe(false);
   const step = (await show(`v2test#${assigned.short_id}`)).children.find((c: any) => c.title === `Delegate ${name} step`);
-  expect(step.status).toBe("closed");
+  midCall?.(delegate);
+  const rewritten = await delegate.event("tool_call", { toolName: "bash", input: { command: `kata close v2test#${step.short_id} --done --message '${message}' --test '${name} fixture'` } });
+  const leadEnv = { ...env, KATA_TRANSCRIPT_AGENT: "omp", KATA_TRANSCRIPT_SESSION_ID: `${name}-lead`, KATA_CLOSE_TRANSCRIPT_ENABLED: "true" };
+  await exec("/bin/sh", ["-c", rewritten.input.command.replace(/^(env [^\n]*? )?kata /, (_: string, prefix?: string) => `${prefix ?? ""}'${binary}' `)], { env: leadEnv, cwd });
+  expect((await show(`v2test#${step.short_id}`)).issue.status).toBe("closed");
   return await closeSessions(step.short_id);
 }
 
-test("an assigned delegate's own todo close records the delegate's session, not the lead's", async () => {
+test("an assigned delegate's shell close of its own step records the delegate's session, not the lead's", async () => {
   expect(await delegateStepCloseSessions("transcript")).toEqual(["transcript-delegate"]);
 });
 
-test("a delegate's todo close keeps the delegate's session when another identity reaches its handlers mid-call", async () => {
+test("a delegate's shell close keeps the delegate's session when another identity reaches its handlers mid-call", async () => {
   // omp's advisor runs as its own sub identity inside the session it advises.
   const advisor = (delegate: ReturnType<typeof host>) => { void delegate.event("tool_call", { toolName: "read", input: { path: "README.md" } }, { ...delegate.ctx, agent: { kind: "sub", id: "Advisor" } }); };
   expect(await delegateStepCloseSessions("swap", advisor)).toEqual(["swap-delegate"]);
@@ -391,7 +391,7 @@ test("delegate teammates differ across sessions that reuse an agent name", async
   for (const n of [1, 2]) {
     const app = host(); await app.event("session_start"); const ref = await app.init([`Reused agent name ${n}`]);
     app.emit("task:subagent:lifecycle", { id: "WriteTests", status: "started", sessionFile: `${scratch}/reused-name-${n}.jsonl`, description: `Reused agent name ${n}` });
-    await app.call({ op: "view" });
+    await eventually(async () => (await show(ref)).children.some((c: any) => c.metadata?.["omp.subagent_id"] === "WriteTests"), true);
     teammates.push((await show(ref)).children.find((c: any) => c.metadata?.["omp.subagent_id"] === "WriteTests").metadata.teammate);
   }
   expect(teammates[0]).not.toBe(teammates[1]);
@@ -400,12 +400,10 @@ test("delegate teammates differ across sessions that reuse an agent name", async
 test("adopting an explicit parent retires an empty automatic parent", async () => {
   const app = host({ before: (args: string[]) => args[0] === "create" && args.includes("--parent") ? { code: 1, stdout: "", stderr: "child create refused" } : undefined });
   await app.event("session_start");
-  await app.call({ op: "init", items: ["Never created"] });
-  const auto = (await app.call({ op: "view" })).details.kata.parent;
+  const auto = await app.init(["Never created"]);
   expect(auto).toMatch(/^v2test#/);
   const explicit = await issue(); await kata(["claim", explicit, "--json"]);
   await app.event("tool_result", { toolName: "bash", input: { command: `kata claim ${explicit}` }, isError: false, details: { exitCode: 0 } });
-  expect((await app.call({ op: "view" })).details.kata.parent).toBe(`v2test#${explicit}`);
   const retired = await show(auto);
   expect(retired.issue.status).toBe("closed");
   expect(retired.issue.closed_reason).toBe("superseded");
@@ -419,7 +417,7 @@ test("a handed-back plan task can be delegated again", async () => {
     const id = `regadget-${n}`, sessionFile = `${scratch}/${id}.jsonl`;
     expect(await app.event("tool_call", { toolName: "task", toolCallId: id, input: { name: "WriteTests", task: 'Complete "Write gadget tests"' } })).toBeUndefined();
     app.emit("task:subagent:lifecycle", { id, status: "started", sessionFile, parentToolCallId: id, index: 0 });
-    await app.call({ op: "view" });
+    await eventually(() => boundTo(ref, "Write gadget tests"), id);
     if (state === "completed") { app.emit("task:subagent:lifecycle", { id, status: "completed", sessionFile }); await app.call({ op: "view" }); }
   }
   const children = (await show(ref)).children;
@@ -427,30 +425,21 @@ test("a handed-back plan task can be delegated again", async () => {
   expect(children.find((c: any) => c.title === "Write gadget tests").metadata["omp.subagent_id"]).toBe("regadget-2");
 });
 
-test("after a hand-back, a bare done closes the lead's own active task", async () => {
+test("after a hand-back, the lead closes its own active task and the handed-back one stays open", async () => {
   const app = host(); await app.event("session_start");
   const ref = await app.init(["Write widget tests", "Implement widget"]);
   await app.event("tool_call", { toolName: "task", toolCallId: "bare-done", input: { task: 'Complete "Write widget tests"' } });
   const sessionFile = `${scratch}/bare-done.jsonl`;
   app.emit("task:subagent:lifecycle", { id: "bare-done", status: "started", sessionFile, parentToolCallId: "bare-done", index: 0 });
-  await app.call({ op: "view" });
+  await eventually(() => boundTo(ref, "Write widget tests"), "bare-done");
   expect((await app.call({ op: "start", task: "Implement widget" })).isError).toBeUndefined();
   await ran(app, "bare-done", sessionFile);
   app.emit("task:subagent:lifecycle", { id: "bare-done", status: "completed", sessionFile });
   await app.call({ op: "view" });
-  expect((await app.call({ op: "done", message, evidence })).isError).toBeUndefined();
+  expect((await app.done("Implement widget")).isError).toBeUndefined();
   const children = (await show(ref)).children;
   expect(children.find((c: any) => c.title === "Implement widget").status).toBe("closed");
   expect(children.find((c: any) => c.title === "Write widget tests").status).toBe("open");
-});
-
-test("a done plan task keeps its message and evidence as a comment, not only as the close reason", async () => {
-  const app = host(); await app.event("session_start");
-  const ref = await app.init(["Write widget tests"]);
-  expect((await app.call({ op: "done", task: "Write widget tests", message, evidence })).isError).toBeUndefined();
-  const child = (await show(ref)).children[0];
-  expect(child.status).toBe("closed");
-  expect(await commentsOf(child.short_id)).toEqual([`Done: ${message}\nEvidence: ${evidence.join(", ")}`]);
 });
 
 test("a task call that never spawns releases its plan task", async () => {
@@ -462,10 +451,11 @@ test("a task call that never spawns releases its plan task", async () => {
 });
 
 // The lead's plan task a task call named, bound to a delegate whose start is reported after the call returned.
-async function lateStart(app: ReturnType<typeof host>, ref: string, id: string) {
+async function lateStart(app: ReturnType<typeof host>, ref: string, id: string, expected: string | undefined) {
   app.emit("task:subagent:lifecycle", { id, status: "started", sessionFile: `${scratch}/${id}.jsonl`, parentToolCallId: id, index: 0 });
   await app.call({ op: "view" });
-  return (await show(ref)).children.find((c: any) => c.title === "Write sprocket tests").metadata["omp.subagent_id"];
+  await eventually(() => boundTo(ref, "Write sprocket tests"), expected);
+  return boundTo(ref, "Write sprocket tests");
 }
 
 test("a synchronous task call that settled without a start leaves no assignment for a later start", async () => {
@@ -473,7 +463,7 @@ test("a synchronous task call that settled without a start leaves no assignment 
   const input = { task: 'Complete "Write sprocket tests"' };
   await app.event("tool_call", { toolName: "task", toolCallId: "sync-gone", input });
   await app.event("tool_result", { toolName: "task", toolCallId: "sync-gone", isError: false, input, details: { results: [] } });
-  expect(await lateStart(app, ref, "sync-gone")).toBeUndefined();
+  expect(await lateStart(app, ref, "sync-gone", undefined)).toBeUndefined();
 });
 
 test("a background task call keeps its assignment for a late start until its jobs stop running", async () => {
@@ -484,7 +474,7 @@ test("a background task call keeps its assignment for a late start until its job
   running = [{ id: "job-1", agentId: "late-1", type: "task", status: "running" }];
   await app.event("tool_call", { toolName: "task", toolCallId: "late-1", input });
   await app.event("tool_result", { toolName: "task", toolCallId: "late-1", isError: false, input, details });
-  expect(await lateStart(app, ref, "late-1")).toBe("late-1");
+  expect(await lateStart(app, ref, "late-1", "late-1")).toBe("late-1");
 
   const second = { task: 'Complete "Write sprocket docs"' };
   await app.event("tool_call", { toolName: "task", toolCallId: "late-2", input: second });
@@ -507,15 +497,17 @@ test("a later turn of a delegate that closed its plan task reports on that task 
   await app.event("tool_call", { toolName: "task", toolCallId: "wake-bound", input: { name: "WriteTests", task: 'Complete "Write widget tests"' } });
   const lifecycle = { id: "wake-bound", sessionFile: `${scratch}/wake-bound.jsonl`, parentToolCallId: "wake-bound", index: 0 };
   app.emit("task:subagent:lifecycle", { ...lifecycle, status: "started" });
-  await app.call({ op: "view" });
+  await eventually(() => boundTo(ref, "Write widget tests"), "wake-bound");
+  // The assignment's last write: a close before it would fail the assignment.
+  await eventually(async () => (await show(ref)).children.find((c: any) => c.title === "Write widget tests").metadata["work.attention"], "ok");
   const task = (await show(ref)).children.find((c: any) => c.title === "Write widget tests"), taskRef = `v2test#${task.short_id}`;
   await kata(["close", taskRef, "--done", "--message", message, "--test", "wake fixture", "--teammate", task.metadata.teammate, "--json"]);
   app.emit("task:subagent:lifecycle", { ...lifecycle, status: "completed" });
-  await app.call({ op: "view" });
+  await app.event("session_stop");
   app.emit("task:subagent:lifecycle", { ...lifecycle, status: "started" });
   app.emit("task:subagent:event", assistantText("wake-bound", "The tests also cover empty input."));
   app.emit("task:subagent:lifecycle", { ...lifecycle, status: "completed" });
-  await app.call({ op: "view" });
+  await eventually(async () => (await commentsOf(taskRef)).includes("Report from subagent wake-bound (after a follow-up):\n\nThe tests also cover empty input."), true);
   expect(await commentsOf(taskRef)).toContain("Report from subagent wake-bound (after a follow-up):\n\nThe tests also cover empty input.");
   const children = (await show(ref)).children;
   expect(children.filter((c: any) => c.metadata?.["omp.mission"] === "true")).toEqual([]);
@@ -527,12 +519,11 @@ test("a later turn of an untracked delegate adds its report to the mission its f
   const ref = await app.init(["Implement gadget"]);
   await app.event("tool_call", { toolName: "task", toolCallId: "wake-scout", input: { tasks: [{ name: "Scout", agent: "scout", task: "Survey the repository layout and report the top-level directories." }] } });
   const lifecycle = { id: "Scout", agent: "scout", sessionFile: `${scratch}/wake-scout.jsonl`, parentToolCallId: "wake-scout", index: 0 };
-  for (const text of ["Top level: core, docs, plugins.", "Also scripts and tests."]) {
+  for (const [round, text] of ["Top level: core, docs, plugins.", "Also scripts and tests."].entries()) {
     app.emit("task:subagent:lifecycle", { ...lifecycle, status: "started" });
-    await app.call({ op: "view" });
     app.emit("task:subagent:event", assistantText("Scout", text));
     app.emit("task:subagent:lifecycle", { ...lifecycle, status: "completed" });
-    await app.call({ op: "view" });
+    await eventually(async () => { const m = await missionOf(ref); return m ? (await commentsOf(`v2test#${m.short_id}`)).length : 0; }, round + 1);
   }
   const missions = (await show(ref)).children.filter((c: any) => c.metadata["omp.mission"] === "true");
   expect(missions.map((c: any) => c.status)).toEqual(["closed"]);
@@ -548,6 +539,6 @@ test("a background task call keeps the ticket its spawn named reserved after its
   await app.event("tool_result", { toolName: "task", toolCallId: "late-ticket", isError: false, input, details: { async: { state: "running", jobId: "job-late", type: "task" }, progress: [{ id: "late-ticket" }] } });
   expect(await app.event("tool_call", { toolName: "task", toolCallId: "late-ticket-again", input })).toMatchObject({ block: true, reason: expect.stringMatching(/already delegated/) });
   app.emit("task:subagent:lifecycle", { id: "late-ticket", status: "started", sessionFile: `${scratch}/late-ticket.jsonl`, parentToolCallId: "late-ticket", index: 0 });
-  await app.call({ op: "view" });
+  await eventually(() => issueBoundTo(`v2test#${ticket}`), "late-ticket");
   expect((await show(`v2test#${ticket}`)).issue.metadata["omp.subagent_id"]).toBe("late-ticket");
 });

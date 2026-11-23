@@ -23,7 +23,7 @@ Where the plan lives follows the [oh-my-pi rules](oh-my-pi.md#where-the-plan-liv
 
 ## The `todo` tool
 
-The mod removes `TaskCreate`, `TaskGet`, `TaskList`, `TaskUpdate` and `TodoWrite` from the tool list and adds `todo`; `TaskStop` stays, because it stops background tasks. The tool is the one the [oh-my-pi reference](oh-my-pi.md) describes: `init`, `start`, `done`, `rm`, `drop`, `block`, `unblock`, `append` and `view`, with the same phases, ticket items (`<project>#<short_id>: <action>`), refusals and [closing rules](closing-rules.md). A `todo` call needs no permission prompt: the mod answers it. A delegate's call works its own assigned issue ([Delegates](#delegates)).
+The mod removes `TaskCreate`, `TaskGet`, `TaskList`, `TaskUpdate` and `TodoWrite` from the tool list and adds `todo`; `TaskStop` stays, because it stops background tasks. The tool is the plugin's own, the one the [Pi reference](pi.md) describes, not omp's native `todo`: `init`, `start`, `done`, `rm`, `drop`, `block`, `unblock`, `append` and `view`, with the same phases, ticket items (`<project>#<short_id>: <action>`), refusals and [closing rules](closing-rules.md). `done` takes the message and evidence, and `init` takes `replace` and `ref`, as in Pi; omp's native `todo` takes none of these. A `todo` call needs no permission prompt: the mod answers it. A delegate's call works its own assigned issue ([Delegates](#delegates)).
 
 Each prompt carries the plan as hidden context after the user's text. A section the model already holds is not sent again until it changes or the conversation is compacted.
 
@@ -72,9 +72,9 @@ Closing the terminal or killing Claude Code runs no hooks: work left open is fin
 The mod draws in the terminal UI, and in the desktop Code tab and the VS Code chat panel where Claude Code draws mods. `claude -p` and the Agent SDK run the hooks and draw nothing.
 
 - **Plan band** above the prompt: `Kata plan 2/5 · 1 blocked · ▶ active task`, with a progress bar.
-- **Checklist card** under each of the lead's `todo` calls, with the result's notice (a deleted parent, a close Kata deferred) above the checklist. A delegate's `todo` call keeps the engine's own row. A session-local plan (kept while Kata is unreachable) draws no band and no card, as in omp.
+- **Checklist card** under each of the lead's `todo` calls, with the result's notice (a deleted parent, a close Kata deferred) above the checklist. A delegate's `todo` call keeps the engine's own row. A session-local plan (kept while Kata is unreachable) draws no band and no card.
 - **`#` ticket completion** in the prompt, with the same tokens as the [omp ticket references](oh-my-pi.md#ticket-references-in-the-prompt). A loaded list answers at once, whatever Kata is doing; only the first fill of a session's list waits, for 400 ms at most, beside the rows of other plugins.
-- **`/todo`** shows the plan; the subcommands `start`, `done`, `drop`, `rm`, `append`, `block`, `unblock` and `takeover` change it, as in omp.
+- **`/todo`** shows the plan; the subcommands `start`, `done`, `drop`, `rm`, `append`, `block`, `unblock` and `takeover` change it, as in Pi.
 
 ## Live inbox
 

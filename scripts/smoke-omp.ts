@@ -1,5 +1,6 @@
 // Smoke test: load the portable omp plugin into a real, headless omp against a
-// real Kata daemon, and check what lands in a throwaway Kata store.
+// real Kata daemon, and check what lands in a throwaway Kata store. omp's native
+// todo runs with the plugin's `kata` todo backend selected (a --config overlay).
 //
 //   bun run smoke:omp [--scenario <name>] [--verbose]
 //   bun run smoke:omp --live --model <provider/model> [--scenario <name>]
@@ -13,7 +14,7 @@ import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync, type Dirent } from "node:fs";
 import path from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
-import { SCENARIOS, type Prompt, type Request, type ToolUse, type Scenario, type Session, type Store } from "./smoke-omp-scenarios";
+import { PROJECT, SCENARIOS, type Prompt, type Request, type ToolUse, type Scenario, type Session, type Store } from "./smoke-omp-scenarios";
 import { cleanEnv, defer, flag, kataProject, lastLines, linesIn, option, pickScenarios, report, reportChecks, runToEnd, scratchRoot, teardown, verbose, verdict, type Check } from "./smoke-lib";
 import { MODEL, PROVIDER } from "./smoke-provider";
 
@@ -23,7 +24,6 @@ const liveModel = option("--model");
 if (live && !liveModel) { console.error("--live needs --model <provider/model> for a provider you are logged into (prefer a subscription)."); process.exit(2); }
 const scenarios = pickScenarios(SCENARIOS);
 
-const PROJECT = "omp-smoke";
 const TIMEOUT_MS = live ? 600_000 : 120_000;
 const tmp = scratchRoot("omp-kata-smoke-");
 const base = cleanEnv();
@@ -122,10 +122,11 @@ async function run(scenario: Scenario) {
 		env.KATA_SMOKE_VARS = JSON.stringify(vars);
 		// Scripted runs need no login, so omp gets a throwaway agent directory; live runs use yours (inherited PI_CODING_AGENT_DIR, else omp's default).
 		if (!live) env.PI_CODING_AGENT_DIR = agentDir;
-		if (scenario.ompConfig) writeFileSync(ompConfig, scenario.ompConfig);
+		// The plugin mirrors and guards omp's native todo only while the `kata` backend is selected, so every run selects it; the scenario's own settings follow.
+		writeFileSync(ompConfig, `todo:\n  backend: kata\n${scenario.ompConfig ?? ""}`);
 		// The smoke extension also records each agent's system prompt, so it loads after the plugin in live runs too.
 		const args = ["--no-extensions", "--no-skills", "--no-rules", "--no-context-files", "--no-lsp", "--no-title", ...(scenario.persist ? [] : ["--no-session"]),
-			"-e", path.join(root, "plugins/oh-my-pi/kata.ts"), "-e", path.join(root, "scripts/smoke-omp-provider.ts"), ...(scenario.ompConfig ? ["--config", ompConfig] : [])];
+			"-e", path.join(root, "plugins/oh-my-pi/kata.ts"), "-e", path.join(root, "scripts/smoke-omp-provider.ts"), "--config", ompConfig];
 		args.push("--model", live ? liveModel! : `${PROVIDER}/${MODEL}`);
 		const { code, output, checks } = scenario.drive ? await drive(scenario, args, env, work, project.kata)
 			: { ...await runToEnd("omp", ["-p", "--wait-async", ...(verbose ? ["--mode", "json"] : []), ...args, live ? scenario.livePrompt!(vars) : scenario.prompt!], { env, cwd: work, timeout: TIMEOUT_MS }), checks: [] };

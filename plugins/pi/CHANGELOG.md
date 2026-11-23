@@ -4,6 +4,12 @@ All notable changes to `@dangerboi/kata-pi` are listed here. The format follows 
 
 ## [Unreleased]
 
+### Fixed
+
+#### Plans
+
+- Restarting a closed task you own with `todo` reopens it, instead of failing with "no longer owned" when Kata cleared the owner on close.
+
 ## [1.12.1] - 2026-11-18
 
 ### Fixed
