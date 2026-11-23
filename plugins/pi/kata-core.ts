@@ -1902,9 +1902,8 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 		if (at >= 0 && !branch.slice(at + 1).some(entry => seenIds.has(entry?.id))) return;
 		// Every entry of the session as it is now was read: a later `/tree` forward to one of them reloads.
 		const saved = loadNative(ctx, savedSnapshot(ctx, branch, sid(ctx), onBranch(branch)).snapshot, branch);
-		const key = (m: NativeMemory) => JSON.stringify([[...m.prev], [...m.phase], m.listed]);
 		// The branch moved: the next snapshot is written even when it equals the last one this core wrote on the other branch.
-		if (key(saved) !== key(native)) lastSnapshot = undefined;
+		if (JSON.stringify(savedNative(saved)) !== JSON.stringify(savedNative(native))) lastSnapshot = undefined;
 		native = saved;
 	}
 
