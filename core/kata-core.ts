@@ -384,6 +384,8 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 	let mirrorWarned = false, errorsSeen = 0;
 	// What this core last mirrored of omp's list for the session (see diffNativeList), saved in the session snapshot.
 	let native = nativeMemory(undefined);
+	// The id of the last entry of the branch whose list produced `native`: while that id is on a branch, `native` is that lineage's newest memory.
+	let nativeLeaf: unknown;
 	const flagged = new Set<string>();
 	let sessionTeammate: string | undefined;
 	const ownTeammate = () => sessionTeammate ?? setting("KATA_TEAMMATE") ?? "";
@@ -830,7 +832,7 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 			if (typeof snapshot.deletedParent === "string") deletedParent = snapshot.deletedParent;
 		}
 		// The mirror continues from the list this branch's snapshot last mirrored, or from none: a tree move or a branch switch must not carry the old branch's.
-		if (main(ctx)) native = nativeMemory(snapshot);
+		if (main(ctx)) { native = nativeMemory(snapshot); nativeLeaf = undefined; }
 		let stored: any = snapshot?.plan?.parent ? snapshot.plan : undefined;
 		for (const entry of branch) {
 			if (entry?.type !== "custom" || entry.customType !== PARENT_ENTRY || (entry.data?.sessionId && entry.data.sessionId !== parentOwner)) continue;
@@ -1662,11 +1664,11 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 		const message = (error as Error)?.message ?? error;
 		if (!outage) {
 			const names = (tasks ?? []).map(t => `"${t}"`).join(", "), many = (tasks?.length ?? 0) > 1;
-			const closes = (refs ?? []).map(r => `\`kata close ${r} --wontfix\``).join(", ");
+			const closes = (refs ?? []).map(r => `\`kata close ${r} --wontfix --message '<60+ characters>'\``).join(", ");
 			const stays = tasks === undefined
 				? `The change stays in ${listName}; the next change tries again.`
 				: removed === "ticket"
-					? `Removing ${many ? "them" : "it"} from the plan only comments on ${many ? "the tickets" : "the ticket"}, so ${many ? "they stay" : "it stays"} as ${many ? "they are" : "it is"} and nothing needs closing.`
+					? `${names} ${many ? "are ticket items" : "is a ticket item"}. Removing ${many ? "them" : "it"} from the plan comments on ${many ? "the tickets" : "the ticket"} and puts ${many ? "any that were in progress back to pending" : "it back to pending if it was in progress"}; ${many ? "the tickets stay" : "the ticket stays"} open and need${many ? "" : "s"} no close.`
 					: removed
 						? `${names} ${many ? "stay" : "stays"} open in Kata; close ${many ? "them" : "it"} there with ${closes}.`
 						: `${names} ${many ? "stay" : "stays"} in ${listName}. ${many ? "Each is" : "It is"} sent to Kata again only when ${many ? "it" : "that task"} changes in the list.`;
@@ -1734,6 +1736,8 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 				if (oldPhase === undefined) phaseOf.delete(content); else phaseOf.set(content, oldPhase);
 			}
 			native = { prev: next, phase: phaseOf, listed: phases.length > 0 };
+			const own: readonly any[] = main(ctx) ? ctx.sessionManager?.getBranch?.() ?? [] : [];
+			nativeLeaf = own[own.length - 1]?.id;
 		};
 		if (boundAgent && boundAgent !== agentKey(ctx)) return [];
 		// A delegate with no assignment has no plan to mirror into.
@@ -1854,8 +1858,11 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 	function nativeFromBranch(ctx: HostContext) {
 		if (!options.native || !main(ctx)) return;
 		const branch: readonly any[] = ctx.sessionManager?.getBranch?.() ?? [];
+		// The memory came from a list of this lineage (its leaf is on this branch), so it is at least as new as any snapshot on the branch.
+		if (nativeLeaf !== undefined && branch.some(entry => entry?.id === nativeLeaf)) return;
 		const saved = nativeMemory(savedSnapshot(ctx, branch, sid(ctx)).snapshot);
 		const key = (m: NativeMemory) => JSON.stringify([[...m.prev], [...m.phase], m.listed]);
+		nativeLeaf = undefined;
 		if (key(saved) === key(native)) return;
 		native = saved;
 		// The branch moved: the next snapshot is written even when it equals the last one this core wrote on the other branch.

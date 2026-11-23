@@ -273,7 +273,9 @@ function rawOmpHost(sid: string, before: (args: string[], opts: any) => any) {
     /** /tree: the same session now answers for another branch and leaf. */
     moveTo: (next: any[], nextLeaf: string | null) => { branch = next; leaf = nextLeaf; },
     /** /tree right after the next saved entry: the move lands between one mirror's save and the next mirror's bind. */
-    moveAfterNextAppend: (next: any[], nextLeaf: string | null) => { afterAppend = () => { branch = next; leaf = nextLeaf; }; } };
+    moveAfterNextAppend: (next: any[], nextLeaf: string | null) => { afterAppend = () => { branch = next; leaf = nextLeaf; }; },
+    /** /tree to an earlier entry: the branch is the path up to it; the entries after it stay in `app.entries`. */
+    moveToEntry: (id: string) => { branch = app.entries.slice(0, app.entries.findIndex((e: any) => e.id === id) + 1); leaf = id; } };
 }
 const listOf = (...tasks: [string, "pending" | "in_progress" | "completed"][]) => [{ name: "Tasks", tasks: tasks.map(([content, status]) => ({ content, status })) }];
 
@@ -345,4 +347,25 @@ test("a mirror still running when /tree moves the session to another branch is d
   hold.release();
   await Promise.all([slow, queued]);
   expect((await show(docs)).issue.status).toBe("open");
+});
+
+test("a list captured at an earlier entry of a branch whose tip the in-memory list came from is diffed against that entry's snapshot", async () => {
+  const { parser: parserTask, docs: docsTask } = names();
+  const extraTask = `Extra ${unique()}`;
+  const { app, event, replace, moveToEntry } = rawOmpHost(`v2-child-${unique()}`, () => undefined);
+  await event("session_start");
+  // Entry L: the branch after the first list, whose snapshot has the parser and docs tasks.
+  await replace(listOf([parserTask, "pending"], [docsTask, "pending"]));
+  const leafL = app.entries[app.entries.length - 1].id;
+  const parent = await planParentOf(parserTask);
+  // Two more lists add a third task; the second is captured at the tip, past L, so the in-memory list comes from there.
+  await replace(listOf([parserTask, "pending"], [docsTask, "pending"], [extraTask, "pending"]));
+  await replace(listOf([parserTask, "pending"], [docsTask, "pending"], [extraTask, "pending"]));
+  const extra = await childRef(parent, extraTask);
+  // /tree back to L, whose subtree still exists: the list captured there is diffed against L's snapshot, which never had the third task,
+  // so the third task is not one omp's list removed.
+  moveToEntry(leafL);
+  await replace(listOf([parserTask, "pending"], [docsTask, "pending"]));
+  expect(app.notices.filter(n => MIRROR_FAILURE.test(String(n[0])))).toEqual([]);
+  expect((await show(extra)).issue.status).toBe("open");
 });

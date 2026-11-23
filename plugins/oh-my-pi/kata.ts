@@ -238,26 +238,21 @@ export default function ompKata(pi: any) {
 	const enter = async (ctx: any) => { see(ctx); await syncJobs(ctx); };
 
 	// omp's context and session manager are class instances with private fields: a method only works called on the
-	// original, so the view is a plain object (never Object.create or a spread). The branch, header, file and leaf are
-	// captured by the caller before its first await, since the originals answer for omp's CURRENT session: they are read
-	// live only while the manager still reports the captured session id and its branch still contains the captured leaf (every
-	// new entry moves the leaf, so the live branch has only grown since capture), and the captured copies answer after a
-	// switch or a /tree move to another branch of the same session.
+	// original, so the view is a plain object (never Object.create or a spread). The branch, header and file are captured
+	// by the caller before its first await, since the originals answer for omp's CURRENT session and leaf (a /new, a resume or
+	// a /tree move changes them); the view answers from those copies alone.
 	type Header = { parentSession?: unknown } | null | undefined;
-	const boundContext = (ctx: any, id: string | undefined, captured: { branch: unknown[]; header: Header; file: string | undefined; leaf: unknown }) => {
-		const sm = ctx?.sessionManager;
+	const boundContext = (ctx: any, id: string | undefined, captured: { branch: unknown[]; header: Header; file: string | undefined }) => {
 		const bind = (owner: any, name: string) => typeof owner?.[name] === "function" ? owner[name].bind(owner) : undefined;
-		const live = () => sm?.getSessionId?.() === id
-			&& (captured.leaf == null || (sm?.getBranch?.() ?? []).some((entry: any) => entry?.id === captured.leaf));
 		return {
 			cwd: ctx?.cwd, agent: ctx?.agent, ui: ctx?.ui,
 			setTimeout: bind(ctx, "setTimeout"), clearTimer: bind(ctx, "clearTimer"),
 			sessionManager: {
 				getSessionId: () => id,
-				getBranch: () => live() ? sm.getBranch?.() ?? captured.branch : captured.branch,
-				getHeader: () => live() ? sm.getHeader?.() : captured.header,
-				getSessionFile: () => live() ? sm.getSessionFile?.() : captured.file,
-				getEntries: bind(sm, "getEntries"),
+				getBranch: () => captured.branch,
+				getHeader: () => captured.header,
+				getSessionFile: () => captured.file,
+				getEntries: bind(ctx?.sessionManager, "getEntries"),
 			},
 		};
 	};
@@ -276,7 +271,6 @@ export default function ompKata(pi: any) {
 				branch: [...(sm?.getBranch?.() ?? [])] as unknown[],
 				header: sm?.getHeader?.() as Header,
 				file: sm?.getSessionFile?.() as string | undefined,
-				leaf: sm?.getLeafId?.(),
 			};
 			try {
 				await enter(ctx);
