@@ -310,6 +310,7 @@ export function createKataCore(host: CoreHost, options: CoreOptions): KataCore {
 
 // A native `todo` call as omp receives it. omp infers a missing `op` (inferTodoOp): a non-empty `list` is init, `items` with a phase is
 // append, and `items` alone is init when omp's list has no phases. Whether it has any is not known here, so `items` alone counts as init.
+// The delegate guard checks a call only when the op omp would infer is init, start, done, drop or rm.
 type NativeCall = { op?: unknown; task?: unknown; phase?: unknown; items?: unknown; list?: unknown };
 const GUARDED_OPS: readonly string[] = ["init", "start", "done", "drop", "rm"];
 function inferNativeOp(call: NativeCall): string | undefined {
@@ -320,8 +321,6 @@ function inferNativeOp(call: NativeCall): string | undefined {
 	}
 	return undefined;
 }
-// Whether the delegate guard checks this call: init, start, done, drop or rm, with the op omp would infer. Conservative: a call with only
-// `items` and no `phase` counts as init.
 function guardedNativeCall(input: unknown): boolean {
 	if (!input || typeof input !== "object") return false;
 	const op = inferNativeOp(input as NativeCall);
@@ -1913,11 +1912,12 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 		seenIds.add(last.id);
 	}
 
+	const bumpMirror = (session: string) => { const next = (mirrorStamps.get(session) ?? 0) + 1; mirrorStamps.set(session, next); return next; };
+
 	// omp calls this after it saved its list, with the whole list. Newest wins: a mirror still queued when a newer one of the SAME session
 	// arrives does nothing, since the newer one carries everything; a list of a session left behind still lands. Never rejects.
 	function mirror(ctx: HostContext, phases: NativePhase[]): Promise<void> {
-		const session = sid(ctx) ?? "", mine = (mirrorStamps.get(session) ?? 0) + 1;
-		mirrorStamps.set(session, mine);
+		const session = sid(ctx) ?? "", mine = bumpMirror(session);
 		return serial(async job => {
 			if (mine !== mirrorStamps.get(session)) return;
 			let failures: MirrorFailure[];
@@ -1930,7 +1930,9 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 
 	// The tasks a change names, found by diffing omp's list before and after it: the ones that went to the status the op sets, or left the list.
 	function targetsOf(change: NativeChange): string[] {
-		const before = new Map(nativeItems(change.previous).map(i => [i.content, i.status])), after = new Map(nativeItems(change.next).map(i => [i.content, i.status]));
+		// The first copy of a text wins, as in omp's findTaskByContent and diffNativeList.
+		const firstOf = (phases: NativePhase[]) => { const map = new Map<string, NativeStatus>(); for (const i of nativeItems(phases)) if (!map.has(i.content)) map.set(i.content, i.status); return map; };
+		const before = firstOf(change.previous), after = firstOf(change.next);
 		const became = (status: NativeStatus) => [...after].filter(([content, now]) => now === status && before.get(content) !== status).map(([content]) => content);
 		switch (change.op) {
 			case "start": return became("in_progress");
@@ -2027,12 +2029,22 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 		return bounded((async () => { await after?.catch(debug); if (main(ctx) || !delegates.assignment(ctx)) return undefined; return serial(job => guardText(job, ctx, op, delegateAim(call, op)), { ctx }); })(), GUARD_MS);
 	}
 
-	// Asked before omp commits a `todo` call of the lead: the text that refuses it, or undefined. It only checks: omp sends `replace` with the
-	// list once it commits, and that mirror is what writes Kata, so a change omp does not commit never reaches it. A read Kata fails (down, too
-	// old) refuses nothing; the mirror meets the same failure and tells the user.
+	// Asked before omp commits a `todo` call of the lead: the text that refuses it, or undefined. It writes nothing omp did not commit: omp does not
+	// queue `apply` behind `replace`, so Kata may still lack omp's committed list (`previous`). When it does, `previous` is mirrored first (stamped,
+	// so an older `replace` still queued does nothing; omp's own `replace(previous)` then finds nothing to change), then the call is checked. The
+	// call itself reaches Kata through the `replace` omp sends once it commits. A read Kata fails (down, too old) refuses nothing; the mirror meets
+	// the same failure and tells the user.
 	function accept(ctx: HostContext, change: NativeChange): Promise<string | undefined> {
 		return serial(async job => {
 			try {
+				const previous = new Map<string, NativeStatus>();
+				for (const item of nativeItems(change.previous)) if (item.content.trim() && !previous.has(item.content)) previous.set(item.content, item.status);
+				if (previous.size !== native.prev.size || [...previous].some(([content, status]) => native.prev.get(content) !== status)) {
+					bumpMirror(sid(ctx) ?? "");
+					try { await mirrorList(job, ctx, change.previous); }
+					catch (error) { debug(error); }
+					finally { if (persist(job)) ownSnapshotLanded(ctx); }
+				}
 				return await guardText(job, ctx, change.op, () => {
 					const items = (phases: NativePhase[]) => new Set(nativeItems(phases).map(i => i.content));
 					return change.op === "init" ? { init: { kept: items(change.next), was: items(change.previous) } } : { contents: targetsOf(change) };

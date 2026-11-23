@@ -40,7 +40,7 @@ export interface OmpHostOptions extends Omit<FakeHostOptions, "exec"> {
   sendUserMessage?: (...args: any[]) => void;
   /** Runs after each `event`, e.g. to undo process-level side effects of the handler. */
   afterEvent?: () => void;
-  /** omp's queue: a call does not wait for `replace`, lists collapse newest-wins while one runs, and `settled()` awaits the queue. Default: each call awaits its `replace`. */
+  /** omp's queue never makes a tool result wait for `replace`; lists collapse newest-wins while one runs. By default the harness's `call`, `batch`, `edit` and `backend` return once the queue is drained, so a test reads Kata right after; with `queuedReplace` they return at once and `settled()` awaits the queue. `holdReplace()` pauses the queue either way. */
   queuedReplace?: boolean;
 }
 
@@ -157,12 +157,15 @@ export function ompHost(options: OmpHostOptions) {
   // The queue behind `queuedReplace`: one list waits while a `replace` runs, and a newer list takes its place.
   let waiting: { phases: TodoPhase[]; key: string; sid: string | undefined; context: any } | undefined;
   let draining: Promise<void> | undefined;
+  /** While set, the queue waits on it before each `replace` (`holdReplace`). */
+  let gate: Promise<void> | undefined;
   function drain(): Promise<void> {
     if (draining) return draining;
     const run = (async () => {
       await null;
       try {
         while (waiting) {
+          while (gate) await gate;
           const next = waiting;
           waiting = undefined;
           const backend = host.todoBackend;
@@ -183,7 +186,7 @@ export function ompHost(options: OmpHostOptions) {
   // omp's `#mirrorTodoPhases` (agent-session.ts) then `syncTodoBackend`/`#sendTodoList` (runner.ts): main session only, after
   // `session_start`, a registered backend that `todo.backend` selects, and a list that differs from the one last taken. A throw
   // leaves nothing recorded, so the next list goes out again.
-  async function sync(context: any) {
+  function sync(context: any): Promise<void> | undefined {
     if ((context.agent?.kind ?? "main") !== "main") return;
     if (!started) { unsent = context; return; }
     const backend = host.todoBackend;
@@ -192,9 +195,10 @@ export function ompHost(options: OmpHostOptions) {
     const last = waiting ? { sid: waiting.sid, id: backend.id, phases: waiting.key } : sent;
     if (last ? last.sid === sid && last.id === backend.id && last.phases === key : phases.length === 0) return;
     waiting = { phases, key, sid, context };
-    const running = drain();
-    if (!options.queuedReplace) await running;
+    return drain();
   }
+  /** What the harness does with the queue after a step: wait for it to drain, unless the test runs omp's queue as it is or holds it. */
+  const flush = async (running: Promise<void> | undefined) => { if (!options.queuedReplace && !gate) await running; };
 
   const lineOf = (text: string) => text.replace(/\s+/g, " ").trim() || "no reason given";
   /**
@@ -219,24 +223,31 @@ export function ompHost(options: OmpHostOptions) {
     if (outcome.committed) {
       const at = manager.getSessionId();
       const { asked, refusal } = await askBackend(context, result.details.op, previous, outcome.committed);
-      // Between the ask and the commit omp's call can be aborted: the test's hook says so by returning true.
+      // The call can be aborted while `apply` still runs: the test's hook says so by returning true.
       const aborted = (await app.beforeCommit?.()) === true;
       const current = () => executeTodo(previous, { op: "view" }, "memory").result.content[0].text;
-      const fail = (text: string, refused?: true): TodoResult => ({ content: [{ type: "text", text }], details: { ...result.details, phases: clonePhases(previous), ...refused && { refused } }, isError: true });
-      if (refusal !== undefined) {
-        result = fail(`Todo backend "${host.todoBackend.id}" did not accept this change: ${refusal}\n${current()}`, true);
-        sent = undefined; await sync(context);
-      }
+      const fail = (text: string, refused?: true): TodoResult => ({ content: [{ type: "text", text: `${text}\n${current()}` }], details: { ...result.details, phases: clonePhases(previous), ...refused && { refused } }, isError: true });
+      const id = host.todoBackend.id;
       // omp's commit rule: the list and the session are as they were when the backend was asked. Otherwise the backend is stale and gets the current list again.
-      else if (asked && (aborted || JSON.stringify(listOf(context)) !== JSON.stringify(previous) || manager.getSessionId() !== at)) {
-        result = fail(`Todo backend "${host.todoBackend.id}" did not take this change in time.\n${current()}`);
-        sent = undefined; await sync(context);
-      } else { lists.set(listKey(context), outcome.committed); await sync(context); }
+      // The resend and the commit's `replace` are queued: the tool result does not wait for them.
+      if (refusal !== undefined) {
+        result = fail(`Todo backend "${id}" did not accept this change: ${refusal}`, true);
+        sent = undefined; sync(context);
+      } else if (asked && aborted) {
+        result = fail(`The call was aborted while todo backend "${id}" decided; nothing was saved.`);
+        sent = undefined; sync(context);
+      } else if (asked && manager.getSessionId() !== at) {
+        result = fail(`The session changed while todo backend "${id}" decided; nothing was saved.`);
+        sent = undefined; sync(context);
+      } else if (asked && JSON.stringify(listOf(context)) !== JSON.stringify(previous)) {
+        result = fail(`The todo list changed while todo backend "${id}" decided; nothing was saved.`);
+        sent = undefined; sync(context);
+      } else { lists.set(listKey(context), outcome.committed); sync(context); }
     }
     await fire("tool_result", { type: "tool_result", toolName: "todo", toolCallId: callId, input: params, content: result.content, details: result.details, isError: !!result.isError }, context);
     return result;
   }
-  const call = async (params: any, context: any = ctx, callId = options.callId ?? "fixture"): Promise<TodoResult> => execute(params, context, callId);
+  const call = async (params: any, context: any = ctx, callId = options.callId ?? "fixture"): Promise<TodoResult> => { const result = await execute(params, context, callId); await flush(draining); return result; };
 
   // Kata, through the same runner the fixture gives the adapter.
   const kata = async (args: string[]) => {
@@ -279,7 +290,7 @@ export function ompHost(options: OmpHostOptions) {
           // A list set before `session_start` waited (omp's `syncTodoBackend`) and goes out now.
           const waitingContext = unsent;
           unsent = undefined;
-          if (waitingContext) await sync(waitingContext);
+          if (waitingContext) await flush(sync(waitingContext));
         }
         options.afterEvent?.();
       }
@@ -295,6 +306,12 @@ export function ompHost(options: OmpHostOptions) {
     call,
     /** With `queuedReplace`: resolves once every queued `replace` has run. */
     async settled() { while (draining) await draining; },
+    /** Pauses omp's replace queue: calls return without it draining. Returns the release. */
+    holdReplace(): () => void {
+      let release!: () => void;
+      gate = new Promise<void>(resolve => { release = () => { gate = undefined; resolve(); }; });
+      return release;
+    },
     /**
      * The main session changes to another one (omp `/new`, or a fork with `fork`): a new id, and for a fork a header naming the
      * source and the list carried over. With `listFirst` omp sends the new session's list to the backend before `session_switch`.
@@ -303,11 +320,11 @@ export function ompHost(options: OmpHostOptions) {
       const previous = manager.getSessionId();
       manager.switchTo(next, fork ? { parentSession: previous } : {});
       if (!fork) lists.delete(mainId);
-      if (listFirst) await sync(ctx);
+      if (listFirst) await flush(sync(ctx));
       return app.event("session_switch", { type: "session_switch", reason: fork ? "fork" : "new" });
     },
     /** A list edit from outside the tool (`/todo` editor, `set_todos`): no `apply`; the list is committed as given and goes to the backend. */
-    async edit(phases: TodoPhase[], context: any = ctx) { lists.set(listKey(context), clonePhases(phases)); await sync(context); },
+    async edit(phases: TodoPhase[], context: any = ctx) { lists.set(listKey(context), clonePhases(phases)); await flush(sync(context)); },
     /** One assistant message with several calls, run in order: a todo call (asked when it commits) gives a result; a function stands for another tool's call (a `kata close` in bash) and gives none. */
     async batch(calls: (any | (() => Promise<unknown>))[], context: any = ctx): Promise<TodoResult[]> {
       const results: TodoResult[] = [];
@@ -315,6 +332,7 @@ export function ompHost(options: OmpHostOptions) {
         if (typeof step === "function") await step();
         else results.push(await execute(step, context, `${options.callId ?? "fixture"}-${i}`));
       }
+      await flush(draining);
       return results;
     },
     /**
@@ -334,7 +352,7 @@ export function ompHost(options: OmpHostOptions) {
     /** Switches `todo.backend` (`"kata"` is this adapter's; `"native"` the default omp has), fires the setting's listeners, and, as omp's settings UI does for a non-native backend, hands it the current list. */
     async backend(value: string) {
       await setBackend(value);
-      await sync(ctx);
+      await flush(sync(ctx));
     },
     /** The native list now. */
     list: () => clonePhases(lists.get(mainId) ?? []),

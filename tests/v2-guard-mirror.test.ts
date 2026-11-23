@@ -230,7 +230,7 @@ test("an accepted done that omp does not commit leaves the task closed in Kata: 
   const mark = app.calls.length;
   const result = await app.call({ op: "done", task: "Write docs" });
   expect(result.isError).toBe(true);
-  expect(result.content[0].text).toContain("did not take this change in time");
+  expect(result.content[0].text).toContain("The call was aborted while todo backend");
   expect(app.list()).toEqual(before);
   expect(app.mirrorFailures()).toEqual([]);
   expect(await issueOf(child)).toMatchObject({ status: "closed", closed_reason: "done" });
@@ -652,4 +652,41 @@ test("two different refusals in one mirror pass are each warned once, a later ch
   expect((await app.call({ op: "start", task: two.item })).isError).toBeUndefined();
   expect(namingOf(app, one.closed) + namingOf(app, two.closed)).toBeGreaterThan(attempts);
   expect(refusalsOf(app)).toHaveLength(2);
+});
+
+test("a drop that omp committed, then an init without that task while the drop's replace is still queued, is accepted", async () => {
+  const app = host(); await app.event("session_start");
+  const parent = await app.init(["Write parser", "Write docs"]);
+  const docs = await childRef(parent, "Write docs");
+  const release = app.holdReplace();
+  expect((await app.call({ op: "drop", task: "Write docs" })).isError).toBeUndefined();
+  const init = await app.call({ op: "init", items: ["Write parser"] });
+  expect(init.isError, init.content[0]?.text).toBeUndefined();
+  release(); await app.settled();
+  expect(app.mirrorFailures()).toEqual([]);
+  expect(await issueOf(docs)).toMatchObject({ status: "closed", closed_reason: "wontfix" });
+});
+
+test("an append omp committed, then done on that task while the append's replace is still queued, is refused naming the task's open issue", async () => {
+  const app = host(); await app.event("session_start");
+  const parent = await app.init(["Write parser"]);
+  const release = app.holdReplace();
+  expect((await app.call({ op: "append", phase: "Tasks", items: ["Write docs"] })).isError).toBeUndefined();
+  const refused = await app.call({ op: "done", task: "Write docs" });
+  expect(refused.isError).toBe(true);
+  expect(refused.details.refused).toBe(true);
+  expect(refused.content[0].text).toContain(`"Write docs" is open in Kata as`);
+  release(); await app.settled();
+  const docs = await childRef(parent, "Write docs");
+  expect((await issueOf(docs)).status).toBe("open");
+});
+
+test("a done naming a text that sits in two phases checks the first copy, as omp does", async () => {
+  const app = host(); await app.event("session_start");
+  const parent = await app.init(["Write parser"]);
+  const child = await childRef(parent, "Write parser");
+  await app.edit([{ name: "A", tasks: [{ content: "Write parser", status: "pending" }] }, { name: "B", tasks: [{ content: "Write parser", status: "pending" }] }]);
+  const refused = await app.call({ op: "done", task: "Write parser" });
+  expect(refused.isError).toBe(true);
+  expect(refused.content[0].text).toContain(`"Write parser" is open in Kata as ${child}`);
 });
