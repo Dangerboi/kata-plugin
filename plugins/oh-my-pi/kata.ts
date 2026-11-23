@@ -197,6 +197,9 @@ export default function ompKata(pi: any) {
 			const session = (data as { sessionId?: string } | undefined)?.sessionId;
 			const live = leadSession();
 			if (type === snapshotEntry(NAMESPACE) && live && session !== live) { debug(`skipped snapshot for ${session}: live session is ${live}`); return; }
+			// A snapshot that describes a branch (`leaf`) omp has left would put that branch's list on the live one. getBranch is read live here, like the session id above.
+			const leaf = (data as { leaf?: unknown } | undefined)?.leaf;
+			if (type === snapshotEntry(NAMESPACE) && leaf !== undefined && seen && main(seen) && !(seen.sessionManager?.getBranch?.() ?? []).some((entry: any) => entry?.id === leaf)) { debug(`skipped snapshot for ${session}: its leaf ${String(leaf)} is not on the live branch`); return; }
 			pi.appendEntry(type, data);
 		},
 		getSessionName: () => pi.getSessionName?.(),
@@ -240,7 +243,7 @@ export default function ompKata(pi: any) {
 	// omp's context and session manager are class instances with private fields: a method only works called on the
 	// original, so the view is a plain object (never Object.create or a spread). The branch, header and file are captured
 	// by the caller before its first await, since the originals answer for omp's CURRENT session and leaf (a /new, a resume or
-	// a /tree move changes them); the view answers from those copies alone.
+	// a /tree move changes them); the view answers from those copies, except `getEntries`, the one live read.
 	type Header = { parentSession?: unknown } | null | undefined;
 	const boundContext = (ctx: any, id: string | undefined, captured: { branch: unknown[]; header: Header; file: string | undefined }) => {
 		const bind = (owner: any, name: string) => typeof owner?.[name] === "function" ? owner[name].bind(owner) : undefined;

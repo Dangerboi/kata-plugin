@@ -352,7 +352,7 @@ test("a mirror still running when /tree moves the session to another branch is d
 test("a list captured at an earlier entry of a branch whose tip the in-memory list came from is diffed against that entry's snapshot", async () => {
   const { parser: parserTask, docs: docsTask } = names();
   const extraTask = `Extra ${unique()}`;
-  const { app, event, replace, moveToEntry } = rawOmpHost(`v2-child-${unique()}`, () => undefined);
+  const { app, event, replace, moveToEntry } = rawOmpHost(`v2-tree-back-${unique()}`, () => undefined);
   await event("session_start");
   // Entry L: the branch after the first list, whose snapshot has the parser and docs tasks.
   await replace(listOf([parserTask, "pending"], [docsTask, "pending"]));
@@ -368,4 +368,59 @@ test("a list captured at an earlier entry of a branch whose tip the in-memory li
   await replace(listOf([parserTask, "pending"], [docsTask, "pending"]));
   expect(app.notices.filter(n => MIRROR_FAILURE.test(String(n[0])))).toEqual([]);
   expect((await show(extra)).issue.status).toBe("open");
+});
+
+test("a /tree forward to a later entry of the same path loads that entry's snapshot, so a task started there is not started again", async () => {
+  const { parser: parserTask, docs: docsTask } = names();
+  const { app, event, replace, moveToEntry } = rawOmpHost(`v2-tree-fwd-${unique()}`, () => undefined);
+  await event("session_start");
+  // Entry L: the branch after the first list, whose snapshot has both tasks pending.
+  await replace(listOf([parserTask, "pending"], [docsTask, "pending"]));
+  const leafL = app.entries[app.entries.length - 1].id;
+  const parent = await planParentOf(parserTask);
+  const parser = await childRef(parent, parserTask);
+  // Later on the same path: the parser task is started; the tip T's snapshot has it in progress.
+  await replace(listOf([parserTask, "in_progress"], [docsTask, "pending"]));
+  const tip = app.entries[app.entries.length - 1].id;
+  expect((await show(parser)).issue.metadata?.["todo.status"]).toBe("in_progress");
+  // /tree back to L and a list there: the in-memory list now comes from L.
+  moveToEntry(leafL);
+  await replace(listOf([parserTask, "pending"], [docsTask, "pending"]));
+  const before = JSON.stringify((await show(parser)).issue), commentsBefore = (await commentsOf(parser)).length;
+  // /tree forward to T: the memory from L is older than T's snapshot, which is the one the list is diffed against.
+  moveToEntry(tip);
+  await replace(listOf([parserTask, "in_progress"], [docsTask, "pending"]));
+  expect(app.notices.filter(n => MIRROR_FAILURE.test(String(n[0])))).toEqual([]);
+  expect(JSON.stringify((await show(parser)).issue)).toBe(before);
+  expect(await commentsOf(parser)).toHaveLength(commentsBefore);
+});
+
+test("a mirror held on one branch whose snapshot would land after /tree moved to another saves none there, and the next mirror removes nothing", async () => {
+  const { parser: parserTask, docs: docsTask } = names();
+  let armed = false;
+  const hold = holdKata(() => armed);
+  const { app, event, replace, moveTo } = rawOmpHost(`v2-tree-live-${unique()}`, hold.before);
+  await event("session_start");
+  // Branch W holds the snapshot of a list with the parser task only.
+  await replace(listOf([parserTask, "pending"]));
+  const parent = await planParentOf(parserTask);
+  const branchW = [...app.entries];
+  const leafW = branchW[branchW.length - 1].id;
+  // Mirror A of branch Z (a list that adds the docs task) is held; /tree moves to W before it saves.
+  moveTo([{ id: "entry-z", type: "custom", customType: "other", data: {} }], "entry-z");
+  armed = true;
+  const slow = replace(listOf([parserTask, "pending"], [docsTask, "pending"]));
+  await hold.entered;
+  armed = false;
+  moveTo(branchW, leafW);
+  const snapshots = () => branchW.filter((e: any) => e.customType === snapshotEntry("omp")).length;
+  const before = snapshots();
+  hold.release();
+  await slow;
+  expect(snapshots()).toBe(before);
+  // W's next list: the docs task was never on W, so nothing of Z's memory may remove it.
+  const docs = await childRef(parent, docsTask);
+  await replace(listOf([parserTask, "pending"]));
+  expect(app.notices.filter(n => MIRROR_FAILURE.test(String(n[0])))).toEqual([]);
+  expect((await show(docs)).issue.status).toBe("open");
 });
