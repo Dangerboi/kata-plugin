@@ -395,6 +395,24 @@ test("a /tree forward to a later entry of the same path loads that entry's snaps
   expect(await commentsOf(parser)).toHaveLength(commentsBefore);
 });
 
+test("a snapshot another path saved from the same memory after the mirror's own does not reload the memory, so nothing is mirrored or saved again", async () => {
+  const { parser: parserTask, docs: docsTask } = names();
+  const { app, event, replace } = rawOmpHost(`v2-same-memory-${unique()}`, () => undefined);
+  await event("session_start");
+  await replace(listOf([parserTask, "pending"], [docsTask, "pending"]));
+  const stale = app.entries[app.entries.length - 1].data;
+  // The parser task is started: the mirror's snapshot has it in progress.
+  await replace(listOf([parserTask, "in_progress"], [docsTask, "pending"]));
+  const mirrored = app.entries[app.entries.length - 1];
+  expect(mirrored.data.memory).toBeDefined();
+  // Another path (a delegate exit) saved a snapshot after it from the same memory. Its content is the older list's here, so a reload from it would start the task again.
+  app.entries.push({ id: "entry-other-path", type: "custom", customType: snapshotEntry("omp"), data: { ...stale, leaf: mirrored.id, memory: mirrored.data.memory } });
+  const entries = app.entries.length;
+  await replace(listOf([parserTask, "in_progress"], [docsTask, "pending"]));
+  // The memory is kept: the list equals it, so the pass changes nothing and saves no snapshot. A reload from the older snapshot would save one.
+  expect(app.entries.length).toBe(entries);
+});
+
 test("a mirror held on one branch whose snapshot would land after /tree moved to another saves none there, and the next mirror removes nothing", async () => {
   const { parser: parserTask, docs: docsTask } = names();
   let armed = false;
