@@ -349,6 +349,7 @@ for (const match of ["active", "named"]) test(`delegation naming ${match === "ac
   await eventually(async () => (await app.call({ op: "done", task: expected.title })).isError === undefined, true);
   expect((await app.done(match === "active" ? "Write widget tests" : "Implement widget")).isError).toBeUndefined();
   await app.event("session_stop", { messages: [] });
-  expect((await show(ref)).issue.status).toBe("closed");
+  // The turn's settle waits a bounded time and finishes in the background: the parent's close may land after the handler returns.
+  await eventually(async () => (await show(ref)).issue.status, "closed");
   expect(app.calls.some(a => a[0] === "close" && a[1] === `v2test#${expected.short_id}`)).toBe(false);
 });

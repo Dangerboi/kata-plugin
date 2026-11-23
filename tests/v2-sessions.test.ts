@@ -3,7 +3,7 @@ import { execFile } from "node:child_process";
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { promisify } from "node:util";
-import { finishes, holdKata, later } from "./kata-fixture";
+import { eventually, finishes, holdKata, later } from "./kata-fixture";
 import { missingExecutable, siblingThrottle } from "./kata-errors";
 import { v2Fixture } from "./v2-fixture";
 
@@ -75,7 +75,7 @@ test("the plugin's close of an automatic parent records the omp session as its t
   const done = await app.done("only step");
   expect(done.isError, done.content?.[0]?.text).toBeUndefined();
   await app.event("session_stop");
-  expect((await show(parent)).issue.status).toBe("closed");
+  await eventually(async () => (await show(parent)).issue.status, "closed");
   expect(app.calls.some(c => c[0] === "close")).toBe(false);
   const closes = (await events()).filter((e: any) => e.type === "issue.closed" && e.payload?.transcript?.session_id === "transcript-recorded");
   expect(closes.length).toBeGreaterThan(0);
@@ -91,7 +91,7 @@ test("the plugin's close of an automatic parent records no transcript when KATA_
   const done = await app.done("only step");
   expect(done.isError, done.content?.[0]?.text).toBeUndefined();
   await app.event("session_stop");
-  expect((await show(parent)).issue.status).toBe("closed");
+  await eventually(async () => (await show(parent)).issue.status, "closed");
   expect(await closeSessions(parent)).toEqual([undefined]);
 });
 
@@ -122,7 +122,7 @@ test("auto parents carry typed identity and close exactly once from child eviden
   expect((await show(ref)).issue.metadata["omp.session_id"]).toBe(app.sid);
   for (const task of ["Implement fixture", "Verify fixture"]) expect((await app.done(task)).isError).toBeUndefined();
   await app.event("session_stop");
-  expect((await show(ref)).issue.status).toBe("closed");
+  await eventually(async () => (await show(ref)).issue.status, "closed");
   await app.call({ op: "view" }); await app.event("session_stop");
   const closes = await closesOf(ref);
   expect(closes).toHaveLength(1);
@@ -164,7 +164,7 @@ test("external closes reconcile an auto parent, including non-todo children", as
   await app.event("session_stop");
   expect((await show(ref)).issue.status).toBe("open");
   await kata(["close", extra, "--done", "--message", "Externally verified this additional child with an independent test run.", "--test", "external verifier", "--json"]);
-  await app.event("session_stop"); expect((await show(ref)).issue.status).toBe("closed");
+  await app.event("session_stop"); await eventually(async () => (await show(ref)).issue.status, "closed");
 });
 
 test("a delegate bound to an existing plan item gets a teammate, the verbatim contract and closes it itself", async () => {
@@ -196,7 +196,7 @@ test("a delegate bound to an existing plan item gets a teammate, the verbatim co
   expect((await show(ref)).issue.status).toBe("open"); // Native agent still running.
   parent.emit("task:subagent:lifecycle", { id: "Build.Widget", status: "completed", sessionFile });
   await parent.call({ op: "view" }); await parent.event("session_stop");
-  expect((await show(ref)).issue.status).toBe("closed");
+  await eventually(async () => (await show(ref)).issue.status, "closed");
   expect(child.widgets).toEqual([]);
   expect(child.calls.some(a => a[0] === "meta" && a[3]?.startsWith("work."))).toBe(false);
 });
@@ -311,7 +311,7 @@ test("pinned plan survives cwd changes and ignores another session's saved bindi
 test("new work reopens an auto parent; all-wontfix parents require review", async () => {
   const app = host(); await app.event("session_start"); const parent = await app.init(["Initial work"]);
   await app.done("Initial work"); await app.event("session_stop");
-  expect((await show(parent)).issue.status).toBe("closed");
+  await eventually(async () => (await show(parent)).issue.status, "closed");
   await app.call({ op: "append", items: ["Additional work"] });
   expect((await show(parent)).issue.status).toBe("open");
   const dropped = host(); await dropped.event("session_start"); const retired = await dropped.init(["x"]);
@@ -342,10 +342,11 @@ test("a throttled automatic-parent close does not label the parent for review", 
   await app.event("session_start");
   parent = await app.init(["Throttled parent"]);
   await app.done("Throttled parent"); await app.event("session_stop");
+  // The turn's settle waits a bounded time and finishes in the background: the throttled close sets its retry timer when it lands.
+  await eventually(async () => timers.size, 1);
   const view = await show(parent);
   expect(view.issue.status).toBe("open");
   expect(view.labels.some((l: any) => l.label === "needs-review")).toBe(false);
-  expect(timers.size).toBe(1);
 });
 
 test("a throttled automatic-parent close is retried by the host timer", async () => {
@@ -353,12 +354,12 @@ test("a throttled automatic-parent close is retried by the host timer", async ()
   await app.event("session_start");
   const parent = await app.init(["Throttled task"]);
   await app.done("Throttled task"); await app.event("session_stop");
+  await eventually(async () => timers.size, 1);
   expect((await show(parent)).issue.status).toBe("open");
-  expect(timers.size).toBe(1);
   lift();
   await later(async () => { for (const timer of [...timers]) timer.run(); await closing; });
   await app.event("session_stop");
-  expect((await show(parent)).issue.status).toBe("closed");
+  await eventually(async () => (await show(parent)).issue.status, "closed");
 });
 test("binding another session cancels the pending retry through the host", async () => {
   const { app, timers } = throttledClose();

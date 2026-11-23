@@ -1,6 +1,6 @@
 {
   "name": "@dangerboi/kata-omp",
-  "version": "2.12.1",
+  "version": "3.0.0",
   "type": "module",
   "description": "Kata plans and subagent tracking for oh-my-pi",
   "license": "MIT",

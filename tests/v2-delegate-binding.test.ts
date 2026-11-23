@@ -208,7 +208,7 @@ test("an unrelated delegation never takes the lead's active task and creates not
   expect((await app.done("Write widget tests")).isError).toBeUndefined();
   // The automatic parent closes when the turn settles, not on the lead's native done.
   await app.event("session_stop");
-  expect((await show(ref)).issue.status).toBe("closed");
+  await eventually(async () => (await show(ref)).issue.status, "closed");
 });
 
 test("an untracked scout's run is recorded as a closed mission with its agent and its last report", async () => {
@@ -348,7 +348,7 @@ test("a delegate whose assignment failed is handed back when it exits, and the a
   expect((await app.done("Delegated plan task")).isError).toBeUndefined();
   expect((await app.done("Lead step")).isError).toBeUndefined();
   await app.event("session_stop");
-  expect((await show(ref)).issue.status).toBe("closed");
+  await eventually(async () => (await show(ref)).issue.status, "closed");
 });
 
 // A lead assigns one delegate, whose session header names `<name>-delegate`; with close transcripts on, the delegate plans
