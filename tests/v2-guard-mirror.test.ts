@@ -690,3 +690,17 @@ test("a done naming a text that sits in two phases checks the first copy, as omp
   expect(refused.isError).toBe(true);
   expect(refused.content[0].text).toContain(`"Write parser" is open in Kata as ${child}`);
 });
+
+test("a refusal Kata gives while apply catches the mirror up with omp's committed list reaches the user once", async () => {
+  const app = host({ before: (args: string[]) => args[0] === "create" && args.some(a => a.includes("Plain one")) ? refuse("create refused by the test") : undefined });
+  await app.event("session_start");
+  await app.init(["Plain start"]);
+  const release = app.holdReplace();
+  expect((await app.call({ op: "append", items: ["Plain one"] })).isError).toBeUndefined();
+  expect((await app.call({ op: "append", items: ["Plain two"] })).isError).toBeUndefined();
+  release(); await app.settled();
+  const notices = refusalsOf(app).map(n => String(n[0]));
+  expect(notices).toHaveLength(1);
+  expect(notices[0]).toContain("create refused by the test");
+  expect(notices[0]).toContain('"Plain one"');
+});

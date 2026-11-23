@@ -2029,21 +2029,23 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 		return bounded((async () => { await after?.catch(debug); if (main(ctx) || !delegates.assignment(ctx)) return undefined; return serial(job => guardText(job, ctx, op, delegateAim(call, op)), { ctx }); })(), GUARD_MS);
 	}
 
-	// Asked before omp commits a `todo` call of the lead: the text that refuses it, or undefined. It writes nothing omp did not commit: omp does not
-	// queue `apply` behind `replace`, so Kata may still lack omp's committed list (`previous`). When it does, `previous` is mirrored first (stamped,
-	// so an older `replace` still queued does nothing; omp's own `replace(previous)` then finds nothing to change), then the call is checked. The
-	// call itself reaches Kata through the `replace` omp sends once it commits. A read Kata fails (down, too old) refuses nothing; the mirror meets
-	// the same failure and tells the user.
+	// Asked before omp commits a `todo` call of the lead: the text that refuses it, or undefined. It checks, and writes only what omp committed: omp does
+	// not queue `apply` behind `replace`, so Kata may still lack omp's committed list (`previous`). When it does, `previous` is mirrored first, and
+	// what Kata refuses of it is reported like the mirror's own (omp's `replace(previous)` then finds nothing to change); then the call is checked.
+	// The mirror is not stamped: a `replace` sent before the ask runs earlier in the queue, and a newer list reaching the plugin meanwhile must win.
+	// The call itself reaches Kata through the `replace` omp sends once it commits. A read Kata fails (down, too old) refuses nothing; the mirror
+	// meets the same failure and tells the user.
 	function accept(ctx: HostContext, change: NativeChange): Promise<string | undefined> {
 		return serial(async job => {
 			try {
 				const previous = new Map<string, NativeStatus>();
 				for (const item of nativeItems(change.previous)) if (item.content.trim() && !previous.has(item.content)) previous.set(item.content, item.status);
 				if (previous.size !== native.prev.size || [...previous].some(([content, status]) => native.prev.get(content) !== status)) {
-					bumpMirror(sid(ctx) ?? "");
-					try { await mirrorList(job, ctx, change.previous); }
-					catch (error) { debug(error); }
+					let failures: MirrorFailure[];
+					try { failures = await mirrorList(job, ctx, change.previous); }
+					catch (error) { failures = [failureOf(error)]; }
 					finally { if (persist(job)) ownSnapshotLanded(ctx); }
+					report(ctx, failures);
 				}
 				return await guardText(job, ctx, change.op, () => {
 					const items = (phases: NativePhase[]) => new Set(nativeItems(phases).map(i => i.content));

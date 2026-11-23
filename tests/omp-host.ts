@@ -225,8 +225,11 @@ export function ompHost(options: OmpHostOptions) {
       const { asked, refusal } = await askBackend(context, result.details.op, previous, outcome.committed);
       // The call can be aborted while `apply` still runs: the test's hook says so by returning true.
       const aborted = (await app.beforeCommit?.()) === true;
-      const current = () => executeTodo(previous, { op: "view" }, "memory").result.content[0].text;
-      const fail = (text: string, refused?: true): TodoResult => ({ content: [{ type: "text", text: `${text}\n${current()}` }], details: { ...result.details, phases: clonePhases(previous), ...refused && { refused } }, isError: true });
+      // A failed call shows the session's list as it stands: `previous`, unless the list changed while the backend decided (omp's todo.ts returns the current list).
+      const fail = (text: string, refused?: true): TodoResult => {
+        const now = listOf(context);
+        return { content: [{ type: "text", text: `${text}\n${executeTodo(now, { op: "view" }, "memory").result.content[0].text}` }], details: { ...result.details, phases: clonePhases(now), ...refused && { refused } }, isError: true };
+      };
       const id = host.todoBackend.id;
       // omp's commit rule: the list and the session are as they were when the backend was asked. Otherwise the backend is stale and gets the current list again.
       // The resend and the commit's `replace` are queued: the tool result does not wait for them.
