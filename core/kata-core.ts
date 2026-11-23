@@ -6,7 +6,7 @@ import { createKata, debugTo, type CORE_ENV, isKataCode, isUnusable, KataError, 
 import { createTicketCompletion } from "./autocomplete";
 import { kataCommands, quote, shellOptions } from "./shell";
 import { closedTaskStatus, digest, FULL_ID_REF, hasLabel, heldBySession, heldMessage, itemTicket, NATIVE_WORDING, OPEN, PROOF_MIN, projectOf, proofProblem, QUALIFIED_REF_ONLY, qualifiedRef, SESSION_KEY, sessionParentKeys, slug, tasksOf, textOf, TITLE_MAX, TODO_WORDING, WONTFIX_MIN, WORKING, type Binding, type Change, type KataIssue, type KataShow, type Plan, type Status, type Task, type ToolWording } from "./model";
-import { diffNativeList, nativeTargets, type NativeItem, type NativePhase, type NativeStatus } from "./todo-list";
+import { diffNativeList, nativeOpen, nativeTargets, type NativeItem, type NativePhase, type NativeStatus } from "./todo-list";
 
 // What omp's own todo list holds, as `todo.mirror` takes it.
 export type { NativePhase, NativeStatus } from "./todo-list";
@@ -345,6 +345,12 @@ type NativeMemory = {
 	listed: boolean;
 	leaf?: string;
 };
+// The saved form of the memory; `leaf` goes in only when asked, as the comparison of snapshots leaves it out.
+const savedNative = (memory: NativeMemory, withLeaf = false): Snapshot["native"] => {
+	const leaf = withLeaf ? memory.leaf : undefined;
+	return memory.prev.size || memory.phase.size || memory.listed || leaf
+		? { prev: Object.fromEntries(memory.prev), phase: Object.fromEntries(memory.phase), ...(memory.listed ? { listed: true as const } : {}), ...(leaf ? { leaf } : {}) } : undefined;
+};
 const nativeMemory = (saved: Snapshot["native"], leaf?: string): NativeMemory => ({ prev: mapOf<NativeStatus>(saved?.prev), phase: mapOf<string>(saved?.phase), listed: saved?.listed === true, leaf });
 const tipOf = (branch: readonly any[]): string | undefined => branch[branch.length - 1]?.id;
 
@@ -452,8 +458,7 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 	function persist(job: Job): boolean {
 		if (!currentId || !isLeadCall(job)) return false;
 		const kept = delegates.saved();
-		const memory = native.prev.size || native.phase.size || native.listed
-			? { prev: Object.fromEntries(native.prev), phase: Object.fromEntries(native.phase), ...(native.listed ? { listed: true as const } : {}) } : undefined;
+		const memory = savedNative(native);
 		const data = { version: 1, sessionId: currentId, ...(ownSessions.length ? { ownSessions: [...ownSessions] } : {}),
 			plan: structuredClone({ ...plan, tasks: plan.tasks.filter(t => !t.ticket) }), ...settlement.snapshot(),
 			...(kept.length ? { delegates: structuredClone(kept) } : {}),
@@ -463,8 +468,8 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 		if (encoded === lastSnapshot) return false;
 		// `leaf` is the entry whose branch the mirror memory describes; a reload takes only snapshots whose leaf is on its branch. It moves
 		// without the plan, so it is left out of the comparison above.
-		const leaf = options.native && typeof native.leaf === "string" ? native.leaf : undefined;
-		host.appendEntry(SNAPSHOT_ENTRY, { ...data, ...(leaf ? { native: { prev: {}, phase: {}, ...memory, leaf } } : {}) } satisfies Snapshot);
+		const stamped = savedNative(native, true);
+		host.appendEntry(SNAPSHOT_ENTRY, { ...data, ...(stamped ? { native: stamped } : {}) } satisfies Snapshot);
 		lastSnapshot = encoded;
 		return true;
 	}
@@ -839,7 +844,7 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 			if (typeof snapshot.deletedParent === "string") deletedParent = snapshot.deletedParent;
 		}
 		// The mirror continues from the list this branch's snapshot last mirrored, or from none: a tree move or a branch switch must not carry the old branch's.
-		if (main(ctx) && options.native) { native = nativeMemory(snapshot?.native, tipOf(branch)); seenIds.clear(); markAllSeen(ctx); }
+		if (main(ctx) && options.native) { seenIds.clear(); native = loadNative(ctx, snapshot, branch); }
 		let stored: any = snapshot?.plan?.parent ? snapshot.plan : undefined;
 		for (const entry of branch) {
 			if (entry?.type !== "custom" || entry.customType !== PARENT_ENTRY || (entry.data?.sessionId && entry.data.sessionId !== parentOwner)) continue;
@@ -1440,10 +1445,16 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 		if (!bound || currentId !== sid(ctx)) await enter(job, ctx, replay, initRef);
 	};
 
-	async function apply(job: Job, params: any, ctx: HostContext): Promise<string> {
-		await ensureBound(job, ctx, params.op === "view", params.ref ?? (!bound ? requestedRef : undefined));
+	// The start of every plan operation: bound to the ctx's session, with the mirror memory of the ctx's branch (a no-op on hosts without a mirror).
+	async function enterPlan(job: Job, ctx: HostContext, replay = true, initRef?: string): Promise<void> {
+		await ensureBound(job, ctx, replay, initRef);
 		currentCtx = ctx;
+		nativeFromBranch(ctx);
 		currentId ||= sid(ctx);
+	}
+
+	async function apply(job: Job, params: any, ctx: HostContext): Promise<string> {
+		await enterPlan(job, ctx, params.op === "view", params.ref ?? (!bound ? requestedRef : undefined));
 		if (plan.local) {
 			try { await replayLocal(job, ctx); }
 			catch (error) { if (params.op !== "view") throw new Error(`Kata is reachable again, but the local plan could not be replayed into it: ${(error as Error).message}`, { cause: error }); }
@@ -1759,13 +1770,13 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 		if (boundAgent && boundAgent !== agentKey(ctx)) return [];
 		// A delegate with no assignment has no plan to mirror into.
 		if (!main(ctx) && !delegates.assignment(ctx)) return [];
-		await enterNative(job, ctx);
+		await enterPlan(job, ctx, false);
 		if (plan.local) await replayLocal(job, ctx).catch(debug);
 		const items = nativeItems(phases).filter(item => item.content.trim());
 		await load(job, plan.workspace);
 		// A local plan with no task yet (Kata was down when the session bound) starts from omp's list the same way: init builds it locally.
 		if (!plan.parent && !named.length && (!plan.local || !plan.tasks.length)) {
-			const open = items.filter(item => item.status === "pending" || item.status === "in_progress");
+			const open = items.filter(item => nativeOpen(item.status));
 			if (!open.length) { remember(items); return []; }
 			const list: { phase: string; items: string[] }[] = [];
 			for (const item of open) {
@@ -1791,7 +1802,7 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 		}
 		const failures: MirrorFailure[] = [];
 		// An automatic parent a restored session found (its claim never marked it) is marked now, as ensureParent does for a new one.
-		if (plan.parent && plan.auto && !plan.local && items.some(item => item.status === "pending" || item.status === "in_progress")) {
+		if (plan.parent && plan.auto && !plan.local && items.some(item => nativeOpen(item.status))) {
 			try {
 				const shown: KataIssue = (await kata.show(job, plan.parent, plan.workspace)).issue;
 				if (shown.metadata?.[keys.auto] === undefined) {
@@ -1859,6 +1870,12 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 	}
 	const markAllSeen = (ctx: HostContext) => { markSeen(ctx.sessionManager?.getBranch?.() ?? []); markSeen(ctx.sessionManager?.getEntries?.() ?? []); };
 
+	// The mirror memory a snapshot saved, on `branch`; every entry of the session as it is now counts as read.
+	function loadNative(ctx: HostContext, snapshot: Snapshot | undefined, branch: readonly any[]): NativeMemory {
+		markAllSeen(ctx);
+		return nativeMemory(snapshot?.native, tipOf(branch));
+	}
+
 	// A snapshot saved under another branch's tip (its `leaf` is not on `branch`) is not this branch's memory.
 	const onBranch = (branch: readonly any[]) => (data: Snapshot) => data.native?.leaf === undefined || branch.some(entry => entry?.id === data.native!.leaf);
 
@@ -1883,19 +1900,11 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 		const at = native.leaf === undefined ? -1 : branch.findIndex(entry => entry?.id === native.leaf);
 		if (at >= 0 && !branch.slice(at + 1).some(entry => seenIds.has(entry?.id))) return;
 		// Every entry of the session as it is now was read: a later `/tree` forward to one of them reloads.
-		markAllSeen(ctx);
-		const saved = nativeMemory(savedSnapshot(ctx, branch, sid(ctx), onBranch(branch)).snapshot?.native, tipOf(branch));
+		const saved = loadNative(ctx, savedSnapshot(ctx, branch, sid(ctx), onBranch(branch)).snapshot, branch);
 		const key = (m: NativeMemory) => JSON.stringify([[...m.prev], [...m.phase], m.listed]);
 		// The branch moved: the next snapshot is written even when it equals the last one this core wrote on the other branch.
 		if (key(saved) !== key(native)) lastSnapshot = undefined;
 		native = saved;
-	}
-
-	async function enterNative(job: Job, ctx: HostContext) {
-		await ensureBound(job, ctx, false);
-		currentCtx = ctx;
-		nativeFromBranch(ctx);
-		currentId ||= sid(ctx);
 	}
 
 	// The snapshot a mirror pass just saved is the last entry of the branch its memory belongs to when it was appended under that branch's tip: the host's newest
@@ -1930,7 +1939,7 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 	const texts = (value: unknown): string[] => Array.isArray(value) ? value.filter((v): v is string => typeof v === "string") : [];
 
 	async function guardText(job: Job, ctx: HostContext, call: NativeCall): Promise<string | undefined> {
-		await enterNative(job, ctx);
+		await enterPlan(job, ctx, false);
 		// Inferred here: whether omp's list had phases is the branch's, known only after the sync above.
 		const op = inferNativeOp(call, native.listed);
 		if (!op || !GUARDED_OPS.includes(op)) return;
@@ -1990,9 +1999,10 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 	// first, within the same GUARD_MS bound.
 	function guard(ctx: HostContext, input: unknown, after?: Promise<unknown>): Promise<string | undefined> {
 		const call = input as NativeCall | null;
-		// A delegate's own core is never main, so it is guarded when it has an assignment; a lead's context that is no lead's is not.
-		if (!call || typeof call !== "object" || !guardedNativeCall(call) || (!main(ctx) && !delegates.assignment(ctx))) return Promise.resolve(undefined);
-		return bounded((async () => { await after?.catch(debug); return serial(job => guardText(job, ctx, call), { ctx }); })(), GUARD_MS);
+		if (!call || typeof call !== "object" || !guardedNativeCall(call)) return Promise.resolve(undefined);
+		// A delegate's own core is never main, so it is guarded when it has an assignment, which its queued next use (`after`) may give it: it is
+		// checked once that has run. A lead's context that is no lead's is not guarded.
+		return bounded((async () => { await after?.catch(debug); if (!main(ctx) && !delegates.assignment(ctx)) return undefined; return serial(job => guardText(job, ctx, call), { ctx }); })(), GUARD_MS);
 	}
 
 	// `/todo ref <id>`: makes the Kata issue the plan's parent at once, loading its open children. A plan that already has a parent keeps it.
@@ -2001,7 +2011,7 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 		if (!main(ctx)) return Promise.resolve("/todo ref sets the main session's plan parent.");
 		return serial(async job => {
 			try {
-				await enterNative(job, ctx);
+				await enterPlan(job, ctx, false);
 				const pinned = await kata.pin(job, ref, path.resolve(ctx.cwd));
 				const explicit = configuredRef();
 				if (explicit && await kata.pin(job, explicit, path.resolve(ctx.cwd)) !== pinned) return `KATA_REF is set to ${explicit}, which fixes the plan parent; ${ref} is not used.`;

@@ -154,7 +154,7 @@ export type NativeStep =
 	// `start`: omp's list has it in progress, so it is started once appended.
 	| { step: "append"; phase: string; content: string; start?: boolean };
 
-const nativeOpen = (status: NativeStatus | undefined) => status === "pending" || status === "in_progress";
+export const nativeOpen = (status: NativeStatus | undefined) => status === "pending" || status === "in_progress";
 
 // The plan follows what CHANGED in omp's list, not every difference from Kata: a Kata-side change (an agent's `kata close`, a delegate's close,
 // a hand-back) stands while omp's status for that task is the one it had at the last mirror.

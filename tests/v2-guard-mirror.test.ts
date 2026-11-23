@@ -198,6 +198,30 @@ test("a delegate's todo with no assignment is neither guarded nor mirrored", asy
   expect(delegate.mirrorFailures()).toEqual([]);
 });
 
+test("a delegate whose assignment failed and is retried by its first todo call is guarded by it: done on an open task is refused", async () => {
+  let failed = false;
+  const lead = host({ before: (args: string[]) => {
+    if (failed || args[0] !== "meta" || args[3] !== "omp.subagent_id") return;
+    failed = true;
+    return { code: 1, stdout: "", stderr: "delegation service permission denied" };
+  } });
+  await lead.event("session_start");
+  const parent = await lead.init(["Delegated plan task"]);
+  const assigned = await childRef(parent, "Delegated plan task");
+  const sessionFile = `${scratch}/retried-assignment.jsonl`;
+  lead.emit("task:subagent:lifecycle", { id: "retried-assignment", status: "started", sessionFile, description: "Delegated plan task" });
+  await lead.call({ op: "view" });
+  await eventually(async () => failed, true);
+  // The delegate has no assignment until its next use retries it; its todo call is that next use.
+  const open = await planTask("Delegate step", assigned);
+  const title = (await issueOf(`v2test#${open}`)).title;
+  const worker = host({ sessionFile, agent: { kind: "sub", id: "retried-assignment", parentId: lead.ctx.agent.id } });
+  const refused = await worker.call({ op: "done", task: title });
+  expect(refused.isError).toBe(true);
+  expect(refused.content[0].text).toContain(`v2test#${open}`);
+  expect((await issueOf(`v2test#${open}`)).status).toBe("open");
+});
+
 test("a mirror while Kata is unreachable does not throw, and the change lands in Kata on the next change once it answers", async () => {
   let unreachable = false;
   const app = host({ before: (args: string[]) => unreachable && (args[0] === "create" || args[0] === "show") ? down() : undefined });

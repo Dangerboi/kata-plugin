@@ -413,7 +413,7 @@ test("a snapshot another caller saved from the bind's memory after the captured 
   expect((await show(docs)).issue.status).toBe("closed");
 });
 
-test("a snapshot another caller saved from the same memory after the mirror's own does not reload the memory, so nothing is mirrored or saved again", async () => {
+test("a snapshot another caller saved from the same memory after the mirror's own does not reload the memory, so nothing is mirrored again", async () => {
   const { parser: parserTask, docs: docsTask } = names();
   const { app, event, replace } = rawOmpHost(`v2-same-memory-${unique()}`, () => undefined);
   await event("session_start");

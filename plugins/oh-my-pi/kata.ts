@@ -278,12 +278,12 @@ export default function ompKata(pi: any) {
 
 	// Which backend omp has selected is read lazily (see `followBackend`), from this instance's own settings.
 	let noticeFor: string | undefined;
-	async function kataBackend(): Promise<boolean> {
+	async function kataBackend(): Promise<string | undefined> {
 		await followBackend(pi.pi.settings, debug);
-		return setting?.get(pi.pi.settings) === BACKEND_ID;
+		return setting?.get(pi.pi.settings);
 	}
 	// Once per session, main session only: with another backend selected nothing reaches Kata.
-	function offNotice(ctx: any, backend: string | undefined = setting?.get(pi.pi.settings)) {
+	function offNotice(ctx: any, backend: string | undefined) {
 		if (!main(ctx) || backend === undefined || backend === BACKEND_ID) return;
 		const id = sessionId(ctx);
 		if (!id || noticeFor === id) return;
@@ -298,7 +298,7 @@ export default function ompKata(pi: any) {
 		const text = event.text.trim();
 		const match = /^\/todo\s+(\S+)(?:\s+([\s\S]*))?$/.exec(text);
 		if (match && (NATIVE_TODO_COMMANDS as readonly string[]).includes(match[1]!)) {
-			if (await kataBackend()) {
+			if (await kataBackend() === BACKEND_ID) {
 				ctx.ui?.notify?.(await core.todo.command(ctx, `${match[1]} ${match[2] ?? ""}`.trim()), "info");
 				return { handled: true };
 			}
@@ -381,7 +381,7 @@ export default function ompKata(pi: any) {
 		await core.tools.call(ctx);
 		const record = ctx.agent?.kind === "sub" ? await recordOf(ctx) : undefined;
 		if (record) ranTool(record);
-		if (event.toolName === "todo" && await kataBackend()) {
+		if (event.toolName === "todo" && await kataBackend() === BACKEND_ID) {
 			const owner = main(ctx) ? core : record && !isUntracked(record) ? core.delegate(record.id) : undefined;
 			// A delegate's guard waits for its queued next use, inside the guard's own time bound.
 			const reason = await owner?.todo.guard(ctx, event.input, !main(ctx) ? nextUseOf(ctx) : undefined);
@@ -452,7 +452,7 @@ export default function ompKata(pi: any) {
 		} else if (call) over(event.toolCallId);
 		await core.tools.result(ctx, event);
 		// A delegate's todo list is not mirrored by omp (backends are main-session only), so its result carries the list here.
-		if (event.toolName === "todo" && !event.isError && ctx.agent?.kind === "sub" && event.details?.op !== "view" && Array.isArray(event.details?.phases) && await kataBackend()) {
+		if (event.toolName === "todo" && !event.isError && ctx.agent?.kind === "sub" && event.details?.op !== "view" && Array.isArray(event.details?.phases) && await kataBackend() === BACKEND_ID) {
 			const record = await recordOf(ctx);
 			if (record && !isUntracked(record)) {
 				await nextUseOf(ctx);
@@ -478,9 +478,9 @@ export default function ompKata(pi: any) {
 		if (sections.contract && !base.some((s: string) => s.includes(sections.contract!.slice(0, 80)))) out.push(tagged("contract", sections.contract));
 		if (sections.assignment) out.push(tagged("assignment", sections.assignment));
 		if (sections.inbox) out.push(tagged("inbox", sections.inbox));
-		const kata = await kataBackend();
-		offNotice(ctx);
-		if (main(ctx) && kata && sections.todo) out.push(tagged("todo", sections.todo));
+		const backend = await kataBackend();
+		offNotice(ctx, backend);
+		if (main(ctx) && backend === BACKEND_ID && sections.todo) out.push(tagged("todo", sections.todo));
 		if (!out.length) return;
 		return { systemPrompt: [...base, out.join("\n\n")] };
 	});
@@ -490,9 +490,9 @@ export default function ompKata(pi: any) {
 		if (!main(ctx)) { await core.session.start(ctx, { after: nextUseOf(ctx) }); return; }
 		core.offerTickets(ctx.ui);
 		exportTranscriptSession(NAMESPACE, sessionId(ctx));
-		await kataBackend();
+		const backend = await kataBackend();
 		await core.session.start(ctx);
-		offNotice(ctx);
+		offNotice(ctx, backend);
 	}
 
 	pi.on("session_start", (_event: any, ctx: any) => begin(ctx));
