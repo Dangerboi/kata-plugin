@@ -328,8 +328,9 @@ export function guardedNativeCall(input: unknown): boolean {
 	return !!op && GUARDED_OPS.includes(op);
 }
 // A failure of a mirror pass: `outage` is Kata being out of reach (the next change tries again), anything else a refusal.
-// `task` names the step's task when one step of one task was refused.
-type MirrorFailure = { error: unknown; outage: boolean; task?: string };
+// `tasks` names the tasks whose step Kata refused with this message (none: a refused setup, init or parent mark); `removed` marks refused removals,
+// whose item has left omp's list, so they are worded apart from the other steps.
+type MirrorFailure = { error: unknown; outage: boolean; tasks?: string[]; removed?: boolean };
 // An error that is, or was caused by, Kata being unreachable.
 const outageOf = (error: unknown): boolean => isUnusable(error) || (error instanceof Error && error.cause !== undefined && outageOf(error.cause));
 const mapOf = <T>(value: unknown) => new Map<string, T>(Object.entries(typeof value === "object" && value ? value as Record<string, T> : {}));
@@ -1653,16 +1654,20 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 
 	const nativeItems = (phases: NativePhase[]): NativeItem[] => phases.flatMap(p => p.tasks.map(t => ({ phase: p.name || "Tasks", content: t.content, status: t.status })));
 
-	// omp's list stays the truth when Kata cannot take a change, and the next change repeats it all, so an outage is reported once. A refused step of one
-	// task is sent again only when that task changes in the list; a refused parent setup, init or parent mark is tried again on the next change. A refusal is
-	// not repeated (see mirrorList): each distinct refusal is shown once, until a change goes through, and holds no outage notice back.
-	function mirrorFailed(ctx: HostContext, { error, outage, task }: MirrorFailure) {
+	// omp's list stays the truth when Kata cannot take a change, and the next change repeats it all, so an outage is reported once. A refused parent setup,
+	// init or parent mark is tried again on the next change; a refused step of a task is not repeated until that task changes in the list, and a refused
+	// removal never is, as the item has left the list. A refusal is not repeated (see mirrorList): each distinct refusal (message, kind and task) is shown
+	// once, until a change goes through, and holds no outage notice back. One notice names every task refused with the same message.
+	function mirrorFailed(ctx: HostContext, { error, outage, tasks, removed }: MirrorFailure) {
 		debug(error);
 		const message = (error as Error)?.message ?? error;
 		if (!outage) {
-			const stays = task === undefined
+			const names = (tasks ?? []).map(t => `"${t}"`).join(", "), many = (tasks?.length ?? 0) > 1;
+			const stays = tasks === undefined
 				? `The change stays in ${listName}; the next change tries again.`
-				: `"${task}" stays in ${listName} and is sent to Kata again only when that task changes in the list.`;
+				: removed
+					? `${names} ${many ? "stay" : "stays"} open in Kata; drop or close ${many ? "them" : "it"} there.`
+					: `${names} ${many ? "stay" : "stays"} in ${listName} and ${many ? "are" : "is"} sent to Kata again only when ${many ? "a task" : "that task"} changes in the list.`;
 			uiOf(ctx)?.notify?.(`Kata refused the latest change to the todo list (${message}). ${stays}`, "warning");
 			return;
 		}
@@ -1673,14 +1678,17 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 	}
 
 	const refusalKey = (error: unknown): string => (error as Error)?.message ?? String(error);
+	// What `refusedOnce` remembers: the message, the kind of refusal and the task, so a task refused later with a message already shown is still named.
+	const shownKey = (error: unknown, task?: string, removed?: boolean): string => JSON.stringify([refusalKey(error), task === undefined ? "setup" : removed ? "rm" : "step", task]);
 
 	// A failure to report: an outage (or any failure while the plan is local), or a refusal not already shown since the last clean change.
 	// The caller records a refusal in `refusedOnce` when it shows it, so each new distinct refusal of a pass is shown.
-	function failureOf(error: unknown, task?: string): MirrorFailure | undefined {
+	function failureOf(error: unknown, task?: string, removed?: boolean): MirrorFailure | undefined {
 		errorsSeen++;
 		if (outageOf(error) || plan.local) return { error, outage: true };
-		if (refusedOnce.has(refusalKey(error))) return undefined;
-		return { error, outage: false, task };
+		// A step refused with a message the plan's setup already showed (a ticket item the init could not resolve, retried as a step) is the same refusal: not shown again.
+		if (refusedOnce.has(shownKey(error, task, removed)) || (task !== undefined && refusedOnce.has(shownKey(error)))) return undefined;
+		return { error, outage: false, tasks: task === undefined ? undefined : [task], removed };
 	}
 
 	// A task omp's list marks completed while Kata still has it open: the agent skipped the close. The task stays open and is labeled
@@ -1760,10 +1768,13 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 				return refused ? [refused] : [];
 			}
 		}
-		// One failure per distinct error: an outage once, a refusal once per message.
+		// One failure per distinct error: an outage once, a refusal once per message and kind, naming every task refused with it.
 		const failures: MirrorFailure[] = [];
 		const collect = (next: MirrorFailure | undefined) => {
-			if (next && !failures.some(f => f.outage === next.outage && (next.outage || refusalKey(f.error) === refusalKey(next.error)))) failures.push(next);
+			if (!next) return;
+			const same = failures.find(f => f.outage === next.outage && (next.outage || (refusalKey(f.error) === refusalKey(next.error) && (f.tasks === undefined) === (next.tasks === undefined) && !f.removed === !next.removed)));
+			if (!same) failures.push(next);
+			else if (same.tasks && next.tasks) for (const t of next.tasks) if (!same.tasks.includes(t)) same.tasks.push(t);
 		};
 		// An automatic parent a restored session found (its claim never marked it) is marked now, as ensureParent does for a new one.
 		if (plan.parent && plan.auto && !plan.local && items.some(item => item.status === "pending" || item.status === "in_progress")) {
@@ -1814,7 +1825,7 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 				}
 			} catch (error) {
 				debug(error);
-				const content = step.step === "append" ? step.content : step.task.content, next = failureOf(error, content);
+				const content = step.step === "append" ? step.content : step.task.content, next = failureOf(error, content, step.step === "rm");
 				// An outage is what the next mirror repeats, so the step stays unmirrored. A refusal fails the same way next time: it counts as applied
 				// (the list is remembered with it, and the diff asks for it again only when its status changes), and is shown once per distinct error until a change goes through.
 				if (next?.outage) failed.add(content);
@@ -1861,7 +1872,7 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 			catch (error) { const next = failureOf(error); failures = next ? [next] : []; }
 			finally { persist(job); refresh(ctx); }
 			for (const failure of failures) {
-				if (!failure.outage) refusedOnce.add(refusalKey(failure.error));
+				if (!failure.outage) for (const key of failure.tasks?.map(t => shownKey(failure.error, t, failure.removed)) ?? [shownKey(failure.error)]) refusedOnce.add(key);
 				mirrorFailed(ctx, failure);
 			}
 			if (!failures.some(f => f.outage)) mirrorWarned = false;

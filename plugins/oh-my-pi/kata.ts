@@ -194,9 +194,9 @@ export default function ompKata(pi: any) {
 		appendEntry: (type, data) => {
 			// A snapshot the core writes for a session that is no longer omp's live main session would land in the live
 			// session's file. Skip it: the core re-derives its state from the branch on resume.
-			const owner = (data as { sessionId?: string } | undefined)?.sessionId;
+			const session = (data as { sessionId?: string } | undefined)?.sessionId;
 			const live = leadSession();
-			if (type === snapshotEntry(NAMESPACE) && live && owner !== live) { debug(`skipped snapshot for ${owner}: live session is ${live}`); return; }
+			if (type === snapshotEntry(NAMESPACE) && live && session !== live) { debug(`skipped snapshot for ${session}: live session is ${live}`); return; }
 			pi.appendEntry(type, data);
 		},
 		getSessionName: () => pi.getSessionName?.(),
@@ -238,14 +238,15 @@ export default function ompKata(pi: any) {
 	const enter = async (ctx: any) => { see(ctx); await syncJobs(ctx); };
 
 	// omp's context and session manager are class instances with private fields: a method only works called on the
-	// original, so the view is a plain object (never Object.create or a spread). The branch, header and file are
+	// original, so the view is a plain object (never Object.create or a spread). The branch, header, file and leaf are
 	// captured by the caller before its first await, since the originals answer for omp's CURRENT session: they are read
-	// live only while the manager still reports the captured session id, and the captured copies answer after a switch.
+	// live only while the manager still reports the captured session id and leaf, and the captured copies answer after a
+	// switch or a /tree move to another branch of the same session.
 	type Header = { parentSession?: unknown } | null | undefined;
-	const boundContext = (ctx: any, id: string | undefined, captured: { branch: unknown[]; header: Header; file: string | undefined }) => {
+	const boundContext = (ctx: any, id: string | undefined, captured: { branch: unknown[]; header: Header; file: string | undefined; leaf: unknown }) => {
 		const sm = ctx?.sessionManager;
 		const bind = (owner: any, name: string) => typeof owner?.[name] === "function" ? owner[name].bind(owner) : undefined;
-		const live = () => sm?.getSessionId?.() === id;
+		const live = () => sm?.getSessionId?.() === id && sm?.getLeafId?.() === captured.leaf;
 		return {
 			cwd: ctx?.cwd, agent: ctx?.agent, ui: ctx?.ui,
 			setTimeout: bind(ctx, "setTimeout"), clearTimer: bind(ctx, "clearTimer"),
@@ -273,6 +274,7 @@ export default function ompKata(pi: any) {
 				branch: [...(sm?.getBranch?.() ?? [])] as unknown[],
 				header: sm?.getHeader?.() as Header,
 				file: sm?.getSessionFile?.() as string | undefined,
+				leaf: sm?.getLeafId?.(),
 			};
 			try {
 				await enter(ctx);

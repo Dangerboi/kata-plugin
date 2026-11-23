@@ -11,9 +11,6 @@ All notable changes to `@dangerboi/kata-omp` are listed here. The format follows
 - `/todo ref <ref>` makes an issue the plan parent at once and loads its open children.
   - Naming the current automatic parent makes it explicit, so it no longer closes itself.
   - A plan that already has another parent keeps it, and with `KATA_REF` set the ref is not used.
-- omp shows a warning when the todo mirror cannot reach Kata or Kata refuses a change.
-  - "Kata did not take…" means Kata was unreachable; the next change to the list sends the whole list again.
-  - "Kata refused…" names the task and comes once per distinct error until a change goes through.
 
 ### Changed
 
@@ -31,6 +28,9 @@ All notable changes to `@dangerboi/kata-omp` are listed here. The format follows
   - A task the user marks completed through `/todo` or RPC `set_todos` while its issue is open stays open, labeled `needs-review` with one comment.
   - A task that was never in omp's list (from an adopted parent, `KATA_REF` or a claimed ticket) is never removed. Tasks are matched by text, and moving one to another phase is not mirrored.
   - While Kata is unreachable the plan is kept in the session and replays when Kata returns; omp's list is never held up by Kata.
+  - omp shows a warning when the mirror cannot reach Kata or Kata refuses a change.
+    - "Kata did not take…" means Kata was unreachable; the next change to the list sends the whole list again.
+    - "Kata refused…" names the refused tasks, if any, and comes once per distinct error until a change goes through. A refused removal stays open in Kata.
 - `todo done` on a task whose Kata issue is still open is refused, naming the issue and the `kata close <ref> --done --message '<40+ characters>' --test '<command>'` command (or `--commit`, `--pr`, `--reviewed-paths`). The agent closes the issue in its shell, then calls `done` again.
   - A ticket item's `done` that is not the ticket's last open item goes through with a plain comment on the ticket. The last open item is refused until the ticket is closed.
   - `done` on a delegated task is refused: its delegate closes it.

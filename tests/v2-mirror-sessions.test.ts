@@ -255,13 +255,15 @@ test("a queued list of a session that runs after /new is diffed against that ses
 // allows. `ompHost` runs one `replace` at a time, so it cannot capture a list while the previous mirror is still running.
 function rawOmpHost(sid: string, before: (args: string[], opts: any) => any) {
   const app = fakeHost({ run: (args, opts) => run(args, opts.cwd, opts.timeout), cwd, sid, before });
-  let current = sid;
-  app.ctx.sessionManager = { getSessionId: () => current, getBranch: () => app.entries, getHeader: () => ({}), getSessionFile: () => undefined };
+  let current = sid, branch: any[] = app.entries, leaf = "leaf-0";
+  app.ctx.sessionManager = { getSessionId: () => current, getLeafId: () => leaf, getBranch: () => branch, getHeader: () => ({}), getSessionFile: () => undefined };
   app.ctx.agent = { kind: "main", id: `main-${sid}` };
   app.ctx.getAsyncJobSnapshot = () => ({ running: [], recent: [] });
   ompKata({ ...app.api, pi: { settings: {} }, events: { on: registry().on } });
   const event = async (name: string) => { try { await app.event(name); } finally { for (const key of TRANSCRIPT_ENV) delete process.env[key]; } };
-  return { app, event, replace: (phases: any[]) => app.todoBackend.replace(phases, app.ctx), switchTo: (next: string) => { current = next; } };
+  return { app, event, replace: (phases: any[]) => app.todoBackend.replace(phases, app.ctx), switchTo: (next: string) => { current = next; },
+    /** /tree: the same session now answers for another branch and leaf. */
+    moveTo: (next: any[], nextLeaf: string) => { branch = next; leaf = nextLeaf; } };
 }
 const listOf = (...tasks: [string, "pending" | "in_progress" | "completed"][]) => [{ name: "Tasks", tasks: tasks.map(([content, status]) => ({ content, status })) }];
 
@@ -308,4 +310,28 @@ test("a mirror of the previous session still running when /new switches the sess
   await mirroring;
   const snapshots = app.entries.slice(before).filter((e: any) => e.customType === snapshotEntry("omp"));
   expect(snapshots.filter((e: any) => e.data?.sessionId === sessionA)).toEqual([]);
+});
+
+test("a mirror still running when /tree moves the session to another branch is diffed against its own branch, so the new branch's open tasks are not removed", async () => {
+  const { parser: parserTask, docs: docsTask } = names();
+  let armed = false;
+  const hold = holdKata(() => armed);
+  const { app, event, replace, moveTo } = rawOmpHost(`v2-tree-${unique()}`, hold.before);
+  await event("session_start");
+  // Branch Y holds the snapshot of a list with both tasks open.
+  await replace(listOf([parserTask, "pending"], [docsTask, "pending"]));
+  const parent = await planParentOf(parserTask);
+  const docs = await childRef(parent, docsTask);
+  const branchY = [...app.entries];
+  // A slow mirror of branch X (which has no entries) is held; the next list of X is captured behind it and binds only when it runs.
+  moveTo([], "leaf-x");
+  armed = true;
+  const slow = replace(listOf([parserTask, "pending"]));
+  await hold.entered;
+  armed = false;
+  const queued = replace(listOf([parserTask, "pending"]));
+  moveTo(branchY, "leaf-y");
+  hold.release();
+  await Promise.all([slow, queued]);
+  expect((await show(docs)).issue.status).toBe("open");
 });

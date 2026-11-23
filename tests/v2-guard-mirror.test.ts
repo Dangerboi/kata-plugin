@@ -419,6 +419,20 @@ test("a ticket item naming a closed ticket, appended to a plan, warns once, and 
   expect(namingOf(app, closed)).toBe(attempts);
 });
 
+test("two tasks refused with the same message in one pass are named by one notice, worded for a step", async () => {
+  let refusing = false;
+  const app = host({ before: (args: string[]) => refusing && args[0] === "create" ? refuse("create refused by the test") : undefined });
+  await app.event("session_start");
+  await app.init(["Plain start"]);
+  refusing = true;
+  expect((await app.call({ op: "append", items: ["Plain one", "Plain two"] })).isError).toBeUndefined();
+  const notices = refusalsOf(app).map(n => String(n[0]));
+  expect(notices).toHaveLength(1);
+  expect(notices[0]).toContain("create refused by the test");
+  expect(notices[0]).toContain('"Plain one", "Plain two" stay in');
+  expect(notices[0]).toContain("are sent to Kata again only when a task changes");
+});
+
 test("a ticket item naming a closed ticket, in the init that starts the plan, warns once, creates no issue for it, and later changes retry it without warning again", async () => {
   const { closed, item } = await closedTicketItem();
   const app = host(); await app.event("session_start");
