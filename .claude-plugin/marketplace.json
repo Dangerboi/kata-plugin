@@ -10,7 +10,7 @@
     {
       "name": "kata-cc",
       "description": "Kata work tracking for Claude Code: a Kata-backed todo tool, delegate tracking, a plan band and a live inbox",
-      "version": "1.0.0",
+      "version": "1.1.0",
       "source": "./plugins/claude-code"
     }
   ]
