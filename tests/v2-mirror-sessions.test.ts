@@ -274,7 +274,7 @@ function rawOmpHost(sid: string, before: (args: string[], opts: any) => any) {
     moveTo: (next: any[], nextLeaf: string | null) => { branch = next; leaf = nextLeaf; },
     /** /tree right after the next saved entry: the move lands between one mirror's save and the next mirror's bind. */
     moveAfterNextAppend: (next: any[], nextLeaf: string | null) => { afterAppend = () => { branch = next; leaf = nextLeaf; }; },
-    /** /tree to an earlier entry: the branch is the path up to it; the entries after it stay in `app.entries`. */
+    /** /tree to an earlier entry: the branch is the entries up to it; the entries after it stay in `app.entries`. */
     moveToEntry: (id: string) => { branch = app.entries.slice(0, app.entries.findIndex((e: any) => e.id === id) + 1); leaf = id; } };
 }
 const listOf = (...tasks: [string, "pending" | "in_progress" | "completed"][]) => [{ name: "Tasks", tasks: tasks.map(([content, status]) => ({ content, status })) }];
@@ -370,7 +370,7 @@ test("a list captured at an earlier entry of a branch whose tip the in-memory li
   expect((await show(extra)).issue.status).toBe("open");
 });
 
-test("a /tree forward to a later entry of the same path loads that entry's snapshot, so a task started there is not started again", async () => {
+test("a /tree forward to a later entry of the same branch loads that entry's snapshot, so a task started there is not started again", async () => {
   const { parser: parserTask, docs: docsTask } = names();
   const { app, event, replace, moveToEntry } = rawOmpHost(`v2-tree-fwd-${unique()}`, () => undefined);
   await event("session_start");
@@ -379,7 +379,7 @@ test("a /tree forward to a later entry of the same path loads that entry's snaps
   const leafL = app.entries[app.entries.length - 1].id;
   const parent = await planParentOf(parserTask);
   const parser = await childRef(parent, parserTask);
-  // Later on the same path: the parser task is started; the tip T's snapshot has it in progress.
+  // Later on the same branch: the parser task is started; the tip T's snapshot has it in progress.
   await replace(listOf([parserTask, "in_progress"], [docsTask, "pending"]));
   const tip = app.entries[app.entries.length - 1].id;
   expect((await show(parser)).issue.metadata?.["todo.status"]).toBe("in_progress");
@@ -393,6 +393,55 @@ test("a /tree forward to a later entry of the same path loads that entry's snaps
   expect(app.notices.filter(n => MIRROR_FAILURE.test(String(n[0])))).toEqual([]);
   expect(JSON.stringify((await show(parser)).issue)).toBe(before);
   expect(await commentsOf(parser)).toHaveLength(commentsBefore);
+});
+
+test("a fork's /tree forward to a later entry of its source's branch, before its rebind, loads that entry's snapshot, so a task started there is not started again", async () => {
+  const { parser: parserTask, docs: docsTask } = names();
+  const source = `v2-fork-fwd-${unique()}`;
+  const { app, event, replace, switchTo, moveToEntry } = rawOmpHost(source, () => undefined);
+  await event("session_start");
+  await replace(listOf([parserTask, "pending"], [docsTask, "pending"]));
+  const leafL = app.entries[app.entries.length - 1].id;
+  const parent = await planParentOf(parserTask);
+  const parser = await childRef(parent, parserTask);
+  await replace(listOf([parserTask, "in_progress"], [docsTask, "pending"]));
+  const tip = app.entries[app.entries.length - 1].id;
+  expect((await show(parser)).issue.metadata?.["todo.status"]).toBe("in_progress");
+  // The agent sets the task back to pending in Kata: a memory kept from L would see it started in the list and start it again.
+  await kata(["meta", "set", parser, "todo.status", "pending", "--json"]);
+  // The fork is made at L: it binds from the source's snapshot there, which has the task pending.
+  moveToEntry(leafL);
+  switchTo(`${source}-fork`);
+  app.ctx.sessionManager.getHeader = () => ({ parentSession: source });
+  await event("session_switch");
+  // /tree forward to T, a snapshot of the source, with the list arriving before the fork's rebind: T's snapshot, not the one from L, is what the list is diffed against.
+  moveToEntry(tip);
+  await replace(listOf([parserTask, "in_progress"], [docsTask, "pending"]));
+  expect(app.notices.filter(n => MIRROR_FAILURE.test(String(n[0])))).toEqual([]);
+  expect((await show(parser)).issue.metadata?.["todo.status"]).toBe("pending");
+});
+
+test("a snapshot another caller saved from the bind's memory after the captured tip, once a pass saw a branch that went on past the memory's leaf, does not reload the memory on a late mirror", async () => {
+  const { parser: parserTask, docs: docsTask } = names();
+  const { app, event, replace, moveTo } = rawOmpHost(`v2-bind-id-${unique()}`, () => undefined);
+  const base = { id: "entry-base", type: "custom", customType: "other", data: {} };
+  const message = { id: "entry-message", type: "custom", customType: "other", data: {} };
+  app.entries.push(base);
+  moveTo(app.entries, base.id);
+  await event("session_start");
+  const bound = app.entries.find((e: any) => e.customType === snapshotEntry("omp")).data;
+  // The pass captures a branch that goes on past the bind's leaf with no snapshot of the session on it: the bind's id must stay issued.
+  const branch = [base, message];
+  moveTo(branch, message.id);
+  await replace(listOf([parserTask, "pending"], [docsTask, "pending"]));
+  const mirrored: any = branch[branch.length - 1];
+  expect(mirrored.data.memoryId).not.toBe(bound.memoryId);
+  // Another caller saved a snapshot from the bind's memory, which had no list; it landed after the pass's own.
+  branch.push({ id: "entry-bind-id", type: "custom", customType: snapshotEntry("omp"), data: { ...bound, leaf: base.id } });
+  const entries = app.entries.length;
+  await replace(listOf([parserTask, "pending"], [docsTask, "pending"]));
+  // The memory is kept: reloading from the bind's emptier snapshot would mirror both tasks again and save a snapshot.
+  expect(app.entries.length).toBe(entries);
 });
 
 test("a snapshot another caller saved from the same memory after the mirror's own does not reload the memory, so nothing is mirrored or saved again", async () => {

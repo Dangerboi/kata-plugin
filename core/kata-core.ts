@@ -844,7 +844,7 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 			if (typeof snapshot.deletedParent === "string") deletedParent = snapshot.deletedParent;
 		}
 		// The mirror continues from the list this branch's snapshot last mirrored, or from none: a tree move or a branch switch must not carry the old branch's.
-		if (main(ctx)) { native = nativeMemory(snapshot); nativeLeaf = options.native ? branch[branch.length - 1]?.id : undefined; nativeId = `${instance}:${++memories}`; issued.clear(); issued.add(nativeId); }
+		if (main(ctx)) { native = nativeMemory(snapshot); nativeLeaf = options.native ? branch[branch.length - 1]?.id : undefined; newMemory(true); }
 		let stored: any = snapshot?.plan?.parent ? snapshot.plan : undefined;
 		for (const entry of branch) {
 			if (entry?.type !== "custom" || entry.customType !== PARENT_ENTRY || (entry.data?.sessionId && entry.data.sessionId !== parentOwner)) continue;
@@ -1680,7 +1680,7 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 			const stays = tasks === undefined
 				? `The change stays in ${listName}; the next change tries again.`
 				: removed === "ticket"
-					? `${names} ${many ? "are ticket items" : "is a ticket item"}. Kata refused part of removing ${many ? "them" : "it"} from the plan; ${many ? "the tickets stay" : "the ticket stays"} open and ${many ? "need" : "needs"} no close, and if ${many ? "one was" : "it was"} in progress Kata may still show it in progress.`
+					? `${names} ${many ? "are ticket items" : "is a ticket item"}. Kata refused part of removing ${many ? "them" : "it"} from the plan; ${many ? "the tickets stay" : "the ticket stays"} open and ${many ? "need" : "needs"} no close, and if ${many ? "one was" : "it was"} in progress or blocked, Kata may still show it so.`
 					: removed
 						? `${names} ${many ? "stay" : "stays"} open in Kata; close ${many ? "them" : "it"} there with ${closes}.`
 						: `${names} ${many ? "stay" : "stays"} in ${listName}. ${many ? "Each is" : "It is"} sent to Kata again only when ${many ? "it" : "that task"} changes in the list.`;
@@ -1757,7 +1757,7 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 		await ensureBound(job, ctx, false);
 		currentCtx = ctx;
 		nativeFromBranch(ctx);
-		nativeId = `${instance}:${++memories}`; issued.add(nativeId);
+		newMemory(false);
 		currentId ||= sid(ctx);
 		if (plan.local) await replayLocal(job, ctx).catch(debug);
 		const items = nativeItems(phases).filter(item => item.content.trim());
@@ -1856,6 +1856,16 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 		return failures;
 	}
 
+	// A new mirror memory id, recorded as issued; `reload` first forgets the ids of the memory it replaces.
+	function newMemory(reload: boolean) {
+		if (reload) issued.clear();
+		nativeId = `${instance}:${++memories}`; issued.add(nativeId);
+	}
+
+	// The snapshot an entry holds of this session or of one of its own (a fork's source), or undefined.
+	const ownSnapshot = (entry: any, session: unknown): Snapshot | undefined =>
+		ownSessions.includes(entry?.data?.sessionId) ? snapshotOf(entry, entry.data.sessionId) : snapshotOf(entry, session);
+
 	// A saved snapshot of `session` (a custom entry of the snapshot type), or undefined for any other entry.
 	const snapshotOf = (entry: any, session: unknown): Snapshot | undefined =>
 		entry?.type === "custom" && entry.customType === SNAPSHOT_ENTRY && entry.data?.version === 1 && entry.data.sessionId === session ? entry.data : undefined;
@@ -1880,15 +1890,16 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 		// no id (saved before ids existed: reloaded to be safe). A snapshot saved from this memory carries nothing newer, whoever saved it: an interim snapshot of
 		// the mirror pass, or a delegate exit's.
 		const session = sid(ctx), at = nativeLeaf === undefined ? -1 : branch.findIndex(entry => entry?.id === nativeLeaf);
-		const newer = (entry: any) => { const data = ownSessions.includes(entry?.data?.sessionId) ? snapshotOf(entry, entry.data.sessionId) : snapshotOf(entry, session); return !!data && !(data.memoryId && issued.has(data.memoryId)); };
+		const newer = (entry: any) => { const data = ownSnapshot(entry, session); return !!data && !(data.memoryId && issued.has(data.memoryId)); };
 		if (at >= 0 && !branch.slice(at + 1).some(newer)) {
-			// None of this core's snapshots follows the leaf: the ids issued so far stamp snapshots of another branch (a /tree back to the leaf), whose content is not this memory's.
-			if (!branch.slice(at + 1).some(entry => ownSessions.includes(entry?.data?.sessionId) && snapshotOf(entry, entry.data.sessionId))) issued.clear();
+			// The branch ends at the leaf: the ids issued so far stamp snapshots of another branch (a /tree back to the leaf), whose content is not this memory's. A branch that
+			// goes on past the leaf may yet hold a snapshot another caller saved from an id in hand, so the ids stay.
+			if (at === branch.length - 1) newMemory(true);
 			return;
 		}
 		const saved = nativeMemory(savedSnapshot(ctx, branch, session).snapshot);
 		const key = (m: NativeMemory) => JSON.stringify([[...m.prev], [...m.phase], m.listed]);
-		nativeLeaf = branch[branch.length - 1]?.id; nativeId = `${instance}:${++memories}`; issued.clear(); issued.add(nativeId);
+		nativeLeaf = branch[branch.length - 1]?.id; newMemory(true);
 		if (key(saved) === key(native)) return;
 		native = saved;
 		// The branch moved: the next snapshot is written even when it equals the last one this core wrote on the other branch.

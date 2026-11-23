@@ -445,8 +445,28 @@ test("a ticket item whose removal Kata refuses is worded for both failure points
   const notices = refusalsOf(app).map(n => String(n[0]));
   expect(notices).toHaveLength(1);
   expect(notices[0]).toContain("comment refused by the test");
-  expect(notices[0]).toContain("is a ticket item. Kata refused part of removing it from the plan; the ticket stays open and needs no close, and if it was in progress Kata may still show it in progress.");
+  expect(notices[0]).toContain("is a ticket item. Kata refused part of removing it from the plan; the ticket stays open and needs no close, and if it was in progress or blocked, Kata may still show it so.");
   expect((await issueOf(refOf(ticket))).status).toBe("open");
+});
+
+test("a started ticket item whose status reset Kata refuses is worded the same, and the ticket keeps its working status", async () => {
+  const ticket = await issue("Started work");
+  const item = `${refOf(ticket)}: more work`;
+  let refusing = false;
+  const app = host({ before: (args: string[]) => refusing && args[0] === "meta" ? refuse("meta refused by the test") : undefined });
+  await app.event("session_start");
+  await app.init(["Plain start", item]);
+  expect((await app.call({ op: "start", task: item })).isError).toBeUndefined();
+  expect((await issueOf(refOf(ticket))).metadata?.["todo.status"]).toBe("in_progress");
+  refusing = true;
+  expect((await app.call({ op: "rm", task: item })).isError).toBeUndefined();
+  // The refused meta write also names the plain task in the same pass; the ticket item has its own notice.
+  const notices = refusalsOf(app).map(n => String(n[0])).filter(n => n.includes(`"${item}"`));
+  expect(notices).toHaveLength(1);
+  expect(notices[0]).toContain("meta refused by the test");
+  expect(notices[0]).toContain("if it was in progress or blocked, Kata may still show it so.");
+  expect((await issueOf(refOf(ticket))).status).toBe("open");
+  expect((await issueOf(refOf(ticket))).metadata?.["todo.status"]).toBe("in_progress");
 });
 
 test("a ticket item naming a closed ticket, in the init that starts the plan, warns once, creates no issue for it, and later changes retry it without warning again", async () => {
