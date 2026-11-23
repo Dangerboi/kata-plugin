@@ -15,7 +15,7 @@ omp plugin install kata@kata-plugin
 
 A marketplace install from before the npm package is still named `kata-omp`, and omp loads it beside the npm package. Upgrade it first (`omp plugin marketplace update kata-plugin`, then `omp plugin upgrade kata@kata-plugin`) or uninstall it; if both are already installed, uninstall one.
 
-Restart omp. Requires Kata 0.23.0 or later and a running Kata daemon. Tested with oh-my-pi 18.20.2 and Kata 0.23.0. For stock pi, install [`@dangerboi/kata-pi`](https://www.npmjs.com/package/@dangerboi/kata-pi) instead.
+Restart omp. Requires Kata 0.23.0 or later and a running Kata daemon. Tested with oh-my-pi 19.1.1 and Kata 0.23.0. For stock pi, install [`@dangerboi/kata-pi`](https://www.npmjs.com/package/@dangerboi/kata-pi) instead.
 
 - The plugin's `todo` and `/todo` replace omp's built-in todo and plan into Kata. A repo with no Kata project plans in the project named by `KATA_DEFAULT_PROJECT` (labeled with the repo), or else in its inferred project.
 - An item named `<project>#<short_id>: <action>` works and logs on that existing ticket.

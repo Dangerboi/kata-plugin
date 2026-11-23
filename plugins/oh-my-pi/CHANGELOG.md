@@ -4,6 +4,12 @@ All notable changes to `@dangerboi/kata-omp` are listed here. The format follows
 
 ## [Unreleased]
 
+### Changed
+
+#### Requirements
+
+- Tested with oh-my-pi 19.1.1. Kata 0.23.0 is still required.
+
 ## [2.12.1] - 2026-11-18
 
 ### Fixed
