@@ -433,6 +433,22 @@ test("two tasks refused with the same message in one pass are named by one notic
   expect(notices[0]).toContain("Each is sent to Kata again only when it changes in the list");
 });
 
+test("a ticket item whose removal Kata refuses is worded for both failure points: part of the removal refused, the ticket open, its status possibly unchanged", async () => {
+  const ticket = await issue("Open work");
+  const item = `${refOf(ticket)}: more work`;
+  let refusing = false;
+  const app = host({ before: (args: string[]) => refusing && args[0] === "comment" ? refuse("comment refused by the test") : undefined });
+  await app.event("session_start");
+  await app.init(["Plain start", item]);
+  refusing = true;
+  expect((await app.call({ op: "rm", task: item })).isError).toBeUndefined();
+  const notices = refusalsOf(app).map(n => String(n[0]));
+  expect(notices).toHaveLength(1);
+  expect(notices[0]).toContain("comment refused by the test");
+  expect(notices[0]).toContain("is a ticket item. Kata refused part of removing it from the plan; the ticket stays open and needs no close, and if it was in progress Kata may still show it in progress.");
+  expect((await issueOf(refOf(ticket))).status).toBe("open");
+});
+
 test("a ticket item naming a closed ticket, in the init that starts the plan, warns once, creates no issue for it, and later changes retry it without warning again", async () => {
   const { closed, item } = await closedTicketItem();
   const app = host(); await app.event("session_start");

@@ -94,7 +94,7 @@ export const PROMPT_TAGS = { contract: "kata_contract", inbox: "kata_inbox", ass
 export const tagged = (name: keyof PromptSections, text: string) => `<${PROMPT_TAGS[name]}>\n${text}\n</${PROMPT_TAGS[name]}>`;
 // The session entry the core saves its state in: appended after each change, and the session's latest is read at the next bind.
 export const snapshotEntry = (namespace: string) => `io.kata.${namespace}.state`;
-export type Snapshot = SettlementSnapshot & { version: number; sessionId: string; ownSessions?: string[]; plan: Plan; delegates?: SavedDelegate[]; named?: Task[]; deletedParent?: string; nativePrev?: Record<string, NativeStatus>; nativePhase?: Record<string, string>; nativeListed?: boolean; leaf?: string; memory?: string };
+export type Snapshot = SettlementSnapshot & { version: number; sessionId: string; ownSessions?: string[]; plan: Plan; delegates?: SavedDelegate[]; named?: Task[]; deletedParent?: string; nativePrev?: Record<string, NativeStatus>; nativePhase?: Record<string, string>; nativeListed?: boolean; leaf?: string; memoryId?: string };
 // Whether a saved session left work a later instance must finish: a pending close (a task's or a ticket's) or an unfinished
 // delegate. The automatic parent's close is not counted: a session owes it only once it ends (see session.end).
 export function owes(snapshot: Partial<Snapshot> | undefined): boolean {
@@ -384,13 +384,16 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 	let mirrorWarned = false, errorsSeen = 0;
 	// What this core last mirrored of omp's list for the session (see diffNativeList), saved in the session snapshot.
 	let native = nativeMemory(undefined);
-	// The id of the last entry of the branch `native` describes (the one its list was captured on, or its snapshot was loaded from): while that id is on a branch, `native` is that path's newest memory.
+	// The id of the last entry of the branch `native` describes (the one its list was captured on, or its snapshot was loaded from): while that id is on a branch, `native` is that branch's newest memory.
 	let nativeLeaf: unknown;
 	// Which memory `native` is: it changes when a mirror pass starts and when the memory is loaded from a branch. Every snapshot saved from it carries this id
-	// (`memory`), whichever path saves it (the pass's own, a delegate exit, a sweep). A snapshot on the branch with another id was saved from another memory, and one
+	// (`memoryId`), whichever caller saves it (the pass's own, a delegate exit, a sweep). A snapshot on the branch with another id was saved from another memory, and one
 	// with none predates the id.
 	const instance = `${Date.now().toString(36)}${Math.random().toString(36).slice(2)}`;
 	let memories = 0, nativeId = `${instance}:0`;
+	// Every id issued since `native` was last loaded (at a bind or a reload): a snapshot stamped with one of them was saved from this memory, even by a caller that
+	// persisted before a pass changed the id.
+	const issued = new Set<string>([nativeId]);
 	const flagged = new Set<string>();
 	let sessionTeammate: string | undefined;
 	const ownTeammate = () => sessionTeammate ?? setting("KATA_TEAMMATE") ?? "";
@@ -460,10 +463,10 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 			...(native.prev.size ? { nativePrev: Object.fromEntries(native.prev) } : {}), ...(native.phase.size ? { nativePhase: Object.fromEntries(native.phase) } : {}), ...(native.listed ? { nativeListed: true } : {}) };
 		const encoded = JSON.stringify(data);
 		if (encoded === lastSnapshot) return;
-		// Native hosts only: `leaf` is the entry whose branch the mirror memory describes (a host that knows its live branch skips a snapshot of another one) and `memory`
+		// Native hosts only: `leaf` is the entry whose branch the mirror memory describes (a host that knows its live branch skips a snapshot of another one) and `memoryId`
 		// is the memory's id, which nativeFromBranch compares to tell a snapshot saved from the memory in hand from a newer one. Both move without the plan, so they are
 		// left out of the comparison above.
-		const stamp = options.native ? { ...(typeof nativeLeaf === "string" ? { leaf: nativeLeaf } : {}), memory: nativeId } : {};
+		const stamp = options.native ? { ...(typeof nativeLeaf === "string" ? { leaf: nativeLeaf } : {}), memoryId: nativeId } : {};
 		host.appendEntry(SNAPSHOT_ENTRY, { ...data, ...stamp } satisfies Snapshot);
 		lastSnapshot = encoded;
 	}
@@ -841,7 +844,7 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 			if (typeof snapshot.deletedParent === "string") deletedParent = snapshot.deletedParent;
 		}
 		// The mirror continues from the list this branch's snapshot last mirrored, or from none: a tree move or a branch switch must not carry the old branch's.
-		if (main(ctx)) { native = nativeMemory(snapshot); nativeLeaf = options.native ? branch[branch.length - 1]?.id : undefined; nativeId = `${instance}:${++memories}`; }
+		if (main(ctx)) { native = nativeMemory(snapshot); nativeLeaf = options.native ? branch[branch.length - 1]?.id : undefined; nativeId = `${instance}:${++memories}`; issued.clear(); issued.add(nativeId); }
 		let stored: any = snapshot?.plan?.parent ? snapshot.plan : undefined;
 		for (const entry of branch) {
 			if (entry?.type !== "custom" || entry.customType !== PARENT_ENTRY || (entry.data?.sessionId && entry.data.sessionId !== parentOwner)) continue;
@@ -1677,7 +1680,7 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 			const stays = tasks === undefined
 				? `The change stays in ${listName}; the next change tries again.`
 				: removed === "ticket"
-					? `${names} ${many ? "are ticket items" : "is a ticket item"}. Kata refused removing ${many ? "them" : "it"} from the plan; ${many ? "the tickets stay" : "the ticket stays"} open and ${many ? "need" : "needs"} no close, since removing a ticket item never closes the ticket.`
+					? `${names} ${many ? "are ticket items" : "is a ticket item"}. Kata refused part of removing ${many ? "them" : "it"} from the plan; ${many ? "the tickets stay" : "the ticket stays"} open and ${many ? "need" : "needs"} no close, and if ${many ? "one was" : "it was"} in progress Kata may still show it in progress.`
 					: removed
 						? `${names} ${many ? "stay" : "stays"} open in Kata; close ${many ? "them" : "it"} there with ${closes}.`
 						: `${names} ${many ? "stay" : "stays"} in ${listName}. ${many ? "Each is" : "It is"} sent to Kata again only when ${many ? "it" : "that task"} changes in the list.`;
@@ -1754,7 +1757,7 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 		await ensureBound(job, ctx, false);
 		currentCtx = ctx;
 		nativeFromBranch(ctx);
-		nativeId = `${instance}:${++memories}`;
+		nativeId = `${instance}:${++memories}`; issued.add(nativeId);
 		currentId ||= sid(ctx);
 		if (plan.local) await replayLocal(job, ctx).catch(debug);
 		const items = nativeItems(phases).filter(item => item.content.trim());
@@ -1872,14 +1875,20 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 	function nativeFromBranch(ctx: HostContext) {
 		if (!options.native || !main(ctx)) return;
 		const branch: readonly any[] = ctx.sessionManager?.getBranch?.() ?? [];
-		// The memory describes a leaf of this path, so it is the newest unless a snapshot of this session after that leaf was saved from another memory (a /tree
-		// forward to a later entry of the same path) or has no id (saved before ids existed: reloaded to be safe). A snapshot saved from this memory carries nothing
-		// newer, whoever saved it: an interim snapshot of the mirror pass, or another path's such as a delegate exit.
+		// The memory describes a leaf of this branch, so it is the newest unless a snapshot of this session (or of one it descends from: a fork's /tree forward
+		// comes before its rebind) after that leaf was saved from a memory not issued since the last load (a /tree forward to a later entry of the same branch) or has
+		// no id (saved before ids existed: reloaded to be safe). A snapshot saved from this memory carries nothing newer, whoever saved it: an interim snapshot of
+		// the mirror pass, or a delegate exit's.
 		const session = sid(ctx), at = nativeLeaf === undefined ? -1 : branch.findIndex(entry => entry?.id === nativeLeaf);
-		if (at >= 0 && !branch.slice(at + 1).some(entry => { const data = snapshotOf(entry, session); return !!data && data.memory !== nativeId; })) return;
+		const newer = (entry: any) => { const data = ownSessions.includes(entry?.data?.sessionId) ? snapshotOf(entry, entry.data.sessionId) : snapshotOf(entry, session); return !!data && !(data.memoryId && issued.has(data.memoryId)); };
+		if (at >= 0 && !branch.slice(at + 1).some(newer)) {
+			// None of this core's snapshots follows the leaf: the ids issued so far stamp snapshots of another branch (a /tree back to the leaf), whose content is not this memory's.
+			if (!branch.slice(at + 1).some(entry => ownSessions.includes(entry?.data?.sessionId) && snapshotOf(entry, entry.data.sessionId))) issued.clear();
+			return;
+		}
 		const saved = nativeMemory(savedSnapshot(ctx, branch, session).snapshot);
 		const key = (m: NativeMemory) => JSON.stringify([[...m.prev], [...m.phase], m.listed]);
-		nativeLeaf = branch[branch.length - 1]?.id; nativeId = `${instance}:${++memories}`;
+		nativeLeaf = branch[branch.length - 1]?.id; nativeId = `${instance}:${++memories}`; issued.clear(); issued.add(nativeId);
 		if (key(saved) === key(native)) return;
 		native = saved;
 		// The branch moved: the next snapshot is written even when it equals the last one this core wrote on the other branch.
