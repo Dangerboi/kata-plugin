@@ -110,7 +110,7 @@ const evidence = "test:bun smoke scenario ran";
 const recorded = { type: "test", command: "bun smoke scenario ran" }; // how Kata stores it
 const message = "Verified the smoke scenario by running it end to end against a real omp and a real Kata daemon.";
 
-const PROJECT = "omp-smoke";
+export const PROJECT = "omp-smoke";
 // A plan task is mirrored into Kata after omp's own todo call returns, and that mirror needs the omp process's event loop,
 // so a scripted turn never waits for it itself. It hands omp's bash tool a bun script instead: the script polls `kata list`
 // until the plan task's child issue exists, then runs `run` with `ref` (qualified) and `kata(...)` in scope.
@@ -420,7 +420,6 @@ export const SCENARIOS: Scenario[] = [{
 		const issues = await store.issues();
 		const ticket = issues.find(i => i.ref === t);
 		const closed = eventsOf(ticket, "issue.closed");
-		// The old "refused close left one blocking comment" check is gone: the plugin no longer closes the ticket, so it has no close to refuse.
 		return [
 			{ name: "the claimed ticket is the plan parent: the plain item is its child", ok: issues.some(i => i.title === "Add the ignore file" && i.status === "closed"), detail: issues.map(i => `${i.title}:${i.status}`).join(", ") },
 			{ name: "the ticket closed once, through the agent's kata close with the ticket item's evidence", ok: ticket?.status === "closed" && closed.length === 1 && JSON.stringify(closed[0].payload.evidence) === JSON.stringify([{ type: "test", command: "bun smoke scenario ticket item" }]), detail: `${ticket?.status} ${JSON.stringify(closed)}` },
@@ -576,8 +575,8 @@ export const SCENARIOS: Scenario[] = [{
 			] } }],
 			// Delegate wake-ups re-prompt the lead, and the resumed run continues this script after the first run's assistant
 			// messages, so a turn chooses by what it was last told rather than by its position. The resumed lead's turn waits in
-			// omp's bash tool until the background settle has written the hand back and the rollback: a native `todo view` no
-			// longer passes through the plugin, so it cannot be used to wait for the settle.
+			// omp's bash tool until the background settle has written the hand back and the rollback: a native `todo view` does
+			// not pass through the plugin, so it cannot be used to wait for the settle.
 			...Array.from({ length: 24 }, () => (ctx: TurnContext) => ctx.texts.at(-1)?.includes(RESUMED) ? [{ tool: "bash", args: { command: waitSettled(RESUME_HAND_BACK, RESUME_ROLL_BACK) } }] : ["Noted."]),
 		],
 		// ResumeOne: one finished tool, then a bash call that outlives the process. ResumeTwo: its model call never answers,

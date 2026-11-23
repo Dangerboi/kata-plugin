@@ -1,23 +1,15 @@
 import { expect, test } from "bun:test";
 import { eventually } from "./kata-fixture";
 import { v2Fixture } from "./v2-fixture";
+import { kataViews } from "./omp-host";
 
 // The omp adapter against a real Kata, on omp's native `todo`: the guard that refuses calls (`tool_call`) and the mirror that follows
 // the list into Kata (the todo backend's `replace`). Edge cases of both, one behaviour per test.
 const { show, issue, host, down, total, commentsOf, sessionParents, closesOf, scratch, kata, message } = v2Fixture();
 
-const refOf = (short: string) => `v2test#${short}`;
-async function children(parent: string): Promise<any[]> { return (await show(parent)).children ?? []; }
-async function childRef(parent: string, title: string): Promise<string> {
-  const child = (await children(parent)).find((c: any) => c.title === title);
-  if (!child) throw new Error(`${parent} has no child "${title}"`);
-  return refOf(child.short_id);
-}
-const issueOf = async (ref: string) => (await show(ref)).issue;
-const labelsOf = async (ref: string): Promise<string[]> => ((await show(ref)).labels ?? []).map((l: any) => l.label);
+const { refOf, children, childRef, issueOf, labelsOf, titles } = kataViews(show);
 // A pre-existing plan task (todo.phase set), as an earlier session's mirror leaves it; `issue` suffixes the title.
 const planTask = (title: string, parent: string) => issue(title, { parent, meta: ["todo.phase=Tasks", "todo.status=pending"] });
-const titles = async (parent: string) => (await children(parent)).map((c: any) => c.title).sort();
 
 test("done on a task whose Kata child is open is refused with the child's ref and the close command, leaving Kata and omp's list as they were", async () => {
   const app = host(); await app.event("session_start");
@@ -214,13 +206,14 @@ test("a mirror while Kata is unreachable does not throw, and the change lands in
   const before = await total();
   const init = await app.call({ op: "init", items: ["Write parser", "Write docs"] });
   expect(init.isError, init.content[0].text).toBeUndefined();
-  expect(app.mirrorFailures()).toEqual([]);
+  // The outage is told once, as an outage; no other warning.
+  expect(app.mirrorFailures().map(args => String(args[0]))).toEqual([expect.stringContaining("Kata is unreachable")]);
   expect(await total()).toBe(before);
 
   unreachable = false;
   const appended = await app.call({ op: "append", items: ["Write tests"] });
   expect(appended.isError, appended.content[0].text).toBeUndefined();
-  expect(app.mirrorFailures()).toEqual([]);
+  expect(app.mirrorFailures()).toHaveLength(1);
   const [parent] = await sessionParents(app.sid);
   expect(parent).toBeDefined();
   expect(await titles(parent.qualified_id)).toEqual(["Write docs", "Write parser", "Write tests"]);
@@ -350,6 +343,9 @@ test("/todo takeover with todo.backend native is not handled by the plugin", asy
   await app.backend("native");
   const result = await app.event("input", { text: "/todo takeover Write parser", source: "interactive" });
   expect(result?.handled).toBeUndefined();
+  // The same command is the plugin's with the Kata backend: without this, an unrecognised command would pass too.
+  await app.backend("kata");
+  expect((await app.event("input", { text: "/todo takeover Write parser", source: "interactive" }))?.handled).toBe(true);
 });
 
 test("an init with no op and only items, sent while omp's list is empty, is refused when it leaves out an open task from /todo ref", async () => {
@@ -381,7 +377,7 @@ test("an init with no op and only items, sent while omp's list is empty, is refu
 
 test("after every task is removed, leaving empty phases, a call with only items and no op is not an init for the guard", async () => {
   const parent = refOf(await issue("Explicit parent"));
-  await planTask("Existing work", parent);
+  const existing = refOf(await planTask("Existing work", parent));
   const app = host(); await app.event("session_start");
   await app.event("input", { text: `/todo ref ${parent}`, source: "interactive" });
   expect((await app.call({ op: "append", items: ["Fresh one", "Fresh two"] })).isError).toBeUndefined();
@@ -389,8 +385,12 @@ test("after every task is removed, leaving empty phases, a call with only items 
   expect(app.list().length).toBeGreaterThan(0);
   expect(app.list().every(p => p.tasks.length === 0)).toBe(true);
   const result = await app.call({ items: ["Fresh three"] });
-  expect(JSON.stringify(result.content)).not.toContain("leaves out");
-  expect(JSON.stringify(result.content)).not.toContain("Existing work");
+  // omp's own schema error: no op can be inferred while its list has phases. The guard's init refusal would name the open task instead.
+  expect(result.isError).toBe(true);
+  expect(result.content[0].text).toContain("op must be present");
+  expect(result.content[0].text).not.toContain("leaves out");
+  expect(await titles(parent)).not.toContain("Fresh three");
+  expect((await issueOf(existing)).status).toBe("open");
 });
 
 const closedTicketItem = async () => {

@@ -14,7 +14,7 @@ import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync, type Dirent } from "node:fs";
 import path from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
-import { SCENARIOS, type Prompt, type Request, type ToolUse, type Scenario, type Session, type Store } from "./smoke-omp-scenarios";
+import { PROJECT, SCENARIOS, type Prompt, type Request, type ToolUse, type Scenario, type Session, type Store } from "./smoke-omp-scenarios";
 import { cleanEnv, defer, flag, kataProject, lastLines, linesIn, option, pickScenarios, report, reportChecks, runToEnd, scratchRoot, teardown, verbose, verdict, type Check } from "./smoke-lib";
 import { MODEL, PROVIDER } from "./smoke-provider";
 
@@ -24,7 +24,6 @@ const liveModel = option("--model");
 if (live && !liveModel) { console.error("--live needs --model <provider/model> for a provider you are logged into (prefer a subscription)."); process.exit(2); }
 const scenarios = pickScenarios(SCENARIOS);
 
-const PROJECT = "omp-smoke";
 const TIMEOUT_MS = live ? 600_000 : 120_000;
 const tmp = scratchRoot("omp-kata-smoke-");
 const base = cleanEnv();

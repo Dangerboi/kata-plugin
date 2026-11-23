@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { MESSAGE, realKata, unique } from "./kata-fixture";
-import { MIRROR_FAILURE, ompHost } from "./omp-host";
+import { ompHost } from "./omp-host";
 
 // Who may move a Kata task when omp's native todo list changes: a start the mirror cannot make because another actor, teammate or
 // session holds the task leaves its attention and status alone, at every point a handoff can race it; a restart reopens only an owned
@@ -34,7 +34,7 @@ function host(parent: string | undefined, before?: Before) {
     calls, get notices() { return app.notices.map(args => args[0] as string); },
     async begin() { await app.event("session_start"); await flush(); },
     async shutdown() { await app.event("session_shutdown"); },
-    call: app.call, edit: app.edit, init: app.init, done: app.done,
+    call: app.call, edit: app.edit, init: app.init, done: app.done, mirrorFailures: app.mirrorFailures,
     input: (text: string) => app.event("input", { text, source: "interactive" }),
     // omp's list holds the plan task `ref` with this status, as a user's /todo edit or the model's call leaves it; the mirror follows.
     async native(ref: string, status: "pending" | "in_progress" | "completed" = "in_progress") {
@@ -43,7 +43,7 @@ function host(parent: string | undefined, before?: Before) {
   };
 }
 // The mirror could not make a change in Kata: omp keeps its list and the user is told once.
-const refused = (app: { notices: string[] }) => app.notices.some(message => MIRROR_FAILURE.test(message));
+const refused = (app: { mirrorFailures: () => unknown[] }) => app.mirrorFailures().length > 0;
 const workWrites = (app: { calls: string[][] }) => app.calls.filter(args => args[0] === "meta" && args[3]?.startsWith("work."));
 
 // Removing the ownership gate or swallowing claim failures must fail these.
@@ -277,7 +277,7 @@ test("a native init's auto-start cannot claim another teammate's task", async ()
   expect((await app.call({ op: "start", task: other })).isError).toBeUndefined();
   expect(refused(app)).toBe(false);
   expect((await app.call({ op: "start", task: title })).isError).toBeUndefined();
-  expect(app.notices.filter(message => MIRROR_FAILURE.test(message)).length).toBe(1);
+  expect(app.mirrorFailures().length).toBe(1);
   const after = await issueOf(ref);
   expect(after.metadata["work.attention"]).toBe("needs-human");
   expect(after.metadata["todo.status"]).toBe("pending");

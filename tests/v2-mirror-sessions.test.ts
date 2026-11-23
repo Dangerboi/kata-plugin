@@ -1,9 +1,7 @@
 import { expect, test } from "bun:test";
-import { eventually, fakeHost, holdKata, holdNext, memoryDelegateStore, registry } from "./kata-fixture";
+import { eventually, holdKata, holdNext, memoryDelegateStore } from "./kata-fixture";
 import { v2Fixture } from "./v2-fixture";
-import { MIRROR_FAILURE, ompHost } from "./omp-host";
-import ompKata from "../plugins/oh-my-pi/kata";
-import { TRANSCRIPT_ENV } from "../core/kata-cli";
+import { clearTranscriptEnv, kataViews, mirrorFailures, ompHost, rawOmpHost as rawHost } from "./omp-host";
 import { createKataCore, snapshotEntry } from "../core/kata-core";
 import { nodePlatform } from "../core/node-host";
 
@@ -14,20 +12,13 @@ const { binary: kataBinary, scratch, cwd, run, show, issue, host, down, comments
 // Every test names its own tasks: a title shared with another test would let the harness's title lookup find that test's plan.
 const names = () => { const id = unique(); return { parser: `Write parser ${id}`, docs: `Write docs ${id}`, tests: `Write tests ${id}` }; };
 
-const refOf = (short: string) => `v2test#${short}`;
-const children = async (parent: string): Promise<any[]> => (await show(parent)).children ?? [];
-async function childRef(parent: string, title: string): Promise<string> {
-  const child = (await children(parent)).find((c: any) => c.title === title);
-  if (!child) throw new Error(`${parent} has no child "${title}"`);
-  return refOf(child.short_id);
-}
+const { children, childRef, labelsOf } = kataViews(show);
 const planParentOf = async (title: string): Promise<string> => {
   const found = (await kata(["list", "--all", "--status", "all", "--json"])).issues.find((i: any) => i.title === title && i.parent);
   if (!found) throw new Error(`No plan task "${title}"`);
   return found.parent.qualified_id;
 };
 const holder = async (ref: string) => (await show(ref)).issue.metadata?.["todo.session"];
-const labelsOf = async (ref: string): Promise<string[]> => ((await show(ref)).labels ?? []).map((l: any) => l.label);
 // A host bound to an existing plan parent, as a second lead of the same user is.
 const lead = (parent: string) => host({ entries: [{ type: "custom", customType: "io.kata.omp.parent", data: { parent } }] });
 
@@ -112,7 +103,7 @@ test("with omp's queue, three rapid list changes during a slow mirror leave Kata
   // The fixture's `host` passes no `queuedReplace`, so this host is built on the fake directly.
   const sid = `v2-queued-${unique()}`;
   const app = ompHost({ run: (args, opts) => run(args, opts.cwd, opts.timeout), cwd, sid, sessionFile: `${scratch}/${sid}.jsonl`, before: hold.before, queuedReplace: true,
-    afterEvent: () => { for (const key of TRANSCRIPT_ENV) delete process.env[key]; } });
+    afterEvent: clearTranscriptEnv });
   await app.event("session_start");
   const parent = await app.init([parserTask, docsTask, testsTask]);
   await app.settled();
@@ -216,7 +207,7 @@ test("a queued list of a session that runs after /new is diffed against that ses
   const hold = holdKata(() => armed);
   const sid = `v2-queued-new-${unique()}`;
   const app = ompHost({ run: (args, opts) => run(args, opts.cwd, opts.timeout), cwd, sid, sessionFile: `${scratch}/${sid}.jsonl`, before: hold.before, queuedReplace: true,
-    afterEvent: () => { for (const key of TRANSCRIPT_ENV) delete process.env[key]; } });
+    afterEvent: clearTranscriptEnv });
   await app.event("session_start");
   const parent = await app.init([parserTask, docsTask]);
   await app.settled();
@@ -251,34 +242,8 @@ test("a queued list of a session that runs after /new is diffed against that ses
   expect(await labelsOf(parser)).not.toContain("needs-review");
 });
 
-// A host that hands the adapter's todo backend to the test, so two `replace` calls of one session can overlap as the core's queue
-// allows. `ompHost` runs one `replace` at a time, so it cannot capture a list while the previous mirror is still running.
-function rawOmpHost(sid: string, before: (args: string[], opts: any) => any) {
-  const app = fakeHost({ run: (args, opts) => run(args, opts.cwd, opts.timeout), cwd, sid, before });
-  // Like omp's session manager: every appended entry gets a new id on the current branch and moves the leaf to it.
-  let current = sid, branch: any[] = app.entries, leaf: string | null = null, appended = 0, afterAppend: (() => void) | undefined;
-  const appendEntry = (customType: string, data: any) => {
-    const entry = { id: `entry-${sid}-${++appended}`, parentId: leaf, type: "custom", customType, data };
-    if (branch !== app.entries) app.entries.push(entry);
-    branch.push(entry);
-    leaf = entry.id;
-    const hook = afterAppend; afterAppend = undefined; hook?.();
-  };
-  app.ctx.sessionManager = { getSessionId: () => current, getLeafId: () => leaf, getBranch: () => branch, getEntries: () => app.entries, getHeader: () => ({}), getSessionFile: () => undefined };
-  app.ctx.agent = { kind: "main", id: `main-${sid}` };
-  app.ctx.getAsyncJobSnapshot = () => ({ running: [], recent: [] });
-  ompKata({ ...app.api, appendEntry, pi: { settings: {} }, events: { on: registry().on } });
-  const event = async (name: string) => { try { await app.event(name); } finally { for (const key of TRANSCRIPT_ENV) delete process.env[key]; } };
-  return { app, event, replace: (phases: any[]) => app.todoBackend.replace(phases, app.ctx), switchTo: (next: string) => { current = next; },
-    /** /tree: the same session now answers for another branch and leaf. */
-    moveTo: (next: any[], nextLeaf: string | null) => { branch = next; leaf = nextLeaf; },
-    /** /tree right after the next saved entry: the move lands between one mirror's save and the next mirror's bind. */
-    moveAfterNextAppend: (next: any[], nextLeaf: string | null) => { afterAppend = () => { branch = next; leaf = nextLeaf; }; },
-    /** Runs `then` right after the next saved entry, as another caller appending to the session would. */
-    afterNextAppend: (then: () => void) => { afterAppend = then; },
-    /** /tree to an earlier entry: the branch is the entries up to it; the entries after it stay in `app.entries`. */
-    moveToEntry: (id: string) => { branch = app.entries.slice(0, app.entries.findIndex((e: any) => e.id === id) + 1); leaf = id; } };
-}
+// A raw host for this file's store: omp's todo backend handed to the test.
+const rawOmpHost = (sid: string, before: (args: string[], opts: any) => any) => rawHost(sid, { run: (args, opts) => run(args, opts.cwd, opts.timeout), cwd, before });
 const listOf = (...tasks: [string, "pending" | "in_progress" | "completed"][]) => [{ name: "Tasks", tasks: tasks.map(([content, status]) => ({ content, status })) }];
 
 test("a list captured while the session's previous mirror still runs is diffed against that mirror's snapshot, not a duplicate of a task the agent closed", async () => {
@@ -298,7 +263,7 @@ test("a list captured while the session's previous mirror still runs is diffed a
   const second = replace(listOf([parserTask, "pending"], [docsTask, "pending"], [`Extra ${unique()}`, "pending"]));
   hold.release();
   await Promise.all([first, second]);
-  expect(app.notices.filter(n => MIRROR_FAILURE.test(String(n[0])))).toEqual([]);
+  expect(mirrorFailures(app.notices)).toEqual([]);
   const titles = (await children(parent)).map((c: any) => c.title);
   expect(titles.filter((t: string) => t === parserTask)).toHaveLength(1);
   expect((await show(parser)).issue.status).toBe("closed");
@@ -368,7 +333,7 @@ test("a list captured at an earlier entry of a branch whose tip the in-memory li
   // so the third task is not one omp's list removed.
   moveToEntry(leafL);
   await replace(listOf([parserTask, "pending"], [docsTask, "pending"]));
-  expect(app.notices.filter(n => MIRROR_FAILURE.test(String(n[0])))).toEqual([]);
+  expect(mirrorFailures(app.notices)).toEqual([]);
   expect((await show(extra)).issue.status).toBe("open");
 });
 
@@ -392,7 +357,7 @@ test("a /tree forward to a later entry of the same branch loads that entry's sna
   // /tree forward to T: the memory from L is older than T's snapshot, which is the one the list is diffed against.
   moveToEntry(tip);
   await replace(listOf([parserTask, "in_progress"], [docsTask, "pending"]));
-  expect(app.notices.filter(n => MIRROR_FAILURE.test(String(n[0])))).toEqual([]);
+  expect(mirrorFailures(app.notices)).toEqual([]);
   expect(JSON.stringify((await show(parser)).issue)).toBe(before);
   expect(await commentsOf(parser)).toHaveLength(commentsBefore);
 });
@@ -419,7 +384,7 @@ test("a fork's /tree forward to a later entry of its source's branch, before its
   // /tree forward to T, a snapshot of the source, with the list arriving before the fork's rebind: T's snapshot, not the one from L, is what the list is diffed against.
   moveToEntry(tip);
   await replace(listOf([parserTask, "in_progress"], [docsTask, "pending"]));
-  expect(app.notices.filter(n => MIRROR_FAILURE.test(String(n[0])))).toEqual([]);
+  expect(mirrorFailures(app.notices)).toEqual([]);
   expect((await show(parser)).issue.metadata?.["todo.status"]).toBe("pending");
 });
 
@@ -437,11 +402,15 @@ test("a snapshot another caller saved from the bind's memory after the captured 
   moveTo(branch, message.id);
   await replace(listOf([parserTask, "pending"], [docsTask, "pending"]));
   // Another caller saved a snapshot from the bind's memory, which had no list; it landed after the pass's own.
-  branch.push({ id: "entry-bind-after-tip", type: "custom", customType: snapshotEntry("omp"), data: { ...bound, leaf: base.id } });
-  const entries = app.entries.length;
+  branch.push({ id: "entry-bind-after-tip", type: "custom", customType: snapshotEntry("omp"), data: { ...bound, native: { ...bound.native, leaf: base.id } } });
+  // The agent closes the docs task in Kata. The kept memory has it pending, as the list does, so the list changes nothing; a memory
+  // reloaded from the bind's snapshot, which has no list, would see the pending docs task as new and create it again.
+  const parent = await planParentOf(parserTask), docs = await childRef(parent, docsTask);
+  await kata(["close", docs, "--done", "--message", "Closed by the agent in Kata, outside the list.", "--evidence", "test:agent closed it", "--json"]);
   await replace(listOf([parserTask, "pending"], [docsTask, "pending"]));
-  // The memory is kept: reloading from the bind's emptier snapshot would mirror both tasks again and save a snapshot.
-  expect(app.entries.length).toBe(entries);
+  expect(mirrorFailures(app.notices)).toEqual([]);
+  expect((await children(parent)).filter((c: any) => c.title === docsTask)).toHaveLength(1);
+  expect((await show(docs)).issue.status).toBe("closed");
 });
 
 test("a snapshot another caller saved from the same memory after the mirror's own does not reload the memory, so nothing is mirrored or saved again", async () => {
@@ -454,11 +423,14 @@ test("a snapshot another caller saved from the same memory after the mirror's ow
   await replace(listOf([parserTask, "in_progress"], [docsTask, "pending"]));
   const mirrored = app.entries[app.entries.length - 1];
   // Another caller (a delegate exit) saved a snapshot after it from the same memory. Its content is the older list's here, so a reload from it would start the task again.
-  app.entries.push({ id: "entry-other-caller", type: "custom", customType: snapshotEntry("omp"), data: { ...stale, leaf: mirrored.id } });
-  const entries = app.entries.length;
+  app.entries.push({ id: "entry-other-caller", type: "custom", customType: snapshotEntry("omp"), data: { ...stale, native: { ...stale.native, leaf: mirrored.id } } });
+  // The agent sets the task back to pending in Kata. The kept memory has it in progress, as the list does, so the list changes nothing; a
+  // reload from the older snapshot, which has it pending, would see it started in the list and start it again.
+  const parent = await planParentOf(parserTask), parser = await childRef(parent, parserTask);
+  await kata(["meta", "set", parser, "todo.status", "pending", "--json"]);
   await replace(listOf([parserTask, "in_progress"], [docsTask, "pending"]));
-  // The memory is kept: the list equals it, so the pass changes nothing and saves no snapshot. A reload from the older snapshot would save one.
-  expect(app.entries.length).toBe(entries);
+  expect(mirrorFailures(app.notices)).toEqual([]);
+  expect((await show(parser)).issue.metadata?.["todo.status"]).toBe("pending");
 });
 
 test("a snapshot of branch Z that landed on branch W (a mirror held across /tree) is not loaded by W's next mirror, so W's open tasks stay open", async () => {
@@ -482,14 +454,14 @@ test("a snapshot of branch Z that landed on branch W (a mirror held across /tree
   hold.release();
   await slow;
   // The held mirror's snapshot landed on W, stamped with Z's leaf, which is not on W: W's next mirror must not load it.
-  const landed = branchW.filter((e: any) => e.customType === snapshotEntry("omp") && e.data.leaf === "entry-z");
+  const landed = branchW.filter((e: any) => e.customType === snapshotEntry("omp") && e.data.native?.leaf === "entry-z");
   expect(landed.length).toBeGreaterThan(0);
   // W is bound again (a /tree): its memory comes from the latest snapshot on W whose leaf is on W, not from Z's.
   await event("session_tree");
   // W's next list: the docs task was never on W, so nothing of Z's memory may remove it.
   const docs = await childRef(parent, docsTask);
   await replace(listOf([parserTask, "pending"]));
-  expect(app.notices.filter(n => MIRROR_FAILURE.test(String(n[0])))).toEqual([]);
+  expect(mirrorFailures(app.notices)).toEqual([]);
   expect((await show(docs)).issue.status).toBe("open");
 });
 
@@ -513,7 +485,7 @@ test("a guarded call between a held mirror and the next one does not move the me
   const second = replace(listOf([parserTask, "pending"]));
   hold.release();
   await Promise.all([first, guarded, second]);
-  expect(app.notices.filter(n => MIRROR_FAILURE.test(String(n[0])))).toEqual([]);
+  expect(mirrorFailures(app.notices)).toEqual([]);
   // The guard did not move the memory to the live tip, which is not on the captured branch: N's list is what N+1 is diffed against, so the docs task is removed.
   expect((await show(await childRef(parent, docsTask))).issue.status).toBe("closed");
 });

@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { eventually, EVIDENCE, MESSAGE, realKata, unique } from "./kata-fixture";
-import { MIRROR_FAILURE, ompHost } from "./omp-host";
+import { ompHost } from "./omp-host";
 import type { TodoStatus } from "./omp-native-todo";
 
 // Who holds a plan task when several lead sessions of one user share a plan parent, on omp's native todo. Two leads have the same
@@ -249,7 +249,7 @@ test("a ticket item may name another plan's task that session holds; tickets kee
   expect(result.isError).toBeUndefined();
   expect(b.app.list().flatMap(p => p.tasks.map(t => t.content))).toEqual([item]);
   // The mirror reported no refusal for the held ticket.
-  expect(b.app.notices.filter(n => MIRROR_FAILURE.test(String(n[0])))).toEqual([]);
+  expect(b.app.mirrorFailures()).toEqual([]);
 });
 
 test("a /todo takeover that names no task takes nothing", async () => {

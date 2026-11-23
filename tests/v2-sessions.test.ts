@@ -101,8 +101,8 @@ test("an unreachable Kata keeps the native list working, makes no Kata mutations
   expect((await app.call({ op: "done", task: "Implement fixture" })).isError).toBeUndefined();
   expect(app.list().flatMap(p => p.tasks.map(t => [t.content, t.status]))).toEqual([["Implement fixture", "completed"], ["Verify fixture", "in_progress"]]);
   expect(app.calls.some(a => ["create", "claim", "meta", "close"].includes(a[0]))).toBe(false);
-  expect(app.notices.map(n => n[1])).toEqual(["warning"]);
-  expect(app.mirrorFailures()).toEqual([]);
+  expect(app.mirrorFailures().map(args => String(args[0]))).toEqual([expect.stringContaining("Kata is unreachable")]);
+  expect(app.notices).toHaveLength(1);
 });
 
 test("KATA_REF beats stored session binding and is qualified", async () => {

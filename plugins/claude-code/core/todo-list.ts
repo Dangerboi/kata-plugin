@@ -163,13 +163,13 @@ const nativeOpen = (status: NativeStatus | undefined) => status === "pending" ||
 // held by another session); the others are left alone. Tasks are keyed by content: omp keeps one task per content across all phases, so a
 // phase change of a known task is ignored.
 export function diffNativeList(tasks: readonly Task[], prev: ReadonlyMap<string, NativeStatus>, next: readonly NativeItem[], led: (task: Task) => boolean): NativeStep[] {
-	const status = new Map<string, NativeStatus>();
-	for (const item of next) if (!status.has(item.content)) status.set(item.content, item.status);
+	const listed = new Map<string, NativeItem>();
+	for (const item of next) if (!listed.has(item.content)) listed.set(item.content, item);
 	const copies = groupsOf(tasks);
 	const removals: NativeStep[] = [], settles: NativeStep[] = [], adds: NativeStep[] = [], starts: NativeStep[] = [];
-	for (const task of tasks) if (OPEN.has(task.status) && !status.has(task.content) && prev.has(task.content) && led(task)) removals.push({ step: "rm", task });
-	for (const [content, wanted] of status) {
-		const item = next.find(n => n.content === content)!;
+	for (const task of tasks) if (OPEN.has(task.status) && !listed.has(task.content) && prev.has(task.content) && led(task)) removals.push({ step: "rm", task });
+	for (const [content, item] of listed) {
+		const wanted = item.status;
 		const group = copies.get(content);
 		const task = group && representative(group);
 		// A content the plan lacks is appended when omp's list just added it or changed its status; one prev already had in this status was
@@ -185,7 +185,7 @@ export function diffNativeList(tasks: readonly Task[], prev: ReadonlyMap<string,
 			// Another open item of the ticket counts as closed once omp's list has it completed or abandoned, or has just removed it (its
 			// removal closes it in Kata this same mirror). One omp never listed, or one this session does not lead, is still open.
 			const stillOpen = (other: Task) => OPEN.has(other.status) && other.content !== content
-				&& (nativeOpen(status.get(other.content)) || (!status.has(other.content) && (!prev.has(other.content) || !led(other))));
+				&& (nativeOpen(listed.get(other.content)?.status) || (!listed.has(other.content) && (!prev.has(other.content) || !led(other))));
 			// Already closed in Kata (the agent closed it before marking it done): only the completed bookkeeping is left, e.g. a stale needs-review.
 			if (open) for (const c of mine) settles.push({ step: "flag", task: c, lastOfTicket: !!c.ticket && !tasks.some(o => o.ticket === c.ticket && stillOpen(o)) });
 			else if (!task.ticket) settles.push({ step: "cleared", task });

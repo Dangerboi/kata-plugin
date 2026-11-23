@@ -183,7 +183,10 @@ test("a ticket in another project is never taken for a plan item by its short id
   const ticket = await issue("Foreign ticket", { project: foreign });
   await app.init(["Plain item"]);
   const result = await app.call({ op: "done", task: `${foreign}#${ticket}` });
+  // omp's own not-found: a guard that took the ticket for a plan item would answer with its own refusal, or reach for the ticket in Kata.
   expect(result.isError).toBe(true);
+  expect(result.content[0].text).toContain(`Task "${foreign}#${ticket}" not found`);
+  expect(app.calls.filter(args => args.some(arg => arg.includes(ticket)))).toEqual([]);
   expect((await show(`${foreign}#${ticket}`)).issue.status).toBe("open");
 });
 
@@ -232,7 +235,7 @@ test("free text containing # is never shown as a Kata ref", async () => {
   const app = host(); await app.event("session_start"); await app.init(["Plain task"]);
   for (const target of ["Fix C# parser", "Fix #12 bug", "-flag#abc"]) {
     expect((await app.call({ op: "done", task: target })).isError).toBe(true);
-    expect(app.calls.some(a => a[0] === "show" && a[1] === target)).toBe(false);
+    expect(app.calls.some(args => args.includes(target))).toBe(false);
   }
 });
 

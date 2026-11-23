@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 import { eventually } from "./kata-fixture";
 import { v2Fixture } from "./v2-fixture";
+import { kataViews } from "./omp-host";
 import { isRead } from "../core/kata-cli";
 
 // The omp adapter against a real Kata, driven through omp's native todo: plan items that name tickets (their guard, mirror and
@@ -12,7 +13,7 @@ const namingPlan = (a: string, b: string) => [
   { phase: "Inbox", items: [`v2test#${b}: fetch the inbox`] },
 ];
 const closeRef = (ref: string, proof: string) => kata(["close", ref, "--done", "--message", message, "--test", proof, "--json"]);
-const labelsOf = async (ref: string) => ((await show(ref)).labels ?? []).map((label: any) => label.label);
+const { labelsOf } = kataViews(show);
 const titles = (view: any) => view.children.map((c: any) => c.title);
 const notified = (app: { notices: any[][] }, pattern: RegExp) => app.notices.some(args => pattern.test(String(args[0])));
 const begin = async () => { const app = host(); await app.event("session_start"); return app; };
@@ -165,9 +166,10 @@ test("completing the one item omp lists does not flag the ticket last while anot
   const a = await issue("Ticket A");
   const [first, second] = [`v2test#${a}: write the script`, `v2test#${a}: bump the version`];
   await app.call({ op: "init", items: [first, second] });
-  // A resumed session whose omp list never held the second item: the plan has it, omp's last-seen list does not.
+  // A resumed session whose omp list never held the second item: the plan has it, omp's last-seen list does not. No list sequence
+  // reaches it (a dropped item leaves the plan too), so the saved snapshot's memory of omp's list is edited.
   const entries = structuredClone(app.entries);
-  for (const entry of entries) if (entry.data?.nativePrev) delete entry.data.nativePrev[second];
+  for (const entry of entries) if (entry.data?.native?.prev) delete entry.data.native.prev[second];
   const resumed = host({ sid: app.sid, entries });
   await resumed.event("session_start");
   await resumed.edit([{ name: "Tasks", tasks: [{ content: first, status: "completed" }] }]);

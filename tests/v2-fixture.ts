@@ -2,8 +2,7 @@ import { mkdirSync } from "node:fs";
 import path from "node:path";
 import { EVIDENCE, MESSAGE, realKata, unique } from "./kata-fixture";
 import { daemonUnavailable, siblingThrottle } from "./kata-errors";
-import { ompHost } from "./omp-host";
-import { TRANSCRIPT_ENV } from "../core/kata-cli";
+import { clearTranscriptEnv, ompHost } from "./omp-host";
 
 /**
  * The omp adapter against a real Kata: a scratch workspace, its own store and daemon, and a fake omp host per call.
@@ -21,7 +20,7 @@ export function v2Fixture() {
       run: (args, opts) => run(args, opts.cwd, opts.timeout), cwd: options.cwd || cwd, sid, agent: options.agent, entries: options.entries,
       sessionFile: options.sessionFile || `${scratch}/${sid}.jsonl`, header: options.header, snapshot: options.snapshot, before: options.before,
       // The adapter spawns closes itself while a transcript session is exported, so a host that must see or fail closes runs without one; `transcript: true` keeps it.
-      afterEvent: () => { if (!options.transcript) for (const key of TRANSCRIPT_ENV) delete process.env[key]; },
+      afterEvent: () => { if (!options.transcript) clearTranscriptEnv(); },
     });
     // Not a spread copy: `sid` is a getter that follows `switchSession`.
     const init = app.init;

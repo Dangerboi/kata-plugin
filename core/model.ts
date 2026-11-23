@@ -15,6 +15,8 @@ export type Plan = Partial<Binding> & { workspace: string; tasks: Task[]; local?
 export type Change = { message?: string; evidence?: string[]; reason?: string; remove?: boolean };
 // What Kata's close as done needs: evidence, and a message of PROOF_MIN characters (whitespace runs count as one).
 export const PROOF_MIN = 40;
+// What Kata's close as wontfix needs: a message of WONTFIX_MIN characters.
+export const WONTFIX_MIN = 60;
 // What `change` lacks of that, as the clause that finishes "cannot be completed without"; undefined when it has proof.
 export function proofProblem(change: { message?: string; evidence?: string[] }): string | undefined {
 	const message = (change.message || "").replace(/\s+/g, " ").trim().length < PROOF_MIN;
@@ -115,7 +117,7 @@ export interface ToolWording {
 	retryTakeover: string;
 	takeOverFirst: string;
 	planUnder(ticket: string): string;
-	// What the host calls its own todo list in the notes and comments the core writes when it mirrors that list (hosts whose list the core mirrors).
+	// What the host calls its own todo list in the notes and comments the core writes when it mirrors that list; absent: "the todo list".
 	list?: string;
 }
 // The `todo` tool of pi, which takes ops. (omp's own tool takes the same ops, but has no takeover or ref parameter: see NATIVE_WORDING.)
@@ -128,16 +130,12 @@ export const TODO_WORDING: ToolWording = {
 	retryTakeover: "repeat the call with takeover: true",
 	takeOverFirst: "todo start with takeover: true",
 	planUnder: ticket => `todo init with ref ${ticket}`,
-	list: "the todo list",
 };
 
 // omp's own todo tool, whose list is mirrored into Kata. It has no `replace`, `takeover` or `ref` parameter: a held task is taken over by
 // the user's `/todo takeover`, and the plan parent is set by `kata claim` or `/todo ref`.
 export const NATIVE_WORDING: ToolWording = {
-	tool: "todo",
-	refresh: "Use todo op=view to refresh.",
-	plan: "Use todo op=init.",
-	planFirst: "Call todo op=init first.",
+	...TODO_WORDING,
 	leftOut: "Keep them in the list, or todo drop them first (todo append any that omp's list lacks), then call init again.",
 	retryTakeover: "ask the user to run /todo takeover with the task's text",
 	takeOverFirst: "ask the user to run /todo takeover with the task's text",

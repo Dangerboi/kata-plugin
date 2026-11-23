@@ -1,3 +1,4 @@
+import { TRANSCRIPT_ENV } from "../core/kata-cli";
 import { mock } from "bun:test";
 import ompKata from "../plugins/oh-my-pi/kata";
 import { EVIDENCE, fakeHost, MESSAGE, registry, type FakeHostOptions } from "./kata-fixture";
@@ -61,8 +62,76 @@ class FakeSessionManager {
   switchTo(id: string, header: any) { this.#id = id; this.#header = header; }
 }
 
-/** The notices the adapter shows when a mirror to Kata failed or was refused. */
-export const MIRROR_FAILURE = /Kata did not take the latest change|Kata refused the latest change/;
+/** The notice that says todo.backend is not Kata: a warning, but not a failed mirror. */
+const BACKEND_OFF = /Kata is not tracking your todo list/;
+
+/** The warnings among `notices` (`notify` argument lists) that are not the backend-off notice: every mirror failure or refusal, whatever its wording. */
+export const mirrorFailures = (notices: any[][]): any[][] => notices.filter(args => args[1] === "warning" && !BACKEND_OFF.test(String(args[0])));
+
+/** Removes the process-level variables the adapter sets while a transcript session is exported, because it spawns Kata outside the fake exec. */
+export const clearTranscriptEnv = () => { for (const key of TRANSCRIPT_ENV) delete process.env[key]; };
+
+/**
+ * The fake host with the omp adapter loaded: omp's agent, async jobs and event bus on the shared fake host. `makeManager` builds the
+ * session manager over the host's entries (default: `FakeSessionManager`); `extra` is merged into the adapter's api.
+ */
+function loadAdapter(options: OmpHostOptions, makeManager?: (entries: any[]) => any, extra: Record<string, unknown> = {}) {
+  const host = fakeHost(options), bus = registry();
+  const { ctx } = host;
+  ctx.sessionManager = makeManager ? makeManager(host.entries) : new FakeSessionManager(options.sid, host.entries, options.header, options.sessionFile);
+  ctx.agent = options.agent || { kind: "main", id: `main-${options.sid}` };
+  ctx.getAsyncJobSnapshot = () => options.snapshot?.() || { running: [], recent: [] };
+  void setBackend("kata");
+  ompKata({ ...host.api, ...extra, pi: { settings }, events: { on: bus.on }, ...options.sendUserMessage && { sendUserMessage: options.sendUserMessage } });
+  return { host, bus };
+}
+
+/**
+ * A host that hands the adapter's todo backend to the test, so two `replace` calls of one session can overlap as the core's queue
+ * allows; `ompHost` runs one `replace` at a time. It keeps no list and does no backend selection. Its session manager is omp's:
+ * every appended entry gets a new id on the current branch and moves the leaf to it.
+ */
+export function rawOmpHost(sid: string, options: Omit<OmpHostOptions, "sid">) {
+  let entries!: any[], current = sid, branch!: any[], leaf: string | null = null, appended = 0, afterAppend: (() => void) | undefined;
+  const appendEntry = (customType: string, data: any) => {
+    const entry = { id: `entry-${sid}-${++appended}`, parentId: leaf, type: "custom", customType, data };
+    if (branch !== entries) entries.push(entry);
+    branch.push(entry);
+    leaf = entry.id;
+    const hook = afterAppend; afterAppend = undefined; hook?.();
+  };
+  const { host: app } = loadAdapter({ ...options, sid }, list => {
+    entries = branch = list;
+    return { getSessionId: () => current, getLeafId: () => leaf, getBranch: () => branch, getEntries: () => entries, getHeader: () => ({}), getSessionFile: () => undefined };
+  }, { appendEntry });
+  const event = async (name: string) => { try { await app.event(name); } finally { clearTranscriptEnv(); } };
+  return { app, event, replace: (phases: any[]) => app.todoBackend.replace(phases, app.ctx), switchTo: (next: string) => { current = next; },
+    /** /tree: the same session now answers for another branch and leaf. */
+    moveTo: (next: any[], nextLeaf: string | null) => { branch = next; leaf = nextLeaf; },
+    /** /tree right after the next saved entry: the move lands between one mirror's save and the next mirror's bind. */
+    moveAfterNextAppend: (next: any[], nextLeaf: string | null) => { afterAppend = () => { branch = next; leaf = nextLeaf; }; },
+    /** Runs `then` right after the next saved entry, as another caller appending to the session would. */
+    afterNextAppend: (then: () => void) => { afterAppend = then; },
+    /** /tree to an earlier entry: the branch is the entries up to it; the entries after it stay in `app.entries`. */
+    moveToEntry: (id: string) => { branch = entries.slice(0, entries.findIndex((e: any) => e.id === id) + 1); leaf = id; } };
+}
+
+/** The Kata views the omp tests share, over the fixture's `show`. */
+export function kataViews(show: (ref: string) => Promise<any>) {
+  const refOf = (short: string) => `v2test#${short}`;
+  const children = async (parent: string): Promise<any[]> => (await show(parent)).children ?? [];
+  const childRef = async (parent: string, title: string): Promise<string> => {
+    const child = (await children(parent)).find((c: any) => c.title === title);
+    if (!child) throw new Error(`${parent} has no child "${title}"`);
+    return refOf(child.short_id);
+  };
+  return {
+    refOf, children, childRef,
+    issueOf: async (ref: string) => (await show(ref)).issue,
+    labelsOf: async (ref: string): Promise<string[]> => ((await show(ref)).labels ?? []).map((l: any) => l.label),
+    titles: async (parent: string) => (await children(parent)).map((c: any) => c.title).sort(),
+  };
+}
 
 /**
  * The fake omp host: the shared fake host plus omp's agent, session file, async jobs and event bus, with the omp adapter loaded,
@@ -70,14 +139,9 @@ export const MIRROR_FAILURE = /Kata did not take the latest change|Kata refused 
  * `contractReady` settles once the adapter's contract read has answered.
  */
 export function ompHost(options: OmpHostOptions) {
-  const host = fakeHost(options), bus = registry();
+  const { host, bus } = loadAdapter(options);
   const { ctx } = host;
-  const manager = new FakeSessionManager(options.sid, host.entries, options.header, options.sessionFile);
-  ctx.sessionManager = manager;
-  ctx.agent = options.agent || { kind: "main", id: `main-${options.sid}` };
-  ctx.getAsyncJobSnapshot = () => options.snapshot?.() || { running: [], recent: [] };
-  void setBackend("kata");
-  ompKata({ ...host.api, pi: { settings }, events: { on: bus.on }, ...options.sendUserMessage && { sendUserMessage: options.sendUserMessage } });
+  const manager = ctx.sessionManager as FakeSessionManager;
 
   // Each agent's todo list, keyed by agent id as omp keeps one per session. The runner's `#todoSent` (runner.ts, `#sendTodoList`)
   // is what the backend last took: `undefined` is omp's "none", which an empty list does not replace, and it holds the session id too.
@@ -179,8 +243,8 @@ export function ompHost(options: OmpHostOptions) {
 
   const app = { ctx, get sid() { return manager.getSessionId(); }, entries: host.entries, calls: host.calls, notices: host.notices, widgets: host.widgets,
     contractReady: host.answered("agent-contract-hook"),
-    /** The "did not take the latest change" and "refused the latest change" notices: the adapter catches a failing `replace` and tells the user, so a mirror that failed shows only here. */
-    mirrorFailures: () => host.notices.filter(args => MIRROR_FAILURE.test(String(args[0]))),
+    /** Every warning the adapter showed except the backend-off one: a failing or refused mirror shows only here, because the adapter catches a failing `replace` and tells the user. */
+    mirrorFailures: () => mirrorFailures(host.notices),
     event: async (name: string, data: any = {}, context: any = ctx) => {
       try { return await host.event(name, data, context); }
       finally {

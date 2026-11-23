@@ -18,13 +18,14 @@ import { spawn } from "node:child_process";
 import { BroadcastChannel, isMainThread, threadId } from "node:worker_threads";
 import { closeSync, openSync, readSync } from "node:fs";
 import { createInterface } from "node:readline";
-import { createKataCore, guardedNativeCall, NATIVE_TODO_COMMANDS, PROMPT_TAGS, snapshotEntry, tagged } from "./kata-core";
+import { createKataCore, NATIVE_TODO_COMMANDS, PROMPT_TAGS, snapshotEntry, tagged } from "./kata-core";
 import { execKata, exportTranscriptSession, nodePlatform, sessionKey } from "./node-host";
-import { closeEnv, debugTo, NO_JOB, waitAtMost } from "./kata-cli";
+import { closeEnv, debugTo, NO_JOB } from "./kata-cli";
 import { delegateCommand, kataCommands as parseKataCommands } from "./shell";
 import { FINAL, isUntracked, Refusal, teammateFor } from "./delegates";
 import { textOf } from "./model";
 import type { DelegateOutcome, DelegateRecord, Delegates, DelegateStore } from "./delegates";
+import type { Setting } from "@oh-my-pi/pi-coding-agent/config/registry";
 import type { InboxStream } from "./inbox";
 
 // What the lead's Delegates takes from an adapter other than the lead itself: a delegate's next use runs in the lead's queue.
@@ -52,7 +53,7 @@ const leads = new Map<string, DelegateEvents>();
 // The `todo.backend` setting, found once per module copy (per thread), and one settings listener that only feeds the
 // main session's off-notice through `backendWatchers`. Whether the backend is Kata is read through `setting` against the
 // calling instance's own settings each time, so it stays right when the listener's settings object is gone.
-let setting: { get(settings: unknown): string; listen(settings: unknown, listener: (next: string) => void): unknown } | undefined;
+let setting: Setting | undefined;
 const backendWatchers = new Set<(next: string) => void>();
 // One import shared by concurrent callers; kept once the setting is found, dropped when it is not (yet) available so a later call retries.
 let following: Promise<void> | undefined;
@@ -70,8 +71,6 @@ function followBackend(settings: unknown, debug: (error: unknown) => void): Prom
 	return following;
 }
 
-// The most a todo call waits for a delegate's queued next use: the guard's own bound, well under omp's 30 s handler timeout.
-const GUARD_WAIT_MS = 10_000;
 // omp runs a subagent on a worker thread once enough run at once, and loads a separate copy of this module there, so
 // the records and lead Delegates above stay on the main thread. A worker's copy asks the main thread's copy over this
 // channel (omp's event bus does not cross threads) and keeps the answer in its own map, which its store then reads.
@@ -238,11 +237,11 @@ export default function ompKata(pi: any) {
 	const enter = async (ctx: any) => { see(ctx); await syncJobs(ctx); };
 
 	// omp's context and session manager are class instances with private fields: a method only works called on the
-	// original, so the view is a plain object (never Object.create or a spread). The branch, header and file are captured
+	// original, so the view is a plain object (never Object.create or a spread). The branch and header are captured
 	// by the caller before its first await, since the originals answer for omp's CURRENT session and leaf (a /new, a resume or
 	// a /tree move changes them); the view answers from those copies, except `getEntries`, the one live read.
 	type Header = { parentSession?: unknown } | null | undefined;
-	const boundContext = (ctx: any, id: string | undefined, captured: { branch: unknown[]; header: Header; file: string | undefined }) => {
+	const boundContext = (ctx: any, id: string | undefined, captured: { branch: unknown[]; header: Header }) => {
 		const bind = (owner: any, name: string) => typeof owner?.[name] === "function" ? owner[name].bind(owner) : undefined;
 		return {
 			cwd: ctx?.cwd, agent: ctx?.agent, ui: ctx?.ui,
@@ -251,7 +250,6 @@ export default function ompKata(pi: any) {
 				getSessionId: () => id,
 				getBranch: () => captured.branch,
 				getHeader: () => captured.header,
-				getSessionFile: () => captured.file,
 				getEntries: bind(ctx?.sessionManager, "getEntries"),
 			},
 		};
@@ -270,7 +268,6 @@ export default function ompKata(pi: any) {
 			const captured = {
 				branch: [...(sm?.getBranch?.() ?? [])] as unknown[],
 				header: sm?.getHeader?.() as Header,
-				file: sm?.getSessionFile?.() as string | undefined,
 			};
 			try {
 				await enter(ctx);
@@ -279,19 +276,21 @@ export default function ompKata(pi: any) {
 		},
 	});
 
-	// Which backend omp has selected is read lazily (see `followBackend`), from this instance's own settings; the off-notice below is per session.
+	// Which backend omp has selected is read lazily (see `followBackend`), from this instance's own settings.
 	let noticeFor: string | undefined;
-	const chosen = (): string | undefined => setting?.get(pi.pi.settings);
-	const active = () => chosen() === BACKEND_ID;
-	function offWatcher(next: string) { if (next !== BACKEND_ID && seen && main(seen)) notifyOff(seen, next); }
-	const follow = () => followBackend(pi.pi.settings, debug);
-	// Once per session: with another backend selected nothing reaches Kata.
-	function notifyOff(ctx: any, backend: string) {
+	async function kataBackend(): Promise<boolean> {
+		await followBackend(pi.pi.settings, debug);
+		return setting?.get(pi.pi.settings) === BACKEND_ID;
+	}
+	// Once per session, main session only: with another backend selected nothing reaches Kata.
+	function offNotice(ctx: any, backend: string | undefined = setting?.get(pi.pi.settings)) {
+		if (!main(ctx) || backend === undefined || backend === BACKEND_ID) return;
 		const id = sessionId(ctx);
 		if (!id || noticeFor === id) return;
 		noticeFor = id;
 		ctx.ui?.notify?.(`Kata is not tracking your todo list: omp's todo backend is "${backend}". Pick Kata under /settings → Tools → Todos → Todo Backend.`, "warning");
 	}
+	function offWatcher(next: string) { if (seen) offNotice(seen, next); }
 
 	// /todo is built in and omp reserves its name; intercept the Kata subcommands before its dispatcher. Every other /todo is omp's.
 	pi.on("input", async (event: any, ctx: any) => {
@@ -299,13 +298,11 @@ export default function ompKata(pi: any) {
 		const text = event.text.trim();
 		const match = /^\/todo\s+(\S+)(?:\s+([\s\S]*))?$/.exec(text);
 		if (match && (NATIVE_TODO_COMMANDS as readonly string[]).includes(match[1]!)) {
-			await follow();
-			if (active()) {
+			if (await kataBackend()) {
 				ctx.ui?.notify?.(await core.todo.command(ctx, `${match[1]} ${match[2] ?? ""}`.trim()), "info");
 				return { handled: true };
 			}
 		}
-		if (event.source === "interactive" && !text.startsWith("/")) core.session.input();
 	});
 
 	// The Delegates that owns a delegate's record is the lead's, on the main thread; a worker's copy reaches it over the channel.
@@ -384,11 +381,10 @@ export default function ompKata(pi: any) {
 		await core.tools.call(ctx);
 		const record = ctx.agent?.kind === "sub" ? await recordOf(ctx) : undefined;
 		if (record) ranTool(record);
-		if (event.toolName === "todo" && (await follow(), active())) {
+		if (event.toolName === "todo" && await kataBackend()) {
 			const owner = main(ctx) ? core : record && !isUntracked(record) ? core.delegate(record.id) : undefined;
-			// A delegate's turn waits for its queued next use only when its guard will run, and never past the bound.
-			if (!main(ctx) && owner && guardedNativeCall(event.input)) await waitAtMost(nextUseOf(ctx) ?? Promise.resolve(), GUARD_WAIT_MS, debug, nodePlatform);
-			const reason = await owner?.todo.guard(ctx, event.input);
+			// A delegate's guard waits for its queued next use, inside the guard's own time bound.
+			const reason = await owner?.todo.guard(ctx, event.input, !main(ctx) ? nextUseOf(ctx) : undefined);
 			if (reason) return { block: true, reason };
 		}
 		if (main(ctx) && event.toolName === "task" && event.toolCallId) {
@@ -456,7 +452,7 @@ export default function ompKata(pi: any) {
 		} else if (call) over(event.toolCallId);
 		await core.tools.result(ctx, event);
 		// A delegate's todo list is not mirrored by omp (backends are main-session only), so its result carries the list here.
-		if (event.toolName === "todo" && !event.isError && ctx.agent?.kind === "sub" && event.details?.op !== "view" && Array.isArray(event.details?.phases) && (await follow(), active())) {
+		if (event.toolName === "todo" && !event.isError && ctx.agent?.kind === "sub" && event.details?.op !== "view" && Array.isArray(event.details?.phases) && await kataBackend()) {
 			const record = await recordOf(ctx);
 			if (record && !isUntracked(record)) {
 				await nextUseOf(ctx);
@@ -464,7 +460,7 @@ export default function ompKata(pi: any) {
 			}
 		}
 	});
-	// The todo reminder is gone: omp's own todo tracker reminds, and the mirror keeps Kata in step with it.
+	// omp's own todo tracker does the reminding; the mirror keeps Kata in step with it.
 	pi.on("session_stop", async (event: any, ctx: any) => {
 		await enter(ctx);
 		await core.session.settle(ctx, event.signal);
@@ -474,7 +470,6 @@ export default function ompKata(pi: any) {
 		// omp discards the result of a revive and nothing needs the work.
 		if (event.reason === "revive") return;
 		await enter(ctx);
-		await follow();
 		const { sections } = await core.session.beforePrompt(ctx, { after: !main(ctx) ? nextUseOf(ctx) : undefined });
 		const ours = new RegExp(`^<(${Object.values(PROMPT_TAGS).join("|")})>`);
 		const base = (Array.isArray(event.systemPrompt) ? event.systemPrompt : [event.systemPrompt || ""]).filter((s: string) => !ours.test(s));
@@ -483,9 +478,9 @@ export default function ompKata(pi: any) {
 		if (sections.contract && !base.some((s: string) => s.includes(sections.contract!.slice(0, 80)))) out.push(tagged("contract", sections.contract));
 		if (sections.assignment) out.push(tagged("assignment", sections.assignment));
 		if (sections.inbox) out.push(tagged("inbox", sections.inbox));
-		const current = main(ctx) ? chosen() : undefined;
-		if (current !== undefined && current !== BACKEND_ID) notifyOff(ctx, current);
-		if (main(ctx) && active() && sections.todo) out.push(tagged("todo", sections.todo));
+		const kata = await kataBackend();
+		offNotice(ctx);
+		if (main(ctx) && kata && sections.todo) out.push(tagged("todo", sections.todo));
 		if (!out.length) return;
 		return { systemPrompt: [...base, out.join("\n\n")] };
 	});
@@ -495,10 +490,9 @@ export default function ompKata(pi: any) {
 		if (!main(ctx)) { await core.session.start(ctx, { after: nextUseOf(ctx) }); return; }
 		core.offerTickets(ctx.ui);
 		exportTranscriptSession(NAMESPACE, sessionId(ctx));
-		await follow();
+		await kataBackend();
 		await core.session.start(ctx);
-		const current = chosen();
-		if (current !== undefined && current !== BACKEND_ID) notifyOff(ctx, current);
+		offNotice(ctx);
 	}
 
 	pi.on("session_start", (_event: any, ctx: any) => begin(ctx));
