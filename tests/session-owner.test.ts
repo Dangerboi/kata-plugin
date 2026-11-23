@@ -5,7 +5,7 @@ import type { TodoStatus } from "./omp-native-todo";
 
 // Who holds a plan task when several lead sessions of one user share a plan parent, on omp's native todo. Two leads have the same
 // actor and the same empty teammate (no KATA_TEAMMATE): only the session marker tells them apart. A session marks the tasks its
-// native list starts (the first pending task starts with an init), the guard refuses a todo call on a task another session holds,
+// native list starts (the first pending task starts with an init), the backend refuses a todo call on a task another session holds,
 // and only the user's `/todo takeover <task>` moves it. Releases at shutdown and switch, forks and resumes are checked here too.
 const store = realKata({ prefix: "session-owner", author: "actor-a", project: "omptest", adopt: true });
 const { cwd, run, kata, show } = store;
@@ -15,7 +15,7 @@ const meta = async (ref: string) => (await show(ref)).issue.metadata ?? {};
 const title = (label: string) => `${label} ${unique()}`;
 const task = (parent: string, content: string, status: "pending" | "in_progress" = "pending", extra: string[] = []) =>
   store.issue(content, { parent, meta: ["todo.phase=Tasks", `todo.status=${status}`, ...extra] });
-// The agent's own `kata close` in its shell: the guard lets a native done through once Kata has the close.
+// The agent's own `kata close` in its shell: the backend lets a native done through once Kata has the close.
 const closeTask = (ref: string) => kata(["close", ref, "--done", "--message", MESSAGE, ...EVIDENCE.flatMap(e => ["--evidence", e]), "--json"]);
 
 // A refusal for a task another session holds: names the holder and sends the model to the user.

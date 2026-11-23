@@ -3,7 +3,7 @@ import { eventually } from "./kata-fixture";
 import { v2Fixture } from "./v2-fixture";
 import { kataViews } from "./omp-host";
 
-// The omp adapter against a real Kata, on omp's native `todo`: the guard that refuses calls (`tool_call`) and the mirror that follows
+// The omp adapter against a real Kata, on omp's native `todo`: the backend's `apply` that refuses calls before they commit and the mirror that follows
 // the list into Kata (the todo backend's `replace`). Edge cases of both, one behaviour per test.
 const { show, issue, host, down, total, commentsOf, sessionParents, closesOf, scratch, kata, message } = v2Fixture();
 
@@ -146,7 +146,7 @@ test("after /todo ref an init that leaves out the parent's open child is refused
   expect(await titles(parent)).toEqual([(await issueOf(existing)).title]);
 });
 
-test("with todo.backend native the plugin neither guards nor mirrors and says so once; switching back mirrors the current list", async () => {
+test("with todo.backend native the plugin neither asks `apply` nor mirrors and says so once; switching back mirrors the current list", async () => {
   const app = host(); await app.event("session_start");
   const parent = await app.init(["Write parser", "Write docs"]);
   const child = await childRef(parent, "Write parser");
@@ -185,7 +185,41 @@ test("of several calls in one message only the done whose child was closed befor
   expect((await issueOf(openChild)).status).toBe("open");
 });
 
-test("a delegate's todo with no assignment is neither guarded nor mirrored", async () => {
+test("a task closed in Kata earlier in the same message is accepted as done: omp asks when the call commits", async () => {
+  const app = host(); await app.event("session_start");
+  const parent = await app.init(["Write parser", "Write docs"]);
+  const parserRef = await childRef(parent, "Write parser");
+  const [done] = await app.batch([() => app.close("Write parser"), { op: "done", task: "Write parser" }]);
+  expect(done!.isError, done!.content[0].text).toBeUndefined();
+  expect((await issueOf(parserRef)).status).toBe("closed");
+  expect(app.list()[0]!.tasks.find(t => t.content === "Write parser")!.status).toBe("completed");
+  expect(await labelsOf(parserRef)).not.toContain("needs-review");
+});
+
+test("a refused call is no extension error, leaves Kata and the list as they were, and says which task to close", async () => {
+  const app = host(); await app.event("session_start");
+  const parent = await app.init(["Write parser", "Write docs"]);
+  const before = app.list();
+  const refused = await app.call({ op: "done", task: "Write docs" });
+  expect(refused.isError).toBe(true);
+  expect(refused.details.refused).toBe(true);
+  expect(refused.content[0].text).toMatch(/^Todo backend "kata" did not accept this change: "Write docs" is open in Kata as /);
+  expect(app.list()).toEqual(before);
+  expect(app.mirrorFailures()).toEqual([]);
+  expect((await issueOf(await childRef(parent, "Write docs"))).status).toBe("open");
+});
+
+test("an accepted change is in Kata when the call returns, without a replace after it", async () => {
+  const app = host(); await app.event("session_start");
+  const parent = await app.init(["Write parser"]);
+  const mark = app.calls.length;
+  expect((await app.call({ op: "append", items: ["Write docs"] })).isError).toBeUndefined();
+  expect(await titles(parent)).toEqual(["Write docs", "Write parser"]);
+  const created = app.calls.slice(mark).filter(c => c[0] === "create");
+  expect(created).toHaveLength(1);
+});
+
+test("a delegate's todo with no assignment is neither asked nor mirrored", async () => {
   const lead = host(); await lead.event("session_start");
   const parent = await lead.init(["Lead task"]);
   const delegate = host({ agent: { kind: "sub", id: "unassigned-delegate", parentId: lead.ctx.agent.id } });
@@ -290,7 +324,7 @@ test("after /todo ref the init refusal for a child omp never listed advises appe
   expect((await issueOf(await childRef(parent, "Fresh one"))).status).toBe("open");
 });
 
-test("a task moved to another phase in omp is still guarded by done on that phase while its issue is open", async () => {
+test("a task moved to another phase in omp is still refused by done on that phase while its issue is open", async () => {
   const app = host(); await app.event("session_start");
   const parent = await app.init(["Write parser", "Write docs"]);
   const child = await childRef(parent, "Write parser");
@@ -399,7 +433,7 @@ test("an init with no op and only items, sent while omp's list is empty, is refu
   } finally { delete process.env.KATA_REF; }
 });
 
-test("after every task is removed, leaving empty phases, a call with only items and no op is not an init for the guard", async () => {
+test("after every task is removed, leaving empty phases, a call with only items and no op is not an init for `apply`", async () => {
   const parent = refOf(await issue("Explicit parent"));
   const existing = refOf(await planTask("Existing work", parent));
   const app = host(); await app.event("session_start");
@@ -409,7 +443,7 @@ test("after every task is removed, leaving empty phases, a call with only items 
   expect(app.list().length).toBeGreaterThan(0);
   expect(app.list().every(p => p.tasks.length === 0)).toBe(true);
   const result = await app.call({ items: ["Fresh three"] });
-  // omp's own schema error: no op can be inferred while its list has phases. The guard's init refusal would name the open task instead.
+  // omp's own schema error: no op can be inferred while its list has phases. The init refusal would name the open task instead.
   expect(result.isError).toBe(true);
   expect(result.content[0].text).toContain("op must be present");
   expect(result.content[0].text).not.toContain("leaves out");

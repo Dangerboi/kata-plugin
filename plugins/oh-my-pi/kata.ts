@@ -4,8 +4,9 @@
 //   - a todo backend (`registerTodoBackend`) that mirrors the whole list into Kata after omp saves it, with every
 //     task a Kata child issue. It works once `todo.backend` is `kata` (/settings → Tools → Todos); with another
 //     backend selected the plugin leaves todos alone and says so once per session;
-//   - a `tool_call` guard that refuses todo calls Kata's rules forbid (a done on a task still open in Kata, an init that
+//   - the backend's `apply`, which omp asks before the main session's `todo` call commits and which refuses what Kata's rules forbid (a done on a task still open in Kata, an init that
 //     leaves open tasks out, a task another session holds), so the model gets the reason as the tool's error;
+//   - a `tool_call` guard with the same refusals for a delegate's `todo` calls, which omp never asks a backend about;
 //   - `/todo takeover` and `/todo ref`, intercepted on input; every other `/todo` is omp's;
 //   - the todo rules in the system prompt, cached Kata contracts, guarded main-session attention, and delegate identity.
 //
@@ -255,24 +256,30 @@ export default function ompKata(pi: any) {
 		};
 	};
 
-	// omp's own `todo` tool runs; Kata mirrors its list through this backend after omp has saved it. A throw only
-	// reports an extension error, so nothing here rejects.
+	// omp's own `todo` tool runs. `apply` is asked before the model's call commits: a throw refuses it, and on accept Kata
+	// already holds the change's list, so omp sends no `replace` for it. `replace` mirrors every other change after omp has
+	// saved it; a throw there only reports an extension error, so nothing in it rejects.
+	// The context a backend call works on, read before its first await: a later /new changes what the session manager answers.
+	const captureContext = (ctx: any) => {
+		const id = sessionId(ctx), sm = ctx?.sessionManager;
+		return boundContext(ctx, id, { branch: [...(sm?.getBranch?.() ?? [])] as unknown[], header: sm?.getHeader?.() as Header });
+	};
 	pi.registerTodoBackend({
 		id: BACKEND_ID,
 		label: "Kata",
 		description: "Mirrors the todo list into Kata issues",
 		async replace(phases: any, ctx: any) {
-			// Read before the first await: a later /new changes what the session manager answers.
-			const id = sessionId(ctx);
-			const sm = ctx?.sessionManager;
-			const captured = {
-				branch: [...(sm?.getBranch?.() ?? [])] as unknown[],
-				header: sm?.getHeader?.() as Header,
-			};
+			const bound = captureContext(ctx);
 			try {
 				await enter(ctx);
-				await core.todo.mirror(boundContext(ctx, id, captured), phases);
+				await core.todo.mirror(bound, phases);
 			} catch (error) { debug(error); }
+		},
+		async apply(change: any, ctx: any) {
+			const bound = captureContext(ctx);
+			await enter(ctx);
+			const refusal = await core.todo.accept(bound, change);
+			if (refusal) throw new Error(refusal);
 		},
 	});
 
@@ -381,10 +388,9 @@ export default function ompKata(pi: any) {
 		await core.tools.call(ctx);
 		const record = ctx.agent?.kind === "sub" ? await recordOf(ctx) : undefined;
 		if (record) ranTool(record);
-		if (event.toolName === "todo" && await kataBackend() === BACKEND_ID) {
-			const owner = main(ctx) ? core : record && !isUntracked(record) ? core.delegate(record.id) : undefined;
-			// A delegate's guard waits for its queued next use, inside the guard's own time bound.
-			const reason = await owner?.todo.guard(ctx, event.input, !main(ctx) ? nextUseOf(ctx) : undefined);
+		// omp asks a backend's `apply` about the main session's calls only, so a tracked delegate's todo call is guarded here; the main session never is.
+		if (event.toolName === "todo" && !main(ctx) && record && !isUntracked(record) && await kataBackend() === BACKEND_ID) {
+			const reason = await core.delegate(record.id).todo.guard(ctx, event.input, nextUseOf(ctx));
 			if (reason) return { block: true, reason };
 		}
 		if (main(ctx) && event.toolName === "task" && event.toolCallId) {

@@ -4,6 +4,20 @@ All notable changes to `@dangerboi/kata-omp` are listed here. The format follows
 
 ## [Unreleased]
 
+### Changed
+
+#### Requirements
+
+- **Breaking:** the plugin requires oh-my-pi 19.2.0 or later, the release whose todo backends can veto a `todo` call before it commits.
+
+#### Plans
+
+- The main session's `todo` calls are refused through the `kata` backend's `apply` instead of a `tool_call` guard, with the same refusal texts: a `done` on a task still open in Kata, an `init` that leaves open tasks out, and any op on a task another session holds.
+  - A `kata close` and a `todo done` in the same assistant message now pass, because omp asks when the call commits and the close has run by then.
+  - The main session has no 10 second fail-open any more. omp bounds `apply` itself; a late answer or a changed list fails the call and omp sends Kata its full list.
+  - A refusal fails the call with the list unchanged and no longer adds omp's retry reminder.
+  - omp asks `apply` in the main session only, so a delegate subagent's `todo` calls keep the `tool_call` guard, with its 10 second fail-open. `/todo` edits and RPC `set_todos` are mirrored, never refused.
+
 ## [3.0.0] - 2026-11-23
 
 ### Added

@@ -54,7 +54,7 @@ test("tracked worker todo uses its assigned issue and teammate from an unbound w
   const tasks = (await show(`v2test#${assigned.short_id}`)).children;
   expect(tasks[0].metadata.teammate).toBe(assigned.metadata.teammate);
   const taskRef = `v2test#${tasks[0].short_id}`;
-  // The guard refuses a native done while the task is open in Kata; the delegate closes it, then marks it done.
+  // The delegate's tool_call guard refuses a native done while the task is open in Kata; the delegate closes it, then marks it done.
   expect((await worker.call({ op: "done", task: "Verify assigned worker" })).isError).toBe(true);
   await kata(["close", taskRef, "--done", "--message", message, "--test", "external verification", "--json"]);
   expect((await worker.call({ op: "done", task: "Verify assigned worker" })).isError).toBeUndefined();

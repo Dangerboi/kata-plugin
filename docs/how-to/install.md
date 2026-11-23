@@ -14,7 +14,7 @@ Plain `go build`, `go install …@latest` and tagless clones can report `dev` or
 
 ## Oh-my-pi
 
-Requires oh-my-pi 19.1.1 or later: the plugin registers a todo backend, which older omp releases cannot load.
+Requires oh-my-pi 19.2.0 or later: the plugin registers a todo backend with `apply`, which older omp releases do not ask.
 
 ```sh
 omp plugin marketplace add /path/to/kata-plugin

@@ -2,7 +2,7 @@
 // data: scripted turns per agent plus assertions over the throwaway Kata store.
 // omp runs its own native `todo` tool; the plugin mirrors that list into Kata through
 // the `kata` todo backend (the driver selects it for every run) and refuses `todo`
-// calls Kata's rules forbid. Scripts therefore send native params only, and they close
+// calls Kata's rules forbid, through the backend's `apply` (omp asks it at execute time). Scripts send native params only, and they close
 // a plan task with a `kata close` bash call before `todo done`. Assertions read the
 // store, or the tool results a request carried, never a todo result's details.
 // Add a scenario by appending an entry to SCENARIOS. The driver and the scripted
@@ -78,6 +78,7 @@ export type Scenario = {
 	check?(store: Store, vars: Record<string, string>): Promise<Check[]>;
 };
 
+const SAME = "[smoke:same]";
 const MAIN = "[smoke:main]";
 const SUB = "[smoke:sub]";
 const SCOUT = "[smoke:scout]";
@@ -203,6 +204,31 @@ export const SCENARIOS: Scenario[] = [{
 			{ name: "the main agent's bash close inherits the omp session", ok: bashClosed?.status === "closed" && closeTranscript(bashClosed)?.agent === "omp" && closeTranscript(bashClosed)?.session_id === closeTranscript(tests)?.session_id, detail: `${bashClosed?.status} ${JSON.stringify(closeTranscript(bashClosed))}` },
 			{ name: "the delegate's bash close records the omp session of the delegate, not the lead's", ok: closeTranscript(parser)?.agent === "omp" && !!closeTranscript(parser)?.session_id && closeTranscript(parser)?.session_id !== closeTranscript(tests)?.session_id, detail: JSON.stringify(closeTranscript(parser)) },
 			{ name: "session shutdown closed the automatic parent", ok: parent?.status === "closed", detail: parent?.status },
+		];
+	},
+}, {
+	name: "same-message",
+	// The todo backend's apply runs at execute time, after the close earlier in the same assistant message has finished, so no guard refuses the done.
+	prompt: `${SAME} Plan one task, then close it and mark it done in a single message.`,
+	livePrompt: () => "Use the todo tool to plan one item, 'Write parser tests'. Find its Kata ref (the Kata todo section of your prompt, or kata list). Then, in ONE message with two tool calls, send kata close <ref> --done --message '<40+ characters>' --test 'bun smoke scenario ran' and the todo tool's done for 'Write parser tests'. Do not send them in separate messages. Change no files. Stop when it is done.",
+	scripts: {
+		[SAME]: [
+			[{ tool: "todo", args: { op: "init", list: [{ phase: "Parser", items: ["Write parser tests"] }] } }],
+			[{ tool: "bash", args: { command: showChild("Write parser tests") } }],
+			// One assistant message, two tool calls: the close runs first, then the done is applied.
+			[{ tool: "bash", args: { command: closeChild("Write parser tests", "bun smoke scenario ran") } }, { tool: "todo", args: { op: "done", task: "Write parser tests" } }],
+			["The parser tests task is finished."],
+		],
+	},
+	async check(store) {
+		const tests = (await store.issues()).find(i => i.title === "Write parser tests");
+		const dones = store.tools().filter(t => t.tool === "todo" && t.op === "done");
+		const results = store.requests().flatMap(r => r.results);
+		return [
+			{ name: "the todo done sent in the same message as the close was not an error", ok: dones.length > 0 && !dones[0].isError, detail: JSON.stringify(dones.map(t => t.isError)) },
+			{ name: "no tool result in any request said the child is open in Kata", ok: !results.some(t => t.includes("is open in Kata as")), detail: results.filter(t => t.includes("open in Kata")).join(" | ") },
+			{ name: "the plan task's Kata child is closed with the recorded evidence", ok: tests?.status === "closed" && closeEvidence(tests).some(e => e.type === recorded.type && e.command === recorded.command), detail: `${tests?.status} ${JSON.stringify(closeEvidence(tests))}` },
+			{ name: "exactly one todo done call was made, so there was no retry", ok: dones.length === 1, detail: `${dones.length} done calls` },
 		];
 	},
 }, {

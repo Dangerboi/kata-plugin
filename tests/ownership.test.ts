@@ -27,8 +27,8 @@ function host(parent: string | undefined, before?: Before) {
       return before?.(comparable);
     },
   });
-  // A native start with no task fails in omp and changes nothing, but the guard runs it through the core's queue first: awaiting it
-  // waits for the session's bind and for whatever the core queued before it.
+  // A native start with no task fails in omp and changes nothing, but its `tool_call` event still reaches the core, and awaiting it
+  // waits for the session's bind.
   const flush = () => app.call({ op: "start" });
   return {
     calls, get notices() { return app.notices.map(args => args[0] as string); },

@@ -4,8 +4,8 @@ import { v2Fixture } from "./v2-fixture";
 import { kataViews } from "./omp-host";
 import { isRead } from "../core/kata-cli";
 
-// The omp adapter against a real Kata, driven through omp's native todo: plan items that name tickets (their guard, mirror and
-// comments), delegates working a ticket an item names, and the guard's check of an init against the plan's open tasks.
+// The omp adapter against a real Kata, driven through omp's native todo: plan items that name tickets (their refusals, mirror and
+// comments), delegates working a ticket an item names, and the backend's check of an init against the plan's open tasks.
 // Behaviour that only the other hosts' todo tool still has (done with evidence, block, replace, held ticket closes) is in pi-tickets.test.ts.
 const { scratch, kata, show, issue, host, message, total, commentsOf, sessionParents, closesOf } = v2Fixture();
 const namingPlan = (a: string, b: string) => [
@@ -410,7 +410,8 @@ test("init names only the open tasks the new list leaves out", async () => {
   const mark = app.calls.length;
   const result = await app.call({ op: "init", items: ["One", "Four"] });
   expect(result.isError).toBe(true);
-  const text = result.content[0].text;
+  // The first line is the refusal; the lines after it are omp's own summary of the unchanged list, which names every task.
+  const text = result.content[0].text.split("\n")[0];
   expect(text).toContain("Two"); expect(text).toContain("Three");
   expect(text).not.toContain("One"); expect(text).not.toContain("Four");
   expect(kataWrites(app.calls.slice(mark))).toEqual([]);

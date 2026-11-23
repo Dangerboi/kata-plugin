@@ -341,7 +341,7 @@ for (const match of ["active", "named"]) test(`delegation naming ${match === "ac
   const prompt = (await child.event("before_agent_start", { systemPrompt: [] })).systemPrompt.join("\n");
   expect(prompt).toContain(`Your Kata issue is v2test#${expected.short_id};`);
   expect(prompt).toContain(`close 'v2test#${expected.short_id}'`);
-  // The main cannot finish the delegated task on behalf of a running worker: the guard refuses the native done.
+  // The main cannot finish the delegated task on behalf of a running worker: the backend refuses the native done.
   expect((await app.call({ op: "done", task: expected.title })).isError).toBe(true);
   await kata(["close", expected.short_id, "--teammate", delegated.metadata.teammate, "--done", "--message", message, "--test", `delegate-${match}`, "--json"]);
   app.emit("task:subagent:lifecycle", { id: `reuse-${match}`, status: "completed", sessionFile });

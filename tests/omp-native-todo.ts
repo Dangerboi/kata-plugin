@@ -21,7 +21,7 @@ export interface TodoParams {
 export interface TodoCompletionTransition { phase: string; content: string }
 export interface TodoResult {
   content: { type: "text"; text: string }[];
-  details: { op?: TodoOperation; phases?: TodoPhase[]; storage?: "session" | "memory"; completedTasks?: TodoCompletionTransition[] };
+  details: { op?: TodoOperation; phases?: TodoPhase[]; storage?: "session" | "memory"; completedTasks?: TodoCompletionTransition[]; refused?: true };
   isError?: true;
 }
 /** The outcome of one native call: the tool result, and the list the call committed (undefined for errors and `view`). */

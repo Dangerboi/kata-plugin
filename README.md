@@ -20,7 +20,7 @@ omp plugin install kata@kata-plugin
 
 Or from npm, as listed on [omp packages](https://omppackages.com): `omp plugin install @dangerboi/kata-omp`. Use one install or the other; see the [install guide](docs/how-to/install.md#oh-my-pi).
 
-Then pick Kata under `/settings` → Tools → Todos → Todo Backend (`todo.backend: kata` in omp's config); the plugin needs oh-my-pi 19.1.1 or later. omp's own `todo` keeps running, and the plugin mirrors each change to its list into Kata in every folder. `todo done` is refused while the task's Kata issue is open: the agent closes it with `kata close` and its evidence first. A repo with no Kata project plans in the project named by `KATA_DEFAULT_PROJECT` (labeled with the repo), or else in its inferred project, which the plugin registers in the daemon without writing files into the repo.
+Then pick Kata under `/settings` → Tools → Todos → Todo Backend (`todo.backend: kata` in omp's config); the plugin needs oh-my-pi 19.2.0 or later. omp's own `todo` keeps running, and the plugin mirrors each change to its list into Kata in every folder. `todo done` is refused while the task's Kata issue is open: the agent closes it with `kata close` and its evidence first. A repo with no Kata project plans in the project named by `KATA_DEFAULT_PROJECT` (labeled with the repo), or else in its inferred project, which the plugin registers in the daemon without writing files into the repo.
 
 Kata inbox requests reach a session when `KATA_INBOX_USER` names a session address, `<actor>/<name>`. A bare `<actor>` is that person's own inbox, so sessions don't read it. On OMP the main session gets each new request from that actor live, even while idle or mid-run (`KATA_OMP_LIVE_INBOX=0` turns it off); Pi reads per turn.
 

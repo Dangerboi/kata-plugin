@@ -196,21 +196,46 @@ export function ompHost(options: OmpHostOptions) {
     if (!options.queuedReplace) await running;
   }
 
-  const blocked = (reason: string): TodoResult => ({ content: [{ type: "text", text: reason }], isError: true, details: {} });
-  const guard = async (params: any, context: any, callId: string) => {
-    const refusal = await fire("tool_call", { type: "tool_call", toolName: "todo", toolCallId: callId, input: params }, context);
-    return refusal?.block ? blocked(refusal.reason ?? "Blocked") : undefined;
-  };
-  // The tool's execution and what follows it: `replace` after the list is saved, then `tool_result`. A refused call never ran, so omp reports no result for it.
-  async function execute(params: any, context: any, callId: string, refused: TodoResult | undefined): Promise<TodoResult> {
-    if (refused) return refused;
-    const outcome = executeTodo(listOf(context), params, context.sessionManager.getSessionFile?.() ? "session" : "memory");
-    const result = outcome.result;
-    if (outcome.committed) { lists.set(listKey(context), outcome.committed); await sync(context); }
+  const lineOf = (text: string) => text.replace(/\s+/g, " ").trim() || "no reason given";
+  /**
+   * omp's `apply` ask (todo.ts): only the model's call in the main session, after `session_start`, when the selected backend has `apply`. A throw
+   * refuses the call. On accept the backend holds `next`, so a backend that held `previous` is recorded as holding `next` and gets no `replace`.
+   */
+  async function askBackend(context: any, op: string | undefined, previous: TodoPhase[], next: TodoPhase[]): Promise<{ asked: boolean; refusal?: string }> {
+    const backend = host.todoBackend;
+    if ((context.agent?.kind ?? "main") !== "main" || !started || settings.backend !== backend?.id || typeof backend.apply !== "function" || !op || op === "view") return { asked: false };
+    try { await backend.apply({ op, previous: clonePhases(previous), next: clonePhases(next) }, context); }
+    catch (error) { return { asked: true, refusal: lineOf(String((error as Error)?.message ?? error)) }; }
+    // The same held check as `sync`: with nothing sent yet, an empty list counts as held.
+    const key = JSON.stringify(previous), at = manager.getSessionId();
+    const held = sent ? sent.id === backend.id && sent.sid === at && sent.phases === key : previous.length === 0;
+    if (held) sent = { sid: at, id: backend.id, phases: JSON.stringify(next) };
+    return { asked: true };
+  }
+  // The tool's execution and what follows it: the backend's ask, the commit, then `replace` after the list is saved and `tool_result`. A refused call fails with the list unchanged.
+  async function execute(params: any, context: any, callId: string): Promise<TodoResult> {
+    // A `tool_call` handler that returns `{ block, reason }` refuses the call: it never runs and omp reports no result for it.
+    const blocked = await fire("tool_call", { type: "tool_call", toolName: "todo", toolCallId: callId, input: params }, context);
+    if (blocked?.block) return { content: [{ type: "text", text: blocked.reason ?? "Blocked" }], isError: true, details: {} };
+    const previous = listOf(context);
+    const outcome = executeTodo(previous, params, context.sessionManager.getSessionFile?.() ? "session" : "memory");
+    let result = outcome.result;
+    if (outcome.committed) {
+      const at = manager.getSessionId();
+      const { asked, refusal } = await askBackend(context, result.details.op, previous, outcome.committed);
+      const current = () => executeTodo(previous, { op: "view" }, "memory").result.content[0].text;
+      const fail = (text: string, refused?: true): TodoResult => ({ content: [{ type: "text", text }], details: { ...result.details, phases: clonePhases(previous), ...refused && { refused } }, isError: true });
+      if (refusal !== undefined) result = fail(`Todo backend "${host.todoBackend.id}" did not accept this change: ${refusal}\n${current()}`, true);
+      // omp's commit rule: the list and the session are as they were when the backend was asked. Otherwise the backend is stale and gets the current list again.
+      else if (asked && (JSON.stringify(listOf(context)) !== JSON.stringify(previous) || manager.getSessionId() !== at)) {
+        result = fail(`Todo backend "${host.todoBackend.id}" did not take this change in time.\n${current()}`);
+        sent = undefined; await sync(context);
+      } else { lists.set(listKey(context), outcome.committed); await sync(context); }
+    }
     await fire("tool_result", { type: "tool_result", toolName: "todo", toolCallId: callId, input: params, content: result.content, details: result.details, isError: !!result.isError }, context);
     return result;
   }
-  const call = async (params: any, context: any = ctx, callId = options.callId ?? "fixture"): Promise<TodoResult> => execute(params, context, callId, await guard(params, context, callId));
+  const call = async (params: any, context: any = ctx, callId = options.callId ?? "fixture"): Promise<TodoResult> => execute(params, context, callId);
 
   // Kata, through the same runner the fixture gives the adapter.
   const kata = async (args: string[]) => {
@@ -260,8 +285,8 @@ export function ompHost(options: OmpHostOptions) {
     },
     emit: (name: string, data: any) => bus.fire(name, data),
     /**
-     * One native `todo` call as omp runs it: the `tool_call` handlers (one that returns `{ block, reason }` refuses the call with
-     * `{ isError: true, content: [reason], details: {} }` and no `tool_result`), the op on the calling agent's own list, then, for a
+     * One native `todo` call as omp runs it: the `tool_call` handlers (one that returns `{ block, reason }` refuses the call with `{ isError: true, content: [reason], details: {} }` and no `tool_result`), the op on the calling agent's own list; then, for the model's call in the main session, the
+     * backend's `apply` when `todo.backend` selects a backend that has one (a throw fails the call with the list unchanged); then, for a
      * successful non-view op in the main session whose list differs from the last one sent, `replace(phases, ctx)` if `todo.backend`
      * selects the registered backend (awaited, unless `queuedReplace`), then `tool_result`. Returns the native result
      * (`details: { op, phases, storage, completedTasks? }`).
@@ -280,15 +305,15 @@ export function ompHost(options: OmpHostOptions) {
       if (listFirst) await sync(ctx);
       return app.event("session_switch", { type: "session_switch", reason: fork ? "fork" : "new" });
     },
-    /** A list edit from outside the tool (`/todo` editor, `set_todos`): no `tool_call`; the list is committed as given and goes to the backend. */
+    /** A list edit from outside the tool (`/todo` editor, `set_todos`): no `apply`; the list is committed as given and goes to the backend. */
     async edit(phases: TodoPhase[], context: any = ctx) { lists.set(listKey(context), clonePhases(phases)); await sync(context); },
-    /** One assistant message with several todo calls: every `tool_call` handler runs first, then the ops run in order, as omp does. */
-    async batch(paramsList: any[], context: any = ctx): Promise<TodoResult[]> {
-      const ids = paramsList.map((_, i) => `${options.callId ?? "fixture"}-${i}`);
-      const refusals: (TodoResult | undefined)[] = [];
-      for (const [i, params] of paramsList.entries()) refusals.push(await guard(params, context, ids[i]));
+    /** One assistant message with several calls, run in order: a todo call (asked when it commits) gives a result; a function stands for another tool's call (a `kata close` in bash) and gives none. */
+    async batch(calls: (any | (() => Promise<unknown>))[], context: any = ctx): Promise<TodoResult[]> {
       const results: TodoResult[] = [];
-      for (const [i, params] of paramsList.entries()) results.push(await execute(params, context, ids[i], refusals[i]));
+      for (const [i, step] of calls.entries()) {
+        if (typeof step === "function") await step();
+        else results.push(await execute(step, context, `${options.callId ?? "fixture"}-${i}`));
+      }
       return results;
     },
     /**

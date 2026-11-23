@@ -219,9 +219,9 @@ test("a queued list of a session that runs after /new is diffed against that ses
   expect((await show(docs)).issue.status).toBe("open");
   const sessionA = app.sid;
   const parserBefore = JSON.stringify((await show(parser)).issue), commentsBefore = (await commentsOf(parser)).length;
-  // A todo call the core is still guarding (its Kata reads held) has A's next list (the docs task removed) queued behind it.
+  // A todo call the backend is still asked about (its Kata reads held) has A's next list (the docs task removed) queued behind it.
   armed = true;
-  const reading = app.call({ op: "start", task: `No such task ${sid}` });
+  const reading = app.call({ op: "start", task: docsTask });
   await hold.entered;
   await app.edit([{ name: "Tasks", tasks: [{ content: parserTask, status: "completed" as const }] }]);
   // /new: B's branch holds none of A's entries. The fake session manager has one entry list for every session, so B's is made by emptying it.
@@ -465,7 +465,7 @@ test("a snapshot of branch Z that landed on branch W (a mirror held across /tree
   expect((await show(docs)).issue.status).toBe("open");
 });
 
-test("a guarded call between a held mirror and the next one does not move the memory's branch, so the next list is still diffed against the held mirror's list", async () => {
+test("an accepted change between a held mirror and the next one does not move the memory's branch, so the next list is still diffed against the held mirror's list", async () => {
   const { parser: parserTask, docs: docsTask } = names();
   let creates = 0;
   const hold = holdKata((args) => args[0] === "create" && ++creates === 3);
@@ -477,15 +477,15 @@ test("a guarded call between a held mirror and the next one does not move the me
   const parent = await planParentOf(parserTask);
   // Another caller's entry lands right after N's snapshot, so the live branch ends past it and N's own snapshot is not its last entry.
   afterNextAppend(() => app.entries.push({ id: "entry-after-snapshot", type: "custom", customType: "other", data: {} }));
-  // A guarded call is queued behind N, and mirror N+1 captures N's branch, which has no snapshot of N's, with the docs task removed.
-  const guarded = app.event("tool_call", { toolName: "todo", toolCallId: "guard-keeps", input: { op: "start", task: `No such task ${unique()}` } });
-  // The adapter's guard handler awaits its cached backend lookup and job sync before queuing the guard; neither waits on Kata,
-  // so a few event-loop turns put the guard in the core's queue ahead of N+1.
+  // `apply` of a start is queued behind N, and mirror N+1 captures N's branch, which has no snapshot of N's, with the docs task removed.
+  const accepted = app.todoBackend.apply({ op: "start", previous: listOf([parserTask, "pending"], [docsTask, "pending"]), next: listOf([parserTask, "pending"], [docsTask, "in_progress"]) }, app.ctx);
+  // `apply` awaits its cached backend lookup and job sync before queuing; neither waits on Kata,
+  // so a few event-loop turns put it in the core's queue ahead of N+1.
   for (let turn = 0; turn < 5; turn++) await new Promise(resolve => setImmediate(resolve));
   const second = replace(listOf([parserTask, "pending"]));
   hold.release();
-  await Promise.all([first, guarded, second]);
+  await Promise.all([first, accepted, second]);
   expect(mirrorFailures(app.notices)).toEqual([]);
-  // The guard did not move the memory to the live tip, which is not on the captured branch: N's list is what N+1 is diffed against, so the docs task is removed.
+  // `apply` did not move the memory to the live tip, which is not on the captured branch: N's list is what N+1 is diffed against, so the docs task is removed.
   expect((await show(await childRef(parent, docsTask))).issue.status).toBe("closed");
 });

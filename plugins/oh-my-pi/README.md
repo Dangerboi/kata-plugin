@@ -15,7 +15,7 @@ omp plugin install kata@kata-plugin
 
 A marketplace install from before the npm package is still named `kata-omp`, and omp loads it beside the npm package. Upgrade it first (`omp plugin marketplace update kata-plugin`, then `omp plugin upgrade kata@kata-plugin`) or uninstall it; if both are already installed, uninstall one.
 
-Restart omp, then pick Kata under `/settings` → Tools → Todos → Todo Backend (`todo.backend: kata`); until then omp's todo list stays out of Kata. Requires oh-my-pi 19.1.1 or later, Kata 0.23.0 or later and a running Kata daemon. Tested with oh-my-pi 19.1.1 and Kata 0.23.0. For stock pi, install [`@dangerboi/kata-pi`](https://www.npmjs.com/package/@dangerboi/kata-pi) instead.
+Restart omp, then pick Kata under `/settings` → Tools → Todos → Todo Backend (`todo.backend: kata`); until then omp's todo list stays out of Kata. Requires oh-my-pi 19.2.0 or later, Kata 0.23.0 or later and a running Kata daemon. Tested with oh-my-pi 19.1.1 and Kata 0.23.0. For stock pi, install [`@dangerboi/kata-pi`](https://www.npmjs.com/package/@dangerboi/kata-pi) instead.
 
 - omp's own `todo`, `/todo` and HUD keep running; the plugin mirrors each change to the list into Kata, with every task a child issue. A repo with no Kata project plans in the project named by `KATA_DEFAULT_PROJECT` (labeled with the repo), or else in its inferred project.
 - `todo done` on a task whose Kata issue is still open is refused with the `kata close` command to run first, so every close carries evidence Kata accepted.
