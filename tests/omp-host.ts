@@ -55,6 +55,7 @@ class FakeSessionManager {
   constructor(id: string | undefined, branch: any[], header: any, file: string | undefined) { this.#id = id; this.#branch = branch; this.#header = header; this.#file = file; }
   getSessionId() { return this.#id; }
   getBranch() { return this.#branch; }
+  getEntries() { return this.#branch; }
   getHeader() { return this.#header; }
   getSessionFile() { return this.#file; }
   switchTo(id: string, header: any) { this.#id = id; this.#header = header; }

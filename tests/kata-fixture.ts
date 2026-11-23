@@ -172,7 +172,7 @@ export function fakeHost(options: FakeHostOptions) {
   const answer = (verb: string) => answers.get(verb) ?? answers.set(verb, Promise.withResolvers<void>()).get(verb)!;
   const ctx: any = {
     cwd: options.cwd,
-    sessionManager: { getSessionId: () => options.sid, getBranch: () => entries, getHeader: () => options.header },
+    sessionManager: { getSessionId: () => options.sid, getBranch: () => entries, getEntries: () => entries, getHeader: () => options.header },
     ui: { notify: (...args: any[]) => notices.push(args), setWidget: (...args: any[]) => widgets.push(args) },
   };
   const api: any = {

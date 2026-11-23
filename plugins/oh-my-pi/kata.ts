@@ -197,9 +197,6 @@ export default function ompKata(pi: any) {
 			const session = (data as { sessionId?: string } | undefined)?.sessionId;
 			const live = leadSession();
 			if (type === snapshotEntry(NAMESPACE) && live && session !== live) { debug(`skipped snapshot for ${session}: live session is ${live}`); return; }
-			// A snapshot that describes a branch (`leaf`) omp has left would put that branch's list on the live one. getBranch is read live here, like the session id above.
-			const leaf = (data as { leaf?: unknown } | undefined)?.leaf;
-			if (type === snapshotEntry(NAMESPACE) && leaf !== undefined && seen && main(seen) && !(seen.sessionManager?.getBranch?.() ?? []).some((entry: any) => entry?.id === leaf)) { debug(`skipped snapshot for ${session}: its leaf ${String(leaf)} is not on the live branch`); return; }
 			pi.appendEntry(type, data);
 		},
 		getSessionName: () => pi.getSessionName?.(),

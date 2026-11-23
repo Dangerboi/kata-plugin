@@ -258,13 +258,13 @@ function rawOmpHost(sid: string, before: (args: string[], opts: any) => any) {
   // Like omp's session manager: every appended entry gets a new id on the current branch and moves the leaf to it.
   let current = sid, branch: any[] = app.entries, leaf: string | null = null, appended = 0, afterAppend: (() => void) | undefined;
   const appendEntry = (customType: string, data: any) => {
-    const entry = { id: `entry-${sid}-${++appended}`, type: "custom", customType, data };
+    const entry = { id: `entry-${sid}-${++appended}`, parentId: leaf, type: "custom", customType, data };
     if (branch !== app.entries) app.entries.push(entry);
     branch.push(entry);
     leaf = entry.id;
     const hook = afterAppend; afterAppend = undefined; hook?.();
   };
-  app.ctx.sessionManager = { getSessionId: () => current, getLeafId: () => leaf, getBranch: () => branch, getHeader: () => ({}), getSessionFile: () => undefined };
+  app.ctx.sessionManager = { getSessionId: () => current, getLeafId: () => leaf, getBranch: () => branch, getEntries: () => app.entries, getHeader: () => ({}), getSessionFile: () => undefined };
   app.ctx.agent = { kind: "main", id: `main-${sid}` };
   app.ctx.getAsyncJobSnapshot = () => ({ running: [], recent: [] });
   ompKata({ ...app.api, appendEntry, pi: { settings: {} }, events: { on: registry().on } });
@@ -421,7 +421,7 @@ test("a fork's /tree forward to a later entry of its source's branch, before its
   expect((await show(parser)).issue.metadata?.["todo.status"]).toBe("pending");
 });
 
-test("a snapshot another caller saved from the bind's memory after the captured tip, once a pass saw a branch that went on past the memory's leaf, does not reload the memory on a late mirror", async () => {
+test("a snapshot another caller saved from the bind's memory after the captured tip does not reload the memory on a late mirror", async () => {
   const { parser: parserTask, docs: docsTask } = names();
   const { app, event, replace, moveTo } = rawOmpHost(`v2-bind-id-${unique()}`, () => undefined);
   const base = { id: "entry-base", type: "custom", customType: "other", data: {} };
@@ -430,12 +430,10 @@ test("a snapshot another caller saved from the bind's memory after the captured 
   moveTo(app.entries, base.id);
   await event("session_start");
   const bound = app.entries.find((e: any) => e.customType === snapshotEntry("omp")).data;
-  // The pass captures a branch that goes on past the bind's leaf with no snapshot of the session on it: the bind's id must stay issued.
+  // The pass captures a branch that goes on past the bind's leaf with no snapshot of the session on it.
   const branch = [base, message];
   moveTo(branch, message.id);
   await replace(listOf([parserTask, "pending"], [docsTask, "pending"]));
-  const mirrored: any = branch[branch.length - 1];
-  expect(mirrored.data.memoryId).not.toBe(bound.memoryId);
   // Another caller saved a snapshot from the bind's memory, which had no list; it landed after the pass's own.
   branch.push({ id: "entry-bind-id", type: "custom", customType: snapshotEntry("omp"), data: { ...bound, leaf: base.id } });
   const entries = app.entries.length;
@@ -453,34 +451,15 @@ test("a snapshot another caller saved from the same memory after the mirror's ow
   // The parser task is started: the mirror's snapshot has it in progress.
   await replace(listOf([parserTask, "in_progress"], [docsTask, "pending"]));
   const mirrored = app.entries[app.entries.length - 1];
-  expect(mirrored.data.memoryId).toBeDefined();
   // Another caller (a delegate exit) saved a snapshot after it from the same memory. Its content is the older list's here, so a reload from it would start the task again.
-  app.entries.push({ id: "entry-other-caller", type: "custom", customType: snapshotEntry("omp"), data: { ...stale, leaf: mirrored.id, memoryId: mirrored.data.memoryId } });
+  app.entries.push({ id: "entry-other-caller", type: "custom", customType: snapshotEntry("omp"), data: { ...stale, leaf: mirrored.id } });
   const entries = app.entries.length;
   await replace(listOf([parserTask, "in_progress"], [docsTask, "pending"]));
   // The memory is kept: the list equals it, so the pass changes nothing and saves no snapshot. A reload from the older snapshot would save one.
   expect(app.entries.length).toBe(entries);
 });
 
-test("a snapshot stamped with an earlier id of the same memory, saved by another caller before a pass changed the id, does not reload the memory on a late mirror", async () => {
-  const { parser: parserTask, docs: docsTask } = names();
-  const { app, event, replace } = rawOmpHost(`v2-earlier-id-${unique()}`, () => undefined);
-  await event("session_start");
-  await replace(listOf([parserTask, "pending"], [docsTask, "pending"]));
-  const stale = app.entries[app.entries.length - 1].data;
-  await replace(listOf([parserTask, "in_progress"], [docsTask, "pending"]));
-  const mirrored = app.entries[app.entries.length - 1];
-  expect(stale.memoryId).toBeDefined();
-  expect(stale.memoryId).not.toBe(mirrored.data.memoryId);
-  // A caller persisted from the memory before the pass changed its id, and its entry landed after the pass's own.
-  app.entries.push({ id: "entry-earlier-id", type: "custom", customType: snapshotEntry("omp"), data: { ...stale, leaf: mirrored.id } });
-  const entries = app.entries.length;
-  await replace(listOf([parserTask, "in_progress"], [docsTask, "pending"]));
-  // The memory is kept: reloading from the older snapshot would start the task again and save a snapshot.
-  expect(app.entries.length).toBe(entries);
-});
-
-test("a mirror held on one branch whose snapshot would land after /tree moved to another saves none there, and the next mirror removes nothing", async () => {
+test("a snapshot of branch Z that landed on branch W (a mirror held across /tree) is not loaded by W's next mirror, so W's open tasks stay open", async () => {
   const { parser: parserTask, docs: docsTask } = names();
   let armed = false;
   const hold = holdKata(() => armed);
@@ -498,11 +477,11 @@ test("a mirror held on one branch whose snapshot would land after /tree moved to
   await hold.entered;
   armed = false;
   moveTo(branchW, leafW);
-  const snapshots = () => branchW.filter((e: any) => e.customType === snapshotEntry("omp")).length;
-  const before = snapshots();
   hold.release();
   await slow;
-  expect(snapshots()).toBe(before);
+  // The held mirror's snapshot landed on W, stamped with Z's leaf, which is not on W: W's next mirror must not load it.
+  const landed = branchW.filter((e: any) => e.customType === snapshotEntry("omp") && e.data.leaf === "entry-z");
+  expect(landed.length).toBeGreaterThan(0);
   // W's next list: the docs task was never on W, so nothing of Z's memory may remove it.
   const docs = await childRef(parent, docsTask);
   await replace(listOf([parserTask, "pending"]));
