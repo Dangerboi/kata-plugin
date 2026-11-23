@@ -11,6 +11,9 @@ All notable changes to `@dangerboi/kata-omp` are listed here. The format follows
 - `/todo ref <ref>` makes an issue the plan parent at once and loads its open children.
   - Naming the current automatic parent makes it explicit, so it no longer closes itself.
   - A plan that already has another parent keeps it, and with `KATA_REF` set the ref is not used.
+- omp shows a warning when the todo mirror cannot reach Kata or Kata refuses a change.
+  - "Kata did not take…" means Kata was unreachable; the next change to the list sends the whole list again.
+  - "Kata refused…" names the task and comes once per distinct error until a change goes through.
 
 ### Changed
 

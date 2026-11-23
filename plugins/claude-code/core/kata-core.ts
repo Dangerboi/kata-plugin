@@ -328,7 +328,8 @@ export function guardedNativeCall(input: unknown): boolean {
 	return !!op && GUARDED_OPS.includes(op);
 }
 // A failure of a mirror pass: `outage` is Kata being out of reach (the next change tries again), anything else a refusal.
-type MirrorFailure = { error: unknown; outage: boolean };
+// `task` names the step's task when one step of one task was refused.
+type MirrorFailure = { error: unknown; outage: boolean; task?: string };
 // An error that is, or was caused by, Kata being unreachable.
 const outageOf = (error: unknown): boolean => isUnusable(error) || (error instanceof Error && error.cause !== undefined && outageOf(error.cause));
 const mapOf = <T>(value: unknown) => new Map<string, T>(Object.entries(typeof value === "object" && value ? value as Record<string, T> : {}));
@@ -1652,27 +1653,34 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 
 	const nativeItems = (phases: NativePhase[]): NativeItem[] => phases.flatMap(p => p.tasks.map(t => ({ phase: p.name || "Tasks", content: t.content, status: t.status })));
 
-	// omp's list stays the truth when Kata cannot take a change, and the next change repeats it all, so an outage is reported once. A change Kata
-	// refused for another reason is not repeated (see mirrorList): each distinct refusal is reported once, until a change goes through, and holds no outage notice back.
-	function mirrorFailed(ctx: HostContext, { error, outage }: MirrorFailure) {
+	// omp's list stays the truth when Kata cannot take a change, and the next change repeats it all, so an outage is reported once. A refused step of one
+	// task is sent again only when that task changes in the list; a refused parent setup, init or parent mark is tried again on the next change. A refusal is
+	// not repeated (see mirrorList): each distinct refusal is shown once, until a change goes through, and holds no outage notice back.
+	function mirrorFailed(ctx: HostContext, { error, outage, task }: MirrorFailure) {
 		debug(error);
 		const message = (error as Error)?.message ?? error;
-		if (!outage) { uiOf(ctx)?.notify?.(`Kata refused the latest change to the todo list (${message}). The change stays in ${listName} and is sent to Kata again only when that task changes in the list.`, "warning"); return; }
+		if (!outage) {
+			const stays = task === undefined
+				? `The change stays in ${listName}; the next change tries again.`
+				: `"${task}" stays in ${listName} and is sent to Kata again only when that task changes in the list.`;
+			uiOf(ctx)?.notify?.(`Kata refused the latest change to the todo list (${message}). ${stays}`, "warning");
+			return;
+		}
 		if (outageOf(error)) wentDown(error);
 		if (mirrorWarned) return;
 		mirrorWarned = true;
 		uiOf(ctx)?.notify?.(`Kata did not take the latest change to the todo list (${message}). The change stays in ${listName}; the next change tries again.`, "warning");
 	}
 
-	// A failure to report: an outage (or any failure while the plan is local), or a refusal not already reported since the last clean change;
-	// a refusal Kata repeats (the same message, whichever step or init makes it) is reported once, until a mirror pass completes without error.
-	function failureOf(error: unknown): MirrorFailure | undefined {
+	const refusalKey = (error: unknown): string => (error as Error)?.message ?? String(error);
+
+	// A failure to report: an outage (or any failure while the plan is local), or a refusal not already shown since the last clean change.
+	// The caller records a refusal in `refusedOnce` when it shows it, so each new distinct refusal of a pass is shown.
+	function failureOf(error: unknown, task?: string): MirrorFailure | undefined {
 		errorsSeen++;
 		if (outageOf(error) || plan.local) return { error, outage: true };
-		const key = (error as Error)?.message ?? String(error);
-		if (refusedOnce.has(key)) return undefined;
-		refusedOnce.add(key);
-		return { error, outage: false };
+		if (refusedOnce.has(refusalKey(error))) return undefined;
+		return { error, outage: false, task };
 	}
 
 	// A task omp's list marks completed while Kata still has it open: the agent skipped the close. The task stays open and is labeled
@@ -1703,8 +1711,8 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 	}
 
 	// One mirror pass: starts the plan from omp's list when there is none, then brings each plan task in line with it (see diffNativeList). One
-	// task's failure does not stop the others; the first failure is returned.
-	async function mirrorList(job: Job, ctx: HostContext, phases: NativePhase[]): Promise<MirrorFailure | undefined> {
+	// task's failure does not stop the others; each distinct failure is returned.
+	async function mirrorList(job: Job, ctx: HostContext, phases: NativePhase[]): Promise<MirrorFailure[]> {
 		// The list just mirrored becomes `prev`, with each task's phase; a task whose step failed keeps its old entries, so the next mirror sees the change again.
 		const remember = (items: NativeItem[], failed: ReadonlySet<string> = new Set()) => {
 			const next = new Map<string, NativeStatus>(), phaseOf = new Map<string, string>();
@@ -1716,9 +1724,9 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 			}
 			native = { prev: next, phase: phaseOf, listed: phases.length > 0 };
 		};
-		if (boundAgent && boundAgent !== agentKey(ctx)) return;
+		if (boundAgent && boundAgent !== agentKey(ctx)) return [];
 		// A delegate with no assignment has no plan to mirror into.
-		if (!main(ctx) && !delegates.assignment(ctx)) return;
+		if (!main(ctx) && !delegates.assignment(ctx)) return [];
 		await ensureBound(job, ctx, false);
 		currentCtx = ctx;
 		nativeFromBranch(ctx);
@@ -1729,7 +1737,7 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 		// A local plan with no task yet (Kata was down when the session bound) starts from omp's list the same way: init builds it locally.
 		if (!plan.parent && !named.length && (!plan.local || !plan.tasks.length)) {
 			const open = items.filter(item => item.status === "pending" || item.status === "in_progress");
-			if (!open.length) { remember(items); return; }
+			if (!open.length) { remember(items); return []; }
 			const list: { phase: string; items: string[] }[] = [];
 			for (const item of open) {
 				const phase = list.find(p => p.phase === item.phase) ?? list[list.push({ phase: item.phase, items: [] }) - 1];
@@ -1749,11 +1757,15 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 				// A refusal (not an outage) leaves no parent: the list is not remembered, so the next mirror after a parent exists appends every open item.
 				const refused = failureOf(error);
 				if (refused?.outage) throw error;
-				return refused;
+				return refused ? [refused] : [];
 			}
 		}
+		// One failure per distinct error: an outage once, a refusal once per message.
+		const failures: MirrorFailure[] = [];
+		const collect = (next: MirrorFailure | undefined) => {
+			if (next && !failures.some(f => f.outage === next.outage && (next.outage || refusalKey(f.error) === refusalKey(next.error)))) failures.push(next);
+		};
 		// An automatic parent a restored session found (its claim never marked it) is marked now, as ensureParent does for a new one.
-		let failure: MirrorFailure | undefined;
 		if (plan.parent && plan.auto && !plan.local && items.some(item => item.status === "pending" || item.status === "in_progress")) {
 			try {
 				const shown: KataIssue = (await kata.show(job, plan.parent, plan.workspace)).issue;
@@ -1761,7 +1773,7 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 					const decision = await reopenParent(job);
 					if (decision) await markAutomaticParent(job, plan.parent, plan.workspace, decision);
 				}
-			} catch (error) { debug(error); failure = failureOf(error); }
+			} catch (error) { debug(error); collect(failureOf(error)); }
 		}
 		const failed = new Set<string>();
 		const steps = diffNativeList(plan.tasks, native.prev, items, leads);
@@ -1802,15 +1814,15 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 				}
 			} catch (error) {
 				debug(error);
-				const content = step.step === "append" ? step.content : step.task.content, next = failureOf(error);
+				const content = step.step === "append" ? step.content : step.task.content, next = failureOf(error, content);
 				// An outage is what the next mirror repeats, so the step stays unmirrored. A refusal fails the same way next time: it counts as applied
-				// (the list is remembered with it, and the diff asks for it again only when its status changes), and is reported once per distinct error until a change goes through.
+				// (the list is remembered with it, and the diff asks for it again only when its status changes), and is shown once per distinct error until a change goes through.
 				if (next?.outage) failed.add(content);
-				if (next && (!failure || next.outage && !failure.outage)) failure = next;
+				collect(next);
 			}
 		}
 		remember(items, failed);
-		return failure;
+		return failures;
 	}
 
 	// The snapshot of the session's current branch; a branch with no snapshot of its own starts from its fork source's, named as `source`.
@@ -1844,14 +1856,17 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 		return serial(async job => {
 			if (mine !== mirrorStamps.get(session)) return;
 			const errors = errorsSeen;
-			let failure: MirrorFailure | undefined;
-			try { failure = await mirrorList(job, ctx, phases); }
-			catch (error) { failure = failureOf(error); }
+			let failures: MirrorFailure[];
+			try { failures = await mirrorList(job, ctx, phases); }
+			catch (error) { const next = failureOf(error); failures = next ? [next] : []; }
 			finally { persist(job); refresh(ctx); }
-			if (failure) mirrorFailed(ctx, failure);
-			if (!failure?.outage) mirrorWarned = false;
-			// A pass with no error at all: a refusal that comes back after this clean change is reported again.
-			if (!failure && errors === errorsSeen) refusedOnce.clear();
+			for (const failure of failures) {
+				if (!failure.outage) refusedOnce.add(refusalKey(failure.error));
+				mirrorFailed(ctx, failure);
+			}
+			if (!failures.some(f => f.outage)) mirrorWarned = false;
+			// A pass with no error at all: a refusal that comes back after this clean change is shown again.
+			if (!failures.length && errors === errorsSeen) refusedOnce.clear();
 		}, { ...within, ctx }).catch(debug);
 	}
 

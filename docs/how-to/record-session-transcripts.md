@@ -23,7 +23,7 @@ Set `KATA_CLOSE_TRANSCRIPT_ENABLED=false` in the environment that launches omp o
 
 The oh-my-pi and pi plugins record the session on every close that carries evidence they can see; you add nothing else.
 
-- The plugin's own closes that carry evidence: `todo done`, the automatic parent's close, and the close of a superseded plan parent when the session adopts another parent. `drop` and `rm` close as wontfix without evidence, and Kata records a session only on a close that carries evidence, so they record none.
+- The plugin's own closes that carry evidence: `todo done` (pi only: on omp the guard refuses `done` while the issue is open, so an omp session is recorded by the agent's own `kata close` in `bash` and by the automatic parent's close), the automatic parent's close, and the close of a superseded plan parent when the session adopts another parent. `drop` and `rm` close as wontfix without evidence, and Kata records a session only on a close that carries evidence, so they record none.
 - A `kata close` run in the harness's `bash` tool: the agent closing an issue itself, or a delegate closing its own issue.
 
 Each session start exports `KATA_CLOSE_TRANSCRIPT_ENABLED` (unless already set), `KATA_TRANSCRIPT_AGENT` (`omp` or `pi`) and `KATA_TRANSCRIPT_SESSION_ID` (the session's ID) in the harness process. Neither plugin clears the pair at shutdown: a reload or new session starts in the same process and overwrites the pair, and clearing after a slow cleanup could delete the new pair. Kata uses the pair only when both are set. Kata builds the link from the agent name (`<agentsview_url>/sessions/omp/<id>`).

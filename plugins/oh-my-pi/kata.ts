@@ -18,7 +18,7 @@ import { spawn } from "node:child_process";
 import { BroadcastChannel, isMainThread, threadId } from "node:worker_threads";
 import { closeSync, openSync, readSync } from "node:fs";
 import { createInterface } from "node:readline";
-import { createKataCore, guardedNativeCall, NATIVE_TODO_COMMANDS, PROMPT_TAGS, tagged } from "./kata-core";
+import { createKataCore, guardedNativeCall, NATIVE_TODO_COMMANDS, PROMPT_TAGS, snapshotEntry, tagged } from "./kata-core";
 import { execKata, exportTranscriptSession, nodePlatform, sessionKey } from "./node-host";
 import { closeEnv, debugTo, NO_JOB, waitAtMost } from "./kata-cli";
 import { delegateCommand, kataCommands as parseKataCommands } from "./shell";
@@ -191,7 +191,14 @@ export default function ompKata(pi: any) {
 			const env = pair && closeEnv(nodePlatform.env, args, pair.agent, pair.id);
 			return env ? execKata(file, args, { ...options, env }) : pi.exec(file, args, options);
 		},
-		appendEntry: (...args) => pi.appendEntry(...args),
+		appendEntry: (type, data) => {
+			// A snapshot the core writes for a session that is no longer omp's live main session would land in the live
+			// session's file. Skip it: the core re-derives its state from the branch on resume.
+			const owner = (data as { sessionId?: string } | undefined)?.sessionId;
+			const live = leadSession();
+			if (type === snapshotEntry(NAMESPACE) && live && owner !== live) { debug(`skipped snapshot for ${owner}: live session is ${live}`); return; }
+			pi.appendEntry(type, data);
+		},
 		getSessionName: () => pi.getSessionName?.(),
 		isMain: main,
 		delegateStore: store,
@@ -232,18 +239,22 @@ export default function ompKata(pi: any) {
 
 	// omp's context and session manager are class instances with private fields: a method only works called on the
 	// original, so the view is a plain object (never Object.create or a spread). The branch, header and file are
-	// captured by the caller before its first await, since the originals answer for omp's CURRENT session.
+	// captured by the caller before its first await, since the originals answer for omp's CURRENT session: they are read
+	// live only while the manager still reports the captured session id, and the captured copies answer after a switch.
 	type Header = { parentSession?: unknown } | null | undefined;
 	const boundContext = (ctx: any, id: string | undefined, captured: { branch: unknown[]; header: Header; file: string | undefined }) => {
 		const sm = ctx?.sessionManager;
 		const bind = (owner: any, name: string) => typeof owner?.[name] === "function" ? owner[name].bind(owner) : undefined;
+		const live = () => sm?.getSessionId?.() === id;
 		return {
 			cwd: ctx?.cwd, agent: ctx?.agent, ui: ctx?.ui,
 			setTimeout: bind(ctx, "setTimeout"), clearTimer: bind(ctx, "clearTimer"),
 			sessionManager: {
 				getSessionId: () => id,
-				getBranch: () => captured.branch, getHeader: () => captured.header,
-				getSessionFile: () => captured.file, getEntries: bind(sm, "getEntries"),
+				getBranch: () => live() ? sm.getBranch?.() ?? captured.branch : captured.branch,
+				getHeader: () => live() ? sm.getHeader?.() : captured.header,
+				getSessionFile: () => live() ? sm.getSessionFile?.() : captured.file,
+				getEntries: bind(sm, "getEntries"),
 			},
 		};
 	};

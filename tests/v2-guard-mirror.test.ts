@@ -473,3 +473,20 @@ test("a refusal warns once, a later clean change goes through, and the same refu
   expect((await app.call({ op: "append", items: ["Refused two"] })).isError).toBeUndefined();
   expect(refusalsOf(app)).toHaveLength(2);
 });
+
+test("two different refusals in one mirror pass are each warned once, a later change that repeats both warns neither, and the step notice names its task", async () => {
+  const one = await closedTicketItem();
+  const two = await closedTicketItem();
+  const app = host(); await app.event("session_start");
+  await app.init(["Plain start"]);
+  expect((await app.call({ op: "append", items: [one.item, two.item] })).isError).toBeUndefined();
+  const warned = refusalsOf(app);
+  expect(warned).toHaveLength(2);
+  expect(warned.filter(n => String(n[0]).includes(`"${one.item}"`))).toHaveLength(1);
+  expect(warned.filter(n => String(n[0]).includes(`"${two.item}"`))).toHaveLength(1);
+  const attempts = namingOf(app, one.closed) + namingOf(app, two.closed);
+  expect((await app.call({ op: "start", task: one.item })).isError).toBeUndefined();
+  expect((await app.call({ op: "start", task: two.item })).isError).toBeUndefined();
+  expect(namingOf(app, one.closed) + namingOf(app, two.closed)).toBeGreaterThan(attempts);
+  expect(refusalsOf(app)).toHaveLength(2);
+});
