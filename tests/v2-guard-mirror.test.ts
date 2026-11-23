@@ -430,7 +430,7 @@ test("two tasks refused with the same message in one pass are named by one notic
   expect(notices).toHaveLength(1);
   expect(notices[0]).toContain("create refused by the test");
   expect(notices[0]).toContain('"Plain one", "Plain two" stay in');
-  expect(notices[0]).toContain("are sent to Kata again only when a task changes");
+  expect(notices[0]).toContain("Each is sent to Kata again only when it changes in the list");
 });
 
 test("a ticket item naming a closed ticket, in the init that starts the plan, warns once, creates no issue for it, and later changes retry it without warning again", async () => {

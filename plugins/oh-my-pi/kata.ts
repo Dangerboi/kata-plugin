@@ -240,13 +240,15 @@ export default function ompKata(pi: any) {
 	// omp's context and session manager are class instances with private fields: a method only works called on the
 	// original, so the view is a plain object (never Object.create or a spread). The branch, header, file and leaf are
 	// captured by the caller before its first await, since the originals answer for omp's CURRENT session: they are read
-	// live only while the manager still reports the captured session id and leaf, and the captured copies answer after a
+	// live only while the manager still reports the captured session id and its branch still contains the captured leaf (every
+	// new entry moves the leaf, so the live branch has only grown since capture), and the captured copies answer after a
 	// switch or a /tree move to another branch of the same session.
 	type Header = { parentSession?: unknown } | null | undefined;
 	const boundContext = (ctx: any, id: string | undefined, captured: { branch: unknown[]; header: Header; file: string | undefined; leaf: unknown }) => {
 		const sm = ctx?.sessionManager;
 		const bind = (owner: any, name: string) => typeof owner?.[name] === "function" ? owner[name].bind(owner) : undefined;
-		const live = () => sm?.getSessionId?.() === id && sm?.getLeafId?.() === captured.leaf;
+		const live = () => sm?.getSessionId?.() === id
+			&& (captured.leaf == null || (sm?.getBranch?.() ?? []).some((entry: any) => entry?.id === captured.leaf));
 		return {
 			cwd: ctx?.cwd, agent: ctx?.agent, ui: ctx?.ui,
 			setTimeout: bind(ctx, "setTimeout"), clearTimer: bind(ctx, "clearTimer"),
