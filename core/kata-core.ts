@@ -1912,12 +1912,11 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 		seenIds.add(last.id);
 	}
 
-	const bumpMirror = (session: string) => { const next = (mirrorStamps.get(session) ?? 0) + 1; mirrorStamps.set(session, next); return next; };
-
 	// omp calls this after it saved its list, with the whole list. Newest wins: a mirror still queued when a newer one of the SAME session
 	// arrives does nothing, since the newer one carries everything; a list of a session left behind still lands. Never rejects.
 	function mirror(ctx: HostContext, phases: NativePhase[]): Promise<void> {
-		const session = sid(ctx) ?? "", mine = bumpMirror(session);
+		const session = sid(ctx) ?? "", mine = (mirrorStamps.get(session) ?? 0) + 1;
+		mirrorStamps.set(session, mine);
 		return serial(async job => {
 			if (mine !== mirrorStamps.get(session)) return;
 			let failures: MirrorFailure[];
@@ -2031,7 +2030,7 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 
 	// Asked before omp commits a `todo` call of the lead: the text that refuses it, or undefined. It checks, and writes only what omp committed: omp does
 	// not queue `apply` behind `replace`, so Kata may still lack omp's committed list (`previous`). When it does, `previous` is mirrored first, and
-	// what Kata refuses of it is reported like the mirror's own (omp's `replace(previous)` then finds nothing to change); then the call is checked.
+	// what Kata refuses of it is reported like the mirror's own (a step that failed because Kata was down stays out of the mirrored list, so omp's `replace(previous)` retries it); then the call is checked.
 	// The mirror is not stamped: a `replace` sent before the ask runs earlier in the queue, and a newer list reaching the plugin meanwhile must win.
 	// The call itself reaches Kata through the `replace` omp sends once it commits. A read Kata fails (down, too old) refuses nothing; the mirror
 	// meets the same failure and tells the user.

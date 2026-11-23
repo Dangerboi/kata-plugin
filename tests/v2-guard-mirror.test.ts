@@ -1,11 +1,11 @@
 import { expect, test } from "bun:test";
-import { eventually } from "./kata-fixture";
+import { eventually, holdNext } from "./kata-fixture";
 import { v2Fixture } from "./v2-fixture";
-import { kataViews } from "./omp-host";
+import { kataViews, rawOmpHost } from "./omp-host";
 
 // The omp adapter against a real Kata, on omp's native `todo`: the backend's `apply` that refuses calls before they commit and the mirror that follows
 // the list into Kata (the todo backend's `replace`). Edge cases of both, one behaviour per test.
-const { show, issue, host, down, total, commentsOf, sessionParents, closesOf, scratch, kata, message } = v2Fixture();
+const { show, issue, host, down, total, commentsOf, sessionParents, closesOf, scratch, kata, message, run, cwd, unique } = v2Fixture();
 
 const { refOf, childRef, issueOf, labelsOf, titles } = kataViews(show);
 // A pre-existing plan task (todo.phase set), as an earlier session's mirror leaves it; `issue` suffixes the title.
@@ -703,4 +703,40 @@ test("a refusal Kata gives while apply catches the mirror up with omp's committe
   expect(notices).toHaveLength(1);
   expect(notices[0]).toContain("create refused by the test");
   expect(notices[0]).toContain('"Plain one"');
+});
+
+const phaseOf = (...tasks: string[]) => [{ name: "Tasks", tasks: tasks.map(content => ({ content, status: "pending" })) }];
+
+test("a newer list that reaches the plugin while apply's catch-up waits in the queue is the one Kata holds in the end", async () => {
+  const hold = holdNext(args => args[0] === "create" && args.some(a => a.includes("Write docs")));
+  const { app, event, replace } = rawOmpHost(`v2-newer-${unique()}`, { run: (args, opts) => run(args, opts.cwd, opts.timeout), cwd, before: hold.before });
+  await event("session_start");
+  await replace(phaseOf("Write parser"));
+  const parent = (await kata(["list", "--all", "--status", "all", "--json"])).issues.find((i: any) => i.title === "Write parser" && i.parent).parent.qualified_id;
+  // A replace is running in Kata (held), and apply's catch-up of omp's committed list queues behind it, Kata lacking the notes task.
+  hold.arm();
+  const running = replace(phaseOf("Write parser", "Write docs"));
+  await hold.entered;
+  const apply = app.todoBackend.apply({ op: "append", previous: phaseOf("Write parser", "Write docs", "Write notes"), next: phaseOf("Write parser", "Write docs", "Write notes", "Write tests") }, app.ctx);
+  // A list newer than the one apply was asked about is sent: its replace queues behind apply's job and must still land.
+  const newer = replace(phaseOf("Write parser", "Write docs", "Write notes", "Write release"));
+  hold.release();
+  await Promise.all([running, apply, newer]);
+  expect(await titles(parent)).toEqual(["Write docs", "Write notes", "Write parser", "Write release"]);
+});
+
+test("an outage during apply's catch-up is reported once, and the next replace applies the steps that failed", async () => {
+  let unreachable = false;
+  const app = host({ before: (args: string[]) => unreachable && args[0] === "create" ? down() : undefined });
+  await app.event("session_start");
+  const parent = await app.init(["Write parser"]);
+  const release = app.holdReplace();
+  expect((await app.call({ op: "append", items: ["Write docs"] })).isError).toBeUndefined();
+  unreachable = true;
+  // apply's catch-up mirrors the held list and meets the outage; the call itself goes through.
+  expect((await app.call({ op: "append", items: ["Write tests"] })).isError).toBeUndefined();
+  expect(app.mirrorFailures().map(args => String(args[0]))).toEqual([expect.stringContaining("Kata did not take the latest change")]);
+  unreachable = false;
+  release(); await app.settled();
+  expect(await titles(parent)).toEqual(["Write docs", "Write parser", "Write tests"]);
 });
