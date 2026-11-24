@@ -260,7 +260,8 @@ export default function ompKata(pi: any) {
 		const id = sessionId(ctx), sm = ctx?.sessionManager;
 		return boundContext(ctx, id, { branch: [...(sm?.getBranch?.() ?? [])] as unknown[], header: sm?.getHeader?.() as Header });
 	};
-	// `apply` refuses the model's call by returning `{ block, reason }`; a throw from it or from `replace` only reports an extension error, so neither rejects.
+	// `apply` refuses the model's call by returning `{ block, reason }`; a throw from it fails the call as stale (an extension error, not a
+	// refusal), and one from `replace` only reports an extension error, so `replace` never rejects.
 	pi.registerTodoBackend({
 		id: BACKEND_ID,
 		label: "Kata",

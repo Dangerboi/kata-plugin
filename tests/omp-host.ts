@@ -212,7 +212,7 @@ export function ompHost(options: OmpHostOptions) {
     if ((context.agent?.kind ?? "main") !== "main" || !started || settings.backend !== backend?.id || typeof backend.apply !== "function" || !op || op === "view") return { asked: false };
     try {
       const answer = await backend.apply({ op, previous: clonePhases(previous), next: clonePhases(next) }, context);
-      return answer?.block === true ? { asked: true, refusal: lineOf(answer.reason ?? "") } : { asked: true };
+      return answer?.block ? { asked: true, refusal: lineOf(typeof answer.reason === "string" ? answer.reason : "") } : { asked: true };
     } catch (error) { return { asked: true, failure: lineOf(String((error as Error)?.message ?? error)) }; }
   }
   // The tool's execution and what follows it: the backend's ask, the commit, then `replace` after the list is saved and `tool_result`. A refused or uncommitted call fails with the list unchanged, then omp resends its current list.
