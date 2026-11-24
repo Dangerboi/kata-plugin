@@ -489,3 +489,23 @@ test("an accepted change between a held mirror and the next one does not move th
   // `apply` did not move the memory to the live tip, which is not on the captured branch: N's list is what N+1 is diffed against, so the docs task is removed.
   expect((await show(await childRef(parent, docsTask))).issue.status).toBe("closed");
 });
+
+test("a done asked after a /tree to a branch whose memory is behind omp's list catches Kata up first, so the task Kata lacks is refused", async () => {
+  const { parser: parserTask, docs: docsTask } = names();
+  const refusal = { code: 1, stdout: "", stderr: '{"error":{"kind":"conflict","code":"create_refused","message":"create refused by a hook","exit_code":1}}\n' };
+  let refusing = false;
+  const { app, event, replace, moveToEntry } = rawOmpHost(`v2-tree-accept-${unique()}`, (args: string[]) => refusing && args[0] === "create" ? refusal : undefined);
+  await event("session_start");
+  await replace(listOf([parserTask, "pending"]));
+  // The first snapshot of the session: the branch up to it has a memory of no tasks.
+  const early = app.entries.find((e: any) => e.customType === snapshotEntry("omp")).id;
+  // Kata refuses the docs task's issue; the memory still counts it as mirrored, so omp's list and the tip's memory agree while Kata lacks it.
+  const both = listOf([parserTask, "pending"], [docsTask, "pending"]);
+  refusing = true;
+  await replace(both);
+  refusing = false;
+  // On the early branch only the catch-up from omp's list gives Kata a child for the docs task.
+  moveToEntry(early);
+  const done = listOf([parserTask, "pending"], [docsTask, "completed"]);
+  await expect(app.todoBackend.apply({ op: "done", previous: both, next: done }, app.ctx)).rejects.toThrow(`"${docsTask}" is open in Kata`);
+});

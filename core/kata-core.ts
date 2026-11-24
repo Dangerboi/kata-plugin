@@ -2036,10 +2036,10 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 	// omp does not queue `apply` behind `replace`, so Kata may still lack the list omp committed (`previous`): then it is mirrored first. That pass is
 	// not stamped: a newer list reaching the plugin meanwhile must win. A read Kata fails refuses nothing; the mirror meets the same failure and tells the user.
 	function accept(ctx: HostContext, change: NativeChange): Promise<string | undefined> {
-		if (!GUARDED_OPS.includes(change.op)) return Promise.resolve(undefined);
 		return serial(async job => {
 			try {
-				// The memory compared below is the bound branch's only after this.
+				// Every op, append too, enters the plan here, while omp still waits: otherwise a fork's handoff runs in the `replace` omp does not wait for,
+				// and Kata lags the call's result. The memory compared below is the bound branch's only after this.
 				await enterPlan(job, ctx, false);
 				const listed = statusMap(nativeItems(change.previous));
 				if (listed.size !== native.prev.size || [...listed].some(([content, status]) => native.prev.get(content) !== status)) await mirrorPass(job, ctx, change.previous);
