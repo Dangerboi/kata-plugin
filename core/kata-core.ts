@@ -1945,9 +1945,9 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 	// any other op names the tasks it changes.
 	type Aim = { init: { kept: ReadonlySet<string>; was: ReadonlySet<string> } } | { contents: string[] };
 
-	// Loads Kata's plan fresh (what the agent closed in its shell counts); false when there is nothing to check a call against.
-	async function loadFresh(job: Job, ctx: HostContext): Promise<boolean> {
-		await enterPlan(job, ctx, false);
+	// Loads Kata's plan fresh (what the agent closed in its shell counts) into the plan the caller entered with `enterPlan`; false when there is
+	// nothing to check a call against.
+	async function loadFresh(job: Job): Promise<boolean> {
 		if (plan.local) return false;
 		await load(kata.fresh(job), plan.workspace);
 		return !!plan.parent || named.length > 0;
@@ -2025,7 +2025,8 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 			await after?.catch(debug);
 			if (!delegates.assignment(ctx)) return undefined;
 			return serial(async job => {
-				if (!await loadFresh(job, ctx)) return undefined;
+				await enterPlan(job, ctx, false);
+				if (!await loadFresh(job)) return undefined;
 				const aim = delegateAim(call, op);
 				return aim && await todoRefusal(job, op, aim);
 			}, { ctx });
@@ -2044,7 +2045,7 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 				const listed = statusMap(nativeItems(change.previous));
 				if (listed.size !== native.prev.size || [...listed].some(([content, status]) => native.prev.get(content) !== status)) await mirrorPass(job, ctx, change.previous);
 				if (!GUARDED_OPS.includes(change.op)) return undefined;
-				if (!await loadFresh(job, ctx)) return undefined;
+				if (!await loadFresh(job)) return undefined;
 				const items = (phases: NativePhase[]) => new Set(nativeItems(phases).map(i => i.content));
 				return await todoRefusal(job, change.op, change.op === "init" ? { init: { kept: items(change.next), was: items(change.previous) } } : { contents: targetsOf(change) });
 			}

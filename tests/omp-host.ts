@@ -92,7 +92,7 @@ function loadAdapter(options: OmpHostOptions, makeManager?: (entries: any[]) => 
  * every appended entry gets a new id on the current branch and moves the leaf to it.
  */
 export function rawOmpHost(sid: string, options: Omit<OmpHostOptions, "sid">) {
-  let entries!: any[], current = sid, branch!: any[], leaf: string | null = null, appended = 0, afterAppend: (() => void) | undefined;
+  let entries!: any[], current = sid, branch!: any[], leaf: string | null = null, appended = 0, afterAppend: (() => void) | undefined, header: { parentSession?: string } = {};
   const appendEntry = (customType: string, data: any) => {
     const entry = { id: `entry-${sid}-${++appended}`, parentId: leaf, type: "custom", customType, data };
     if (branch !== entries) entries.push(entry);
@@ -102,10 +102,10 @@ export function rawOmpHost(sid: string, options: Omit<OmpHostOptions, "sid">) {
   };
   const { host: app } = loadAdapter({ ...options, sid }, list => {
     entries = branch = list;
-    return { getSessionId: () => current, getLeafId: () => leaf, getBranch: () => branch, getEntries: () => entries, getHeader: () => ({}), getSessionFile: () => undefined };
+    return { getSessionId: () => current, getLeafId: () => leaf, getBranch: () => branch, getEntries: () => entries, getHeader: () => header, getSessionFile: () => undefined };
   }, { appendEntry });
   const event = async (name: string) => { try { await app.event(name); } finally { clearTranscriptEnv(); } };
-  return { app, event, replace: (phases: any[]) => app.todoBackend.replace(phases, app.ctx), switchTo: (next: string) => { current = next; },
+  return { app, event, replace: (phases: any[]) => app.todoBackend.replace(phases, app.ctx), switchTo: (next: string, forkOf?: string) => { current = next; header = forkOf ? { parentSession: forkOf } : {}; },
     /** /tree: the same session now answers for another branch and leaf. */
     moveTo: (next: any[], nextLeaf: string | null) => { branch = next; leaf = nextLeaf; },
     /** /tree right after the next saved entry: the move lands between one mirror's save and the next mirror's bind. */
@@ -236,17 +236,17 @@ export function ompHost(options: OmpHostOptions) {
       // The resend and the commit's `replace` are queued: the tool result does not wait for them.
       if (refusal !== undefined) {
         result = fail(`Todo backend "${id}" did not accept this change: ${refusal}`, true);
-        sent = undefined; sync(context);
+        sent = undefined; void sync(context);
       } else if (asked && aborted) {
         result = fail(`The call was aborted while todo backend "${id}" decided; nothing was saved.`);
-        sent = undefined; sync(context);
+        sent = undefined; void sync(context);
       } else if (asked && manager.getSessionId() !== at) {
         result = fail(`The session changed while todo backend "${id}" decided; nothing was saved.`);
-        sent = undefined; sync(context);
+        sent = undefined; void sync(context);
       } else if (asked && JSON.stringify(listOf(context)) !== JSON.stringify(previous)) {
         result = fail(`The todo list changed while todo backend "${id}" decided; nothing was saved.`);
-        sent = undefined; sync(context);
-      } else { lists.set(listKey(context), outcome.committed); sync(context); }
+        sent = undefined; void sync(context);
+      } else { lists.set(listKey(context), outcome.committed); void sync(context); }
     }
     await fire("tool_result", { type: "tool_result", toolName: "todo", toolCallId: callId, input: params, content: result.content, details: result.details, isError: !!result.isError }, context);
     return result;

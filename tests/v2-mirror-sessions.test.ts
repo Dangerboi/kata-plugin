@@ -48,7 +48,7 @@ test("a fork whose list reaches the backend before session_switch holds the task
   await eventually(() => holder(parser), `${source}-fork`);
 });
 
-test("an append that is a fork's first change waits in apply for the handoff of the source's tasks, while its replace is still held", async () => {
+test("an append that is a fork's first change returns only after the handoff of the source's tasks, while its replace is still held", async () => {
   const { parser: parserTask, docs: docsTask, tests: testsTask } = names();
   const hold = holdNext(args => args[0] === "meta" && args[1] === "set");
   const app = host({ before: hold.before }); await app.event("session_start");
@@ -62,13 +62,35 @@ test("an append that is a fork's first change waits in apply for the handoff of 
   const release = app.holdReplace();
   let released = false;
   // A real delay on purpose: a call that does not wait in apply for the handoff returns before the hold is released.
-  setTimeout(() => { released = true; hold.release(); }, 300);
-  expect((await app.call({ op: "append", items: [testsTask] })).isError).toBeUndefined();
-  expect(released).toBe(true);
-  expect(await holder(parser)).toBe(`${source}-fork`);
-  await switching;
-  release(); await app.settled();
+  const timer = setTimeout(() => { released = true; hold.release(); }, 300);
+  try {
+    expect((await app.call({ op: "append", items: [testsTask] })).isError).toBeUndefined();
+    expect(released).toBe(true);
+    expect(await holder(parser)).toBe(`${source}-fork`);
+  } finally {
+    clearTimeout(timer); hold.release(); release();
+    await switching;
+  }
+  await app.settled();
   expect(await childRef(parent, testsTask)).toBeTruthy();
+});
+
+test("an append that is a fork's first change enters the plan in apply, so the fork holds its source's tasks when apply resolves, before session_switch runs", async () => {
+  const { parser: parserTask, docs: docsTask, tests: testsTask } = names();
+  const source = `v2-fork-apply-${unique()}`;
+  const { app, event, replace, switchTo } = rawOmpHost(source, () => undefined);
+  await event("session_start");
+  const before = listOf([parserTask, "in_progress"], [docsTask, "pending"]);
+  await replace(before);
+  const parent = await planParentOf(parserTask);
+  const parser = await childRef(parent, parserTask);
+  expect(await holder(parser)).toBe(source);
+  // omp's fork changes the session before the model's next call, and session_switch is not waited for.
+  switchTo(`${source}-fork`, source);
+  const next = [{ name: "Tasks", tasks: [...before[0].tasks, { content: testsTask, status: "pending" as const }] }];
+  await app.todoBackend.apply({ op: "append", previous: before, next }, app.ctx);
+  expect(await holder(parser)).toBe(`${source}-fork`);
+  await event("session_switch");
 });
 
 test("a plain item and a ticket item set while Kata was away: the ticket gets no child titled after the item, and the item works the ticket", async () => {
