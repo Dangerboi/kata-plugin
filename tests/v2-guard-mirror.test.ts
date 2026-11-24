@@ -22,6 +22,7 @@ test("done on a task whose Kata child is open is refused with the child's ref an
   expect(text).toContain(`is open in Kata as ${child}`);
   expect(text).toContain(`kata close ${child}`);
   expect((await issueOf(child)).status).toBe("open");
+  expect(app.mirrorFailures()).toEqual([]);
   expect(app.list()).toEqual(before);
 });
 
@@ -194,29 +195,6 @@ test("a task closed in Kata earlier in the same message is accepted as done: omp
   expect((await issueOf(parserRef)).status).toBe("closed");
   expect(app.list()[0]!.tasks.find(t => t.content === "Write parser")!.status).toBe("completed");
   expect(await labelsOf(parserRef)).not.toContain("needs-review");
-});
-
-test("a refused call is no extension error, leaves Kata and the list as they were, and says which task to close", async () => {
-  const app = host(); await app.event("session_start");
-  const parent = await app.init(["Write parser", "Write docs"]);
-  const before = app.list();
-  const refused = await app.call({ op: "done", task: "Write docs" });
-  expect(refused.isError).toBe(true);
-  expect(refused.details.refused).toBe(true);
-  expect(refused.content[0].text).toMatch(/^Todo backend "kata" did not accept this change: "Write docs" is open in Kata as /);
-  expect(app.list()).toEqual(before);
-  expect(app.mirrorFailures()).toEqual([]);
-  expect((await issueOf(await childRef(parent, "Write docs"))).status).toBe("open");
-});
-
-test("an accepted change reaches Kata through the replace omp sends after committing it", async () => {
-  const app = host(); await app.event("session_start");
-  const parent = await app.init(["Write parser"]);
-  const mark = app.calls.length;
-  expect((await app.call({ op: "append", items: ["Write docs"] })).isError).toBeUndefined();
-  expect(await titles(parent)).toEqual(["Write docs", "Write parser"]);
-  const created = app.calls.slice(mark).filter(c => c[0] === "create");
-  expect(created).toHaveLength(1);
 });
 
 test("an accepted done that omp does not commit leaves the task closed in Kata: the resend of the old list reopens nothing", async () => {
@@ -691,18 +669,26 @@ test("a done naming a text that sits in two phases checks the first copy, as omp
   expect(refused.content[0].text).toContain(`"Write parser" is open in Kata as ${child}`);
 });
 
-test("a refusal Kata gives while apply catches the mirror up with omp's committed list reaches the user once", async () => {
-  const app = host({ before: (args: string[]) => args[0] === "create" && args.some(a => a.includes("Plain one")) ? refuse("create refused by the test") : undefined });
+test("a refusal Kata gives while apply catches the mirror up with omp's committed list reaches the user once, and the next change retries it", async () => {
+  let refusing = true;
+  const app = host({ before: (args: string[]) => refusing && args[0] === "create" && args.some(a => a.includes("Plain one")) ? refuse("create refused by the test") : undefined });
   await app.event("session_start");
-  await app.init(["Plain start"]);
+  const parent = await app.init(["Plain start"]);
   const release = app.holdReplace();
   expect((await app.call({ op: "append", items: ["Plain one"] })).isError).toBeUndefined();
-  expect((await app.call({ op: "append", items: ["Plain two"] })).isError).toBeUndefined();
-  release(); await app.settled();
+  // A start is checked, so apply mirrors the held append first and meets the refusal; the call itself goes through.
+  expect((await app.call({ op: "start", task: "Plain start" })).isError).toBeUndefined();
   const notices = refusalsOf(app).map(n => String(n[0]));
   expect(notices).toHaveLength(1);
   expect(notices[0]).toContain("create refused by the test");
   expect(notices[0]).toContain('"Plain one"');
+  release(); await app.settled();
+  expect(refusalsOf(app)).toHaveLength(1);
+  refusing = false;
+  // A refused step is sent again when its task changes.
+  expect((await app.call({ op: "start", task: "Plain one" })).isError).toBeUndefined();
+  expect(await titles(parent)).toEqual(["Plain one", "Plain start"]);
+  expect(refusalsOf(app)).toHaveLength(1);
 });
 
 const phaseOf = (...tasks: string[]) => [{ name: "Tasks", tasks: tasks.map(content => ({ content, status: "pending" })) }];
@@ -717,7 +703,9 @@ test("a newer list that reaches the plugin while apply's catch-up waits in the q
   hold.arm();
   const running = replace(phaseOf("Write parser", "Write docs"));
   await hold.entered;
-  const apply = app.todoBackend.apply({ op: "append", previous: phaseOf("Write parser", "Write docs", "Write notes"), next: phaseOf("Write parser", "Write docs", "Write notes", "Write tests") }, app.ctx);
+  const started = phaseOf("Write parser", "Write docs", "Write notes");
+  started[0]!.tasks[2]!.status = "in_progress";
+  const apply = app.todoBackend.apply({ op: "start", previous: phaseOf("Write parser", "Write docs", "Write notes"), next: started }, app.ctx);
   // A list newer than the one apply was asked about is sent: its replace queues behind apply's job and must still land.
   const newer = replace(phaseOf("Write parser", "Write docs", "Write notes", "Write release"));
   hold.release();

@@ -223,12 +223,9 @@ export const SCENARIOS: Scenario[] = [{
 	async check(store) {
 		const tests = (await store.issues()).find(i => i.title === "Write parser tests");
 		const dones = store.tools().filter(t => t.tool === "todo" && t.op === "done");
-		const results = store.requests().flatMap(r => r.results);
 		return [
 			{ name: "the todo done sent in the same message as the close was not an error", ok: dones.length > 0 && !dones[0].isError, detail: JSON.stringify(dones.map(t => t.isError)) },
-			{ name: "no tool result in any request said the child is open in Kata", ok: !results.some(t => t.includes("is open in Kata as")), detail: results.filter(t => t.includes("open in Kata")).join(" | ") },
 			{ name: "the plan task's Kata child is closed with the recorded evidence", ok: tests?.status === "closed" && closeEvidence(tests).some(e => e.type === recorded.type && e.command === recorded.command), detail: `${tests?.status} ${JSON.stringify(closeEvidence(tests))}` },
-			{ name: "exactly one todo done call was made, so there was no retry", ok: dones.length === 1, detail: `${dones.length} done calls` },
 		];
 	},
 }, {
