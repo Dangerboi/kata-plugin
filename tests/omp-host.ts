@@ -202,8 +202,9 @@ export function ompHost(options: OmpHostOptions) {
 
   const lineOf = (text: string) => text.replace(/\s+/g, " ").trim() || "no reason given";
   /**
-   * omp's `apply` ask (todo.ts): only the model's call in the main session, after `session_start`, when the selected backend has `apply`. A throw
-   * refuses the call. `apply` is a veto only: an accepted call that commits is sent through `replace` like any other commit.
+   * Fakes omp's `ExtensionRunner.applyTodoBackend` / `#askTodoBackend` (packages/coding-agent/src/extensibility/extensions/runner.ts);
+   * its texts and commit rule copy omp's and must follow it. Only the model's call in the main session is asked, after `session_start`, when the
+   * selected backend has `apply`. A throw refuses the call; an accepted call that commits is sent through `replace` like any other commit.
    */
   async function askBackend(context: any, op: string | undefined, previous: TodoPhase[], next: TodoPhase[]): Promise<{ asked: boolean; refusal?: string }> {
     const backend = host.todoBackend;

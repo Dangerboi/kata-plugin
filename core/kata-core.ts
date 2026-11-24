@@ -310,7 +310,9 @@ export function createKataCore(host: CoreHost, options: CoreOptions): KataCore {
 
 // omp infers a missing `op` (inferTodoOp), and `items` alone is init only when omp's list has no phases; that is unknown here, so it counts as init.
 type NativeCall = { op?: unknown; task?: unknown; phase?: unknown; items?: unknown; list?: unknown };
-const GUARDED_OPS: readonly string[] = ["init", "start", "done", "drop", "rm"];
+// The ops that set a task's status, and the status each sets; the guard and the diff in `targetsOf` both read it.
+const STATUS_OPS: ReadonlyMap<string, NativeStatus> = new Map([["start", "in_progress"], ["done", "completed"], ["drop", "abandoned"]]);
+const GUARDED_OPS: readonly string[] = ["init", ...STATUS_OPS.keys(), "rm"];
 function inferNativeOp(call: NativeCall): string | undefined {
 	if (typeof call.op === "string") return call.op;
 	if (Array.isArray(call.list) && call.list.length) return "init";
@@ -320,7 +322,7 @@ function inferNativeOp(call: NativeCall): string | undefined {
 	return undefined;
 }
 // What a native `todo` call is about to change, as omp hands it to the backend's `apply`.
-export type NativeChange = { op: string; previous: NativePhase[]; next: NativePhase[] };
+type NativeChange = { op: string; previous: NativePhase[]; next: NativePhase[] };
 // A failure of a mirror pass: `outage` is Kata being out of reach (the next change tries again), anything else a refusal.
 // `task` is the task whose step Kata refused (none: a refused setup, init or parent mark); `removed` marks a refused removal (of a plain
 // task, or of a ticket item), whose item has left omp's list, so it is worded apart from the other steps.
@@ -1934,13 +1936,9 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 	function targetsOf(change: NativeChange): string[] {
 		const before = statusMap(nativeItems(change.previous)), after = statusMap(nativeItems(change.next));
 		const became = (status: NativeStatus) => [...after].filter(([content, now]) => now === status && before.get(content) !== status).map(([content]) => content);
-		switch (change.op) {
-			case "start": return became("in_progress");
-			case "done": return became("completed");
-			case "drop": return became("abandoned");
-			case "rm": return [...before.keys()].filter(content => !after.has(content));
-			default: return [];
-		}
+		if (change.op === "rm") return [...before.keys()].filter(content => !after.has(content));
+		const status = STATUS_OPS.get(change.op);
+		return status ? became(status) : [];
 	}
 
 	// What a todo call aims at, as the shared refusal reads it: an init names the tasks its new list keeps and those omp's list held before it;
