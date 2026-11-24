@@ -309,9 +309,7 @@ export function createKataCore(host: CoreHost, options: CoreOptions): KataCore {
 	};
 }
 
-// A native `todo` call as omp receives it. omp infers a missing `op` (inferTodoOp): a non-empty `list` is init, `items` with a phase is
-// append, and `items` alone is init when omp's list has no phases. Whether it has any is not known here, so `items` alone counts as init.
-// The delegate guard checks a call only when the op omp would infer is init, start, done, drop or rm.
+// omp infers a missing `op` (inferTodoOp), and `items` alone is init only when omp's list has no phases; that is unknown here, so it counts as init.
 type NativeCall = { op?: unknown; task?: unknown; phase?: unknown; items?: unknown; list?: unknown };
 const GUARDED_OPS: readonly string[] = ["init", "start", "done", "drop", "rm"];
 function inferNativeOp(call: NativeCall): string | undefined {
@@ -321,11 +319,6 @@ function inferNativeOp(call: NativeCall): string | undefined {
 		return typeof call.phase === "string" && call.phase ? "append" : "init";
 	}
 	return undefined;
-}
-function guardedNativeCall(input: unknown): boolean {
-	if (!input || typeof input !== "object") return false;
-	const op = inferNativeOp(input as NativeCall);
-	return !!op && GUARDED_OPS.includes(op);
 }
 // What a native `todo` call is about to change, as omp hands it to the backend's `apply`.
 export type NativeChange = { op: string; previous: NativePhase[]; next: NativePhase[] };
@@ -1668,6 +1661,12 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 	// ------------------------------------------------------ omp's native todo list
 
 	const nativeItems = (phases: NativePhase[]): NativeItem[] => phases.flatMap(p => p.tasks.map(t => ({ phase: p.name || "Tasks", content: t.content, status: t.status })));
+	// Content → status of a list: the first copy of a text wins, as in omp's findTaskByContent and diffNativeList; blank contents are skipped.
+	const statusMap = (items: NativeItem[]) => {
+		const map = new Map<string, NativeStatus>();
+		for (const item of items) if (item.content.trim() && !map.has(item.content)) map.set(item.content, item.status);
+		return map;
+	};
 
 	// omp's list stays the truth when Kata cannot take a change, and the next change repeats it all. An outage is shown once, until a pass has none. A refused
 	// parent setup, init or parent mark is tried again on the next change; a refused step of a task is sent to Kata again only when that task changes in the
@@ -1752,8 +1751,7 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 	async function mirrorList(job: Job, ctx: HostContext, phases: NativePhase[]): Promise<MirrorFailure[]> {
 		// The list just mirrored becomes `prev`; a task whose step failed keeps its old entries, so the next mirror sees the change again.
 		const remember = (items: NativeItem[], failed: ReadonlySet<string> = new Set()) => {
-			const next = new Map<string, NativeStatus>();
-			for (const item of items) if (!next.has(item.content)) next.set(item.content, item.status);
+			const next = statusMap(items);
 			for (const content of failed) {
 				const old = native.prev.get(content);
 				if (old === undefined) next.delete(content); else next.set(content, old);
@@ -1913,6 +1911,15 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 		seenIds.add(last.id);
 	}
 
+	// One mirror pass, then persisting and reporting what Kata refused. Never rejects on a mirror failure.
+	async function mirrorPass(job: Job, ctx: HostContext, phases: NativePhase[]) {
+		let failures: MirrorFailure[];
+		try { failures = await mirrorList(job, ctx, phases); }
+		catch (error) { failures = [failureOf(error)]; }
+		finally { if (persist(job)) ownSnapshotLanded(ctx); }
+		report(ctx, failures);
+	}
+
 	// omp calls this after it saved its list, with the whole list. Newest wins: a mirror still queued when a newer one of the SAME session
 	// arrives does nothing, since the newer one carries everything; a list of a session left behind still lands. Never rejects.
 	function mirror(ctx: HostContext, phases: NativePhase[]): Promise<void> {
@@ -1920,19 +1927,13 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 		mirrorStamps.set(session, mine);
 		return serial(async job => {
 			if (mine !== mirrorStamps.get(session)) return;
-			let failures: MirrorFailure[];
-			try { failures = await mirrorList(job, ctx, phases); }
-			catch (error) { failures = [failureOf(error)]; }
-			finally { if (persist(job)) ownSnapshotLanded(ctx); }
-			report(ctx, failures);
+			await mirrorPass(job, ctx, phases);
 		}, { ctx }).catch(debug);
 	}
 
 	// The tasks a change names, found by diffing omp's list before and after it: the ones that went to the status the op sets, or left the list.
 	function targetsOf(change: NativeChange): string[] {
-		// The first copy of a text wins, as in omp's findTaskByContent and diffNativeList.
-		const firstOf = (phases: NativePhase[]) => { const map = new Map<string, NativeStatus>(); for (const i of nativeItems(phases)) if (!map.has(i.content)) map.set(i.content, i.status); return map; };
-		const before = firstOf(change.previous), after = firstOf(change.next);
+		const before = statusMap(nativeItems(change.previous)), after = statusMap(nativeItems(change.next));
 		const became = (status: NativeStatus) => [...after].filter(([content, now]) => now === status && before.get(content) !== status).map(([content]) => content);
 		switch (change.op) {
 			case "start": return became("in_progress");
@@ -1947,20 +1948,21 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 	// any other op names the tasks it changes.
 	type Aim = { init: { kept: ReadonlySet<string>; was: ReadonlySet<string> } } | { contents: string[] };
 
-	// The text that refuses a todo call Kata's rules forbid, or undefined. Both paths use it, the main session's `apply` and a delegate's `tool_call`
-	// guard, so the wording cannot drift. `aim` is computed once Kata's plan is loaded (its `known` task contents). Reads Kata fresh: what the agent
-	// closed in its shell counts.
-	async function guardText(job: Job, ctx: HostContext, op: string | undefined, aim: (known: ReadonlySet<string>) => Aim | undefined): Promise<string | undefined> {
+	// Loads Kata's plan fresh (what the agent closed in its shell counts); false when there is nothing to check a call against.
+	async function loadFresh(job: Job, ctx: HostContext): Promise<boolean> {
 		await enterPlan(job, ctx, false);
-		if (!op || !GUARDED_OPS.includes(op) || plan.local) return;
+		if (plan.local) return false;
 		await load(kata.fresh(job), plan.workspace);
-		if (!plan.parent && !named.length) return;
+		return !!plan.parent || named.length > 0;
+	}
+
+	// The text that refuses a todo call Kata's rules forbid, or undefined, read from the plan `loadFresh` loaded. The lead's `apply` and a delegate's
+	// `tool_call` guard share it, so the wording cannot drift.
+	async function todoRefusal(job: Job, op: string, target: Aim): Promise<string | undefined> {
 		const cwd = plan.workspace;
 		const held = (t: Task) => `"${t.content}": ${heldMessage(t.ref, t.holder!)}. Do not work around it. ${RULES.takeover(wording.takeOverFirst, "")}`;
 		const delegated = (t: Task) => t.delegated || delegates.holds(t.ticket ?? t.ref);
 		const open = plan.tasks.filter(t => OPEN.has(t.status));
-		const target = aim(new Set(plan.tasks.map(t => t.content)));
-		if (!target) return;
 		if ("init" in target) {
 			const { kept: list, was } = target.init;
 			const left = open.filter(t => !t.ticket && !list.has(t.content) && !delegated(t));
@@ -2001,56 +2003,50 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 	const GUARD_MS = 10_000;
 	const texts = (value: unknown): string[] => Array.isArray(value) ? value.filter((v): v is string => typeof v === "string") : [];
 
-	// A delegate's todo call, read before omp runs it: omp asks a backend about the main session's calls only, so a delegate's call is judged
-	// here from the raw call. A delegate's list is never mirrored, so omp's phases are unknown: `{phase}` targets use Kata's own phase.
-	function delegateAim(call: NativeCall, op: string): (known: ReadonlySet<string>) => Aim | undefined {
-		return known => {
-			if (op === "init") {
-				// No list and no items is no plan: omp refuses it itself. An empty list leaves every open task out.
-				if (!Array.isArray(call.list) && !Array.isArray(call.items)) return;
-				const list = Array.isArray(call.list) && call.list.length ? call.list.flatMap((p: unknown) => p && typeof p === "object" && "items" in p ? texts(p.items) : []) : texts(call.items);
-				return { init: { kept: new Set(list), was: new Set() } };
-			}
-			let contents = nativeTargets(known, call.task as string | string[] | undefined);
-			if (op === "start") { if (contents.length !== 1) return; }
-			else if (!contents.length) contents = texts(call.items);
-			if (!contents.length && typeof call.phase === "string") contents = plan.tasks.filter(t => t.phase === call.phase).map(t => t.content);
-			return { contents };
-		};
+	// A delegate's list is never mirrored, so omp's phases are unknown: `{phase}` targets use Kata's own phase.
+	function delegateAim(call: NativeCall, op: string): Aim | undefined {
+		if (op === "init") {
+			// No list and no items is no plan: omp refuses it itself. An empty list leaves every open task out.
+			if (!Array.isArray(call.list) && !Array.isArray(call.items)) return;
+			const list = Array.isArray(call.list) && call.list.length ? call.list.flatMap((p: unknown) => p && typeof p === "object" && "items" in p ? texts(p.items) : []) : texts(call.items);
+			return { init: { kept: new Set(list), was: new Set() } };
+		}
+		let contents = nativeTargets(new Set(plan.tasks.map(t => t.content)), call.task as string | string[] | undefined);
+		if (op === "start") { if (contents.length !== 1) return; }
+		else if (!contents.length) contents = texts(call.items);
+		if (!contents.length && typeof call.phase === "string") contents = plan.tasks.filter(t => t.phase === call.phase).map(t => t.content);
+		return { contents };
 	}
 
-	// Called before omp runs a delegate's `todo` call: the text that refuses it, or undefined to let it run. It reads Kata fresh, and never rejects: a failed
-	// read, input that is no todo call or a context that is no delegate's lets the call through. `after` (a delegate's queued work on the plan) is waited for
-	// first, within the same GUARD_MS bound.
+	// Called before omp runs a delegate's `todo` call: the text that refuses it, or undefined to let it run. Never rejects: a failed read, input that
+	// is no todo call or a context that is no delegate's lets the call through. `after` is waited for first, within the same GUARD_MS bound.
 	function guard(ctx: HostContext, input: unknown, after?: Promise<unknown>): Promise<string | undefined> {
 		const call = input as NativeCall | null;
-		if (!call || typeof call !== "object" || !guardedNativeCall(call)) return Promise.resolve(undefined);
-		const op = inferNativeOp(call)!;
-		return bounded((async () => { await after?.catch(debug); if (main(ctx) || !delegates.assignment(ctx)) return undefined; return serial(job => guardText(job, ctx, op, delegateAim(call, op)), { ctx }); })(), GUARD_MS);
+		const op = call && typeof call === "object" ? inferNativeOp(call) : undefined;
+		if (!call || !op || !GUARDED_OPS.includes(op)) return Promise.resolve(undefined);
+		return bounded((async () => {
+			await after?.catch(debug);
+			if (!delegates.assignment(ctx)) return undefined;
+			return serial(async job => {
+				if (!await loadFresh(job, ctx)) return undefined;
+				const aim = delegateAim(call, op);
+				return aim && await todoRefusal(job, op, aim);
+			}, { ctx });
+		})(), GUARD_MS);
 	}
 
-	// Asked before omp commits a `todo` call of the lead: the text that refuses it, or undefined. It checks, and writes only what omp committed: omp does
-	// not queue `apply` behind `replace`, so Kata may still lack omp's committed list (`previous`). When it does, `previous` is mirrored first, and
-	// what Kata refuses of it is reported like the mirror's own (a step that failed because Kata was down stays out of the mirrored list, so omp's `replace(previous)` retries it); then the call is checked.
-	// The mirror is not stamped: a `replace` sent before the ask runs earlier in the queue, and a newer list reaching the plugin meanwhile must win.
-	// The call itself reaches Kata through the `replace` omp sends once it commits. A read Kata fails (down, too old) refuses nothing; the mirror
-	// meets the same failure and tells the user.
+	// Asked before omp commits a `todo` call of the lead: the text that refuses it, or undefined. It checks, and writes only what omp committed.
+	// omp does not queue `apply` behind `replace`, so Kata may still lack the list omp committed (`previous`): then it is mirrored first. That pass is
+	// not stamped: a newer list reaching the plugin meanwhile must win. A read Kata fails refuses nothing; the mirror meets the same failure and tells the user.
 	function accept(ctx: HostContext, change: NativeChange): Promise<string | undefined> {
+		if (!GUARDED_OPS.includes(change.op)) return Promise.resolve(undefined);
 		return serial(async job => {
 			try {
-				const previous = new Map<string, NativeStatus>();
-				for (const item of nativeItems(change.previous)) if (item.content.trim() && !previous.has(item.content)) previous.set(item.content, item.status);
-				if (previous.size !== native.prev.size || [...previous].some(([content, status]) => native.prev.get(content) !== status)) {
-					let failures: MirrorFailure[];
-					try { failures = await mirrorList(job, ctx, change.previous); }
-					catch (error) { failures = [failureOf(error)]; }
-					finally { if (persist(job)) ownSnapshotLanded(ctx); }
-					report(ctx, failures);
-				}
-				return await guardText(job, ctx, change.op, () => {
-					const items = (phases: NativePhase[]) => new Set(nativeItems(phases).map(i => i.content));
-					return change.op === "init" ? { init: { kept: items(change.next), was: items(change.previous) } } : { contents: targetsOf(change) };
-				});
+				const listed = statusMap(nativeItems(change.previous));
+				if (listed.size !== native.prev.size || [...listed].some(([content, status]) => native.prev.get(content) !== status)) await mirrorPass(job, ctx, change.previous);
+				if (!await loadFresh(job, ctx)) return undefined;
+				const items = (phases: NativePhase[]) => new Set(nativeItems(phases).map(i => i.content));
+				return await todoRefusal(job, change.op, change.op === "init" ? { init: { kept: items(change.next), was: items(change.previous) } } : { contents: targetsOf(change) });
 			}
 			catch (error) { debug(error); return undefined; }
 		}, { ctx });

@@ -733,10 +733,10 @@ test("an outage during apply's catch-up is reported once, and the next replace a
   const release = app.holdReplace();
   expect((await app.call({ op: "append", items: ["Write docs"] })).isError).toBeUndefined();
   unreachable = true;
-  // apply's catch-up mirrors the held list and meets the outage; the call itself goes through.
-  expect((await app.call({ op: "append", items: ["Write tests"] })).isError).toBeUndefined();
+  // apply's catch-up mirrors the held list and meets the outage; the call itself goes through. An append is never checked, so the call is a start.
+  expect((await app.call({ op: "start", task: "Write docs" })).isError).toBeUndefined();
   expect(app.mirrorFailures().map(args => String(args[0]))).toEqual([expect.stringContaining("Kata did not take the latest change")]);
   unreachable = false;
   release(); await app.settled();
-  expect(await titles(parent)).toEqual(["Write docs", "Write parser", "Write tests"]);
+  expect(await titles(parent)).toEqual(["Write docs", "Write parser"]);
 });
