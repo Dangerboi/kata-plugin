@@ -204,14 +204,16 @@ export function ompHost(options: OmpHostOptions) {
   /**
    * Fakes omp's `ExtensionRunner.applyTodoBackend` / `#askTodoBackend` (packages/coding-agent/src/extensibility/extensions/runner.ts);
    * its texts and commit rule copy omp's and must follow it. Only the model's call in the main session is asked, after `session_start`, when the
-   * selected backend has `apply`. A throw refuses the call; an accepted call that commits is sent through `replace` like any other commit.
+   * selected backend has `apply`. `{ block: true, reason }` refuses the call, a throw fails it as stale, and an accepted call that commits is sent
+   * through `replace` like any other commit.
    */
-  async function askBackend(context: any, op: string | undefined, previous: TodoPhase[], next: TodoPhase[]): Promise<{ asked: boolean; refusal?: string }> {
+  async function askBackend(context: any, op: string | undefined, previous: TodoPhase[], next: TodoPhase[]): Promise<{ asked: boolean; refusal?: string; failure?: string }> {
     const backend = host.todoBackend;
     if ((context.agent?.kind ?? "main") !== "main" || !started || settings.backend !== backend?.id || typeof backend.apply !== "function" || !op || op === "view") return { asked: false };
-    try { await backend.apply({ op, previous: clonePhases(previous), next: clonePhases(next) }, context); }
-    catch (error) { return { asked: true, refusal: lineOf(String((error as Error)?.message ?? error)) }; }
-    return { asked: true };
+    try {
+      const answer = await backend.apply({ op, previous: clonePhases(previous), next: clonePhases(next) }, context);
+      return answer?.block === true ? { asked: true, refusal: lineOf(answer.reason ?? "") } : { asked: true };
+    } catch (error) { return { asked: true, failure: lineOf(String((error as Error)?.message ?? error)) }; }
   }
   // The tool's execution and what follows it: the backend's ask, the commit, then `replace` after the list is saved and `tool_result`. A refused or uncommitted call fails with the list unchanged, then omp resends its current list.
   async function execute(params: any, context: any, callId: string): Promise<TodoResult> {
@@ -223,19 +225,22 @@ export function ompHost(options: OmpHostOptions) {
     let result = outcome.result;
     if (outcome.committed) {
       const at = manager.getSessionId();
-      const { asked, refusal } = await askBackend(context, result.details.op, previous, outcome.committed);
+      const { asked, refusal, failure } = await askBackend(context, result.details.op, previous, outcome.committed);
       // The call can be aborted while `apply` still runs: the test's hook says so by returning true.
       const aborted = (await app.beforeCommit?.()) === true;
       // A failed call shows the session's list as it stands: `previous`, unless the list changed while the backend decided (omp's todo.ts returns the current list).
-      const fail = (text: string, refused?: true): TodoResult => {
+      const fail = (text: string, uncommitted: "refused" | "stale" = "stale"): TodoResult => {
         const now = listOf(context);
-        return { content: [{ type: "text", text: `${text}\n${executeTodo(now, { op: "view" }, "memory").result.content[0].text}` }], details: { ...result.details, phases: clonePhases(now), ...refused && { refused } }, isError: true };
+        return { content: [{ type: "text", text: `${text}\n${executeTodo(now, { op: "view" }, "memory").result.content[0].text}` }], details: { ...result.details, phases: clonePhases(now), uncommitted }, isError: true };
       };
       const id = host.todoBackend.id;
       // omp's commit rule: the list and the session are as they were when the backend was asked. Otherwise the backend is stale and gets the current list again.
       // The resend and the commit's `replace` are queued: the tool result does not wait for them.
       if (refusal !== undefined) {
-        result = fail(`Todo backend "${id}" did not accept this change: ${refusal}`, true);
+        result = fail(`Todo backend "${id}" did not accept this change: ${refusal}`, "refused");
+        sent = undefined; void sync(context);
+      } else if (failure !== undefined) {
+        result = fail(`Todo backend "${id}" failed: ${failure}; nothing was saved.`);
         sent = undefined; void sync(context);
       } else if (asked && aborted) {
         result = fail(`The call was aborted while todo backend "${id}" decided; nothing was saved.`);

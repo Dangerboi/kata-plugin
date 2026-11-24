@@ -225,7 +225,7 @@ test("a lead's done naming two tasks, one still open in Kata, is refused naming 
   const before = app.list();
   const refused = await app.call({ op: "done", task: ["Write parser", "Write docs"] });
   expect(refused.isError).toBe(true);
-  expect(refused.details.refused).toBe(true);
+  expect(refused.details.uncommitted).toBe("refused");
   expect(refused.content[0].text).toContain(`"Write docs" is open in Kata as ${openRef}`);
   expect(refused.content[0].text).not.toContain(closedRef);
   expect(app.list()).toEqual(before);
@@ -652,7 +652,7 @@ test("an append omp committed, then done on that task while the append's replace
   expect((await app.call({ op: "append", phase: "Tasks", items: ["Write docs"] })).isError).toBeUndefined();
   const refused = await app.call({ op: "done", task: "Write docs" });
   expect(refused.isError).toBe(true);
-  expect(refused.details.refused).toBe(true);
+  expect(refused.details.uncommitted).toBe("refused");
   expect(refused.content[0].text).toContain(`"Write docs" is open in Kata as`);
   release(); await app.settled();
   const docs = await childRef(parent, "Write docs");

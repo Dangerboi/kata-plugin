@@ -552,5 +552,5 @@ test("a done asked after a /tree to a branch whose memory is behind omp's list c
   // On the early branch only the catch-up from omp's list gives Kata a child for the docs task.
   moveToEntry(early);
   const done = listOf([parserTask, "pending"], [docsTask, "completed"]);
-  await expect(app.todoBackend.apply({ op: "done", previous: both, next: done }, app.ctx)).rejects.toThrow(`"${docsTask}" is open in Kata`);
+  expect(await app.todoBackend.apply({ op: "done", previous: both, next: done }, app.ctx)).toEqual({ block: true, reason: expect.stringContaining(`"${docsTask}" is open in Kata`) });
 });
