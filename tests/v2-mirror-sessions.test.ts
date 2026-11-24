@@ -48,6 +48,29 @@ test("a fork whose list reaches the backend before session_switch holds the task
   await eventually(() => holder(parser), `${source}-fork`);
 });
 
+test("an append that is a fork's first change waits in apply for the handoff of the source's tasks, while its replace is still held", async () => {
+  const { parser: parserTask, docs: docsTask, tests: testsTask } = names();
+  const hold = holdNext(args => args[0] === "meta" && args[1] === "set");
+  const app = host({ before: hold.before }); await app.event("session_start");
+  const parent = await app.init([parserTask, docsTask]);
+  const parser = await childRef(parent, parserTask);
+  const source = app.sid;
+  // omp does not wait for session_switch before the model's next call: the handoff is still held in Kata when the append is asked.
+  hold.arm();
+  const switching = app.switchSession(`${source}-fork`, { fork: true });
+  await hold.entered;
+  const release = app.holdReplace();
+  let released = false;
+  // A real delay on purpose: a call that does not wait in apply for the handoff returns before the hold is released.
+  setTimeout(() => { released = true; hold.release(); }, 300);
+  expect((await app.call({ op: "append", items: [testsTask] })).isError).toBeUndefined();
+  expect(released).toBe(true);
+  expect(await holder(parser)).toBe(`${source}-fork`);
+  await switching;
+  release(); await app.settled();
+  expect(await childRef(parent, testsTask)).toBeTruthy();
+});
+
 test("a plain item and a ticket item set while Kata was away: the ticket gets no child titled after the item, and the item works the ticket", async () => {
   const ticket = await issue("Away ticket");
   let away = true;

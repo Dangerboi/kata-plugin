@@ -2040,10 +2040,11 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 		return serial(async job => {
 			try {
 				// Every op, append too, enters the plan here, while omp still waits: otherwise a fork's handoff runs in the `replace` omp does not wait for,
-				// and Kata lags the call's result. The memory compared below is the bound branch's only after this.
+				// and Kata lags the call's result. Only a guarded op then reads Kata fresh. The memory compared below is the bound branch's only after this.
 				await enterPlan(job, ctx, false);
 				const listed = statusMap(nativeItems(change.previous));
 				if (listed.size !== native.prev.size || [...listed].some(([content, status]) => native.prev.get(content) !== status)) await mirrorPass(job, ctx, change.previous);
+				if (!GUARDED_OPS.includes(change.op)) return undefined;
 				if (!await loadFresh(job, ctx)) return undefined;
 				const items = (phases: NativePhase[]) => new Set(nativeItems(phases).map(i => i.content));
 				return await todoRefusal(job, change.op, change.op === "init" ? { init: { kept: items(change.next), was: items(change.previous) } } : { contents: targetsOf(change) });
