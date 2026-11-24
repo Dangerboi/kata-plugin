@@ -255,12 +255,12 @@ export default function ompKata(pi: any) {
 		};
 	};
 
-	// A throw from `apply` refuses the model's call; one from `replace` only reports an extension error, so `replace` never rejects.
 	// The context a backend call works on, read before its first await: a later /new changes what the session manager answers.
 	const captureContext = (ctx: any) => {
 		const id = sessionId(ctx), sm = ctx?.sessionManager;
 		return boundContext(ctx, id, { branch: [...(sm?.getBranch?.() ?? [])] as unknown[], header: sm?.getHeader?.() as Header });
 	};
+	// A throw from `apply` refuses the model's call; one from `replace` only reports an extension error, so `replace` never rejects.
 	pi.registerTodoBackend({
 		id: BACKEND_ID,
 		label: "Kata",

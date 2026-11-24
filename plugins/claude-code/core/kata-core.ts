@@ -2040,6 +2040,8 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 		if (!GUARDED_OPS.includes(change.op)) return Promise.resolve(undefined);
 		return serial(async job => {
 			try {
+				// The memory compared below is the bound branch's only after this.
+				await enterPlan(job, ctx, false);
 				const listed = statusMap(nativeItems(change.previous));
 				if (listed.size !== native.prev.size || [...listed].some(([content, status]) => native.prev.get(content) !== status)) await mirrorPass(job, ctx, change.previous);
 				if (!await loadFresh(job, ctx)) return undefined;
