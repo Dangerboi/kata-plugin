@@ -2228,7 +2228,7 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 	// Kata owns session attention semantics; the harness name only selects payload parsing and the session token.
 	// `attended`: refs this session started attention for after it began (a ticket the lead claimed, named with `/todo ref` or marked with
 	// `kata meta set ... work.attention ok`, and the explicit parent a fork or resume restored), with the workspace and the attention sessions
-	// to end them under: this session's, and the previous one's when a fork's start failed and the previous session may still hold the ref.
+	// to end them under: this session's, and every earlier one that may still hold the ref because a start for a restored parent may not have applied.
 	// Each stays until the session ends or switches: Kata's end flags a ticket still on `ok`, and does nothing to a closed one.
 	type Attended = Map<string, { cwd: string; sessions: Set<string> }>;
 	let attentionSession: { id: string; cwd: string; ref?: string; hostCwd: string; hostRef?: string; marker?: string; attended: Attended } | undefined;
