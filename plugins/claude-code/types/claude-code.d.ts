@@ -1,5 +1,5 @@
 // The part of Claude Code's plugin API ('claude-code' and 'claude-code/testing') that this plugin and its tests use, as
-// declared by Claude Code 2.1.326. The names and shapes are the engine's own, trimmed; nothing here is invented, but it is
+// declared by Claude Code 2.1.332. The names and shapes are the engine's own, trimmed; nothing here is invented, but it is
 // no more than a subset, so `bun run typecheck` can run without the `claude` binary.
 //
 // The engine's full declaration is early-access, about 26,500 lines, and rewritten into .claude-plugin/types/ (gitignored)

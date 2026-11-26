@@ -177,6 +177,19 @@ test("a child prompt naming any open child issue by short id binds it", async ()
   leaveChild();
 });
 
+test("a child started by a custom-message run joins the plan task its message names", async () => {
+  const parent = await host(); await parent.event("session_start", { reason: "startup" });
+  const ref = await parent.init(["Delegated custom-run work", "Remaining lead work"]);
+  const child = await childOf();
+  const event: any = { messageType: "custom", message: { role: "custom", customType: "note", content: [{ type: "text", text: "Complete Delegated custom-run work" }], display: false, timestamp: 0 }, systemPromptOptions: { sections: {} } };
+  await child.event("before_agent_start", event);
+  const record = delegateRecord(child);
+  expect(record.ref).toContain(ref.split("#")[0]);
+  expect((await show(ref)).children.some((c: any) => c.title === "Delegated custom-run work" && c.metadata["pi.subagent_id"] !== undefined)).toBe(true);
+  expect(event.systemPromptOptions.sections.kata_binding).toContain(record.ref);
+  leaveChild();
+});
+
 test("a child started from a stale parent ref works its plan task in the project the parent moved to", async () => {
   const parent = await host(); await parent.event("session_start", { reason: "startup" });
   const ref = await parent.init(["Lead plan that moves", "Investigate an independent question"]);

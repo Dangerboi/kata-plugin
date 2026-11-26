@@ -21,8 +21,9 @@ export const register: Register = (on, options) => {
 	on("tool.call", { tool: /^todo$/ }, onTodoCall);
 	on("tool.call", { agentId: /./ }, onDelegateCall);
 	on("tool.call", onToolCall);
-	// After `onToolCall`, which calls `next` first and so still sees a refusal.
-	on("tool.call", onWriteGuard);
+	// After `onToolCall`, which calls `next` first and so still sees a refusal. The matcher keeps `claude plugin validate` from
+	// refusing a second unmatched `tool.call` hook; these are the tools the guard checks.
+	on("tool.call", { tool: /^(Write|Edit|NotebookEdit|Bash)$/ }, onWriteGuard);
 	on("tool.call", { tool: "Bash" }, onLeadShell);
 	on("tool.check", { tool: "Bash" }, onShellCheck);
 	on("agent.spawn", onSpawn);

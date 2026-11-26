@@ -6,7 +6,7 @@ It is a Claude Code mod (a hooks module, `hooks/register.ts`), so it runs inside
 
 ## Requirements
 
-- Claude Code 2.1.326, the tested version. The mod API is early access, so a later Claude Code release can need a plugin update.
+- Claude Code 2.1.332, the tested version. The mod API is early access, so a later Claude Code release can need a plugin update.
 - Kata 0.23.0 or later, with `kata` on `PATH` (or set `kataExecutable`). The plugin does nothing useful without it.
 - Recommended: `kata agent-hook install claude --attention`, which adds Kata's contract, inbox and session attention to each prompt.
 

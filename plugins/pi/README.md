@@ -6,13 +6,14 @@
 pi install npm:@dangerboi/kata-pi
 ```
 
-Requires Kata 0.23.0 or later and a running Kata daemon. Tested with pi 1.5.0 and Kata 0.23.0. Remove any other todo extension first.
+Requires Kata 0.23.0 or later and a running Kata daemon. Tested with pi 1.6.1 and Kata 0.23.0. Remove any other todo extension first.
 
 - `/todo` and the `todo` tool plan into Kata. A repo with no Kata project plans in the project named by `KATA_DEFAULT_PROJECT` (labeled with the repo), or else in its inferred project.
 - An item named `<project>#<short_id>: <action>` works and logs on that existing ticket.
 - Typing `#` and part of a ticket id or title in the editor offers matching open Kata issues.
 - A child `pi` started from the main session gets its own Kata issue and teammate. If it exits with the issue open, the issue goes back to the lead for review, or is restored if the child ran no tool.
-- Kata inbox requests for `KATA_INBOX_USER` (`<actor>/<name>`) are read before each prompt.
+- Kata inbox requests for `KATA_INBOX_USER` (`<actor>/<name>`) are read before each prompt. A child's assignment note names its own inbox address.
+- A `write`, `edit` or `git commit` that would add a Kata ref the session works is refused, so the model describes the behaviour instead. `KATA_REF_GUARD=off` turns the ref guard off.
 
 Documentation: [first session](https://github.com/Dangerboi/kata-plugin/blob/main/docs/tutorials/first-session.md), [installation](https://github.com/Dangerboi/kata-plugin/blob/main/docs/how-to/install.md), [pi reference](https://github.com/Dangerboi/kata-plugin/blob/main/docs/reference/pi.md), [completion rules](https://github.com/Dangerboi/kata-plugin/blob/main/docs/reference/closing-rules.md), [limits](https://github.com/Dangerboi/kata-plugin/blob/main/docs/explanation/limits.md). Installing from a folder instead of npm: keep the folder intact; every `.ts` file next to `kata.ts` is a required module.
 

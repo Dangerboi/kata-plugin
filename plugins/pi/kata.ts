@@ -37,6 +37,15 @@ function inheritsModel(argv: string[]): { model: boolean; thinking: boolean } {
 // (`bash -c "pi -p ..."`), may launch a child that needs the lead's parent.
 // Arguments such as `grep pi` or `which pi` do not.
 const PI_LAUNCH = /(?:^|[;&|(`\n]|\$\(|\b(?:ba|z|da|k)?sh\s+(?:-[a-z]+\s+)*-[a-z]*c\s+['"])\s*(?:(?:env|nohup|exec|command|time|setsid|caffeinate)\s+|[A-Za-z_][A-Za-z0-9_]*=(?:'[^']*'|"[^"]*"|[^\s;&|]*)\s+)*(?:[^\s;&|()'"`]*\/)?pi(?=$|[\s;&|)])/;
+/** The text that starts a run: the user prompt, or on pi 1.6+ a custom-message run's message text. */
+function startingText(event: any): string {
+	if (typeof event.prompt === "string") return event.prompt;
+	const content = event.message?.content;
+	if (typeof content === "string") return content;
+	if (Array.isArray(content)) return content.filter((part: any) => part?.type === "text").map((part: any) => part.text).join("\n");
+	return "";
+}
+
 export const launchesPi = (command: string) => PI_LAUNCH.test(command);
 
 export default async function piKata(pi: ExtensionAPI) {
@@ -171,7 +180,7 @@ export default async function piKata(pi: ExtensionAPI) {
 
 	pi.on("before_agent_start", async (event, ctx) => {
 		// A child joins the session that started it before its first prompt runs.
-		if (inherited) await core.delegates.join(ctx, inherited, event.prompt || "");
+		if (inherited) await core.delegates.join(ctx, inherited, startingText(event));
 		exportParent(ctx);
 		const native = !inherited && nativeContractActive(ctx.cwd);
 		const { sections: text, lead: next } = await core.session.beforePrompt(ctx, { context: !native });

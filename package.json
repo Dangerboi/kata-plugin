@@ -33,7 +33,7 @@
     "typecheck": "tsc -p tsconfig.json && tsc -p plugins/claude-code/tsconfig.json && tsc -p tests/tsconfig.json"
   },
   "devDependencies": {
-    "@earendil-works/pi-coding-agent": "1.0.2",
+    "@earendil-works/pi-coding-agent": "1.6.1",
     "@types/bun": "1.4.4",
     "@types/node": "25.9.2",
     "typescript": "7.0.2",

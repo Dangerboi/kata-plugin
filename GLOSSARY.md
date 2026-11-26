@@ -46,6 +46,10 @@ _Avoid_: steal, reclaim
 A delegate's final word on its work: the text of its last assistant message that has any, or what it yielded. The plugin posts it on the delegate's issue when the delegate left no comment of its own, on its mission when it was untracked, or on the targets a refused pi child named.
 _Avoid_: summary, result
 
+**Ref guard**:
+The check that refuses a write or `git commit` message adding a Kata ref the session works, so the model describes the behaviour instead; refs already in the file never count.
+_Avoid_: ref filter, ref blocker, ticket-id check
+
 ## Plans
 
 **Plan**:
@@ -93,7 +97,7 @@ _Avoid_: pending end, ended mark
 ## Inbox
 
 **Session inbox**:
-An inbox addressed to `<actor>/<name>`; its requests steer the session that reads it.
+An inbox addressed to `<actor>/<name>`; its requests steer the session that reads it. A delegate has its own, `<actor>/<teammate>`.
 
 **Personal inbox**:
 An inbox addressed to a bare `<actor>`, holding requests for a person; no session reads it.

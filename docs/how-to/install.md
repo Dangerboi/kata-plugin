@@ -64,7 +64,7 @@ To try it without installing:
 omp --no-extensions -e /path/to/kata-plugin/plugins/oh-my-pi/kata.ts
 ```
 
-Tested with oh-my-pi 19.1.1. To check another omp release, run `bun run smoke:omp` from a checkout (see [development](../development.md#smoke-test-against-a-real-omp)).
+Tested with oh-my-pi 19.2.1. To check another omp release, run `bun run smoke:omp` from a checkout (see [development](../development.md#smoke-test-against-a-real-omp)).
 
 ## Pi
 
@@ -116,13 +116,13 @@ kata agent-hook install opencode
 
 See [Use with Kata agent hooks](use-with-kata-agent-hooks.md#opencode). Optional: record the agent session on each close; the plugin sets agent `opencode` and the session id ([Record agent sessions on closes](record-session-transcripts.md)).
 
-Tested with OpenCode 2.2.7. To check another release, run `bun run smoke:opencode` from a checkout (see [development](../development.md#smoke-test-against-a-real-opencode)).
+Tested with OpenCode 2.4.2. To check another release, run `bun run smoke:opencode` from a checkout (see [development](../development.md#smoke-test-against-a-real-opencode)).
 
 The TUI sidebar shows the plan with no extra setting. Set `experimental.todo: true` in `opencode.json` only if you want the plan in the desktop composer pill too.
 
 ## Claude Code
 
-Tested with Claude Code 2.1.326 (the mod API is early access; see the [limits](../explanation/limits.md#claude-code)) and needs Kata 0.23.0 or later.
+Tested with Claude Code 2.1.332 (the mod API is early access; see the [limits](../explanation/limits.md#claude-code)) and needs Kata 0.23.0 or later.
 
 If Claude Code still has the earlier adapter, `kata@kata-plugin` 0.2.0 (removed in kata-plugin 1.3.0), replace it from a shell instead of the install below. The adapter also files delegates as Kata issues, so with both installed a delegate's work is recorded twice; and its marketplace copy predates `kata-cc` (and may have been added from `salmonumbrella/kata-plugin`), so it needs an update before the install:
 
@@ -165,4 +165,4 @@ For one run without installing, load the folder: `claude --plugin-dir /path/to/k
 
 Run `kata agent-hook install claude --attention` for Kata's contract, inbox and attention; the plugin does not add them unless its `contract` option is on. See [Use with Kata agent hooks](use-with-kata-agent-hooks.md#claude-code). Options (`liveInbox`, `refGuard`, `contract`, `kataExecutable`, `debugFile`) are listed in the [reference](../reference/claude-code.md#settings). Optional: send the plans of repos that have no Kata project to one Kata project by exporting `KATA_DEFAULT_PROJECT` where Claude Code runs. The close of each task records the Claude Code session ([Record agent sessions on closes](record-session-transcripts.md)).
 
-Tested with Claude Code 2.1.326. To check another release, run `bun run validate:claude` and `bun run test:claude`, and, when a login and a few cents of spend are acceptable, `bun run smoke:claude` from a checkout (see [development](../development.md#smoke-test-against-a-real-claude-code)).
+Tested with Claude Code 2.1.332. To check another release, run `bun run validate:claude` and `bun run test:claude`, and, when a login and a few cents of spend are acceptable, `bun run smoke:claude` from a checkout (see [development](../development.md#smoke-test-against-a-real-claude-code)).

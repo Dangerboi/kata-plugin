@@ -13,6 +13,7 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { createServer, type AddressInfo } from "node:net";
 import path from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
+import type { SmokeBlock } from "./smoke-provider";
 import { cleanEnv, closeCount, closeEvent, closeEvidence, closeTranscript, commentsOn, defer, eventsOf, kataProject, labelled, lastLines, option, pickScenarios, report, reportChecks, runToEnd, scratchRoot, teardown, verdict, type Check, type Issue } from "./smoke-lib";
 import { MODEL, PROVIDER, startProvider, type Request, type Turn } from "./smoke-opencode-provider";
 import { SUBAGENT_PREFIX } from "../plugins/opencode/subagents";
@@ -109,6 +110,11 @@ SCENARIOS.push({
 const DELEGATE_PLAN = ["Build the parser", "Document the parser"];
 const planOf = (items: string[]) => [{ tool: "todowrite", args: { todos: items.map((content, n) => ({ content, status: n ? "pending" : "in_progress" })) } }];
 // The child's session id as the lead's subagent result names it.
+// OpenCode 2.4.2 runs every subagent in the background: the call returns at once and the child's report wakes the lead in a later
+// request. 2.2.7 held the call until the child ended. `waits` is true while the lead's last message is the immediate return, so a
+// lead that must act on the child's end ends its turn then, and acts on the next request (the wake) or, on 2.2.7, at once.
+const waits = (texts: string[]) => (texts.at(-1) ?? "").includes("working in the background");
+const woken = (texts: string[]) => (texts.at(-1) ?? "").includes("background-result");
 const childOf = (texts: string[]) => texts.map(t => /ses_[A-Za-z0-9]+/.exec(t.slice(t.indexOf("sessionID")))?.[0] ?? /sessionID[^A-Za-z0-9]+(ses_[A-Za-z0-9]+)/.exec(t)?.[1]).find(Boolean);
 /** The checks every delegate scenario shares: the assignment reached the child, the item came back to the lead open and labelled, the report is a comment. */
 function delegateChecks(store: Store, issues: Issue[], marker: string, report: string): Check[] {
@@ -139,6 +145,7 @@ SCENARIOS.push({
 			planOf(DELEGATE_PLAN),
 			[{ tool: "subagent", args: { agent: "general", description: "Build parser", prompt: `[smoke:fg-child] Work on "${DELEGATE_PLAN[0]}" and report back.` } }],
 			["lead done"],
+			["the report arrived"],
 		],
 		"[smoke:fg-child]": delegateChild("FG-REPORT parser built, not closed."),
 	},
@@ -146,7 +153,7 @@ SCENARIOS.push({
 		const issues = await store.issues();
 		const lead = store.requests().filter(r => r.agent === "[smoke:fg-lead]");
 		return [
-			{ name: "the lead planned, called subagent and ended with text", ok: lead.length === 3, detail: `${lead.length} lead requests` },
+			{ name: "the lead planned, called subagent and ended with text", ok: lead.length >= 3, detail: `${lead.length} lead requests` },
 			{ name: "the child's first message is the subagent preamble and the prompt", ok: store.requests().find(r => r.agent === "[smoke:fg-child]")?.users[0]?.startsWith(SUBAGENT_PREFIX) === true, detail: JSON.stringify(store.requests().find(r => r.agent === "[smoke:fg-child]")?.users) },
 			...delegateChecks(store, issues, "[smoke:fg-child]", "FG-REPORT"),
 		];
@@ -173,6 +180,7 @@ SCENARIOS.push({
 		];
 	},
 });
+const followUp = (texts: string[]): SmokeBlock[] => [{ tool: "subagent", args: { agent: "general", description: "Build parser", sessionID: childOf(texts), prompt: "[smoke:fu-more] Also add a changelog line." } }];
 SCENARIOS.push({
 	name: "delegate-followup",
 	prompt: "[smoke:fu-lead] Plan the parser work, hand the first item to a subagent, then send it a follow-up.",
@@ -180,7 +188,10 @@ SCENARIOS.push({
 		"[smoke:fu-lead]": [
 			planOf(DELEGATE_PLAN),
 			[{ tool: "subagent", args: { agent: "general", description: "Build parser", prompt: `[smoke:fu-child] Work on "${DELEGATE_PLAN[0]}" and report back.` } }],
-			ctx => [{ tool: "subagent", args: { agent: "general", description: "Build parser", sessionID: childOf(ctx.texts), prompt: "[smoke:fu-more] Also add a changelog line." } }],
+			// The follow-up goes out once the first run has ended: on 2.4.2 the lead waits for the wake, a follow-up to a running child joins its run.
+			ctx => waits(ctx.texts) ? ["waiting for the first report"] : followUp(ctx.texts),
+			ctx => woken(ctx.texts) ? followUp(ctx.texts) : ["lead done"],
+			["lead done"],
 			["lead done"],
 		],
 		"[smoke:fu-child]": [
@@ -198,8 +209,8 @@ SCENARIOS.push({
 		const comments = commentsOn(one);
 		const parents = issues.filter(i => store.children(i.ref).length > 0);
 		return [
-			{ name: "the lead made all calls and ended with text", ok: lead.length === 4, detail: `${lead.length} lead requests` },
-			{ name: "the lead named the child's session in the follow-up", ok: !!childOf(lead[2]?.toolResults ?? []), detail: JSON.stringify(lead[2]?.toolResults) },
+			{ name: "the lead made all calls and ended with text", ok: lead.length >= 4, detail: `${lead.length} lead requests` },
+			{ name: "the lead named the child's session in the follow-up", ok: !!childOf(lead[2]?.toolResults ?? []) && lead.some(r => r.toolResults.some(t => t.includes("working in the background") || t.includes("FU-FIRST"))), detail: JSON.stringify(lead[2]?.toolResults) },
 			{ name: "the plan's two items and their parent are the only issues", ok: issues.length === 3 && parents.length === 1, detail: JSON.stringify(issues.map(i => [i.ref, i.title, i.status])) },
 			{ name: "the first report landed on item 1", ok: comments.some(c => c.includes("FU-FIRST")), detail: JSON.stringify(comments) },
 			{ name: "the follow-up's report landed on the same issue", ok: comments.some(c => c.includes("FU-SECOND")), detail: JSON.stringify(comments) },
@@ -214,6 +225,7 @@ const assigned = (ctx: { system: string }) => {
 	return { prefix: m ? m[1].replace(/^'kata'/, "kata") : "kata", ref: m?.[2] ?? "''" };
 };
 const DC_MESSAGE = "Parser built and verified by running the parser tests, all green.";
+const resendPlan: SmokeBlock[] = [{ tool: "todowrite", args: { todos: [{ content: DELEGATE_PLAN[0], status: "completed" }, { content: DELEGATE_PLAN[1], status: "in_progress" }] } }];
 SCENARIOS.push({
 	name: "delegate-close",
 	prompt: "[smoke:dc-lead] Plan the parser work, hand the first item to a subagent, then settle the plan.",
@@ -222,7 +234,10 @@ SCENARIOS.push({
 			planOf(DELEGATE_PLAN),
 			[{ tool: "subagent", args: { agent: "general", description: "Build parser", prompt: `[smoke:dc-child] Work on "${DELEGATE_PLAN[0]}", close it and report back.` } }],
 			// Kata closed item 1 already: completed without message or evidence must be accepted.
-			[{ tool: "todowrite", args: { todos: [{ content: DELEGATE_PLAN[0], status: "completed" }, { content: DELEGATE_PLAN[1], status: "in_progress" }] } }],
+			// On 2.4.2 the lead waits for the child's end first: the call returned at once, the close is not in yet.
+			ctx => waits(ctx.texts) ? ["waiting for the close"] : resendPlan,
+			ctx => woken(ctx.texts) ? resendPlan : ["lead done"],
+			["lead done"],
 			["lead done"],
 		],
 		"[smoke:dc-child]": [
@@ -244,10 +259,10 @@ SCENARIOS.push({
 		const childSession = childOf(lead[2]?.toolResults ?? []);
 		const closed = closeEvent(one);
 		const all = JSON.stringify(issues.map(i => i.events));
-		const resend = lead[3]?.toolResults.at(-1) ?? "";
+		const resend = [...lead].reverse().find(r => r.roles.at(-1) === "tool")?.toolResults.at(-1) ?? "";
 		const asResult = child[1]?.toolResults[0] ?? "";
 		return [
-			{ name: "the lead made all calls and the delegate ran three shell calls and ended with text", ok: lead.length === 4 && child.length === 4 && child[0].tools.includes("shell"), detail: `${lead.length} lead, ${child.length} child requests, ${JSON.stringify(child[0]?.tools)}` },
+			{ name: "the lead made all calls and the delegate ran three shell calls and ended with text", ok: lead.length >= 4 && child.length === 4 && child[0].tools.includes("shell"), detail: `${lead.length} lead, ${child.length} child requests, ${JSON.stringify(child[0]?.tools)}` },
 			{ name: "the --as call ended as an error and ran nothing", ok: /--as is not permitted/.test(asResult) && !all.includes("DC-AS"), detail: asResult },
 			{ name: "item 1 closed done with the delegate's message and evidence", ok: one?.status === "closed" && closed?.reason === "done" && String(closed?.message).includes(DC_MESSAGE) && closeEvidence(one).some(e => e.type === "test" && e.command === "bun test parser"), detail: JSON.stringify(closed) },
 			{ name: "the close carries agent opencode and the child's session, not the lead's", ok: !!childSession && childSession !== leadSession && closeTranscript(one)?.agent === "opencode" && closeTranscript(one)?.session_id === childSession, detail: JSON.stringify([leadSession, childSession, closeTranscript(one)]) },
