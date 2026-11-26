@@ -19,18 +19,24 @@ const INTERNAL_URL = /^[a-z][a-z0-9+.-]*:\/\//i;
 // stripped: whatever a format calls its actions, new text sits in some row. Search text, context and removed rows are in the file already, whose
 // refs the caller holds, so counting them is harmless. The format is chosen first, and only its own headers name targets (`*** Begin|End Patch`
 // at the top level are skipped in every format):
-// - hashline, when the first row is `[path#tag]`: those rows;
-// - sloppy (omp's `*** Edit File:` / `*** Find` / `*** Replace`), when any opener or action row of it is there: `*** Edit File:` rows, which may
-//   continue the current file with an empty path or `all`, and a first-row `*** Update File:`; its other `***` rows are text;
-// - otherwise apply_patch: `*** Add|Update|Delete File:` and `*** Move to:` (naming a second place for the file).
-const HASHLINE = /^\[(.+)#[^#\]]+\]\s*$/, SLOPPY = /^\s*\*{3}\s+(?:Edit\s+File|Find|Replace|Insert|Cut|Paste)\b/im;
-const SLOPPY_FILE = /^\s*\*{3}\s+Edit\s+File:?(.*)$/i, SLOPPY_FIRST = /^\s*\*{3}\s+Update\s+File:?(.*)$/i;
+// The format follows omp's own order: after a BOM, blank rows and an optional `*** Begin Patch`, the first row decides:
+// - `[path#tag]`: hashline, whose rows are those headers;
+// - `*** Edit File:`, or `*** Update File:` with an unindented sloppy action row (`*** Find`, `*** Replace`, ...) after it, or `*** Find`: sloppy
+//   (omp's `*** Edit File:` / `*** Find` / `*** Replace`), whose targets are `*** Edit File:` rows, which may continue the current file with an
+//   empty path or `all`, and the first-row `*** Update File:`; its other `***` rows are text;
+// - anything else: apply_patch: `*** Add|Update|Delete File:` and `*** Move to:` (naming a second place for the file).
+const HASHLINE = /^\[(.+)#[^#\]]+\]\s*$/, SLOPPY_ACTION = /^\*{3}\s+(?:Find|Replace|Insert|Cut|Paste)\b/im;
+const SLOPPY_FILE = /^\s*\*{3}\s+Edit\s+File(?::(.*)|\s*)$/i, SLOPPY_FIRST = /^\s*\*{3}\s+Update\s+File(?::(.*)|\s*)$/i;
 const APPLY_FILE = /^\s*\*{3}\s+(?:Add|Update|Delete)\s+File:(.*)$/i, MOVE_HEADER = /^\s*\*{3}\s+Move\s+to:\s*(.+?)\s*$/i, ENVELOPE = /^\s*\*{3}\s+(?:Begin|End)\s+Patch\s*$/i;
 
 function patchRows(patch: string): Added[] {
-	const lines = patch.split("\n").map(line => line.replace(/\r$/, ""));
-	const start = lines.findIndex(line => line.trim());
-	const format = start >= 0 && HASHLINE.test(lines[start]) ? "hashline" : SLOPPY.test(patch) ? "sloppy" : "apply";
+	const lines = patch.replace(/^\uFEFF/, "").split("\n").map(line => line.replace(/\r$/, ""));
+	let start = lines.findIndex(line => line.trim());
+	if (start >= 0 && /^\s*\*{3}\s+Begin\s+Patch\s*$/i.test(lines[start])) start = lines.findIndex((line, at) => at > start && line.trim());
+	const first = start >= 0 ? lines[start] : "";
+	// `Edit File` is no apply_patch header, so it opens a sloppy patch alone; `Update File` is apply_patch's unless sloppy action rows follow.
+	const sloppy = SLOPPY_FILE.test(first) || /^\*{3}\s+Find\b/i.test(first) || (SLOPPY_FIRST.test(first) && SLOPPY_ACTION.test(lines.slice(start + 1).join("\n")));
+	const format = HASHLINE.test(first) ? "hashline" : sloppy ? "sloppy" : "apply";
 	let last = lines.length - 1;
 	while (last > 0 && !lines[last].trim()) last--;
 	const groups: { files: string[]; rows: string[] }[] = [];
@@ -41,7 +47,7 @@ function patchRows(patch: string): Added[] {
 		const apply = format === "apply" && APPLY_FILE.exec(line);
 		if (hashline || sloppy || apply) {
 			// Sloppy: an optional path, then an optional ` all`; without a path the patch goes on with the current file.
-			let name = hashline ? hashline[1] : sloppy ? sloppy[1].trim().replace(/(?:^|\s)all$/i, "").trim() : apply ? apply[1].trim() : "";
+			let name = hashline ? hashline[1] : sloppy ? (sloppy[1] ?? "").trim().replace(/(?:^|\s)all$/i, "").trim() : apply ? apply[1].trim() : "";
 			if (name.startsWith('"')) try { name = JSON.parse(name); } catch { /* as written */ }
 			if (name) { group = { files: [name], rows: [] }; groups.push(group); }
 			continue;

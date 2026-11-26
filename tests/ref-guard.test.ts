@@ -246,3 +246,22 @@ test("only the chosen patch format's own headers name a target", async () => {
   expect(await check("apply_patch", { input: "*** Add File: /tmp/new.ts\n+demo#ab3d\n*** Delete File: src/s.ts\n*** Update File: /tmp/m.ts\n*** Move to: /tmp/n.ts\n+demo#k9m2" })).toEqual([]);
   expect(await check("apply_patch", { input: "*** Add File: src/new.ts\n+demo#ab3d" })).toEqual(["demo#ab3d"]);
 });
+
+test("the patch format is chosen as omp chooses it", async () => {
+  files["src/s.ts"] = "const a = 1;\n";
+  files["src/m.md"] = "# notes\n*** Find\nx\n";
+  const edit = (input: string) => check("edit", { input });
+  // An envelope or a BOM before the first row changes nothing.
+  expect(await edit("*** Begin Patch\n[src/s.ts#1a2b]\nPUT 1.=1:\n+// demo#ab3d\n*** End Patch\n")).toEqual(["demo#ab3d"]);
+  expect(await edit("\uFEFF[src/s.ts#1a2b]\nPUT 1.=1:\n+// demo#ab3d\n")).toEqual(["demo#ab3d"]);
+  expect(await edit("*** Begin Patch\n\n*** Update File: src/s.ts\n*** Find\nconst a = 1;\n*** Replace\n// demo#ab3d\n*** End Patch\n")).toEqual(["demo#ab3d"]);
+  expect(await edit("\uFEFF*** Update File: src/s.ts\n*** Find\nconst a = 1;\n*** Replace\n// demo#ab3d\n")).toEqual(["demo#ab3d"]);
+  // An indented ` *** Find` is a context row of an apply_patch, not a sloppy action.
+  const patch = "*** Begin Patch\n*** Update File: src/m.md\n@@\n *** Find\n-x\n+// demo#ab3d\n*** End Patch\n";
+  expect(await check("apply_patch", { input: patch })).toEqual(["demo#ab3d"]);
+  expect(await edit(patch)).toEqual(["demo#ab3d"]);
+  expect(await edit("*** Begin Patch\n*** Update File: src/m.md\n@@\n *** Find\n x\n*** Add File: src/n.ts\n+// demo#ab3d\n*** End Patch\n")).toEqual(["demo#ab3d"]);
+  // `*** Edit Filed` and `*** Edit Files` are text.
+  expect(await edit("*** Edit File: src/s.ts\n*** Find\nconst a = 1;\n*** Replace\n*** Edit Filed demo#ab3d\n")).toEqual(["demo#ab3d"]);
+  expect(await edit("*** Edit File: src/s.ts\n*** Find\nconst a = 1;\n*** Insert After\n*** Edit Files /tmp/x\n// demo#ab3d\n")).toEqual(["demo#ab3d"]);
+});
