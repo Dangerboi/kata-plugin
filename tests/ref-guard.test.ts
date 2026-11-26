@@ -144,7 +144,7 @@ test("omp's sloppy edit mode is checked: the replacement text, not the find side
   const patch = (body: string) => ({ input: `*** Edit File: src/s.ts\n${body}` });
   expect(await check("edit", patch("*** Find\nconst a = 1;\n*** Replace\nconst a = 2; // demo#ab3d\n"))).toEqual(["demo#ab3d"]);
   expect(await check("edit", patch("*** Find\nconst a = 1; // demo#ab3d\n*** Replace\nconst a = 2;\n"))).toEqual([]);
-  expect(await check("edit", patch("*** Find\nconst a = 1;\n*** Paste After\n// demo#k9m2\n"))).toEqual(["demo#k9m2"]);
+  expect(await check("edit", patch("*** Find\nconst a = 1;\n*** Insert After\n// demo#k9m2\n"))).toEqual(["demo#k9m2"]);
   expect(await check("edit", patch("*** Replace Block: function f() {\n  return 1; // demo#k9m2\n}\n"))).toEqual(["demo#k9m2"]);
   expect(await check("edit", patch("*** Find\nconst a = 1;\n*** Cut\n"))).toEqual([]);
   expect(await check("edit", { input: "*** Edit File: /tmp/out.ts\n*** Find\na\n*** Replace\ndemo#ab3d\n" })).toEqual([]);
@@ -204,6 +204,17 @@ test("a sloppy opener without a path continues the current file", async () => {
 
 test("a sloppy action line is read as loosely as its opener", async () => {
   expect(await check("edit", { input: "*** Edit File: src/s.ts\n  *** Find\nx\n\t*** REPLACE\ndemo#ab3d\n" })).toEqual(["demo#ab3d"]);
-  expect(await check("edit", { input: "*** Edit File: src/s.ts\n *** paste after\ndemo#k9m2\n" })).toEqual(["demo#k9m2"]);
+  expect(await check("edit", { input: "*** Edit File: src/s.ts\n *** insert after\ndemo#k9m2\n" })).toEqual(["demo#k9m2"]);
+  // Paste puts back what a Cut took, so it carries no text of its own.
+  expect(await check("edit", { input: "*** Edit File: src/s.ts\n *** Find\nx\n*** Cut\n*** Paste After\n" })).toEqual([]);
   expect(await check("edit", { input: "*** Edit File: src/s.ts\n  *** Find\ndemo#ab3d\n  *** Cut\n" })).toEqual([]);
+});
+
+test("a sloppy patch with CRLF line ends is read, and only omp's own action names are headers", async () => {
+  const crlf = "*** Edit File: src/s.ts\r\n*** Find\r\nx\r\n*** Replace\r\n// demo#ab3d\r\n";
+  expect(await check("edit", { input: crlf })).toEqual(["demo#ab3d"]);
+  expect(await check("edit", { input: "*** Edit File: src/s.ts\r\n  *** Replace Block: function f() {\r\n  return 1; // demo#k9m2\r\n" })).toEqual(["demo#k9m2"]);
+  // Any other `***` row inside a replacement is text, so the rows after it still count.
+  expect(await check("edit", { input: "*** Edit File: src/s.ts\n*** Find\nx\n*** Replace\n*** Note\n  *** see below\n// demo#ab3d\n" })).toEqual(["demo#ab3d"]);
+  expect(await check("edit", { input: "*** Edit File: src/s.ts\n*** Find\nx\n*** Replace\n*** Note: demo#ab3d\n" })).toEqual(["demo#ab3d"]);
 });
