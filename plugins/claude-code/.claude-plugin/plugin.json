@@ -1,6 +1,6 @@
 {
   "name": "kata-cc",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "description": "Kata work tracking for Claude Code: a Kata-backed todo tool, delegate tracking, a plan band and a live inbox",
   "author": { "name": "Dangerboi" },
   "license": "MIT",
