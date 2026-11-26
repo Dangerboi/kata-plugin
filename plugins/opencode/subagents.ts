@@ -151,8 +151,8 @@ export function install(seam: Seam): void {
 		if (role.kind === "lead") {
 			// The lead's turn ended. A call still without a child either was refused by a later hook (neither the tool nor
 			// `execute.after` ran) or has a background child that has not reached a context hook yet (every call on OpenCode 2.4.2).
-			// What it reserved is free again. A call that `execute.after` reported running stays matchable until the lead's session ends, any other is dropped: a child that starts now
-			// binds from it, and the core resolves its text again.
+			// What it reserved is free again. A call `execute.after` reported running stays matchable until the lead's session
+			// ends, so a child that starts now binds from it and the core resolves its text again; any other is dropped.
 			for (const call of [...callsOf(role.lead.id)]) {
 				if (call.run) continue;
 				if (call.running) { call.late = true; role.lead.releaseSpawn(call.id); }
