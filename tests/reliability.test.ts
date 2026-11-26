@@ -693,8 +693,9 @@ test("a job held after its batch ended queues like any other call", async () => 
 
 test("a turn's inbox section shows a request sent while an earlier inbox read was still answering", async () => {
   // A delegate's prompt waits up to 3 s for the inbox, so the held read below decides the result, not the machine's speed.
-  const address = `actor-a/inflight-${++seq}`, note = `inflight-note-${seq}`;
-  process.env.KATA_INBOX_USER = address;
+  const note = `inflight-note-${++seq}`;
+  // The lead's setting only opts delegates in; a delegate reads its own address.
+  process.env.KATA_INBOX_USER = "actor-a/inflight-lead";
   let holding = true, answered = false;
   const { promise: released, resolve: release } = Promise.withResolvers<void>();
   const a = app({ isMain: () => false, before: async (args: string[]) => {
@@ -706,9 +707,13 @@ test("a turn's inbox section shows a request sent while an earlier inbox read wa
     await released;
     return out;
   } });
+  await a.core.delegates.start({ id: "inflight-delegate", sessionId: a.ctx.sessionManager.getSessionId(), leadSessionId: "inflight-lead", text: "Survey the tree", untracked: true }, NO_JOB);
   const ref = await issue("In-flight inbox read");
   const first = a.core.session.beforePrompt(a.ctx);
   expect(await until(() => answered)).toBe(true);
+  // The delegate's own address, as its first read asked for it.
+  const address = a.calls.find(c => c[0] === "inbox")![2];
+  expect(address).toMatch(/^actor-a\/.+/);
   await kata(["notify", ref, "--to", address, "--message", note, "--json"]);
   const second = a.core.session.beforePrompt(a.ctx);
   release();

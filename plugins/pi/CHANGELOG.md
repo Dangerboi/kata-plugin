@@ -11,6 +11,18 @@ All notable changes to `@dangerboi/kata-pi` are listed here. The format follows 
 - A `write`, `edit` or `bash` `git commit` call that adds a Kata ref the session works to a file under the project folder or to a commit message is refused, and the reason tells the model to describe the behaviour instead. Kata refs only resolve in the local tracker.
   - Set `KATA_REF_GUARD=off` (or `0`) to turn it off.
 
+### Changed
+
+#### Inbox and attention
+
+- A child's assignment or `<kata_binding>` note names its inbox address, `<actor>/<teammate>`, when `KATA_INBOX_USER` is a session address.
+
+### Fixed
+
+#### Inbox and attention
+
+- A request's text can no longer close the `<kata_inbox>` section or open a tag: `&`, `<` and `>` are written as `&amp;`, `&lt;` and `&gt;` in the section, when the plugin reads the inbox (not under Kata's native pi adapter, which inserts it).
+
 ## [1.12.2] - 2026-11-23
 
 ### Fixed

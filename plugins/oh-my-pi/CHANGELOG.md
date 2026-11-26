@@ -6,10 +6,25 @@ All notable changes to `@dangerboi/kata-omp` are listed here. The format follows
 
 ### Added
 
+#### Inbox and attention
+
+- Session attention also covers each ticket the lead claims with `kata claim` (or marks with `kata meta set ... work.attention ok`) and each issue it names with `/todo ref`, not only `KATA_REF`.
+  - A ticket keeps attention until the session ends or switches, also after another ticket becomes the plan parent. Kata then flags an open ticket still on `ok` as `needs-human`; a ticket closed first is left alone.
+  - A ticket flagged `stuck` or `needs-human` keeps its flag and gets no start, including the flag Kata wrote when an earlier session ended, after a quit and `/resume`. `kata meta set <ref> work.attention ok` run by the lead in its shell clears it and starts attention; run elsewhere it only clears the flag until the lead next claims or names the ticket. Kata leaves the old hand-off message in place.
+  - A fork restarts attention for the parent it keeps; a resume in a new process does so only while the issue is still `ok` (after a crash), not after a quit.
+
 #### Repository content
 
 - A `write`, `edit`, `ast_edit` or `bash` `git commit` call that adds a Kata ref the session works to a file under the project folder or to a commit message is refused, for the lead and its delegates, and the reason tells the model to describe the behaviour instead. Kata refs only resolve in the local tracker.
   - Set `KATA_REF_GUARD=off` (or `0`) to turn it off.
+
+### Fixed
+
+#### Inbox and attention
+
+- A subagent reads its own session inbox, `<actor>/<teammate>`, instead of the lead's, so a request can be sent to one subagent.
+  - Subagents read an inbox only when `KATA_INBOX_USER` is a session address, and their assignment note names it. A subagent the plugin could not record reads none, and omp's advisor no longer shows the lead's requests.
+- A request's text can no longer close the `<kata_inbox>` section or open a tag: `&`, `<` and `>` are written as `&amp;`, `&lt;` and `&gt;` in the section and in a live delivery.
 
 ## [3.0.0] - 2026-11-23
 
