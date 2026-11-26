@@ -28,6 +28,12 @@ test("OMP publishes the native marker before session_start returns", async () =>
   await app.event("session_shutdown"); expect(process.env.KATA_ATTENTION_HOST).toBeUndefined();
 });
 
+// The same host's context under another session id, as a switch or fork delivers it; the entries (the saved plan parent) carry over.
+function switched(app: ReturnType<typeof host>, id: string, parentSession?: string) {
+  const sm = app.ctx.sessionManager;
+  return { ...app.ctx, sessionManager: { getSessionFile: () => sm.getSessionFile(), getEntries: () => sm.getEntries(), getBranch: () => sm.getBranch(), getHeader: () => parentSession ? { parentSession } : sm.getHeader(), getSessionId: () => id } };
+}
+
 function heldBind() {
   const held = holdKata(args => args[0] === "show");
   return { app: host(held.before), held };
@@ -46,9 +52,7 @@ test("switch selects the previous baseline after pending startup", async () => {
   process.env.KATA_REF = await issue();
   const { app, held } = heldBind();
   const start = app.event("session_start"); await held.entered;
-  const sm = app.ctx.sessionManager;
-  const next = { ...app.ctx, sessionManager: { getSessionFile: () => sm.getSessionFile(), getEntries: () => sm.getEntries(), getBranch: () => sm.getBranch(), getHeader: () => sm.getHeader(), getSessionId: () => "attention-switched" } };
-  const switching = app.event("session_switch", {}, next); held.release(); await Promise.all([start, switching]);
+  const switching = app.event("session_switch", {}, switched(app, "attention-switched")); held.release(); await Promise.all([start, switching]);
   expect(app.calls.filter(a => a[1] === "attention-native").map(a => a[3])).toEqual(["start", "end", "start"]);
 });
 
@@ -185,8 +189,37 @@ test("a session switch ends the refs the old session started attention for", asy
   const ref = await fresh(); const app = host(); await app.event("session_start");
   await claimed(app, ref);
   expect((await attention(ref)).state).toBe("ok");
-  const sm = app.ctx.sessionManager;
-  const next = { ...app.ctx, sessionManager: { getSessionFile: () => sm.getSessionFile(), getEntries: () => sm.getEntries(), getBranch: () => sm.getBranch(), getHeader: () => sm.getHeader(), getSessionId: () => "attention-late-switched" } };
-  await app.event("session_switch", {}, next);
+  await app.event("session_switch", {}, switched(app, "attention-late-switched"));
   expect((await attention(ref)).state).toBe("needs-human");
+});
+
+test("a fork whose plan parent is the claimed ticket keeps it ok under the new session", async () => {
+  delete process.env.KATA_REF;
+  const ref = await fresh(); const app = host(); await app.event("session_start");
+  await claimed(app, ref);
+  const before = (await attention(ref)).owner;
+  await app.event("session_switch", { reason: "fork" }, switched(app, "attention-fork", app.sid));
+  const after = await attention(ref);
+  expect(after.state).toBe("ok"); expect(after.owner).toBeTruthy(); expect(after.owner).not.toBe(before);
+  await app.event("session_shutdown");
+  expect((await attention(ref)).state).toBe("needs-human");
+});
+
+test("a ticket Kata flagged when its session ended gets attention again when the lead claims it in a new session", async () => {
+  delete process.env.KATA_REF;
+  const ref = await fresh(); const first = host(); await first.event("session_start");
+  await claimed(first, ref); await first.event("session_shutdown");
+  expect(await attention(ref)).toMatchObject({ state: "needs-human", message: "session ended without hand-off" });
+  const second = host(); await second.event("session_start");
+  await second.event("tool_result", { toolName: "bash", input: { command: `kata claim ${ref.split("#")[1]}`, cwd }, isError: false });
+  expect((await attention(ref)).state).toBe("ok");
+});
+
+test("two claimed tickets keep attention until shutdown, then both are flagged", async () => {
+  delete process.env.KATA_REF;
+  const [one, two] = [await fresh(), await fresh()]; const app = host(); await app.event("session_start");
+  await claimed(app, one); await claimed(app, two);
+  expect((await attention(one)).state).toBe("ok"); expect((await attention(two)).state).toBe("ok");
+  await app.event("session_shutdown");
+  expect((await attention(one)).state).toBe("needs-human"); expect((await attention(two)).state).toBe("needs-human");
 });

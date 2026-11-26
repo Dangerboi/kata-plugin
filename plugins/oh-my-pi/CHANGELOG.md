@@ -10,7 +10,7 @@ All notable changes to `@dangerboi/kata-omp` are listed here. The format follows
 
 - Session attention also covers a ticket the lead claims with `kata claim` and an issue it names with `/todo ref`, not only `KATA_REF`.
   - If the session ends while the issue is open, Kata flags it `needs-human`; a ticket closed first is left alone, and one already flagged `stuck` or `needs-human` keeps its flag.
-  - Binding another ticket ends attention for the one it replaces.
+  - Each ticket the session claims keeps attention until the session ends, also after another ticket becomes the plan parent.
 
 ## [3.0.0] - 2026-11-23
 
