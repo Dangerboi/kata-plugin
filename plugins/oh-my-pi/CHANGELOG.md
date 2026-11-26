@@ -4,6 +4,14 @@ All notable changes to `@dangerboi/kata-omp` are listed here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+
+#### Inbox and attention
+
+- A subagent reads its own session inbox, `<actor>/<teammate>`, instead of the lead's, so it no longer sees the lead's requests and a request can be sent to one subagent.
+  - Subagents read an inbox only when `KATA_INBOX_USER` is a session address, and their assignment note names it.
+  - The lead and subagents preparing prompts at the same time no longer show each other's inbox or contract.
+
 ## [3.0.0] - 2026-11-23
 
 ### Added

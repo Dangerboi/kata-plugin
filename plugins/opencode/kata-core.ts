@@ -239,15 +239,17 @@ const NATIVE_TODO_RULES = [
 	"- There is no blocked status. Record a wait with `kata comment <ref> --body '<what you wait for>'` and leave the task as it is.",
 ].join("\n");
 
-function delegateContext(executable: string, name: string, ref: string, teammate: string, binding: Binding): string {
+function delegateContext(executable: string, name: string, ref: string, teammate: string, binding: Binding, inbox?: string): string {
 	const command = `${quote(executable)} --workspace ${quote(binding.workspace)} --project ${quote(projectOf(binding.parent))} --teammate ${quote(teammate)}`;
-	return `You are subagent ${name}. Your Kata issue is ${ref}; your teammate is ${teammate}. Keep the existing actor and use this issue instead of inherited KATA_REF. Track attention on your own issue. Before you finish, whatever the outcome, YOU must comment on your issue what you did, since other subagents may work it before or after you: ${command} comment ${quote(ref)} --body '<what you changed, how you verified it, and what remains, in a few sentences>'. When verified, YOU must then run: ${command} close ${quote(ref)} --done --message '<describe this task and its verification in at least ${PROOF_MIN} characters>' --evidence '<typed evidence for your actual verification>'. Exception: if your task text tells you not to close issues, or to leave this issue open, do not close it; the lead closes it after its own checks. If unfinished, leave it open; your comment says what remains.`;
+	return `You are subagent ${name}. Your Kata issue is ${ref}; your teammate is ${teammate}. Keep the existing actor and use this issue instead of inherited KATA_REF. Track attention on your own issue. Before you finish, whatever the outcome, YOU must comment on your issue what you did, since other subagents may work it before or after you: ${command} comment ${quote(ref)} --body '<what you changed, how you verified it, and what remains, in a few sentences>'. When verified, YOU must then run: ${command} close ${quote(ref)} --done --message '<describe this task and its verification in at least ${PROOF_MIN} characters>' --evidence '<typed evidence for your actual verification>'. Exception: if your task text tells you not to close issues, or to leave this issue open, do not close it; the lead closes it after its own checks. If unfinished, leave it open; your comment says what remains.${inboxLine(inbox)}`;
 }
+
+const inboxLine = (address?: string) => address ? ` Your Kata inbox is ${address}; requests sent there reach you.` : "";
 
 // A delegate that matched no plan item and named no ticket has no issue. Its
 // context says so instead of sending it to one: the lead tracks the work.
-function untrackedDelegateContext(name: string): string {
-	return `You are subagent ${name}. The lead session tracks this work and you have no Kata issue. Do not create, claim, close, comment on or edit Kata issues, including one named by an inherited KATA_REF. Reading Kata is fine. Report your results in your reply.`;
+function untrackedDelegateContext(name: string, inbox?: string): string {
+	return `You are subagent ${name}. The lead session tracks this work and you have no Kata issue. Do not create, claim, close, comment on or edit Kata issues, including one named by an inherited KATA_REF. Reading Kata is fine. Report your results in your reply.${inboxLine(inbox)}`;
 }
 
 // Items that name no ticket become children of a parent issue; a plan of only named items needs none.
@@ -412,7 +414,11 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 	const isLeadCall = (job: Job) => main(job.ctx ?? currentCtx);
 	let reminders = 0;
 	let progressed = true;
-	let cache: { id?: string; contract?: string; inbox?: string; pending?: Promise<void>; inboxPending?: Promise<void>; inboxNext?: Promise<void>; personInbox?: boolean } = {};
+	// One entry per session: the lead's core serves the lead and every delegate running in its process.
+	type Warm = { contract?: string; inbox?: string; pending?: Promise<void>; inboxPending?: Promise<void>; inboxNext?: Promise<void>; personInbox?: boolean };
+	const cache = new Map<string, Warm>();
+	let leadWarm: string | undefined;
+	const delegateKey = (id: string) => `delegate:${id}`;
 	const kata = createKata({ path, exec: (...args) => host.exec(...args), executable: options.executable, teammate: () => sessionTeammate, ctx: () => currentCtx, session: () => currentId, debug });
 	// Throttled closes, ticket closes waiting on children and the automatic parent's close (see settlement.ts).
 	// The timer is omp's ctx timer (contained, cleared on session_shutdown) when the host has one; pi has none.
@@ -2139,8 +2145,12 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 	function warm(ctx: HostContext, cwd = ctx.cwd, inbox = true) {
 		const job = NO_JOB;
 		const id = sid(ctx);
-		if (cache.id !== id) cache = { id };
-		const entry = cache;
+		// A delegate reads its own session inbox, <actor>/<teammate>, and only when the lead opted in with one: it never reads the lead's.
+		const record = !main(ctx) ? host.delegateStore.of(ctx) : undefined;
+		const key = record ? delegateKey(record.id) : id ?? "";
+		let entry = cache.get(key);
+		// A delegate starts from the lead's contract: it is the same Kata folder's text.
+		if (!entry) cache.set(key, entry = { contract: record ? cache.get(leadWarm ?? "")?.contract : undefined });
 		if (!entry.pending && !entry.contract) {
 			entry.pending = (async () => {
 				if (!await probe(job, cwd)) return;
@@ -2153,27 +2163,35 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 		let inboxRead: Promise<void> | undefined;
 		// A bare actor is a person's own inbox (requests written for them, read by kata inbox and tern-kata's
 		// Attention Page), never instructions for this session. Only <actor>/<teammate> is a session inbox.
-		if (user && !isSessionAddress(user)) {
+		if (record) {
+			if (inbox && user && isSessionAddress(user)) inboxRead = readInbox(entry, job, cwd, undefined, { ref: delegates.assignment(ctx)?.ref, teammate: record.teammate });
+		} else if (user && !isSessionAddress(user)) {
 			if (!entry.personInbox) {
 				entry.personInbox = true;
 				uiOf(ctx)?.notify?.(`KATA_INBOX_USER=${user} is a personal inbox, so this session reads none. Use ${user}/<name> for a session inbox.`, "warning");
 			}
 		} else if (inbox && user) {
-			// Only requests from the session's own actor reach the prompt. A failed read (or actor
-			// lookup) keeps the last inbox; no trusted request removes the section.
-			const read = (): Promise<void> => {
-				const running: Promise<void> = (async () => {
-					const mine = await actor(job, cwd);
-					const out = JSON.parse(await kata.run(job, ["inbox", "--for", user], cwd));
-					entry.inbox = trustedInbox(out?.requests, mine, user);
-				})().catch(debug).finally(() => { if (entry.inboxPending === running) entry.inboxPending = undefined; });
-				return entry.inboxPending = running;
-			};
-			// A read already running may have begun before a request this call must show, so one more read follows it,
-			// shared by every call made meanwhile.
-			inboxRead = !entry.inboxPending ? read() : entry.inboxNext ??= entry.inboxPending.then(() => { entry.inboxNext = undefined; return read(); });
+			inboxRead = readInbox(entry, job, cwd, user);
 		}
-		return Promise.all([entry.pending, inboxRead]).then(() => undefined);
+		const done = Promise.all([entry.pending, inboxRead]).then(() => undefined);
+		return { entry, done };
+	}
+
+	// Only requests from the session's own actor reach the prompt. A failed read (or actor lookup) keeps the last inbox;
+	// no trusted request removes the section.
+	function readInbox(entry: Warm, job: Job, cwd: string, user?: string, delegate?: { ref?: string; teammate: string }): Promise<void> {
+		const read = (): Promise<void> => {
+			const running: Promise<void> = (async () => {
+				const mine = await actor(job, cwd, delegate?.ref);
+				const address = delegate ? `${mine}/${delegate.teammate}` : user!;
+				const out = JSON.parse(await kata.run(job, ["inbox", "--for", address], cwd));
+				entry.inbox = trustedInbox(out?.requests, mine, address);
+			})().catch(debug).finally(() => { if (entry.inboxPending === running) entry.inboxPending = undefined; });
+			return entry.inboxPending = running;
+		};
+		// A read already running may have begun before a request this call must show, so one more read follows it,
+		// shared by every call made meanwhile.
+		return !entry.inboxPending ? read() : entry.inboxNext ??= entry.inboxPending.then(() => { entry.inboxNext = undefined; return read(); });
 	}
 
 	// ------------------------------------------------------------ live inbox
@@ -2310,6 +2328,7 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 	async function shutdown(ctx: HostContext, closing: { delegate?: { id: string; ended: boolean; report?: string }; continues?: boolean; forking?: boolean } = {}): Promise<void> {
 		see(ctx);
 		if (!main(ctx) && !closing.delegate) return;
+		if (closing.delegate) cache.delete(delegateKey(closing.delegate.id));
 		stopFollower();
 		// Left for the fork before the bounded work: pi starts the fork's instance once this shutdown returns or times out.
 		const forking = main(ctx) && closing.forking ? leaving() : undefined;
@@ -2355,6 +2374,8 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 				see(ctx);
 				const explicit = configuredRef(), id = sid(ctx);
 				stopFollower();
+				// The lead's entry goes when the session switches; delegates' entries go when they end.
+				if (leadWarm !== id) { cache.delete(leadWarm ?? ""); leadWarm = id; }
 				const user = setting("KATA_INBOX_USER");
 				const live = !!host.liveInbox && !!user && isSessionAddress(user);
 				if (live) liveInbox = "";
@@ -2395,20 +2416,24 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 				// A delegate cannot learn its assignment later, so its prompt waits for it (`after`) up to DELEGATE_BIND_MS. The
 				// contract and inbox reads keep their usual budget; a slower read lands in the cache for the next turn.
 				if (!main(ctx)) await bounded(Promise.resolve(prompt.after), DELEGATE_BIND_MS);
+				const warmed = context ? warmFor(ctx) : undefined;
 				await bounded(Promise.all([
 					main(ctx) && currentId !== sid(ctx) ? serial(job => enter(job, ctx)) : undefined,
-					context ? warmFor(ctx) : undefined,
+					warmed?.done,
 				]), main(ctx) ? 250 : DELEGATE_PROMPT_MS);
 				const sections: PromptSections = {};
-				if (context) {
-					if (cache.contract) sections.contract = cache.contract;
-					const inbox = main(ctx) && liveInbox !== undefined ? liveInbox : cache.inbox;
+				if (warmed) {
+					const { entry } = warmed;
+					if (entry.contract) sections.contract = entry.contract;
+					const inbox = main(ctx) && liveInbox !== undefined ? liveInbox : entry.inbox;
 					if (inbox) sections.inbox = inbox;
 				}
 				const record = !main(ctx) ? host.delegateStore.of(ctx) : undefined;
 				const assigned = record ? delegates.assignment(ctx) : undefined;
-				if (record && assigned) sections.assignment = delegateContext(options.executable, nameOf(record), assigned.ref, assigned.teammate, assigned.binding);
-				else if (isUntracked(record)) sections.assignment = untrackedDelegateContext(nameOf(record));
+				const mailbox = record && context && isSessionAddress(setting("KATA_INBOX_USER") ?? "") ? await actor(NO_JOB, assigned?.workspace || ctx.cwd, assigned?.ref).catch(() => undefined) : undefined;
+				const inboxAddress = mailbox && record ? `${mailbox}/${record.teammate}` : undefined;
+				if (record && assigned) sections.assignment = delegateContext(options.executable, nameOf(record), assigned.ref, assigned.teammate, assigned.binding, inboxAddress);
+				else if (isUntracked(record)) sections.assignment = untrackedDelegateContext(nameOf(record), inboxAddress);
 				if (options.native) sections.todo = plan.parent || plan.local || plan.tasks.some(t => t.ticket) ? `${NATIVE_TODO_RULES}\nCurrent plan (refs in parentheses):\n${render(plan, wording)}` : NATIVE_TODO_RULES;
 				else if (plan.parent || plan.tasks.some(t => t.ticket)) sections.todo = `The ${wording.tool} tool is backed by Kata. Current plan:\n${render(plan, wording)}`;
 				return { sections, lead: lead() };
@@ -2439,7 +2464,10 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 			guard,
 		},
 		delegates: {
-			apply: delegates.apply,
+			apply: (event: Parameters<typeof delegates.apply>[0], within: Job) => {
+				if (event.type === "exited") cache.delete(delegateKey(event.id));
+				return delegates.apply(event, within);
+			},
 			start: delegates.start,
 			assignment: delegates.assignment,
 			check: delegates.check,
