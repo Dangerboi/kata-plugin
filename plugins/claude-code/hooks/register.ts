@@ -4,6 +4,7 @@ import { onCompact, onPrompt, onStop, onTurnComplete } from "./prompt";
 import { onTodoCall, onToolCall, onToolList } from "./todo";
 import { onDelegateCall, onSpawn } from "./delegates";
 import { onLeadShell, onShellCheck } from "./shell";
+import { onWriteGuard } from "./write-guard";
 import { onTurnStart } from "./inbox";
 import { configure } from "./lead";
 import { onBand, onTickets, onTodoCard, onTodoCommand, onTodoUse } from "./ui";
@@ -20,6 +21,8 @@ export const register: Register = (on, options) => {
 	on("tool.call", { tool: /^todo$/ }, onTodoCall);
 	on("tool.call", { agentId: /./ }, onDelegateCall);
 	on("tool.call", onToolCall);
+	// After `onToolCall`, which calls `next` first and so still sees a refusal.
+	on("tool.call", onWriteGuard);
 	on("tool.call", { tool: "Bash" }, onLeadShell);
 	on("tool.check", { tool: "Bash" }, onShellCheck);
 	on("agent.spawn", onSpawn);

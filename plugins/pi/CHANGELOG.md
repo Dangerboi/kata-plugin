@@ -4,6 +4,13 @@ All notable changes to `@dangerboi/kata-pi` are listed here. The format follows 
 
 ## [Unreleased]
 
+### Added
+
+#### Repository content
+
+- A `write`, `edit` or `bash` `git commit` call that adds a Kata ref the session works to a file under the project folder or to a commit message is refused, and the reason tells the model to describe the behaviour instead. Kata refs only resolve in the local tracker.
+  - Set `KATA_REF_GUARD=off` (or `0`) to turn it off.
+
 ## [1.12.2] - 2026-11-23
 
 ### Fixed

@@ -5,6 +5,7 @@ import { createDelegates, FINAL, heldByDelegate as heldBy, isUntracked, nameOf, 
 import { createSettlement, MAX_FAILURES, openChildren, type PendingClose, type SettlementSnapshot } from "./settlement";
 import { createKata, debugTo, type CORE_ENV, isKataCode, isUnusable, KataError, NO_JOB, waitAtMost, type Batch, type Exec, type Job, type PathOps, type Platform, type Timers } from "./kata-cli";
 import { createTicketCompletion } from "./autocomplete";
+import { offendingRefs } from "./ref-guard";
 import { kataCommands, quote, shellOptions } from "./shell";
 import { closedTaskStatus, digest, FULL_ID_REF, hasLabel, heldBySession, heldMessage, itemTicket, NATIVE_WORDING, OPEN, PROOF_MIN, projectOf, proofProblem, QUALIFIED_REF_ONLY, qualifiedRef, SESSION_KEY, sessionParentKeys, slug, tasksOf, textOf, TITLE_MAX, TODO_WORDING, WONTFIX_MIN, WORKING, type Binding, type Change, type KataIssue, type KataShow, type Plan, type Status, type Task, type ToolWording } from "./model";
 import { diffNativeList, nativeOpen, nativeTargets, type NativeItem, type NativePhase, type NativeStatus } from "./todo-list";
@@ -388,6 +389,8 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 	let assignedRef: string | undefined;
 	const configuredRef = () => options.explicitRef?.() ?? setting("KATA_REF");
 	const aliases = new Set<string>(); // refs the plan's parent was rehomed from: they still name it
+	// Refs this session claimed in its shell or named with `/todo ref`: its work, though the plan may never hold them. Read by `tools.guard`.
+	const claimed = new Set<string>();
 	let requestedRef: string | undefined;
 	// A native host's list says what is in progress, so the core never starts a pending task itself (see nextTask).
 	const autoStart = options.autoStart !== false && !options.native;
@@ -2005,6 +2008,43 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 		return bounded((async () => { await after?.catch(debug); if (!main(ctx) && !delegates.assignment(ctx)) return undefined; return serial(job => guardText(job, ctx, call), { ctx }); })(), GUARD_MS);
 	}
 
+	// How long `tools.guard` waits for its checks (the canonical path of each file the call writes): past it the call goes through unchecked.
+	const REF_GUARD_MS = 2_000;
+
+	// Every ref this session works: the plan, its items, the assignment, a claim or `/todo ref`, and the delegates' issues.
+	function knownRefs(ctx: HostContext): Set<string> {
+		const refs = new Set<string>();
+		const add = (...found: (string | undefined)[]) => { for (const ref of found) if (ref) refs.add(ref); };
+		add(plan.parent, assignedRef, configuredRef(), requestedRef, ...aliases, ...claimed);
+		if (!plan.local) for (const t of plan.tasks) add(t.ref, t.ticket);
+		for (const t of named) add(t.ref, t.ticket);
+		for (const r of [...host.delegateStore.records(), host.delegateStore.of(ctx)]) add(r?.ref, r?.planRef, r?.mission?.ref, r?.binding?.parent, r?.parent);
+		add(delegates.assignment(ctx)?.ref);
+		return refs;
+	}
+
+	// Called before a tool runs: the text that refuses a call that would put a Kata ref into the repository, or undefined to let it run. It
+	// never rejects: an error, a slow check or an off switch (KATA_REF_GUARD=off or 0) lets the call through.
+	function refGuard(ctx: HostContext, call: { tool: string; input: unknown }): Promise<string | undefined> {
+		if (["off", "0"].includes((setting("KATA_REF_GUARD") ?? "").trim().toLowerCase())) return Promise.resolve(undefined);
+		return bounded((async () => {
+			const refs = knownRefs(ctx);
+			const roots = [...new Set([ctx.cwd ?? platform.cwd(), plan.workspace])].map(root => canonicalPath(platform, ".", root));
+			const workspaces = await Promise.all(roots);
+			const prefix = (root: string) => path.join(root, "x").slice(0, -1);
+			const found = await offendingRefs({
+				...call, refs,
+				projects: new Set([...refs].filter(ref => ref.includes("#")).map(projectOf)),
+				async inWorkspace(file) {
+					const canonical = await canonicalPath(platform, file, ctx.cwd ?? platform.cwd());
+					return workspaces.some(root => canonical === root || canonical.startsWith(prefix(root)));
+				},
+			});
+			if (!found.length) return undefined;
+			return `Refused: this ${call.tool} call puts ${found.join(", ")} into the repository. Kata refs only resolve in the local tracker, so code, comments, tests, docs and commit messages should describe the behaviour instead. Rewrite it without the ref and retry. To turn this check off, set KATA_REF_GUARD=off.`;
+		})(), REF_GUARD_MS);
+	}
+
 	// `/todo ref <id>`: makes the Kata issue the plan's parent at once, loading its open children. A plan that already has a parent keeps it.
 	function pinRef(ctx: HostContext, ref: string | undefined): Promise<string> {
 		if (!ref) return Promise.resolve("/todo ref needs the Kata issue the todo plan serves: /todo ref <project>#<id>.");
@@ -2013,6 +2053,7 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 			try {
 				await enterPlan(job, ctx, false);
 				const pinned = await kata.pin(job, ref, path.resolve(ctx.cwd));
+				claimed.add(pinned);
 				const explicit = configuredRef();
 				if (explicit && await kata.pin(job, explicit, path.resolve(ctx.cwd)) !== pinned) return `KATA_REF is set to ${explicit}, which fixes the plan parent; ${ref} is not used.`;
 				if (plan.parent) {
@@ -2062,14 +2103,17 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 
 	async function observeToolResult(event: any, ctx: HostContext) {
 		progressed = true;
-		if (!main(ctx) || configuredRef() || event.toolName !== "bash" || event.isError || (event.details?.exitCode !== undefined && event.details.exitCode !== 0)) return;
+		if (!main(ctx) || event.toolName !== "bash" || event.isError || (event.details?.exitCode !== undefined && event.details.exitCode !== 0)) return;
 		const command = event.input?.command;
-		if (typeof command !== "string" || /[;|\n]/.test(command)) return;
+		if (typeof command !== "string") return;
+		const adopting = !configuredRef() && !/[;|\n]/.test(command);
 		for (const invocation of kataCommands(path, command, options.executable, options.executableVars)) {
 			const parsed = shellOptions(invocation.words), args = parsed.args;
 			let ref = args[0] === "claim" ? args[1] : args[0] === "meta" && args[1] === "set" && args[3] === "work.attention" && args[4] === "ok" ? args[2] : undefined;
 			if (!ref || parsed.options.has("--as")) continue;
 			if (!ref.includes("#") && parsed.value("--project")) ref = `${parsed.value("--project")}#${ref}`;
+			if (args[0] === "claim") claimed.add(ref);
+			if (!adopting) continue;
 			const workspace = path.resolve(event.input.cwd || ctx.cwd, parsed.value("--workspace") || ".");
 			const target = ref;
 			await bounded(serial(async job => {
@@ -2427,6 +2471,8 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 				await observeToolResult(event, ctx);
 				return lead();
 			},
+			// A tool is about to run: the text that refuses it for putting a Kata ref into the repository, or undefined (see `refGuard`).
+			guard: refGuard,
 		},
 		todo: {
 			apply: (ctx: HostContext, op: string, params: any, within: Job) => execute({ ...params, op }, ctx, within),

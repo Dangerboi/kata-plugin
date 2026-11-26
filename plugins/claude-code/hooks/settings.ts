@@ -19,6 +19,7 @@ export async function readEnv($: EngineInterface): Promise<Map<string, string>> 
 	note("KATA_HOME", await $.env.get("KATA_HOME"));
 	note("KATA_ATTENTION_HOST", await $.env.get("KATA_ATTENTION_HOST"));
 	note("KATA_CLOSE_TRANSCRIPT_ENABLED", await $.env.get("KATA_CLOSE_TRANSCRIPT_ENABLED"));
+	note("KATA_REF_GUARD", await $.env.get("KATA_REF_GUARD"));
 	note("USER", await $.env.get("USER"));
 	note("KATA_CLAUDE_EXECUTABLE", await $.env.get("KATA_CLAUDE_EXECUTABLE"));
 	note("KATA_CLAUDE_DEBUG", await $.env.get("KATA_CLAUDE_DEBUG"));
@@ -33,6 +34,8 @@ export interface Settings {
 	contract: boolean;
 	// Follow the session inbox live. Off: the inbox is read once per prompt, as for a subagent.
 	liveInbox: boolean;
+	// Refuse writes and commits that put a Kata ref into the repository. Off: the option or KATA_REF_GUARD is `off` or `0`.
+	refGuard: boolean;
 }
 
 export const EXECUTABLE_VARS = ["KATA_CLAUDE_EXECUTABLE"];
@@ -43,6 +46,7 @@ export function resolveSettings(options: Record<string, unknown> | undefined, en
 		executable: text(options?.kataExecutable) ?? env.get("KATA_CLAUDE_EXECUTABLE") ?? "kata",
 		debugFile: text(options?.debugFile) ?? env.get("KATA_CLAUDE_DEBUG"),
 		contract: options?.contract === true,
-		liveInbox: options?.liveInbox !== false && env.get("KATA_CLAUDE_LIVE_INBOX") !== "0"
+		liveInbox: options?.liveInbox !== false && env.get("KATA_CLAUDE_LIVE_INBOX") !== "0",
+		refGuard: options?.refGuard !== false && !["off", "0"].includes((env.get("KATA_REF_GUARD") ?? "").trim().toLowerCase())
 	};
 }

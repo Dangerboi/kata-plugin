@@ -4,6 +4,13 @@ All notable changes to the `kata-cc` Claude Code plugin are listed here. The for
 
 ## [Unreleased]
 
+### Added
+
+#### Repository content
+
+- A `Write`, `Edit`, `NotebookEdit` or `Bash` `git commit` call that adds a Kata ref the session works to a file under the project folder or to a commit message is denied, for the lead and its delegates, and the reason tells the model to describe the behaviour instead. Kata refs only resolve in the local tracker.
+  - Turn it off with the `refGuard` option or `KATA_REF_GUARD=off` (or `0`).
+
 ## [1.1.0] - 2026-11-23
 
 ### Added

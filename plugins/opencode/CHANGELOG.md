@@ -4,6 +4,13 @@ All notable changes to `@dangerboi/kata-opencode` are listed here. The format fo
 
 ## [Unreleased]
 
+### Added
+
+#### Repository content
+
+- A `write`, `edit`, `patch` or `shell` `git commit` call that adds a Kata ref the session works to a file under the project folder or to a commit message is refused, for the lead and its delegates, and the reason tells the model to describe the behaviour instead. Kata refs only resolve in the local tracker.
+  - Set the `refGuard` option or `KATA_REF_GUARD` to `off` (or `0`) to turn it off.
+
 ## [1.2.2] - 2026-11-23
 
 ### Fixed

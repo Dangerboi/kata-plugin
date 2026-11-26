@@ -442,3 +442,28 @@ test("a switch ends the session it leaves with that session's own debts, also wh
 	await eventually(async () => store.has(`session/${b}`), false);
 	await eventually(async () => ((store.get(`session/${a}`) as any)?.endedAt ?? 0) > 0, true);
 });
+
+test("Write, Edit and a git commit that name a ref of the plan are denied until the refGuard option is off", async () => {
+	for (const off of [false, true]) {
+		const h = host(off ? { options: { kataExecutable: binary, refGuard: false } } : {});
+		await h.start();
+		await h.todo({ op: "init", items: ["Guarded plan item"] });
+		const ref = `${PROJECT}#${(await parentOf(h.state.session)).short_id}`;
+		const file = `${cwd}/notes.ts`;
+		const fire = (call: Record<string, unknown>) => h.fire("tool.call", { tool_use_id: `g-${crypto.randomUUID()}`, ...call }, () => ({ result: "ok", text: "ok" }));
+		const attempts = [
+			{ tool: "Write", file_path: file, content: `// tracked as ${ref}` },
+			{ tool: "Edit", file_path: file, old_string: "x", new_string: `// ${ref}` },
+			{ tool: "Bash", command: `git commit -m "fix ${ref}"` },
+		];
+		for (const attempt of attempts) {
+			const result = await fire(attempt);
+			if (off) { expect(result.deny).toBeUndefined(); continue; }
+			expect(result.deny).toContain(ref);
+			expect(result.deny).toContain("KATA_REF_GUARD=off");
+		}
+		for (const attempt of [{ tool: "Write", file_path: file, content: "// README.md#tasks" }, { tool: "Write", file_path: "/tmp/outside-notes.ts", content: ref }, { tool: "Bash", command: `kata comment ${ref} -m "note ${ref}"` }]) {
+			expect((await fire(attempt)).deny).toBeUndefined();
+		}
+	}
+});

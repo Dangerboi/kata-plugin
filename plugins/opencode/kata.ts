@@ -2,6 +2,7 @@ import { createSeam, EXECUTION_ENDED, SESSION_ENDED, type Seam } from "./seam";
 import type { Lead } from "./lead";
 import { resolveSettings } from "./settings";
 import { install as installShellRoute } from "./shell-route";
+import { install as installWriteGuard } from "./write-guard";
 import { install as installSubagents } from "./subagents";
 import { install as installTodowrite } from "./todowrite";
 
@@ -11,6 +12,7 @@ import { install as installTodowrite } from "./todowrite";
 
 // Installed in this order (see Seam in seam.ts).
 const MODULES: ((seam: Seam) => void | Promise<unknown>)[] = [
+	installWriteGuard,
 	installTodowrite,
 	installSubagents,
 	installShellRoute,

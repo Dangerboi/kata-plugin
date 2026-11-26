@@ -297,6 +297,25 @@ test("subagent bash attribution ignores quoted data, replaces teammates and refu
   expect(result.input.command.match(/--teammate/g)).toHaveLength(2);
 });
 
+test("omp refuses a write or commit that names a ref of the plan, for the lead and a subagent, until KATA_REF_GUARD is off", async () => {
+  const app = host(); await app.event("session_start");
+  const ref = await app.init(["Guarded plan task"]);
+  const write = (who: typeof app, content: string) => who.event("tool_call", { toolName: "write", input: { path: `${cwd}/notes.ts`, content } });
+  const refused = await write(app, `// tracked as ${ref}`);
+  expect(refused).toMatchObject({ block: true });
+  expect(refused.reason).toContain(ref);
+  expect(refused.reason).toContain("KATA_REF_GUARD=off");
+  expect(await write(app, "// tracked as README.md#tasks")).toBeUndefined();
+  expect(await app.event("tool_call", { toolName: "write", input: { path: `${outside}/notes.ts`, content: ref } })).toBeUndefined();
+  expect(await app.event("tool_call", { toolName: "bash", input: { command: `git commit -m "fix ${ref}"` } })).toMatchObject({ block: true });
+  expect(await app.event("tool_call", { toolName: "bash", input: { command: `kata comment ${ref} -m "note ${ref}"` } })).toBeUndefined();
+  const child = { ...app.ctx, agent: { kind: "sub", id: "guard-child", parentId: app.ctx.agent.id } };
+  expect(await app.event("tool_call", { toolName: "write", input: { path: `${cwd}/child.ts`, content: `// ${ref}` } }, child)).toMatchObject({ block: true });
+  process.env.KATA_REF_GUARD = "off";
+  try { expect(await write(app, `// tracked as ${ref}`)).toBeUndefined(); }
+  finally { delete process.env.KATA_REF_GUARD; }
+});
+
 test("pinned plan survives cwd changes and ignores another session's saved binding", async () => {
   const app = host(); await app.event("session_start"); const parent = await app.init(["Pinned task"]);
   app.ctx.cwd = outside;

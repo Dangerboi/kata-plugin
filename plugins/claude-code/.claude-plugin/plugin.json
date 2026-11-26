@@ -12,6 +12,12 @@
       "description": "Deliver requests sent to this session through kata notify as they arrive, without waiting for the next prompt. On unless this is off or KATA_CLAUDE_LIVE_INBOX=0; either one turns it off. When off, the inbox is read once per prompt.",
       "default": true
     },
+    "refGuard": {
+      "type": "boolean",
+      "title": "Refuse Kata refs in repository content",
+      "description": "Refuse a write, an edit or a git commit that puts a Kata ref the session knows into the repository: refs resolve only in the local tracker. On unless this is off or KATA_REF_GUARD=off (or 0); either one turns it off.",
+      "default": true
+    },
     "contract": {
       "type": "boolean",
       "title": "Kata contract in prompts",

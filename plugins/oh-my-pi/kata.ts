@@ -381,6 +381,8 @@ export default function ompKata(pi: any) {
 		await core.tools.call(ctx);
 		const record = ctx.agent?.kind === "sub" ? await recordOf(ctx) : undefined;
 		if (record) ranTool(record);
+		const refused = await core.tools.guard(ctx, { tool: event.toolName, input: event.input });
+		if (refused) return { block: true, reason: refused };
 		if (event.toolName === "todo" && await kataBackend() === BACKEND_ID) {
 			const owner = main(ctx) ? core : record && !isUntracked(record) ? core.delegate(record.id) : undefined;
 			// A delegate's guard waits for its queued next use, inside the guard's own time bound.

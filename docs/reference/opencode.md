@@ -15,6 +15,7 @@ Plugin options sit next to the package in `opencode.json`. Each option falls bac
 | `defaultProject` | `KATA_DEFAULT_PROJECT` | Existing Kata project that collects the plans of folders without a project; issues carry a label naming the repo. |
 | `author` | `KATA_AUTHOR` | Existing actor; also set in the environment of every Kata process the plugin starts. |
 | `teammate` | `KATA_TEAMMATE` | Optional teammate for the lead; also set in the environment of every Kata process. |
+| `refGuard` | `KATA_REF_GUARD` | `off` or `0` stops the refusal of writes and commits that name a Kata ref ([below](#kata-refs-in-repository-content)). On by default. |
 | `debugFile` | `KATA_OPENCODE_DEBUG` | Optional append-only diagnostic log. |
 
 Variables come from the OpenCode server process, not from the shell that starts a client. The default background service does not see variables set in the launching shell; only `opencode run --standalone` does. Use plugin options, or the service's own environment. `KATA_CLOSE_TRANSCRIPT_ENABLED` is read from the same server environment at each close (see below).
@@ -97,6 +98,10 @@ The plugin rewrites Kata commands in the `shell` tool's `command` before it runs
 The TUI keeps showing the command the model wrote; the rewritten one is what runs. Rewriting is lexical and no sandbox: dynamic aliases and scripts must use the supplied commands themselves (see [limits](../explanation/limits.md)). Only `--as` and the delegate rules of a `subagent` call refuse a tool call: when the plugin cannot read a session or its storage in a hook, the call runs as written.
 
 `shell` is not available in Code Mode (the tool sets `codemode: false`), so Code Mode calls never bypass the hook: every `shell` call passes `execute.before` (OpenCode `core/src/tool/plugin/shell.ts:182`, `core/src/tool.ts:268`).
+
+## Kata refs in repository content
+
+Kata refs resolve only in the local tracker, so the plugin refuses a `write`, `edit` (`newString`), `patch` (`+` rows) or `shell` call that puts a ref the session works (the plan parent and items, the assigned or claimed issue, a delegate's issue) into a file under the session's folder or into a `git commit` message, and the model rewrites it to describe the behaviour. A qualified ref counts only when its project is one the session knows, so `README.md#tasks` passes. A bare short id counts only when the session knows it. Only added text is checked: removed and context lines, hashline headers, files outside the folder, internal URLs and the bodies of `kata comment`, `kata close` and `kata create` are not. The check waits at most 2 seconds and lets the call through on an error. `KATA_REF_GUARD=off` (or `0`) turns it off. The lead's and its delegates' calls are checked against the lead's refs. `execute.before` refuses the call, which ends as an error with the reason.
 
 ## Sessions, settling and restart
 
