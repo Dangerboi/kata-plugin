@@ -158,7 +158,8 @@ const clearRef = (ref: string) => /^[\w.][\w.-]*#[A-Za-z0-9]+$/.test(ref) ? ref 
 /** What the agent is told when a request arrives. */
 export function deliveryText(ref: string, address: string, slot: Slot): string {
 	// The sender, comment, kind and message are the request's, and a project can be renamed to carry markup, so the ref is escaped
-	// in the header. The clear command is run, not read: it carries no markup (the short id stands in for an odd ref) and quotes an odd address.
+	// in the header. The clear command is run, not read: the ref adds no markup (the short id stands in for an odd ref), and the
+	// session's own address is quoted when it is not a plain word.
 	const from = escapeMarkup(slot.from), re = slot.re && escapeMarkup(slot.re), kind = slot.kind && escapeMarkup(slot.kind);
 	const notes: string[] = [];
 	if (re) notes.push(`It is about comment ${re}.`);
