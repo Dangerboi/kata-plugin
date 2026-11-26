@@ -1433,8 +1433,14 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 			// A parent this session restored (a fork, or a resume of a ticket still `ok`) starts under the new attention session before the previous session's end runs: Kata keeps
 			// the newest attention session, so that end then does nothing to it. When the start failed, the previous session still holds the parent:
 			// it is not ended here but carried, and the next start or the end of this session takes it over.
-			const started = await startParentAttention(job);
-			if (previous && !started && plan.parent && previous.attended.has(plan.parent)) {
+			// Refs the previous session holds under this session's own attention session (a switch back after a failed fork start) are this session's again.
+			if (previous) for (const [ref, held] of previous.attended) {
+				if (!held.sessions.delete(id)) continue;
+				current.attended.set(ref, { cwd: held.cwd, sessions: new Set([id]) });
+				if (!held.sessions.size) previous.attended.delete(ref);
+			}
+			const failed = await startParentAttention(job);
+			if (previous && failed && plan.parent && previous.attended.has(plan.parent)) {
 				const carried = previous.attended.get(plan.parent)!;
 				const held = current.attended.get(plan.parent);
 				if (held) held.sessions.add(previous.id); else current.attended.set(plan.parent, carried);
@@ -2234,23 +2240,23 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 		await Promise.all([...session.attended].flatMap(([ref, { cwd, sessions }]) => [...sessions].map(id => attentionHook(job, "end", id, ref, cwd).catch(logSkip))));
 		session.attended.clear();
 	}
-	// Starts attention for the plan's explicit parent; false when the start failed. Kata's start would reset any `stuck` or `needs-human`
+	// Starts attention for the plan's explicit parent; true when a failure kept the start from applying. Kata's start would reset any `stuck` or `needs-human`
 	// to ok, Kata's own session-ended flag included, so those issues are skipped; `kata meta set <ref> work.attention ok` clears the flag and
 	// starts attention. A repeat start with the same attention session changes nothing.
 	async function startParentAttention(job: Job): Promise<boolean> {
 		const session = attentionSession, parent = plan.parent;
-		if (!session || !options.attentionHarness || configuredRef() || !parent || plan.auto) return true;
+		if (!session || !options.attentionHarness || configuredRef() || !parent || plan.auto) return false;
 		try {
 			const flag = (await owned(job, parent, plan.workspace)).metadata?.["work.attention"];
-			if (flag === "stuck" || flag === "needs-human") return true;
+			if (flag === "stuck" || flag === "needs-human") return false;
 			// Recorded first: a start that times out after Kata wrote ok must still be ended.
 			const held = session.attended.get(parent) ?? { cwd: plan.workspace, sessions: new Set<string>() };
 			held.sessions.add(session.id); session.attended.set(parent, held);
 			await attentionHook(job, "start", session.id, parent, plan.workspace);
-			return true;
+			return false;
 		} catch (err) {
 			logSkip(err);
-			return false;
+			return true;
 		}
 	}
 	const adoptParent = async (job: Job, ref: string, ctx: HostContext, workspace?: string) => { await adopt(job, ref, ctx, workspace); await startParentAttention(job); };

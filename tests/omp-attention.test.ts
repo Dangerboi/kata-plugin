@@ -300,3 +300,34 @@ test("shutdown ends every claimed ticket together", async () => {
   await app.event("session_shutdown");
   expect(most).toBe(2);
 });
+
+// The fork's start fails either at the hook or, earlier, when its ownership read of the parent (the fork session's actor lookup) throws.
+for (const [how, make] of [["start fails", () => (args: string[]) => args[1] === "attention-native" && args[3] === "start"], ["ownership read fails", () => (args: string[]) => args[0] === "status"]] as const) {
+  test(`a fork whose ${how} and never claims again still has the ticket flagged when it ends`, async () => {
+    delete process.env.KATA_REF;
+    let failing = false; const fails = make(); const ref = await fresh();
+    const app = host(args => failing && fails(args) ? { code: 1, stdout: "", stderr: "fixture failure" } : undefined);
+    await app.event("session_start"); await claimed(app, ref);
+    const first = (await attention(ref)).session;
+    failing = true;
+    await app.event("session_switch", { reason: "fork" }, switched(app, "attention-fork-never", app.sid));
+    expect(await attention(ref)).toMatchObject({ state: "ok", session: first });
+    await app.event("session_shutdown");
+    expect((await attention(ref)).state).toBe("needs-human");
+  });
+}
+
+test("switching back after a fork whose start failed keeps the ticket ok", async () => {
+  delete process.env.KATA_REF;
+  let failing = false; const ref = await fresh();
+  const app = host(args => failing && args[1] === "attention-native" && args[3] === "start" ? { code: 1, stdout: "", stderr: "fixture failure" } : undefined);
+  await app.event("session_start"); await claimed(app, ref);
+  const first = (await attention(ref)).session;
+  failing = true;
+  await app.event("session_switch", { reason: "fork" }, switched(app, "attention-fork-back", app.sid));
+  failing = false;
+  await app.event("session_switch", {}, switched(app, app.sid!));
+  expect(await attention(ref)).toMatchObject({ state: "ok", session: first });
+  await app.event("session_shutdown");
+  expect((await attention(ref)).state).toBe("needs-human");
+});
