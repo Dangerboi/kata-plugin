@@ -557,6 +557,30 @@ test("the late end event of a run that its call's result already ended does not 
 	expect(closed.metadata["opencode.subagent_id"]).toBeUndefined();
 });
 
+test("a follow-up that joins a child still running is one run on the same issue: its end hands the issue back once with the report", async () => {
+	const { host, id } = await startLead();
+	await write(host, id, todos(["Implement parser module", "pending"]));
+	const first = await spawn(host, id, { prompt: "Implement parser module first part.", description: "Parser", background: true });
+	const ref = qref(await item(id, "Implement parser module"));
+	const system = (await host.context(first.child.id)).system.join("\n");
+	expect(assignmentOf(system).ref).toBe(ref);
+	await useTool(host, first.child);
+	// The child has not ended: the follow-up joins its run, and the child's next model call is the follow-up's first context hook.
+	const second = await spawn(host, id, { prompt: "Also cover the edge cases.", sessionID: first.child.id, background: true });
+	expect(second.child.id).toBe(first.child.id);
+	expect((await host.context(first.child.id)).system.join("\n")).toContain(`Your Kata issue is ${ref};`);
+	expect((await show(ref)).issue.metadata["opencode.subagent_id"]).toBe(first.child.id);
+	host.addAssistantText(first.child.id, "Both parts are done except the edge cases.");
+	await host.emit("session.execution.succeeded", { sessionID: first.child.id });
+	await turnEnd(host, id);
+	const handed = (await show(ref)).issue;
+	expect(handed.status).toBe("open");
+	expect(handed.metadata["opencode.subagent_id"]).toBeUndefined();
+	expect(await labelsOf(handed)).toContain("needs-review");
+	const reports = (await commentsOf(ref)).filter(body => body.includes("Both parts are done except the edge cases."));
+	expect(reports.length).toBe(1);
+});
+
 test("a background delegate whose session is gone when its end event is handled still exits, and its issue goes back to the lead", async () => {
 	const { host, id } = await startLead();
 	await write(host, id, todos(["Implement parser module", "pending"]));

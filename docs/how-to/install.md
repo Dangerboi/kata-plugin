@@ -74,7 +74,7 @@ pi install npm:@dangerboi/kata-pi
 pi install /path/to/kata-plugin/plugins/pi
 ```
 
-The root manifest supports `pi install git:github.com/Dangerboi/kata-plugin`. Pi 1.0.2 cannot select a repository subdirectory through a Git URL; appending `/plugins/pi` changes the clone URL. Use the root shim or a local plugin directory.
+The root manifest supports `pi install git:github.com/Dangerboi/kata-plugin`. Pi 1.6.1 still cannot select a repository subdirectory through a Git URL; appending `/plugins/pi` changes the clone URL. Use the root shim or a local plugin directory.
 
 For one run: `pi --no-extensions -e /path/to/kata-plugin/plugins/pi/kata.ts`. Remove any other todo extension first. Keep each plugin directory intact: every `.ts` file next to its `kata.ts` is a required core module. Do not overwrite the native adapter at the user extension path `kata.ts`.
 

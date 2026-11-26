@@ -109,12 +109,12 @@ SCENARIOS.push({
 // ---- Delegates: a lead's `subagent` calls bound to its plan items ----
 const DELEGATE_PLAN = ["Build the parser", "Document the parser"];
 const planOf = (items: string[]) => [{ tool: "todowrite", args: { todos: items.map((content, n) => ({ content, status: n ? "pending" : "in_progress" })) } }];
-// The child's session id as the lead's subagent result names it.
 // OpenCode 2.4.2 runs every subagent in the background: the call returns at once and the child's report wakes the lead in a later
 // request. 2.2.7 held the call until the child ended. `waits` is true while the lead's last message is the immediate return, so a
 // lead that must act on the child's end ends its turn then, and acts on the next request (the wake) or, on 2.2.7, at once.
 const waits = (texts: string[]) => (texts.at(-1) ?? "").includes("working in the background");
 const woken = (texts: string[]) => (texts.at(-1) ?? "").includes("background-result");
+// The child's session id as the lead's subagent result names it.
 const childOf = (texts: string[]) => texts.map(t => /ses_[A-Za-z0-9]+/.exec(t.slice(t.indexOf("sessionID")))?.[0] ?? /sessionID[^A-Za-z0-9]+(ses_[A-Za-z0-9]+)/.exec(t)?.[1]).find(Boolean);
 /** The checks every delegate scenario shares: the assignment reached the child, the item came back to the lead open and labelled, the report is a comment. */
 function delegateChecks(store: Store, issues: Issue[], marker: string, report: string): Check[] {
@@ -180,6 +180,14 @@ SCENARIOS.push({
 		];
 	},
 });
+// The lead's turns after a subagent call, for an action that needs the child's end: on 2.4.2 the lead says `wait` and acts on the wake;
+// on 2.2.7 it acts at once. The last turns end the lead.
+const afterChildEnds = (wait: string, act: (texts: string[]) => SmokeBlock[]): Turn[] => [
+	ctx => waits(ctx.texts) ? [wait] : act(ctx.texts),
+	ctx => woken(ctx.texts) ? act(ctx.texts) : ["lead done"],
+	["lead done"],
+	["lead done"],
+];
 const followUp = (texts: string[]): SmokeBlock[] => [{ tool: "subagent", args: { agent: "general", description: "Build parser", sessionID: childOf(texts), prompt: "[smoke:fu-more] Also add a changelog line." } }];
 SCENARIOS.push({
 	name: "delegate-followup",
@@ -189,10 +197,7 @@ SCENARIOS.push({
 			planOf(DELEGATE_PLAN),
 			[{ tool: "subagent", args: { agent: "general", description: "Build parser", prompt: `[smoke:fu-child] Work on "${DELEGATE_PLAN[0]}" and report back.` } }],
 			// The follow-up goes out once the first run has ended: on 2.4.2 the lead waits for the wake, a follow-up to a running child joins its run.
-			ctx => waits(ctx.texts) ? ["waiting for the first report"] : followUp(ctx.texts),
-			ctx => woken(ctx.texts) ? followUp(ctx.texts) : ["lead done"],
-			["lead done"],
-			["lead done"],
+			...afterChildEnds("waiting for the first report", followUp),
 		],
 		"[smoke:fu-child]": [
 			[{ tool: "read", args: { path: "." } }],
@@ -235,10 +240,7 @@ SCENARIOS.push({
 			[{ tool: "subagent", args: { agent: "general", description: "Build parser", prompt: `[smoke:dc-child] Work on "${DELEGATE_PLAN[0]}", close it and report back.` } }],
 			// Kata closed item 1 already: completed without message or evidence must be accepted.
 			// On 2.4.2 the lead waits for the child's end first: the call returned at once, the close is not in yet.
-			ctx => waits(ctx.texts) ? ["waiting for the close"] : resendPlan,
-			ctx => woken(ctx.texts) ? resendPlan : ["lead done"],
-			["lead done"],
-			["lead done"],
+			...afterChildEnds("waiting for the close", () => resendPlan),
 		],
 		"[smoke:dc-child]": [
 			ctx => [{ tool: "shell", args: { command: `${assigned(ctx).prefix} --as someone comment ${assigned(ctx).ref} --body 'DC-AS impersonated'`, description: "Comment as someone else" } }],

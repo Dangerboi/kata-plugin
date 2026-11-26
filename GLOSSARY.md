@@ -46,10 +46,6 @@ _Avoid_: steal, reclaim
 A delegate's final word on its work: the text of its last assistant message that has any, or what it yielded. The plugin posts it on the delegate's issue when the delegate left no comment of its own, on its mission when it was untracked, or on the targets a refused pi child named.
 _Avoid_: summary, result
 
-**Ref guard**:
-The check that refuses a write or `git commit` message adding a Kata ref the session works, so the model describes the behaviour instead; refs already in the file never count.
-_Avoid_: ref filter, ref blocker, ticket-id check
-
 ## Plans
 
 **Plan**:
@@ -93,6 +89,12 @@ _Avoid_: reconcile, close queue
 **Ended session**:
 A lead session deleted or archived while it still owes closes or delegate cleanups; it is finished once that work is done, by the instance that holds it or else by the next plugin setup, and its saved state is then forgotten.
 _Avoid_: pending end, ended mark
+
+## Repository content
+
+**Ref guard**:
+The check that refuses a write or `git commit` message adding a Kata ref the session works, so the model describes the behaviour instead; refs already in the file never count.
+_Avoid_: ref filter, ref blocker, ticket-id check
 
 ## Inbox
 

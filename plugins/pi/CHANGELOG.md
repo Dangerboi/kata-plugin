@@ -21,7 +21,11 @@ All notable changes to `@dangerboi/kata-pi` are listed here. The format follows 
 
 #### Requirements
 
-- The plugin works with pi 1.6, whose `before_agent_start` also fires for runs that start from a custom message. A child pi on such a run joins the plan item its starting message names.
+- The plugin works with pi 1.6, whose `before_agent_start` also fires for runs that start from a custom message.
+
+#### Delegates
+
+- A child pi whose first run starts from a custom message joins the plan item that message's text names.
 
 #### Inbox and attention
 
