@@ -1429,20 +1429,20 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 			if (previous) await attention(job, "end", previous);
 			const current = attentionSession = { id, cwd: plan.workspace, ref: explicit && plan.parent, hostCwd: path.resolve(ctx.cwd), hostRef: explicit, attended: new Map() };
 			await attention(job, "start", current);
-			// A parent this session restored (a fork, or a resume of a ticket still `ok`) starts under the new attention session before the previous session's end runs: Kata keeps
-			// the newest attention session, so that end then does nothing to it. When the start failed, the previous session still holds the parent:
-			// it is not ended here but carried, and the next start or the end of this session takes it over.
 			// Refs the previous session holds under this session's own attention session (a switch back after a failed fork start) are this session's again.
 			if (previous) for (const [ref, held] of previous.attended) {
 				if (!held.sessions.delete(id)) continue;
 				current.attended.set(ref, { cwd: held.cwd, sessions: new Set([id]) });
 				if (!held.sessions.size) previous.attended.delete(ref);
 			}
+			// A parent this session restored (a fork, or a resume of a ticket still `ok`) starts under the new attention session before the previous session's end runs: Kata keeps
+			// the newest attention session, so that end then does nothing to it. When the start may not have applied, an earlier session may still hold the parent:
+			// it is not ended here but carried with every attention session that may hold it, and the next start or the end of this session takes it over.
 			const failed = await startParentAttention(job);
 			if (previous && failed && plan.parent && previous.attended.has(plan.parent)) {
 				const carried = previous.attended.get(plan.parent)!;
 				const held = current.attended.get(plan.parent);
-				if (held) held.sessions.add(previous.id); else current.attended.set(plan.parent, carried);
+				if (held) for (const carriedId of carried.sessions) held.sessions.add(carriedId); else current.attended.set(plan.parent, carried);
 				previous.attended.delete(plan.parent);
 			}
 			if (previous) await endAttended(job, previous);
@@ -2239,7 +2239,7 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 		await Promise.all([...session.attended].flatMap(([ref, { cwd, sessions }]) => [...sessions].map(id => attentionHook(job, "end", id, ref, cwd).catch(logSkip))));
 		session.attended.clear();
 	}
-	// Starts attention for the plan's explicit parent; true when a failure kept the start from applying. Kata's start would reset any `stuck` or `needs-human`
+	// Starts attention for the plan's explicit parent; true when the start may not have applied: a failure, including a timeout after Kata wrote ok. Kata's start would reset any `stuck` or `needs-human`
 	// to ok, Kata's own session-ended flag included, so those issues are skipped; `kata meta set <ref> work.attention ok` clears the flag and
 	// starts attention. A repeat start with the same attention session changes nothing.
 	async function startParentAttention(job: Job): Promise<boolean> {

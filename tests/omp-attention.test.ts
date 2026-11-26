@@ -331,3 +331,16 @@ test("switching back after a fork whose start failed keeps the ticket ok", async
   await app.event("session_shutdown");
   expect((await attention(ref)).state).toBe("needs-human");
 });
+
+test("two failed fork starts in a row still leave the ticket flagged when the last fork ends", async () => {
+  delete process.env.KATA_REF;
+  let failing = false; const ref = await fresh();
+  const app = host(args => failing && args[1] === "attention-native" && args[3] === "start" ? { code: 1, stdout: "", stderr: "fixture failure" } : undefined);
+  await app.event("session_start"); await claimed(app, ref);
+  failing = true;
+  await app.event("session_switch", { reason: "fork" }, switched(app, "attention-fork-one", app.sid!));
+  await app.event("session_switch", { reason: "fork" }, switched(app, "attention-fork-two", "attention-fork-one"));
+  expect((await attention(ref)).state).toBe("ok");
+  await app.event("session_shutdown");
+  expect((await attention(ref)).state).toBe("needs-human");
+});
