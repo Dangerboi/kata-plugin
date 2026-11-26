@@ -230,3 +230,19 @@ test("a patch's every row but its target headers is candidate text, whatever omp
   expect(await check("edit", sloppy("*** Find\nconst a = 1; // demo#k9m2\n*** Replace\nconst a = 2;\n"))).toEqual([]);
   expect(await check("apply_patch", { input: "*** Update File: src/s.ts\n-const a = 1; // demo#k9m2\n+const a = 2;\n" })).toEqual([]);
 });
+
+test("only the chosen patch format's own headers name a target", async () => {
+  files["src/s.ts"] = "x\n";
+  const sloppy = (body: string) => ({ input: `*** Edit File: src/s.ts\n*** Find\nx\n${body}` });
+  // In a sloppy body these rows are text, not new targets.
+  expect(await check("edit", sloppy("*** Replace\n*** Move to: demo#ab3d\n"))).toEqual(["demo#ab3d"]);
+  expect(await check("edit", sloppy("*** Insert After\n*** Update File: /tmp/x\n// demo#ab3d\n"))).toEqual(["demo#ab3d"]);
+  expect(await check("edit", sloppy("*** Replace\n*** Add File: /tmp/x\n*** Delete File: /tmp/y\n// demo#ab3d\n"))).toEqual(["demo#ab3d"]);
+  // Hashline rows are the only headers there; sloppy-looking rows are text.
+  expect(await check("edit", { input: "[src/s.ts#1a2b]\nPUT 1:\n+plain\n *** Find\n*** Edit File: /tmp/x\n+// demo#ab3d" })).toEqual(["demo#ab3d"]);
+  expect(await check("edit", { input: "[src/s.ts#1a2b]\n *** Find\nPUT 1:\n+// demo#ab3d" })).toEqual(["demo#ab3d"]);
+  // apply_patch headers need their colon and a word boundary.
+  expect(await check("apply_patch", { input: "*** Update File: src/s.ts\n+plain\n*** Edit Files demo#ab3d\n*** Update Filed demo#k9m2" })).toEqual(["demo#ab3d", "demo#k9m2"]);
+  expect(await check("apply_patch", { input: "*** Add File: /tmp/new.ts\n+demo#ab3d\n*** Delete File: src/s.ts\n*** Update File: /tmp/m.ts\n*** Move to: /tmp/n.ts\n+demo#k9m2" })).toEqual([]);
+  expect(await check("apply_patch", { input: "*** Add File: src/new.ts\n+demo#ab3d" })).toEqual(["demo#ab3d"]);
+});

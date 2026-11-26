@@ -15,30 +15,38 @@ const fields = (value: unknown): Record<string, unknown> => value && typeof valu
 const records = (value: unknown): Record<string, unknown>[] => Array.isArray(value) ? value.map(fields) : [];
 const INTERNAL_URL = /^[a-z][a-z0-9+.-]*:\/\//i;
 
-// A patch's rows, per target file. Every row but the headers that name a target (`[path#tag]` of a hashline edit, `*** Edit|Update|Add|Delete
-// File:`, `*** Move to:`, and `*** Begin|End Patch` at the top level) is candidate text, with a leading `+`, `-` or space marker stripped: whatever
-// a format calls its actions, new text sits in some row. Search text, context and removed rows are in the file already, whose refs the caller
-// holds, so counting them is harmless. A sloppy patch (omp's `*** Edit File:` / `*** Find` / `*** Replace` format, recognised by any such opener or
-// action row, whichever header opens it) may continue the current file with an empty path or `all`, and has no hashline headers.
-const SLOPPY = /^\s*\*{3}\s+(?:Edit\s+File|Find|Replace|Insert|Cut|Paste)\b/im, HASHLINE = /^\[(.+)#[^#\]]+\]\s*$/;
-const FILE_HEADER = /^\s*\*{3}\s+(?:Edit|Update|Add|Delete)\s+File:?(.*)$/i, MOVE_HEADER = /^\s*\*{3}\s+Move\s+to:?\s*(.+?)\s*$/i, ENVELOPE = /^\s*\*{3}\s+(?:Begin|End)\s+Patch\s*$/i;
+// A patch's rows, per target file. Every row but the headers that name a target is candidate text, with a leading `+`, `-` or space marker
+// stripped: whatever a format calls its actions, new text sits in some row. Search text, context and removed rows are in the file already, whose
+// refs the caller holds, so counting them is harmless. The format is chosen first, and only its own headers name targets (`*** Begin|End Patch`
+// at the top level are skipped in every format):
+// - hashline, when the first row is `[path#tag]`: those rows;
+// - sloppy (omp's `*** Edit File:` / `*** Find` / `*** Replace`), when any opener or action row of it is there: `*** Edit File:` rows, which may
+//   continue the current file with an empty path or `all`, and a first-row `*** Update File:`; its other `***` rows are text;
+// - otherwise apply_patch: `*** Add|Update|Delete File:` and `*** Move to:` (naming a second place for the file).
+const HASHLINE = /^\[(.+)#[^#\]]+\]\s*$/, SLOPPY = /^\s*\*{3}\s+(?:Edit\s+File|Find|Replace|Insert|Cut|Paste)\b/im;
+const SLOPPY_FILE = /^\s*\*{3}\s+Edit\s+File:?(.*)$/i, SLOPPY_FIRST = /^\s*\*{3}\s+Update\s+File:?(.*)$/i;
+const APPLY_FILE = /^\s*\*{3}\s+(?:Add|Update|Delete)\s+File:(.*)$/i, MOVE_HEADER = /^\s*\*{3}\s+Move\s+to:\s*(.+?)\s*$/i, ENVELOPE = /^\s*\*{3}\s+(?:Begin|End)\s+Patch\s*$/i;
 
 function patchRows(patch: string): Added[] {
 	const lines = patch.split("\n").map(line => line.replace(/\r$/, ""));
-	const sloppy = SLOPPY.test(patch);
+	const start = lines.findIndex(line => line.trim());
+	const format = start >= 0 && HASHLINE.test(lines[start]) ? "hashline" : SLOPPY.test(patch) ? "sloppy" : "apply";
 	let last = lines.length - 1;
 	while (last > 0 && !lines[last].trim()) last--;
 	const groups: { files: string[]; rows: string[] }[] = [];
 	let group: { files: string[]; rows: string[] } | undefined;
 	for (const [at, line] of lines.entries()) {
-		const hashline = !sloppy && HASHLINE.exec(line), file = FILE_HEADER.exec(line), moved = MOVE_HEADER.exec(line);
-		if (hashline || file) {
+		const hashline = format === "hashline" && HASHLINE.exec(line);
+		const sloppy = format === "sloppy" && (SLOPPY_FILE.exec(line) ?? (at === start ? SLOPPY_FIRST.exec(line) : null));
+		const apply = format === "apply" && APPLY_FILE.exec(line);
+		if (hashline || sloppy || apply) {
 			// Sloppy: an optional path, then an optional ` all`; without a path the patch goes on with the current file.
-			let name = hashline ? hashline[1] : sloppy ? file![1].trim().replace(/(?:^|\s)all$/i, "").trim() : file![1].trim();
+			let name = hashline ? hashline[1] : sloppy ? sloppy[1].trim().replace(/(?:^|\s)all$/i, "").trim() : apply ? apply[1].trim() : "";
 			if (name.startsWith('"')) try { name = JSON.parse(name); } catch { /* as written */ }
 			if (name) { group = { files: [name], rows: [] }; groups.push(group); }
 			continue;
 		}
+		const moved = format === "apply" && MOVE_HEADER.exec(line);
 		if (moved) { group?.files.push(moved[1]); continue; }
 		if (ENVELOPE.test(line) && (!group || at === last)) continue;
 		group?.rows.push(/^[-+ ]/.test(line) ? line.slice(1) : line);
