@@ -17,12 +17,13 @@ async function item(id: string, title: string): Promise<any> {
 }
 
 type Work = (child: FakeSession, system: string) => Promise<string>;
-interface SpawnInput { prompt: string; description?: string; background?: boolean; sessionID?: string }
+// `detached`: the call runs in the background as on OpenCode 2.4.2, which has no `background` input: it returns at once all the same.
+interface SpawnInput { prompt: string; description?: string; background?: boolean; detached?: boolean; sessionID?: string }
 // One `subagent` call as OpenCode runs it: the child session exists before its first context hook; a foreground call runs the
 // child to its reply inside the call; a background call returns at once and the test drives the child afterwards (`finish`).
 // `entered` settles once the call reached its execute, after `execute.before` and the plan check; `hold` keeps it there.
 // What `work` throws fails the test: the host would turn it into an error result a caller may not look at.
-function spawn(host: OpenCodeInstance, leadID: string, input: SpawnInput, work?: Work, hold?: Promise<void>) {
+function spawn(host: OpenCodeInstance, leadID: string, { detached, ...input }: SpawnInput, work?: Work, hold?: Promise<void>) {
 	let child: FakeSession | undefined;
 	const entered = Promise.withResolvers<void>();
 	const failures: unknown[] = [];
@@ -35,7 +36,7 @@ function spawn(host: OpenCodeInstance, leadID: string, input: SpawnInput, work?:
 					child = host.sessions.get(given.sessionID)!;
 					host.addMessage(child.id, userMessage(given.prompt));
 				} else child = host.createSession({ parentID: leadID, title: given.description, messages: [userMessage(SUBAGENT_PREFIX + given.prompt)] });
-				if (given.background) return { output: { sessionID: child.id, status: "running", output: "The subagent is working in the background." }, content: "The subagent is working in the background.", metadata: { sessionID: child.id, status: "running" } };
+				if (given.background || detached) return { output: { sessionID: child.id, status: "running", output: "The subagent is working in the background." }, content: "The subagent is working in the background.", metadata: { sessionID: child.id, status: "running" } };
 				let report: string;
 				try { report = await work!(child, (await host.context(child.id)).system.join("\n")); }
 				catch (error) { failures.push(error); throw error; }
@@ -555,6 +556,113 @@ test("the late end event of a run that its call's result already ended does not 
 	const closed = (await show(ref)).issue;
 	expect(statusOf(closed)).toBe("closed:done");
 	expect(closed.metadata["opencode.subagent_id"]).toBeUndefined();
+});
+
+test("a follow-up that joins a child still running is one run on the same issue: its end hands the issue back once with the report", async () => {
+	const { host, id } = await startLead();
+	await write(host, id, todos(["Implement parser module", "pending"]));
+	const first = await spawn(host, id, { prompt: "Implement parser module first part.", description: "Parser", detached: true });
+	const ref = qref(await item(id, "Implement parser module"));
+	const system = (await host.context(first.child.id)).system.join("\n");
+	expect(assignmentOf(system).ref).toBe(ref);
+	await useTool(host, first.child);
+	// The child has not ended: the follow-up joins its run, and the child's next model call is the follow-up's first context hook.
+	const second = await spawn(host, id, { prompt: "Also cover the edge cases.", sessionID: first.child.id, detached: true });
+	expect(second.child.id).toBe(first.child.id);
+	expect((await host.context(first.child.id)).system.join("\n")).toContain(`Your Kata issue is ${ref};`);
+	expect((await show(ref)).issue.metadata["opencode.subagent_id"]).toBe(first.child.id);
+	host.addAssistantText(first.child.id, "Both parts are done except the edge cases.");
+	await host.emit("session.execution.succeeded", { sessionID: first.child.id });
+	await turnEnd(host, id);
+	const handed = (await show(ref)).issue;
+	expect(handed.status).toBe("open");
+	expect(handed.metadata["opencode.subagent_id"]).toBeUndefined();
+	expect(await labelsOf(handed)).toContain("needs-review");
+	const reports = (await commentsOf(ref)).filter(body => body.includes("Both parts are done except the edge cases."));
+	expect(reports.length).toBe(1);
+});
+
+test("a child whose first context hook comes after the lead's turn ended still works its plan item, and a second spawn naming it is refused", async () => {
+	const { host, id } = await startLead();
+	await write(host, id, todos(["Implement parser module", "pending"]));
+	const call = await spawn(host, id, { prompt: "Implement parser module in the background.", description: "Parser", detached: true });
+	expect(call.result.status, call.result.text).toBe("completed");
+	await turnEnd(host, id);
+	const ref = qref(await item(id, "Implement parser module"));
+	const system = (await host.context(call.child.id)).system.join("\n");
+	expect(assignmentOf(system).ref).toBe(ref);
+	expect((await show(ref)).issue.metadata["opencode.subagent_id"]).toBe(call.child.id);
+	const second = await spawn(host, id, { prompt: "Implement parser module again.", detached: true });
+	expect(second.result.status).toBe("error");
+	expect(second.result.text).toContain("already");
+	await useTool(host, call.child);
+	host.addAssistantText(call.child.id, "Parser module half done.");
+	await host.emit("session.execution.succeeded", { sessionID: call.child.id });
+	await turnEnd(host, id);
+	const handed = (await show(ref)).issue;
+	expect(handed.metadata["opencode.subagent_id"]).toBeUndefined();
+	expect(await labelsOf(handed)).toContain("needs-review");
+});
+
+test("a late child whose prompt ends with a newer call's prompt binds to its own call, not the newer one", async () => {
+	const { host, id } = await startLead();
+	await write(host, id, todos(["Implement parser module", "pending"]));
+	const longer = await spawn(host, id, { prompt: "Implement parser module. Then report.", detached: true });
+	await turnEnd(host, id);
+	const shorter = await spawn(host, id, { prompt: "Then report.", detached: true });
+	const system = (await host.context(longer.child.id)).system.join("\n");
+	expect(assignmentOf(system).ref).toBe(qref(await item(id, "Implement parser module")));
+	expect((await host.context(shorter.child.id)).system.join("\n")).toContain("you have no Kata issue");
+});
+
+test("a late child's follow-up that arrives before its first context hook does not keep the child from binding to its call", async () => {
+	const { host, id } = await startLead();
+	await write(host, id, todos(["Implement parser module", "pending"]));
+	const call = await spawn(host, id, { prompt: "Implement parser module in the background.", detached: true });
+	await turnEnd(host, id);
+	await spawn(host, id, { prompt: "Also cover the edge cases.", sessionID: call.child.id, detached: true });
+	const ref = qref(await item(id, "Implement parser module"));
+	expect(assignmentOf((await host.context(call.child.id)).system.join("\n")).ref).toBe(ref);
+	expect((await show(ref)).issue.metadata["opencode.subagent_id"]).toBe(call.child.id);
+});
+
+test("a call another plugin's hook refused does not bind a later child with the same prompt after the lead's turn ended", async () => {
+	let refuse = true;
+	const withRefusal: typeof opencode = { id: opencode.id, async setup(ctx: any) {
+		const cleanup = await opencode.setup(ctx);
+		await ctx.tool.hook("execute.before", (event: any) => { if (event.tool === "subagent" && refuse) throw new Error("Refused by another plugin."); });
+		return cleanup;
+	} };
+	const { host, id } = await startLead({ plugin: withRefusal });
+	await write(host, id, todos(["Implement parser module", "pending"]));
+	const refused = await spawn(host, id, { prompt: "Implement parser module in the background.", detached: true });
+	expect(refused.result.executed).toBe(false);
+	await turnEnd(host, id);
+	refuse = false;
+	const next = await spawn(host, id, { prompt: "Implement parser module in the background.", detached: true });
+	// Both calls name the item: the refused one holds nothing, so the new child gets the assignment from its own call.
+	expect(assignmentOf((await host.context(next.child.id)).system.join("\n")).ref).toBe(qref(await item(id, "Implement parser module")));
+});
+
+test("a background call another plugin's hook refused is dropped at the turn end and does not bind a later child with the same prompt", async () => {
+	let refuse = true;
+	const withRefusal: typeof opencode = { id: opencode.id, async setup(ctx: any) {
+		const cleanup = await opencode.setup(ctx);
+		await ctx.tool.hook("execute.before", (event: any) => { if (event.tool === "subagent" && refuse) throw new Error("Refused by another plugin."); });
+		return cleanup;
+	} };
+	const { host, id } = await startLead({ plugin: withRefusal });
+	await write(host, id, todos(["Implement parser module", "pending"]));
+	const refused = await spawn(host, id, { prompt: "Implement parser module in the background.", description: "Old call", background: true });
+	expect(refused.result.executed).toBe(false);
+	await turnEnd(host, id);
+	refuse = false;
+	const next = await spawn(host, id, { prompt: "Implement parser module in the background.", description: "New call", detached: true });
+	await turnEnd(host, id);
+	// Both calls are past the lead's turn: the refused one never ran, so only the new one can bind the child.
+	const system = (await host.context(next.child.id)).system.join("\n");
+	expect(system).toContain("You are subagent New call.");
+	expect(assignmentOf(system).ref).toBe(qref(await item(id, "Implement parser module")));
 });
 
 test("a background delegate whose session is gone when its end event is handled still exits, and its issue goes back to the lead", async () => {

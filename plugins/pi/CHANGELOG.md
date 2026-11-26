@@ -19,6 +19,14 @@ All notable changes to `@dangerboi/kata-pi` are listed here. The format follows 
 
 ### Fixed
 
+#### Requirements
+
+- The plugin works with pi 1.2 and later, whose `before_agent_start` also fires for runs that start from a custom message.
+
+#### Delegates
+
+- A child pi whose first run starts from a custom message joins the plan item that message's text names.
+
 #### Inbox and attention
 
 - A request's text can no longer close the `<kata_inbox>` section or open a tag: `&`, `<` and `>` are written as `&amp;`, `&lt;` and `&gt;` in the section, when the plugin reads the inbox (not under Kata's native pi adapter, which inserts it).

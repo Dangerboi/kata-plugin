@@ -1,5 +1,5 @@
 import path from "node:path";
-import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type { BeforeAgentStartEvent, ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { createKataCore, DESCRIPTION, PROMPT_TAGS, TODO_OPS, TODO_PARAMS, type Lead, type ChildParent } from "./kata-core";
 import { NO_JOB } from "./kata-cli";
 import { exportTranscriptSession, nodePlatform } from "./node-host";
@@ -38,6 +38,15 @@ function inheritsModel(argv: string[]): { model: boolean; thinking: boolean } {
 // Arguments such as `grep pi` or `which pi` do not.
 const PI_LAUNCH = /(?:^|[;&|(`\n]|\$\(|\b(?:ba|z|da|k)?sh\s+(?:-[a-z]+\s+)*-[a-z]*c\s+['"])\s*(?:(?:env|nohup|exec|command|time|setsid|caffeinate)\s+|[A-Za-z_][A-Za-z0-9_]*=(?:'[^']*'|"[^"]*"|[^\s;&|]*)\s+)*(?:[^\s;&|()'"`]*\/)?pi(?=$|[\s;&|)])/;
 export const launchesPi = (command: string) => PI_LAUNCH.test(command);
+
+/** The text that starts a run: the user prompt, or on pi 1.2+ a custom-message run's message text. */
+function startingText(event: BeforeAgentStartEvent): string {
+	if ("prompt" in event && typeof event.prompt === "string") return event.prompt;
+	const content = "message" in event ? event.message?.content : undefined;
+	if (typeof content === "string") return content;
+	if (Array.isArray(content)) return content.filter((part) => part?.type === "text").map((part) => part.text).join("\n");
+	return "";
+}
 
 export default async function piKata(pi: ExtensionAPI) {
 	// OMP also discovers legacy pi manifests. Do not register a second todo
@@ -171,7 +180,7 @@ export default async function piKata(pi: ExtensionAPI) {
 
 	pi.on("before_agent_start", async (event, ctx) => {
 		// A child joins the session that started it before its first prompt runs.
-		if (inherited) await core.delegates.join(ctx, inherited, event.prompt || "");
+		if (inherited) await core.delegates.join(ctx, inherited, startingText(event));
 		exportParent(ctx);
 		const native = !inherited && nativeContractActive(ctx.cwd);
 		const { sections: text, lead: next } = await core.session.beforePrompt(ctx, { context: !native });

@@ -90,10 +90,16 @@ _Avoid_: reconcile, close queue
 A lead session deleted or archived while it still owes closes or delegate cleanups; it is finished once that work is done, by the instance that holds it or else by the next plugin setup, and its saved state is then forgotten.
 _Avoid_: pending end, ended mark
 
+## Repository content
+
+**Ref guard**:
+The check that refuses a write or `git commit` message adding a Kata ref the session works, so the model describes the behaviour instead; refs already in the file never count.
+_Avoid_: ref filter, ref blocker, ticket-id check
+
 ## Inbox
 
 **Session inbox**:
-An inbox addressed to `<actor>/<name>`; its requests steer the session that reads it.
+An inbox addressed to `<actor>/<name>`; its requests steer the session that reads it. A delegate has its own, `<actor>/<teammate>`.
 
 **Personal inbox**:
 An inbox addressed to a bare `<actor>`, holding requests for a person; no session reads it.
