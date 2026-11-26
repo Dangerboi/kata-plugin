@@ -1,4 +1,5 @@
 import { expect, test } from "bun:test";
+import { posix } from "node:path";
 import { offendingRefs } from "../core/ref-guard";
 import { assertIsolated } from "./isolation";
 assertIsolated();
@@ -7,8 +8,9 @@ assertIsolated();
 const refs = new Set(["demo#ab3d", "demo#k9m2"]);
 // Files under /work or src/ are in the workspace; `files` is what they currently hold.
 const files: Record<string, string> = {};
-const locate = async (file: string) => file === "/work" || file.startsWith("/work/") || file.startsWith("src/") ? file : undefined;
-const read = async (file: string) => { if (file in files) return files[file]; throw new Error("no such file"); };
+// The workspace is /work; a relative path is under it, and `..` is resolved, so a path that climbs out of it is outside.
+const locate = async (file: string) => { const at = posix.resolve("/work", file); return at === "/work" || at.startsWith("/work/") ? at : undefined; };
+const read = async (file: string) => { const name = file.replace(/^\/work\//, ""); if (name in files) return files[name]; throw new Error("no such file"); };
 const check = (tool: string, input: unknown, known = refs) => offendingRefs({ tool, input, known: async () => known, locate, read });
 
 test("each way of adding text to a file flags a known ref", async () => {
@@ -185,4 +187,23 @@ test("git -C values fold in order, and a cd moves the folder of later commands",
   expect(await check("bash", { command: `cd /tmp/x; cd /work; git commit ${msg}` })).toEqual(["demo#ab3d"]);
   expect(await check("bash", { command: `cd sub && git commit ${msg}`, cwd: "/tmp/x" })).toEqual([]);
   expect(await check("bash", { command: `cd .. && git -C work commit ${msg}`, cwd: "/work/sub" })).toEqual(["demo#ab3d"]);
+  expect(await check("bash", { command: `cd ../.. && git commit ${msg}`, cwd: "/work/sub" })).toEqual([]);
+  expect(await check("bash", { command: `git -C ../../tmp commit ${msg}`, cwd: "/work/sub" })).toEqual([]);
+});
+
+test("a sloppy opener without a path continues the current file", async () => {
+  files["src/s2.ts"] = "demo#k9m2 is here\n";
+  const reps = (ref: string) => `*** Find\nx\n*** Replace\n${ref}\n`;
+  // `all` alone is the flag, not a file; an empty path keeps the file too.
+  expect(await check("edit", { input: `*** Edit File: src/s.ts\n*** Find\ny\n*** Edit File: all\n${reps("demo#ab3d")}` })).toEqual(["demo#ab3d"]);
+  expect(await check("edit", { input: `*** Edit File: src/s.ts\n*** Find\ny\n*** Edit File: \n${reps("demo#ab3d")}` })).toEqual(["demo#ab3d"]);
+  expect(await check("edit", { input: `*** Edit File: /tmp/o.ts\n${reps("demo#k9m2")}*** Edit File: all\n${reps("demo#ab3d")}` })).toEqual([]);
+  expect(await check("edit", { input: `*** Edit File: src/s2.ts\n*** Find\ny\n*** Edit File:\n${reps("demo#k9m2")}` })).toEqual([]);
+  expect(await check("edit", { input: `*** Edit File: src/s2.ts all\n${reps("demo#ab3d")}` })).toEqual(["demo#ab3d"]);
+});
+
+test("a sloppy action line is read as loosely as its opener", async () => {
+  expect(await check("edit", { input: "*** Edit File: src/s.ts\n  *** Find\nx\n\t*** REPLACE\ndemo#ab3d\n" })).toEqual(["demo#ab3d"]);
+  expect(await check("edit", { input: "*** Edit File: src/s.ts\n *** paste after\ndemo#k9m2\n" })).toEqual(["demo#k9m2"]);
+  expect(await check("edit", { input: "*** Edit File: src/s.ts\n  *** Find\ndemo#ab3d\n  *** Cut\n" })).toEqual([]);
 });

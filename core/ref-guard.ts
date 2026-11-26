@@ -16,7 +16,7 @@ const INTERNAL_URL = /^[a-z][a-z0-9+.-]*:\/\//i;
 
 // The first header a patch has says which grammar the whole patch is in: hashline (`[path#tag]`), apply_patch (`*** Add|Update File:`) or omp's
 // sloppy edit (`*** Edit File:`, matched loosely as omp does).
-const HASHLINE = /^\[(.+)#[^#\]]+\]\s*$/, APPLY = /^\*\*\* (?:Add|Update) File:\s*(.+?)\s*$/, SLOPPY = /^\s*\*{3}\s+(?:Edit|Update)\s+File:\s*(.+?)\s*$/i;
+const HASHLINE = /^\[(.+)#[^#\]]+\]\s*$/, APPLY = /^\*\*\* (?:Add|Update) File:\s*(.+?)\s*$/, SLOPPY = /^\s*\*{3}\s+(?:Edit|Update)\s+File:(.*)$/i;
 
 // The rows a patch adds, per file. Hashline and apply_patch add their `+` rows (apply_patch's `*** Move to:` names a second place). Sloppy adds
 // the raw rows after `*** Replace`, `*** Replace Block: opener`, `*** Insert` and `*** Paste Before|After`, and not those of `*** Find`.
@@ -30,16 +30,19 @@ function patchRows(patch: string): Added[] {
 	for (const line of lines) {
 		const found = first && header.exec(line);
 		if (found) {
-			let file = first === "sloppy" ? found[1].replace(/\s+all$/i, "") : found[1];
+			// Sloppy: an optional path, then an optional ` all`; without a path the patch goes on with the current file.
+			let file = first === "sloppy" ? found[1].trim().replace(/(?:^|\s)all$/i, "").trim() : found[1];
 			if (file.startsWith('"')) try { file = JSON.parse(file); } catch { /* as written */ }
-			group = { files: [file], rows: [] }; groups.push(group); collecting = false; continue;
+			collecting = false;
+			if (file) { group = { files: [file], rows: [] }; groups.push(group); }
+			continue;
 		}
 		if (first === "apply") {
 			const moved = /^\*\*\* Move to:\s*(.+?)\s*$/.exec(line);
 			if (moved) { group?.files.push(moved[1]); continue; }
 			if (line.startsWith("*** Delete File:")) { group = undefined; continue; }
 		}
-		if (first === "sloppy" && /^\*\*\* [A-Z]/.test(line)) { collecting = /^\*\*\* (?:Replace|Insert|Paste)\b/.test(line); continue; }
+		if (first === "sloppy" && /^\s*\*{3}\s+[A-Za-z]/.test(line)) { collecting = /^\s*\*{3}\s+(?:Replace|Insert|Paste)\b/i.test(line); continue; }
 		if (!group) continue;
 		if (first === "sloppy" ? collecting : line.startsWith("+")) group.rows.push(first === "sloppy" ? line : line.slice(1));
 	}
