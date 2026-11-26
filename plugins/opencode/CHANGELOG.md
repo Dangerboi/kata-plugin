@@ -15,7 +15,7 @@ All notable changes to `@dangerboi/kata-opencode` are listed here. The format fo
 
 #### Delegates
 
-- On OpenCode 2.4.2, where every subagent runs in the background, a subagent that starts after the lead's turn ended still works its plan item: it gets its assignment, and its report and hand back are recorded. A second spawn naming that item is refused while it runs.
+- On OpenCode 2.4.2, where every `subagent` call runs in the background, a delegate that starts after the lead's turn ended still works its plan item: it gets its assignment, and its report and hand back are recorded. A second `subagent` call naming that item is refused while it runs.
 
 ## [1.2.2] - 2026-11-23
 

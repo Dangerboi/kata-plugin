@@ -604,6 +604,46 @@ test("a child whose first context hook comes after the lead's turn ended still w
 	expect(await labelsOf(handed)).toContain("needs-review");
 });
 
+test("a late child whose prompt ends with a newer call's prompt binds to its own call, not the newer one", async () => {
+	const { host, id } = await startLead();
+	await write(host, id, todos(["Implement parser module", "pending"]));
+	const longer = await spawn(host, id, { prompt: "Implement parser module. Then report.", detached: true });
+	await turnEnd(host, id);
+	const shorter = await spawn(host, id, { prompt: "Then report.", detached: true });
+	const system = (await host.context(longer.child.id)).system.join("\n");
+	expect(assignmentOf(system).ref).toBe(qref(await item(id, "Implement parser module")));
+	expect((await host.context(shorter.child.id)).system.join("\n")).toContain("you have no Kata issue");
+});
+
+test("a late child's follow-up that arrives before its first context hook does not keep the child from binding to its call", async () => {
+	const { host, id } = await startLead();
+	await write(host, id, todos(["Implement parser module", "pending"]));
+	const call = await spawn(host, id, { prompt: "Implement parser module in the background.", detached: true });
+	await turnEnd(host, id);
+	await spawn(host, id, { prompt: "Also cover the edge cases.", sessionID: call.child.id, detached: true });
+	const ref = qref(await item(id, "Implement parser module"));
+	expect(assignmentOf((await host.context(call.child.id)).system.join("\n")).ref).toBe(ref);
+	expect((await show(ref)).issue.metadata["opencode.subagent_id"]).toBe(call.child.id);
+});
+
+test("a call another plugin's hook refused does not bind a later child with the same prompt after the lead's turn ended", async () => {
+	let refuse = true;
+	const withRefusal: typeof opencode = { id: opencode.id, async setup(ctx: any) {
+		const cleanup = await opencode.setup(ctx);
+		await ctx.tool.hook("execute.before", (event: any) => { if (event.tool === "subagent" && refuse) throw new Error("Refused by another plugin."); });
+		return cleanup;
+	} };
+	const { host, id } = await startLead({ plugin: withRefusal });
+	await write(host, id, todos(["Implement parser module", "pending"]));
+	const refused = await spawn(host, id, { prompt: "Implement parser module in the background.", detached: true });
+	expect(refused.result.executed).toBe(false);
+	await turnEnd(host, id);
+	refuse = false;
+	const next = await spawn(host, id, { prompt: "Implement parser module in the background.", detached: true });
+	// Both calls name the item: the refused one holds nothing, so the new child gets the assignment from its own call.
+	expect(assignmentOf((await host.context(next.child.id)).system.join("\n")).ref).toBe(qref(await item(id, "Implement parser module")));
+});
+
 test("a background delegate whose session is gone when its end event is handled still exits, and its issue goes back to the lead", async () => {
 	const { host, id } = await startLead();
 	await write(host, id, todos(["Implement parser module", "pending"]));

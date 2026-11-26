@@ -23,8 +23,7 @@ interface Call {
 	background: boolean;
 	// A follow-up: the delegate record (the child's session id) it goes on with.
 	followUp?: string;
-	// The lead's turn ended with the call still without a child: what it reserved is free, and it binds a late child only
-	// when no newer call fits.
+	// The lead's turn ended with the call still without a child: what it reserved is free, and it binds a late child, losing a tie to a newer call.
 	late?: boolean;
 	// The run it started, once the child's first context hook bound it.
 	run?: Run;
@@ -38,8 +37,10 @@ function callFor(calls: Call[], message: any): Call | undefined {
 	// A user message keeps its text in `text`, an assistant message in content parts.
 	const text = textOf(message?.text ?? message?.content);
 	const matching = calls.filter(call => !call.followUp && call.prompt && text.endsWith(call.prompt));
-	const fresh = matching.some(call => !call.late) ? matching.filter(call => !call.late) : matching;
-	return fresh.find(call => text === SUBAGENT_PREFIX + call.prompt) ?? fresh.sort((a, b) => b.prompt.length - a.prompt.length)[0];
+	// A late call is the older one: it loses only a tie.
+	const byLateness = (a: Call, b: Call) => Number(!!a.late) - Number(!!b.late);
+	const exact = matching.filter(call => text === SUBAGENT_PREFIX + call.prompt).sort(byLateness)[0];
+	return exact ?? matching.sort((a, b) => b.prompt.length - a.prompt.length || byLateness(a, b))[0];
 }
 
 // The report of a finished foreground call: the child's final reply, without the `<subagent ...>` wrapper of the result text.
@@ -108,7 +109,8 @@ export function install(seam: Seam): void {
 		const { lead } = role;
 		await lead.ready;
 		const pending = callsOf(lead.id).filter(call => !call.run);
-		const call = pending.find(other => other.followUp === event.sessionID) ?? (!role.record && first ? callFor(pending, event.messages?.[0]) : undefined);
+		// A child with no record yet is bound from the call that spawned it, also when a follow-up to it was sent first.
+		const call = (!role.record && first ? callFor(pending, event.messages?.[0]) : undefined) ?? pending.find(other => other.followUp === event.sessionID);
 		// A follow-up goes on with its delegate's record and matches nothing again (`untracked`); a follow-up to a session the
 		// lead holds no record of is not tracked.
 		const begins = !!call && (!!role.record || !call.followUp);
@@ -147,9 +149,13 @@ export function install(seam: Seam): void {
 		if (role.kind === "lead") {
 			// The lead's turn ended. A call still without a child either was refused by a later hook (neither the tool nor
 			// `execute.after` ran) or has a background child that has not reached a context hook yet (every call on OpenCode 2.4.2).
-			// What it reserved is free again, but the call stays matchable until the lead's session ends: a child that starts now
+			// What it reserved is free again. A call that `execute.after` reported running stays matchable until the lead's session ends, any other is dropped: a child that starts now
 			// binds from it, and the core resolves its text again.
-			for (const call of callsOf(role.lead.id)) if (!call.run) { call.late = true; role.lead.releaseSpawn(call.id); }
+			for (const call of [...callsOf(role.lead.id)]) {
+				if (call.run) continue;
+				if (call.background) { call.late = true; role.lead.releaseSpawn(call.id); }
+				else drop(role.lead, call);
+			}
 			return;
 		}
 		// A child's end ends the run it is in. With no run, a call's result ended it already; and an event OpenCode made
