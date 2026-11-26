@@ -2338,7 +2338,7 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 	// `forking`: a fork replaces this session in a new instance (pi's /fork into a saved session); the tasks are left for it.
 	async function shutdown(ctx: HostContext, closing: { delegate?: { id: string; ended: boolean; report?: string }; continues?: boolean; forking?: boolean } = {}): Promise<void> {
 		see(ctx);
-		// A delegate's own session ending drops its reads (a worker thread's core hears of no exit event).
+		// A delegate's reads live in its own core (the lead's core never holds them) and go when its own session ends.
 		if (!main(ctx)) { const own = host.delegateStore.of(ctx); if (own) delegateReads.delete(own.id); }
 		if (!main(ctx) && !closing.delegate) return;
 		stopFollower();
@@ -2476,10 +2476,7 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 			guard,
 		},
 		delegates: {
-			apply: (event: Parameters<typeof delegates.apply>[0], within: Job) => {
-				if (event.type === "exited") delegateReads.delete(event.id);
-				return delegates.apply(event, within);
-			},
+			apply: delegates.apply,
 			start: delegates.start,
 			assignment: delegates.assignment,
 			check: delegates.check,
