@@ -20,7 +20,7 @@ const INTERNAL_URL = /^[a-z][a-z0-9+.-]*:\/\//i;
 // refs the caller holds, so counting them is harmless. The format is chosen as omp chooses it, and only its own headers name targets. After a BOM,
 // blank rows and any `*** Begin Patch` rows, the first row decides:
 // - `[path#tag]`: hashline, whose headers are those rows;
-// - `*** Edit File` (a colon or whitespace after it), `*** Find`, or `*** Update File:` when some row, trimmed, is a sloppy action and no row is an
+// - `*** Edit File` (a colon, whitespace or the end of the row after it), `*** Find`, or `*** Update File:` when some row, trimmed, is a sloppy action and no row is an
 //   `@@` hunk header: sloppy. Its targets are `*** Edit File` rows, which may continue the current file with an empty path or `all`, and the
 //   first-row `*** Update File:`; its other `***` rows are text;
 // - anything else: apply_patch, with `*** Add|Update|Delete File:` and `*** Move to:` (naming a second place for the file).

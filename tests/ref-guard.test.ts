@@ -272,9 +272,11 @@ test("a spaced Edit File header, indented sloppy actions after Update File, and 
   const edit = (input: string) => check("edit", { input });
   expect(await edit("*** Edit File src/s.ts\n*** Find\nconst a = 1;\n*** Replace\n// demo#ab3d\n")).toEqual(["demo#ab3d"]);
   expect(await edit("*** Edit File\t/tmp/o.ts\n*** Find\nx\n*** Replace\n// demo#ab3d\n")).toEqual([]);
-  // Indentation does not decide an Update File patch: an action row and no `@@` hunk does.
-  expect(await edit("*** Update File: src/h.ts\n\t*** Find\nconst h = 1;\n\t*** Replace\n// demo#ab3d\n")).toEqual(["demo#ab3d"]);
-  expect(await edit("*** Update File: src/h.ts\n *** Find\nconst h = 1;\n *** Replace\n// demo#ab3d\n")).toEqual(["demo#ab3d"]);
-  expect(await edit("*** Update File: src/h.ts\n@@\n *** Find\n-const h = 1;\n+// demo#ab3d\n")).toEqual(["demo#ab3d"]);
+  // Indentation does not decide an Update File patch: a trimmed action row and no `@@` hunk does.
+  files["src/h.ts"] = "const h = 1; // demo#k9m2\n";
+  expect(await edit("*** Update File: src/h.ts\n *** Find\nconst h = 1;\n *** Replace\nconst h = 2;\n*** Edit File: src/t.ts\n *** Find\nconst t = 1;\n *** Replace\n// demo#k9m2\n")).toEqual(["demo#k9m2"]);
+  // With an `@@` hunk it is apply_patch: the ` *** Find` row is context, and the Add File row names an outside target.
+  files["src/m.md"] = "x\n";
+  expect(await edit("*** Begin Patch\n*** Update File: src/m.md\n@@\n *** Find\n x\n+y\n*** Add File: /tmp/n.ts\n+// demo#ab3d\n*** End Patch\n")).toEqual([]);
   expect(await edit("*** Begin Patch\n*** Begin Patch\n[src/s.ts#1a2b]\nPUT 1.=1:\n+// demo#ab3d\n")).toEqual(["demo#ab3d"]);
 });
