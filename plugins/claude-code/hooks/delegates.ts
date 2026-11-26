@@ -79,7 +79,7 @@ const textOf = (e: { prompt: string; description: string; name?: string }) => [e
 // What the agent's prompt gains: the assignment (its issue and commands, or that it has none) and, when the plugin owns the
 // contract, the contract.
 async function assignmentNote($: EngineInterface, rt: Runtime, session: Session, id: string, ms: number): Promise<string | undefined> {
-	const asked = await waitFor($, rt, rt.core.delegate(id).session.beforePrompt(contextOf($, rt, session, id), { context: rt.settings.contract }), ms);
+	const asked = await waitFor($, rt, rt.core.delegate(id).session.beforePrompt(contextOf($, rt, session, id), { context: rt.settings.contract, inbox: false }), ms);
 	if (!asked) return undefined;
 	const { sections } = asked;
 	return [sections.contract && tagged("contract", sections.contract), sections.assignment && tagged("assignment", sections.assignment)].filter(Boolean).join("\n\n") || undefined;
