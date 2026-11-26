@@ -4,6 +4,18 @@ All notable changes to `@dangerboi/kata-pi` are listed here. The format follows 
 
 ## [Unreleased]
 
+### Changed
+
+#### Inbox and attention
+
+- A child's assignment or `<kata_binding>` note names its inbox address, `<actor>/<teammate>`, when `KATA_INBOX_USER` is a session address.
+
+### Fixed
+
+#### Inbox and attention
+
+- A request's text can no longer close the `<kata_inbox>` section or open a tag: `&`, `<` and `>` are written as `&amp;`, `&lt;` and `&gt;` in the section, when the plugin reads the inbox (not under Kata's native pi adapter, which inserts it).
+
 ## [1.12.2] - 2026-11-23
 
 ### Fixed

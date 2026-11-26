@@ -442,3 +442,13 @@ test("a switch ends the session it leaves with that session's own debts, also wh
 	await eventually(async () => store.has(`session/${b}`), false);
 	await eventually(async () => ((store.get(`session/${a}`) as any)?.endedAt ?? 0) > 0, true);
 });
+
+test("a delegate's note names no inbox: the Claude path shows a delegate none", async () => {
+	process.env.KATA_INBOX_USER = "claude-builder/lead";
+	const h = host({ options: { kataExecutable: binary, contract: true } });
+	await h.start();
+	await h.todo({ op: "init", items: ["Note without inbox"] });
+	const spawned = await h.spawn({ prompt: "Note without inbox", description: "Noter" }, "agent-noter");
+	expect(spawned.prompt).toContain("Your Kata issue is");
+	expect(spawned.prompt).not.toContain("Your Kata inbox");
+});

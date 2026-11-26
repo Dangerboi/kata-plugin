@@ -5,6 +5,8 @@ import { projectOf, type Binding } from "./model";
 // Kata invocations inside a bash command, and the rewrite that pins a delegate's to its teammate.
 
 export function quote(value: string): string { return `'${value.replace(/'/g, "'\\''")}'`; }
+// `value` as is when it matches `plain` (a pattern of safe shell words), else quoted.
+export const quoteIfNeeded = (value: string, plain: RegExp) => plain.test(value) ? value : quote(value);
 // `env NAME='value' ... ` in front of a command; empty for no variables.
 export function envPrefix(vars: Record<string, string>): string {
 	const assignments = Object.entries(vars).map(([name, value]) => `${name}=${quote(value)}`);

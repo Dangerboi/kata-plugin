@@ -13,6 +13,14 @@ All notable changes to `@dangerboi/kata-omp` are listed here. The format follows
   - A ticket flagged `stuck` or `needs-human` keeps its flag and gets no start, including the flag Kata wrote when an earlier session ended, after a quit and `/resume`. `kata meta set <ref> work.attention ok` run by the lead in its shell clears it and starts attention; run elsewhere it only clears the flag until the lead next claims or names the ticket. Kata leaves the old hand-off message in place.
   - A fork restarts attention for the parent it keeps; a resume in a new process does so only while the issue is still `ok` (after a crash), not after a quit.
 
+### Fixed
+
+#### Inbox and attention
+
+- A subagent reads its own session inbox, `<actor>/<teammate>`, instead of the lead's, so a request can be sent to one subagent.
+  - Subagents read an inbox only when `KATA_INBOX_USER` is a session address, and their assignment note names it. A subagent the plugin could not record reads none, and omp's advisor no longer shows the lead's requests.
+- A request's text can no longer close the `<kata_inbox>` section or open a tag: `&`, `<` and `>` are written as `&amp;`, `&lt;` and `&gt;` in the section and in a live delivery.
+
 ## [3.0.0] - 2026-11-23
 
 ### Added
