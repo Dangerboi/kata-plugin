@@ -4,6 +4,12 @@ All notable changes to the `kata-cc` Claude Code plugin are listed here. The for
 
 ## [Unreleased]
 
+### Fixed
+
+#### Inbox and attention
+
+- A request's text can no longer close the `<kata_inbox>` section or open a tag: `&`, `<` and `>` are written as `&amp;`, `&lt;` and `&gt;` in the section and in a live delivery.
+
 ## [1.1.0] - 2026-11-23
 
 ### Added
