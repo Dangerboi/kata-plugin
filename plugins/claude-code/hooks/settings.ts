@@ -1,4 +1,5 @@
 import type { EngineInterface } from "claude-code";
+import { refGuardOff } from "../core/kata-cli";
 
 // The host's name: the core's namespace (what it writes to Kata and to the saved entries) and the agent a close's transcript is for.
 export const NAMESPACE = "claude";
@@ -47,6 +48,6 @@ export function resolveSettings(options: Record<string, unknown> | undefined, en
 		debugFile: text(options?.debugFile) ?? env.get("KATA_CLAUDE_DEBUG"),
 		contract: options?.contract === true,
 		liveInbox: options?.liveInbox !== false && env.get("KATA_CLAUDE_LIVE_INBOX") !== "0",
-		refGuard: options?.refGuard !== false && !["off", "0"].includes((env.get("KATA_REF_GUARD") ?? "").trim().toLowerCase())
+		refGuard: options?.refGuard !== false && !refGuardOff(env.get("KATA_REF_GUARD"))
 	};
 }

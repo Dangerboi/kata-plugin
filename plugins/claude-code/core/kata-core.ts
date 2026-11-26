@@ -3,11 +3,11 @@ import { decidePlanParent, explicitParent, isExplicitParent, namesPlanParent } f
 import { createInboxFollower, knownProjectHead, trustedInbox, type InboxFollower, type LiveInbox } from "./inbox";
 import { createDelegates, FINAL, heldByDelegate as heldBy, isUntracked, nameOf, Refusal, teammateFor, type DelegateAssignment, type DelegateStore, type Refused, type Reservation, type SavedDelegate, type Who } from "./delegates";
 import { createSettlement, MAX_FAILURES, openChildren, type PendingClose, type SettlementSnapshot } from "./settlement";
-import { createKata, debugTo, type CORE_ENV, isKataCode, isUnusable, KataError, NO_JOB, waitAtMost, type Batch, type Exec, type Job, type PathOps, type Platform, type Timers } from "./kata-cli";
+import { createKata, debugTo, type CORE_ENV, isKataCode, refGuardOff, isUnusable, KataError, NO_JOB, waitAtMost, type Batch, type Exec, type Job, type PathOps, type Platform, type Timers } from "./kata-cli";
 import { createTicketCompletion } from "./autocomplete";
 import { offendingRefs } from "./ref-guard";
 import { kataCommands, quote, shellOptions } from "./shell";
-import { closedTaskStatus, digest, FULL_ID_REF, hasLabel, heldBySession, heldMessage, itemTicket, NATIVE_WORDING, OPEN, PROOF_MIN, projectOf, proofProblem, QUALIFIED_REF_ONLY, qualifiedRef, SESSION_KEY, sessionParentKeys, slug, tasksOf, textOf, TITLE_MAX, TODO_WORDING, WONTFIX_MIN, WORKING, type Binding, type Change, type KataIssue, type KataShow, type Plan, type Status, type Task, type ToolWording } from "./model";
+import { closedTaskStatus, digest, FULL_ID_REF, hasLabel, heldBySession, heldMessage, itemTicket, NATIVE_WORDING, OPEN, PROOF_MIN, projectOf, proofProblem, QUALIFIED_REF_ONLY, qualifiedRef, SESSION_KEY, SHORT_ID_ONLY, sessionParentKeys, slug, tasksOf, textOf, TITLE_MAX, TODO_WORDING, WONTFIX_MIN, WORKING, type Binding, type Change, type KataIssue, type KataShow, type Plan, type Status, type Task, type ToolWording } from "./model";
 import { diffNativeList, nativeOpen, nativeTargets, type NativeItem, type NativePhase, type NativeStatus } from "./todo-list";
 
 // What omp's own todo list holds, as `todo.mirror` takes it.
@@ -133,6 +133,19 @@ function childName(sessionName: string | undefined, reserved: Reservation | unde
 // The path as the host's filesystem names it: `file` against `cwd`, with symlinks resolved. A file that does not exist yet
 // resolves through its folder, and a folder that does not either stays as written. Two workspaces are the same when their
 // canonical paths are.
+// Like `canonicalPath`, but a path under folders that do not exist yet resolves through its nearest existing ancestor.
+async function canonicalNew(host: Pick<Platform, "path" | "realpath">, file: string, cwd: string): Promise<string> {
+	const { path, realpath } = host, absolute = path.resolve(cwd, file), rest: string[] = [];
+	for (let at = absolute; ;) {
+		try { return rest.length ? path.join(await realpath(at), ...rest.reverse()) : await realpath(at); }
+		catch { /* climb */ }
+		const parent = path.dirname(at);
+		if (parent === at) return absolute;
+		rest.push(path.basename(at));
+		at = parent;
+	}
+}
+
 export async function canonicalPath(host: Pick<Platform, "path" | "realpath">, file: string, cwd: string): Promise<string> {
 	const { path, realpath } = host, absolute = path.resolve(cwd, file);
 	try { return await realpath(absolute); }
@@ -822,7 +835,7 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 		if (isNew && main(ctx)) { host.switched?.(ctx); newSession(); shown.clear(); }
 		lastSnapshot = undefined;
 		currentCtx = ctx;
-		plan = { tasks: [], workspace: path.resolve(ctx.cwd) }; named = []; aliases.clear(); deletedParent = undefined;
+		plan = { tasks: [], workspace: path.resolve(ctx.cwd) }; named = []; aliases.clear(); claimed.clear(); deletedParent = undefined;
 		scope = "unknown"; refusal = undefined; outage = "";
 		// A delegate restores nothing from the session's saved entries: they are its lead's.
 		const branch: readonly any[] = main(ctx) ? ctx.sessionManager?.getBranch?.() ?? [] : [];
@@ -2024,21 +2037,25 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 	}
 
 	// Called before a tool runs: the text that refuses a call that would put a Kata ref into the repository, or undefined to let it run. It
-	// never rejects: an error, a slow check or an off switch (KATA_REF_GUARD=off or 0) lets the call through.
-	function refGuard(ctx: HostContext, call: { tool: string; input: unknown }): Promise<string | undefined> {
-		if (["off", "0"].includes((setting("KATA_REF_GUARD") ?? "").trim().toLowerCase())) return Promise.resolve(undefined);
+	// never rejects: an error, a slow check or an off switch (KATA_REF_GUARD=off or 0) lets the call through. `also`: refs a host knows
+	// that this core does not (a delegate on another thread asks its lead).
+	function refGuard(ctx: HostContext, call: { tool: string; input: unknown }, also: Iterable<string> = []): Promise<string | undefined> {
+		if (refGuardOff(setting("KATA_REF_GUARD"))) return Promise.resolve(undefined);
 		return bounded((async () => {
 			const refs = knownRefs(ctx);
-			const roots = [...new Set([ctx.cwd ?? platform.cwd(), plan.workspace])].map(root => canonicalPath(platform, ".", root));
-			const workspaces = await Promise.all(roots);
+			for (const ref of also) refs.add(ref);
+			const cwd = ctx.cwd ?? platform.cwd();
+			const workspaces = await Promise.all([...new Set([cwd, plan.workspace])].map(root => canonicalPath(platform, ".", root)));
 			const prefix = (root: string) => path.join(root, "x").slice(0, -1);
 			const found = await offendingRefs({
 				...call, refs,
-				projects: new Set([...refs].filter(ref => ref.includes("#")).map(projectOf)),
-				async inWorkspace(file) {
-					const canonical = await canonicalPath(platform, file, ctx.cwd ?? platform.cwd());
-					return workspaces.some(root => canonical === root || canonical.startsWith(prefix(root)));
+				async locate(file) {
+					// `~` is the home folder, as the host's own tools read it; a host that knows none cannot place the file.
+					if (file === "~" || file.startsWith("~/")) { if (!platform.home) return undefined; file = path.join(platform.home, file.slice(1)); }
+					const canonical = await canonicalNew(platform, file, cwd);
+					return workspaces.some(root => canonical === root || canonical.startsWith(prefix(root))) ? canonical : undefined;
 				},
+				read: file => platform.readFile(file),
 			});
 			if (!found.length) return undefined;
 			return `Refused: this ${call.tool} call puts ${found.join(", ")} into the repository. Kata refs only resolve in the local tracker, so code, comments, tests, docs and commit messages should describe the behaviour instead. Rewrite it without the ref and retry. To turn this check off, set KATA_REF_GUARD=off.`;
@@ -2112,7 +2129,8 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 			let ref = args[0] === "claim" ? args[1] : args[0] === "meta" && args[1] === "set" && args[3] === "work.attention" && args[4] === "ok" ? args[2] : undefined;
 			if (!ref || parsed.options.has("--as")) continue;
 			if (!ref.includes("#") && parsed.value("--project")) ref = `${parsed.value("--project")}#${ref}`;
-			if (args[0] === "claim") claimed.add(ref);
+			// A word the shell expands (`$ref`, a glob) names nothing yet; only the shape of a ref counts.
+			if (args[0] === "claim" && (QUALIFIED_REF_ONLY.test(ref) || SHORT_ID_ONLY.test(ref))) claimed.add(ref);
 			if (!adopting) continue;
 			const workspace = path.resolve(event.input.cwd || ctx.cwd, parsed.value("--workspace") || ".");
 			const target = ref;
@@ -2473,6 +2491,8 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 			},
 			// A tool is about to run: the text that refuses it for putting a Kata ref into the repository, or undefined (see `refGuard`).
 			guard: refGuard,
+			// The refs this session works, for a delegate's host that checks calls against its lead's.
+			refs: (ctx: HostContext): string[] => [...knownRefs(ctx)],
 		},
 		todo: {
 			apply: (ctx: HostContext, op: string, params: any, within: Job) => execute({ ...params, op }, ctx, within),

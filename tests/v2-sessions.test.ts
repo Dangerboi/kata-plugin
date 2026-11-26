@@ -1,6 +1,6 @@
 import { expect, setSystemTime, test } from "bun:test";
 import { execFile } from "node:child_process";
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, symlinkSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { promisify } from "node:util";
 import { eventually, finishes, holdKata, later } from "./kata-fixture";
@@ -311,6 +311,13 @@ test("omp refuses a write or commit that names a ref of the plan, for the lead a
   expect(await app.event("tool_call", { toolName: "bash", input: { command: `kata comment ${ref} -m "note ${ref}"` } })).toBeUndefined();
   const child = { ...app.ctx, agent: { kind: "sub", id: "guard-child", parentId: app.ctx.agent.id } };
   expect(await app.event("tool_call", { toolName: "write", input: { path: `${cwd}/child.ts`, content: `// ${ref}` } }, child)).toMatchObject({ block: true });
+  // What the file already holds is not added; a new folder under a symlinked cwd and a path in the home folder are judged by where they land.
+  writeFileSync(`${cwd}/held.md`, `see ${ref} here\n`);
+  expect(await app.event("tool_call", { toolName: "write", input: { path: `${cwd}/held.md`, content: `see ${ref} here, and more\n` } })).toBeUndefined();
+  expect(await app.event("tool_call", { toolName: "edit", input: { path: `${cwd}/held.md`, old_string: `see ${ref}`, new_string: `read ${ref}` } })).toBeUndefined();
+  const link = `${scratch}/cwd-link`; symlinkSync(cwd, link);
+  expect(await app.event("tool_call", { toolName: "write", input: { path: `${link}/new/dir/x.ts`, content: `// ${ref}` } })).toMatchObject({ block: true });
+  expect(await app.event("tool_call", { toolName: "write", input: { path: "~/kata-guard-notes.md", content: `// ${ref}` } })).toBeUndefined();
   process.env.KATA_REF_GUARD = "off";
   try { expect(await write(app, `// tracked as ${ref}`)).toBeUndefined(); }
   finally { delete process.env.KATA_REF_GUARD; }

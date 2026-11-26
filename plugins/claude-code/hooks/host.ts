@@ -61,6 +61,7 @@ export function platformOf($: EngineInterface, env: Map<string, string>, state: 
 			if (!found) throw new Error(`${file} does not exist`);
 			return found;
 		},
+		readFile: async file => String(await $.fs.read(file)),
 		// `$.fs.write` replaces a file, so an append reads the old text first; one at a time.
 		appendFile(file, text) {
 			appended = appended

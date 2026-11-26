@@ -1,6 +1,8 @@
 // Generated from core/node-host.ts; edit there.
 import { execFile } from "node:child_process";
 import { appendFileSync, realpathSync } from "node:fs";
+import { readFile } from "node:fs/promises";
+import { homedir } from "node:os";
 import path from "node:path";
 import { transcriptEnv, type ExecResult, type Platform } from "./kata-cli";
 
@@ -16,6 +18,8 @@ export const nodePlatform: Platform = {
 	clearTimer: handle => clearTimeout(handle as ReturnType<typeof setTimeout>),
 	realpath: async file => realpathSync(file),
 	appendFile: appendFileSync,
+	readFile: file => readFile(file, "utf8"),
+	home: homedir(),
 };
 
 // A session file's identity: resolved against `cwd` with symlinks resolved, a file that does not exist yet through its folder.

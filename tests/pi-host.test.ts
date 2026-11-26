@@ -198,6 +198,9 @@ test("pi refuses a write or commit that names a ref of the plan until KATA_REF_G
   expect(await write("// tracked as README.md#tasks")).toBeUndefined();
   expect(await write(ref, path.join(outside, "notes.ts"))).toBeUndefined();
   expect(await app.event("tool_call", { toolName: "bash", input: { command: `kata comment ${ref} -m "note ${ref}"` } })).toBeUndefined();
+  // A claim of a shell variable names nothing: the literal word is no ref.
+  await app.event("tool_result", { toolName: "bash", isError: false, input: { command: 'kata claim "$ref"' }, content: [] });
+  expect(await write("echo $ref; echo ${ref}")).toBeUndefined();
   process.env.KATA_REF_GUARD = "0";
   try { expect(await write(`// tracked as ${ref}`)).toBeUndefined(); }
   finally { delete process.env.KATA_REF_GUARD; }

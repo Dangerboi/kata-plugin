@@ -14,7 +14,7 @@ Requires OpenCode 2.2.7 or later, Kata 0.23.0 or later and a running Kata daemon
 - An item named `<project>#<short_id>: <action>` works and logs on that existing ticket.
 - A delegate started by the lead (a `subagent` call) gets its own Kata issue and teammate when its prompt names a plan item or a ticket. If it ends with the issue open, the issue goes back to the lead for review. A follow-up to the same delegate stays on its issue.
 - A subagent's `kata` commands in the `shell` tool run as its teammate; `--as` is refused.
-- Settings are plugin options in `opencode.json` (`executable` (the Kata executable the plugin runs), `ref`, `defaultProject`, `author`, `teammate`, `debugFile`), each falling back to a `KATA_*` variable in the server's environment. Put them in the entry's `options`:
+- Settings are plugin options in `opencode.json` (`executable` (the Kata executable the plugin runs), `ref`, `defaultProject`, `author`, `teammate`, `refGuard`, `debugFile`), each falling back to a `KATA_*` variable in the server's environment. Put them in the entry's `options`:
 
 ```json
 { "plugins": [{ "package": "@dangerboi/kata-opencode", "options": { "defaultProject": "vault" } }] }

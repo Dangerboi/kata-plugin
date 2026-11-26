@@ -13,19 +13,21 @@ export function envPrefix(vars: Record<string, string>): string {
 type ShellWord = { value: string; start: number; end: number };
 // One Kata invocation: its executable, the words after it, and the `NAME=value` assignments before it.
 type Invocation = { executable: ShellWord; words: ShellWord[]; assignments: ShellWord[] };
-const ASSIGNMENT = /^[A-Za-z_][A-Za-z0-9_]*=/;
+export const ASSIGNMENT = /^[A-Za-z_][A-Za-z0-9_]*=/;
 // The words of one simple command, and the bodies of the heredocs fed to it.
-export type Segment = { words: ShellWord[]; bodies: string[] };
-const PREFIXES = ["if", "then", "elif", "do", "else", "!", "command", "env", "time"];
-// Splits a command at `;`, `&`, `|`, parentheses and newlines. Quoted arguments are single words; heredoc bodies are data kept apart.
+type Segment = { words: ShellWord[]; bodies: string[] };
+// Words that may stand before a command without being it.
+export const PREFIXES = ["if", "then", "elif", "do", "else", "!", "command", "env", "time"];
+// Splits a command at `;`, `&`, `|`, parentheses and newlines. Quoted arguments and heredoc bodies are data (a body belongs to the
+// command whose line holds its `<<`); this lexer never infers whether a test/commit command proves completion.
 export function commandSegments(command: string): Segment[] {
 	const segments: Segment[] = [{ words: [], bodies: [] }];
-	let i = 0, heredoc: string | undefined, wantDelimiter = false;
+	let i = 0, heredoc: string | undefined, owner: Segment | undefined, wantDelimiter = false;
 	while (i < command.length) {
 		if (command[i] === "\n" && heredoc) {
 			const end = command.indexOf(`\n${heredoc}`, i);
 			if (end < 0) break;
-			segments.at(-1)!.bodies.push(command.slice(i + 1, end));
+			owner!.bodies.push(command.slice(i + 1, end));
 			i = command.indexOf("\n", end + 1);
 			if (i < 0) break;
 			heredoc = undefined;
@@ -44,14 +46,13 @@ export function commandSegments(command: string): Segment[] {
 			if (!open && (char === "'" || char === '"')) { open = char; i++; continue; }
 			value += char; i++;
 		}
-		if (wantDelimiter) { heredoc = value; wantDelimiter = false; continue; }
+		if (wantDelimiter) { heredoc = value; owner = segments.at(-1); wantDelimiter = false; continue; }
 		segments.at(-1)!.words.push({ value, start, end: i });
 	}
 	return segments;
 }
 
-// Inspect command positions only. Quoted arguments and heredoc bodies are data;
-// this lexer never infers whether a test/commit command proves completion.
+// Inspect command positions only.
 export function kataCommands(path: Pick<PathOps, "basename">, command: string, configuredExecutable = "kata", executableVars: readonly string[] = []): Invocation[] {
 	const commands: Invocation[] = [];
 	for (const { words: segment } of commandSegments(command)) {

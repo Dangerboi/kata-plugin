@@ -33,6 +33,8 @@ export function resolveSettings(options: Record<string, unknown> | undefined, en
 	// What the core's `env` lookup and Kata's own environment get: the settings that are variables Kata reads.
 	const named = (keys: (keyof typeof SETTINGS)[]) => Object.fromEntries(keys.flatMap(key => { const value = read(key); return value ? [[SETTINGS[key][1], value] as [string, string]] : []; }));
 	const forCore = named(["ref", "defaultProject", "author", "teammate", "refGuard"]);
+	// A JSON boolean works too, as Claude Code's option does: `false` turns the guard off.
+	if (options?.refGuard === false) forCore.KATA_REF_GUARD = "off";
 	return {
 		executable: read("executable") ?? "kata",
 		debugFile: read("debugFile"),

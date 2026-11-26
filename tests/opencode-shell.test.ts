@@ -130,6 +130,14 @@ test("shell kata commands carry the configured author and teammate when the serv
 	expect(close.payload.transcript).toMatchObject({ agent: "opencode", session_id: childID });
 });
 
+test("the refGuard option accepts a JSON boolean false", async () => {
+	const { host, id } = await startLead({ refGuard: false });
+	await host.callTool(id, "todowrite", todos(["Guarded plan item", "in_progress"]));
+	const ref = qref(await parentOf(id));
+	const result = await host.callTool(id, "write", { path: `${cwd}/notes.ts`, content: `// ${ref}` }, { execute: () => "ok" });
+	expect(result.status, result.text).toBe("completed");
+});
+
 test("a write, patch or commit that names a ref of the plan is refused until the refGuard option is off", async () => {
 	const call = (host: OpenCodeInstance, id: string, tool: string, input: Record<string, unknown>) => host.callTool(id, tool, input, { execute: () => "ok" });
 	for (const off of [false, true]) {

@@ -2,7 +2,7 @@ import type { Hook } from "claude-code";
 import { contextOf, runtime } from "./lead";
 
 // Refuses a Write, an Edit, a NotebookEdit or a Bash `git commit` that puts a Kata ref into the repository (the core decides: see
-// `tools.guard`). A lead's or a subagent's call alike; a call before the session is bound runs unchecked.
+// `tools.guard`). A lead's or a delegate's call alike; a call before the session is bound runs unchecked.
 export const onWriteGuard: Hook<"tool.call"> = async ($, e, next) => {
 	const rt = runtime();
 	const held = rt?.latest?.held;
