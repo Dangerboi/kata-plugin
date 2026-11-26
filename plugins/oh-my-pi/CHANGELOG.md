@@ -10,8 +10,8 @@ All notable changes to `@dangerboi/kata-omp` are listed here. The format follows
 
 - Session attention also covers each ticket the lead claims with `kata claim` (or marks with `kata meta set ... work.attention ok`) and each issue it names with `/todo ref`, not only `KATA_REF`.
   - A ticket keeps attention until the session ends or switches, also after another ticket becomes the plan parent. Kata then flags an open ticket still on `ok` as `needs-human`; a ticket closed first is left alone.
-  - A ticket flagged `stuck`, or `needs-human` by a person, keeps its flag. The `needs-human` Kata wrote when a session ended without a hand-off is taken back by a re-claim.
-  - A fork or resume restarts attention for the explicit parent it restores.
+  - A ticket flagged `stuck` or `needs-human` keeps its flag and gets no start, including the flag Kata wrote when an earlier session ended, after a quit and `/resume`. `kata meta set <ref> work.attention ok` clears it and starts attention.
+  - A fork restarts attention for the parent it keeps.
 
 ## [3.0.0] - 2026-11-23
 
