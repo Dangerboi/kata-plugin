@@ -329,10 +329,27 @@ test("omp keeps the refs a shell claim named across /tree and qualifies a bare c
   const write = (content: string) => app.event("tool_call", { toolName: "write", input: { path: `${cwd}/claimed.ts`, content } });
   // A claim inside a compound command is recorded, not adopted; a bare id is recorded with the project it resolves in.
   await app.event("tool_result", { toolName: "bash", input: { command: `kata claim ${short} && echo claimed` }, isError: false, details: { exitCode: 0 } });
-  expect(await write(`// ${ref}`)).toMatchObject({ block: true });
   expect(await write(`// ${short} on its own`)).toMatchObject({ block: true });
+  await eventually(async () => !!(await write(`// ${ref}`))?.block, true);
   await app.event("session_tree");
   expect(await write(`// ${ref}`)).toMatchObject({ block: true });
+  // A fork shares its source's claims; any other new session starts with none.
+  await app.switchSession("claims-fork", { fork: true });
+  expect(await write(`// ${ref}`)).toMatchObject({ block: true });
+  await app.switchSession("claims-new");
+  expect(await write(`// ${ref} and ${short}`)).toBeUndefined();
+});
+
+test("a claimed bare id is known at once, though Kata is slow to resolve it, and the hook does not wait", async () => {
+  let slow = false;
+  const held = holdKata(() => slow, () => ({ code: 1, stderr: "offline", stdout: "" }));
+  const app = host({ before: held.before }); await app.event("session_start");
+  const short = await issue();
+  slow = true;
+  try {
+    expect(await finishes(app.event("tool_result", { toolName: "bash", input: { command: `kata claim ${short} && echo claimed` }, isError: false, details: { exitCode: 0 } }), 1000)).toBe(true);
+    expect(await app.event("tool_call", { toolName: "write", input: { path: `${cwd}/slow.ts`, content: `// ${short}` } })).toMatchObject({ block: true });
+  } finally { held.release(); }
 });
 
 test("pinned plan survives cwd changes and ignores another session's saved binding", async () => {

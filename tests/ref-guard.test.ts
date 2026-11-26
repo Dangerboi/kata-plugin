@@ -7,10 +7,7 @@ assertIsolated();
 const refs = new Set(["demo#ab3d", "demo#k9m2"]);
 // Files under /work or src/ are in the workspace; `files` is what they currently hold.
 const files: Record<string, string> = {};
-const locate = async (file: string, from?: string) => {
-  const at = from && !file.startsWith("/") ? `${from}/${file}` : file;
-  return at === "/work" || at.startsWith("/work/") || at.startsWith("src/") ? at : undefined;
-};
+const locate = async (file: string) => file === "/work" || file.startsWith("/work/") || file.startsWith("src/") ? file : undefined;
 const read = async (file: string) => { if (file in files) return files[file]; throw new Error("no such file"); };
 const check = (tool: string, input: unknown, known = refs) => offendingRefs({ tool, input, known: async () => known, locate, read });
 
@@ -164,4 +161,28 @@ test("a commit message attached to its flag, or given as a here-string, is check
     expect(await check("bash", { command }), command).toEqual(["demo#ab3d"]);
   expect(await check("bash", { command: `git commit -m"fix" -- ab3d.ts` })).toEqual([]);
   expect(await check("bash", { command: `git commit -F msg.txt <<< "demo#ab3d"` })).toEqual([]);
+});
+
+test("each patch format is read with its own grammar", async () => {
+  files["src/s.ts"] = "x\n";
+  // In a sloppy replacement a row that looks like a hashline header is text.
+  expect(await check("edit", { input: "*** Edit File: src/s.ts\n*** Find\nx\n*** Replace\n[demo#ab3d]\n" })).toEqual(["demo#ab3d"]);
+  // Omp matches the header loosely: case, leading space, a trailing ` all`, a JSON-quoted path.
+  for (const header of ["*** edit file: src/s.ts", "  *** Edit File: src/s.ts all", '*** Edit File: "src/s.ts"'])
+    expect(await check("edit", { input: `${header}\n*** Find\nx\n*** Replace\ndemo#ab3d\n` }), header).toEqual(["demo#ab3d"]);
+  expect(await check("edit", { input: '*** Edit File: "/tmp/s.ts"\n*** Find\nx\n*** Replace\ndemo#ab3d\n' })).toEqual([]);
+  // A sloppy patch's `+` row is not special; an apply_patch's raw row is not text.
+  expect(await check("edit", { input: "*** Edit File: src/s.ts\n*** Replace\n+demo#ab3d\n" })).toEqual(["demo#ab3d"]);
+  expect(await check("apply_patch", { input: "*** Begin Patch\n*** Update File: src/s.ts\n@@\n*** Replace\ndemo#ab3d\n*** End Patch" })).toEqual([]);
+});
+
+test("git -C values fold in order, and a cd moves the folder of later commands", async () => {
+  const msg = `-m "demo#ab3d"`;
+  expect(await check("bash", { command: `git -C /tmp/x -C /work commit ${msg}` })).toEqual(["demo#ab3d"]);
+  expect(await check("bash", { command: `git -C /work -C /tmp/x commit ${msg}` })).toEqual([]);
+  expect(await check("bash", { command: `git -C /work -C sub commit ${msg}` })).toEqual(["demo#ab3d"]);
+  expect(await check("bash", { command: `cd /tmp/x && git commit ${msg}` })).toEqual([]);
+  expect(await check("bash", { command: `cd /tmp/x; cd /work; git commit ${msg}` })).toEqual(["demo#ab3d"]);
+  expect(await check("bash", { command: `cd sub && git commit ${msg}`, cwd: "/tmp/x" })).toEqual([]);
+  expect(await check("bash", { command: `cd .. && git -C work commit ${msg}`, cwd: "/work/sub" })).toEqual(["demo#ab3d"]);
 });

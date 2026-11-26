@@ -830,11 +830,9 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 		requestedRef = requested;
 		const id = sid(ctx);
 		// Only a bind that starts a session this core did not already hold restores delegates: /tree and a branch switch keep the same one.
-		const isNew = currentId !== id;
+		const isNew = currentId !== id, previous = currentId;
 		currentId = id;
 		if (isNew && main(ctx)) { host.switched?.(ctx); newSession(); shown.clear(); }
-		// The shell claims belong to the session: /tree and a branch switch keep it, a new session starts with none.
-		if (isNew) claimed.clear();
 		lastSnapshot = undefined;
 		currentCtx = ctx;
 		plan = { tasks: [], workspace: path.resolve(ctx.cwd) }; named = []; aliases.clear(); deletedParent = undefined;
@@ -845,6 +843,8 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 		// adopt its parent and ticket items, but not its retries (the source still owns those closes)
 		// nor its local plan (replaying that would make a second automatic parent).
 		const { snapshot, source } = savedSnapshot(ctx, branch, id, onBranch(branch));
+		// The shell claims belong to the session: /tree and a branch switch keep it, a fork of it shares them, any other new session starts with none.
+		if (isNew && !(source && source === previous)) claimed.clear();
 		// A forked session keeps the source id as the parent's owner: the parent's session_id metadata names it.
 		const parentOwner = source ?? id;
 		// A resumed lead keeps its saved sessions; a fork adds itself to its source's, so it works on what its source started.
@@ -2023,6 +2023,7 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 		return bounded((async () => { await after?.catch(debug); if (!main(ctx) && !delegates.assignment(ctx)) return undefined; return serial(job => guardText(job, ctx, call), { ctx }); })(), GUARD_MS);
 	}
 
+	type MoreRefs = () => Promise<Iterable<string>> | Iterable<string>;
 	// How long `tools.guard` waits for its checks (the canonical path of each file the call writes): past it the call goes through unchecked.
 	const REF_GUARD_MS = 2_000;
 
@@ -2039,9 +2040,9 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 	}
 
 	// Called before a tool runs: the text that refuses a call that would put a Kata ref into the repository, or undefined to let it run. It
-	// never rejects: an error, a slow check or an off switch (KATA_REF_GUARD=off or 0) lets the call through. `also`: refs a host knows
-	// that this core does not (a delegate on another thread asks its lead).
-	function refGuard(ctx: HostContext, call: { tool: string; input: unknown }, also: () => Promise<Iterable<string>> | Iterable<string> = () => []): Promise<string | undefined> {
+	// never rejects: an error, a slow check or an off switch (KATA_REF_GUARD=off or 0) lets the call through. `also`: refs a host knows that
+	// this core does not (a delegate on another thread asks its lead); called once, inside the bound, and only for a call that adds text.
+	function refGuard(ctx: HostContext, call: { tool: string; input: unknown }, also: MoreRefs = () => []): Promise<string | undefined> {
 		if (refGuardOff(setting("KATA_REF_GUARD"))) return Promise.resolve(undefined);
 		return bounded((async () => {
 			const cwd = ctx.cwd ?? platform.cwd();
@@ -2054,10 +2055,10 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 					for (const ref of await also()) refs.add(ref);
 					return refs;
 				},
-				async locate(file, from) {
+				async locate(file) {
 					// `~` is the home folder, as the host's own tools read it; a host that knows none cannot place the file.
 					if (file === "~" || file.startsWith("~/")) { if (!platform.home) return undefined; file = path.join(platform.home, file.slice(1)); }
-					const canonical = await canonicalNew(platform, file, from ? path.resolve(cwd, from) : cwd);
+					const canonical = await canonicalNew(platform, file, cwd);
 					return workspaces.some(root => canonical === root || canonical.startsWith(prefix(root))) ? canonical : undefined;
 				},
 				read: file => platform.readFile(file),
@@ -2135,12 +2136,13 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 			if (!ref || parsed.options.has("--as")) continue;
 			if (!ref.includes("#") && parsed.value("--project")) ref = `${parsed.value("--project")}#${ref}`;
 			const workspace = path.resolve(event.input.cwd || ctx.cwd, parsed.value("--workspace") || ".");
-			// A word the shell expands (`$ref`, a glob) names nothing yet; only the shape of a ref counts, and a bare id is recorded with its project.
+			// A word the shell expands (`$ref`, a glob) names nothing yet; only the shape of a ref counts. A bare id is recorded at once (with the
+			// plan's project when the workspace is its own) and replaced by the ref Kata resolves it to, in the background: the hook never waits.
 			if (args[0] === "claim" && QUALIFIED_REF_ONLY.test(ref)) claimed.add(ref);
 			else if (args[0] === "claim" && SHORT_ID_ONLY.test(ref)) {
-				const bare = ref;
-				const pinned = await bounded(serial(job => kata.pin(job, bare, workspace)), 2000);
-				if (pinned) claimed.add(pinned);
+				const bare = ref, session = currentId;
+				claimed.add(plan.parent && plan.workspace === workspace ? `${projectOf(plan.parent)}#${bare}` : bare);
+				void serial(job => kata.pin(job, bare, workspace)).then(pinned => { if (currentId === session) { claimed.delete(bare); claimed.add(pinned); } }).catch(debug);
 			}
 			if (!adopting) continue;
 			const target = ref;

@@ -4,9 +4,9 @@ import { projectOf, qualifiedRefs } from "./model";
 // Kata refs resolve only in the local tracker, so a write or commit that puts one into the repository is refused. This module is the
 // pure part: which refs a tool call would add, never ones the text it replaces, or the file it changes, already holds.
 
-// Text a call adds. `files` are the places it goes: undefined means anywhere (a commit message), and files that lie outside the
-// workspace make it no repository content. `old` is the text it replaces; without it the file's current text is what it keeps.
-type Added = { files?: string[]; from?: string; text: string; old?: string };
+// Text a call adds. `files` are the places it goes: undefined means anywhere, and files that lie outside the workspace make it no
+// repository content. `old` is the text it replaces; the call's refs are held by that and by what the files already say.
+type Added = { files?: string[]; text: string; old?: string };
 
 const escape = (value: string) => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 const asString = (value: unknown): string | undefined => typeof value === "string" ? value : undefined;
@@ -14,22 +14,34 @@ const fields = (value: unknown): Record<string, unknown> => value && typeof valu
 const records = (value: unknown): Record<string, unknown>[] => Array.isArray(value) ? value.map(fields) : [];
 const INTERNAL_URL = /^[a-z][a-z0-9+.-]*:\/\//i;
 
-// The rows a patch adds, per file: `+` rows of a hashline edit (`[path#tag]` sections) or an apply_patch body (`*** Add|Update File:`, with
-// `*** Move to:` naming a second place), and the new text of omp's sloppy edit (`*** Edit File:`, then `*** Find` for the old side and
-// `*** Replace`, `*** Replace Block: opener`, `*** Insert` or `*** Paste Before|After` followed by raw rows). Headers, context and
-// old-side rows are never text.
+// The first header a patch has says which grammar the whole patch is in: hashline (`[path#tag]`), apply_patch (`*** Add|Update File:`) or omp's
+// sloppy edit (`*** Edit File:`, matched loosely as omp does).
+const HASHLINE = /^\[(.+)#[^#\]]+\]\s*$/, APPLY = /^\*\*\* (?:Add|Update) File:\s*(.+?)\s*$/, SLOPPY = /^\s*\*{3}\s+(?:Edit|Update)\s+File:\s*(.+?)\s*$/i;
+
+// The rows a patch adds, per file. Hashline and apply_patch add their `+` rows (apply_patch's `*** Move to:` names a second place). Sloppy adds
+// the raw rows after `*** Replace`, `*** Replace Block: opener`, `*** Insert` and `*** Paste Before|After`, and not those of `*** Find`.
+// Headers, context and old-side rows are never text.
 function patchRows(patch: string): Added[] {
+	const lines = patch.split("\n");
+	const first = lines.map(line => HASHLINE.test(line) ? "hashline" : /^\*\*\* (?:Add|Update|Delete) File:/.test(line) ? "apply" : SLOPPY.test(line) ? "sloppy" : undefined).find(Boolean);
+	const header = first === "hashline" ? HASHLINE : first === "apply" ? APPLY : SLOPPY;
 	const groups: { files: string[]; rows: string[] }[] = [];
 	let group: { files: string[]; rows: string[] } | undefined, collecting = false;
-	for (const line of patch.split("\n")) {
-		const hashline = /^\[(.+)#[^#\]]+\]\s*$/.exec(line), named = /^\*\*\* (?:Add|Update|Edit) File:\s*(.+?)(?: all)?\s*$/.exec(line);
-		if (hashline || named) { group = { files: [(hashline ?? named)![1]], rows: [] }; groups.push(group); collecting = false; continue; }
-		const moved = /^\*\*\* Move to:\s*(.+?)\s*$/.exec(line);
-		if (moved) { group?.files.push(moved[1]); continue; }
-		if (/^\*\*\* [A-Z]/.test(line)) { collecting = /^\*\*\* (?:Replace|Insert|Paste)\b/.test(line); continue; }
+	for (const line of lines) {
+		const found = first && header.exec(line);
+		if (found) {
+			let file = first === "sloppy" ? found[1].replace(/\s+all$/i, "") : found[1];
+			if (file.startsWith('"')) try { file = JSON.parse(file); } catch { /* as written */ }
+			group = { files: [file], rows: [] }; groups.push(group); collecting = false; continue;
+		}
+		if (first === "apply") {
+			const moved = /^\*\*\* Move to:\s*(.+?)\s*$/.exec(line);
+			if (moved) { group?.files.push(moved[1]); continue; }
+			if (line.startsWith("*** Delete File:")) { group = undefined; continue; }
+		}
+		if (first === "sloppy" && /^\*\*\* [A-Z]/.test(line)) { collecting = /^\*\*\* (?:Replace|Insert|Paste)\b/.test(line); continue; }
 		if (!group) continue;
-		if (collecting) group.rows.push(line);
-		else if (line.startsWith("+")) group.rows.push(line.slice(1));
+		if (first === "sloppy" ? collecting : line.startsWith("+")) group.rows.push(first === "sloppy" ? line : line.slice(1));
 	}
 	return groups.filter(g => g.rows.length).map(g => ({ files: g.files, text: g.rows.join("\n") }));
 }
@@ -45,15 +57,19 @@ const SHORT_WITH_VALUE = /[FCctSu]/;
 // here-string fed to it. Its other words (--author, --trailer, pathspecs) are not the message. `cwd`: where the bash call runs.
 function commitMessages(command: string, cwd: string | undefined): Added[] {
 	const added: Added[] = [];
+	// Where each command runs: the call's folder, moved by a `cd` before it, then by `git -C` values in order (absolute replaces, relative appends).
+	const fold = (base: string | undefined, dir: string) => dir.startsWith("/") || dir.startsWith("~") || !base ? dir : `${base.replace(/\/+$/, "")}/${dir}`;
+	let base = cwd;
 	const segments = commandSegments(command);
 	for (const [index, { words, bodies: own }] of segments.entries()) {
 		// Stdin is the heredoc of this command, or of the one before it (`cat <<EOF | git commit -F -`).
 		const bodies = own.length ? own : segments[index - 1]?.bodies ?? [];
 		let at = 0;
 		while (at < words.length && (ASSIGNMENT.test(words[at].value) || PREFIXES.includes(words[at].value))) at++;
+		if (words[at]?.value === "cd" && words[at + 1] && !words[at + 1].value.startsWith("-")) base = fold(base, words[at + 1].value);
 		if (!/(^|\/)git$/.test(words[at]?.value ?? "")) continue;
-		const dirs: string[] = [];
-		for (at++; at < words.length && words[at].value.startsWith("-"); at += GIT_VALUE_OPTIONS.has(words[at].value) ? 2 : 1) if (words[at].value === "-C" && words[at + 1]) dirs.push(words[at + 1].value);
+		let place = base;
+		for (at++; at < words.length && words[at].value.startsWith("-"); at += GIT_VALUE_OPTIONS.has(words[at].value) ? 2 : 1) if (words[at].value === "-C" && words[at + 1]) place = fold(place, words[at + 1].value);
 		if (words[at]?.value !== "commit") continue;
 		const rest = words.slice(at + 1).map(word => word.value), parts: string[] = [];
 		for (let n = 0; n < rest.length; n++) {
@@ -63,7 +79,7 @@ function commitMessages(command: string, cwd: string | undefined): Added[] {
 			else if (short && !SHORT_WITH_VALUE.test(short[1])) { if (short[2]) parts.push(short[2]); else if (rest[n + 1] !== undefined) parts.push(rest[++n]); }
 			else if (word === "-F-" || word === "--file=-" || ((word === "-F" || word === "--file") && rest[n + 1] === "-")) parts.push(...bodies);
 		}
-		added.push({ files: dirs.length ? dirs : cwd ? [cwd] : undefined, from: dirs.length ? cwd : undefined, text: parts.join("\n") });
+		added.push({ files: place === undefined ? undefined : [place], text: parts.join("\n") });
 	}
 	return added;
 }
@@ -106,8 +122,7 @@ export interface RefGuardCall {
 	tool: string;
 	input: unknown;
 	// The canonical path of a file or folder as the call wrote it, when it lies in the session's workspace; undefined outside it.
-	// `from`: the folder a relative `file` is relative to, when it is not the session's (a bash call's own `cwd`).
-	locate(file: string, from?: string): Promise<string | undefined>;
+	locate(file: string): Promise<string | undefined>;
 	// A file's current text; rejects when it cannot be read, which counts as empty.
 	read(file: string): Promise<string>;
 	// The qualified refs the session knows; a bare short id counts when it is the id of one of these. Asked only when the call adds text, so
@@ -138,7 +153,7 @@ export async function offendingRefs(call: RefGuardCall): Promise<string[]> {
 		if (!candidates.length) continue;
 		const located: string[] = [];
 		if (added.files) {
-			for (const file of added.files.filter(name => !INTERNAL_URL.test(name))) { const place = await call.locate(file, added.from); if (place) located.push(place); }
+			for (const file of added.files.filter(name => !INTERNAL_URL.test(name))) { const place = await call.locate(file); if (place) located.push(place); }
 			if (!located.length) continue;
 		}
 		// Held: what the call replaces and what the files it changes already say.
