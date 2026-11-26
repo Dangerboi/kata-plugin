@@ -116,6 +116,7 @@ test("saved child resumes its teammate and binding without inherited environment
   const event:any={prompt:"Continue saved work",systemPromptOptions:{sections:{}}};
   await resumed.event("before_agent_start",event);
   expect(event.systemPromptOptions.sections.kata_binding).toContain(record.ref);
+  expect(event.systemPromptOptions.sections.kata_binding).toContain(`Your Kata inbox is pi-builder/${record.teammate};`);
   expect(process.env.KATA_TEAMMATE).toBe(record.teammate);
   expect(process.env.KATA_INBOX_USER).toBe(`pi-builder/${record.teammate}`);
   expect(JSON.parse(process.env.KATA_PI_PARENT!).ref).toBe(record.ref);

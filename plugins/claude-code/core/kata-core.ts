@@ -414,11 +414,11 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 	const isLeadCall = (job: Job) => main(job.ctx ?? currentCtx);
 	let reminders = 0;
 	let progressed = true;
-	// One entry per session: the lead's core serves the lead and every delegate running in its process.
-	type Warm = { contract?: string; inbox?: string; pending?: Promise<void>; inboxPending?: Promise<void>; inboxNext?: Promise<void>; personInbox?: boolean };
-	const cache = new Map<string, Warm>();
-	let leadWarm: string | undefined;
-	const delegateKey = (id: string) => `delegate:${id}`;
+	// What one session's prompt reads from Kata, kept between turns. A core serves the lead and every delegate running in its
+	// process, so each has its own: the lead's by session id ("" when the host gives none), a delegate's by delegate id.
+	type PromptReads = { cwd: string; contract?: string; inbox?: string; address?: string; pending?: Promise<void>; inboxPending?: Promise<void>; inboxNext?: Promise<void>; personInbox?: boolean };
+	const leadReads = new Map<string, PromptReads>();
+	const delegateReads = new Map<string, PromptReads>();
 	const kata = createKata({ path, exec: (...args) => host.exec(...args), executable: options.executable, teammate: () => sessionTeammate, ctx: () => currentCtx, session: () => currentId, debug });
 	// Throttled closes, ticket closes waiting on children and the automatic parent's close (see settlement.ts).
 	// The timer is omp's ctx timer (contained, cleared on session_shutdown) when the host has one; pi has none.
@@ -2144,13 +2144,18 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 	// inbox to a caller that keeps it current another way.
 	function warm(ctx: HostContext, cwd = ctx.cwd, inbox = true) {
 		const job = NO_JOB;
-		const id = sid(ctx);
-		// A delegate reads its own session inbox, <actor>/<teammate>, and only when the lead opted in with one: it never reads the lead's.
+		const id = sid(ctx) ?? "";
 		const record = !main(ctx) ? host.delegateStore.of(ctx) : undefined;
-		const key = record ? delegateKey(record.id) : id ?? "";
-		let entry = cache.get(key);
-		// A delegate starts from the lead's contract: it is the same Kata folder's text.
-		if (!entry) cache.set(key, entry = { contract: record ? cache.get(leadWarm ?? "")?.contract : undefined });
+		const reads = record ? delegateReads : leadReads;
+		const key = record ? record.id : id;
+		let entry = reads.get(key);
+		if (!entry) {
+			// Entries of delegates that ended go when the next one starts (a worker thread's core never hears of an end).
+			if (record) for (const other of delegateReads.keys()) { const known = host.delegateStore.get(other); if (!known || known.exited) delegateReads.delete(other); }
+			// A delegate working in the lead's folder starts from the lead's contract: that folder's text.
+			const lead = leadReads.get(currentId ?? "");
+			reads.set(key, entry = { cwd: path.resolve(cwd), contract: record && lead && lead.cwd === path.resolve(cwd) ? lead.contract : undefined });
+		}
 		if (!entry.pending && !entry.contract) {
 			entry.pending = (async () => {
 				if (!await probe(job, cwd)) return;
@@ -2161,29 +2166,34 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 		}
 		const user = setting("KATA_INBOX_USER");
 		let inboxRead: Promise<void> | undefined;
-		// A bare actor is a person's own inbox (requests written for them, read by kata inbox and tern-kata's
-		// Attention Page), never instructions for this session. Only <actor>/<teammate> is a session inbox.
-		if (record) {
-			if (inbox && user && isSessionAddress(user)) inboxRead = readInbox(entry, job, cwd, undefined, { ref: delegates.assignment(ctx)?.ref, teammate: record.teammate });
+		if (!main(ctx)) {
+			// A delegate reads its own session inbox, <actor>/<teammate>, and only when the lead opted in with one; with no record
+			// it reads none, and never the lead's. A pi child's own process already holds its address in KATA_INBOX_USER.
+			if (record && inbox && user && isSessionAddress(user)) {
+				const own = user.endsWith(`/${record.teammate}`);
+				inboxRead = readInbox(entry, job, cwd, delegates.assignment(ctx)?.ref, mine => own ? user : `${mine}/${record.teammate}`);
+			}
 		} else if (user && !isSessionAddress(user)) {
+			// A bare actor is a person's own inbox (requests written for them, read by kata inbox and tern-kata's
+			// Attention Page), never instructions for this session. Only <actor>/<teammate> is a session inbox.
 			if (!entry.personInbox) {
 				entry.personInbox = true;
 				uiOf(ctx)?.notify?.(`KATA_INBOX_USER=${user} is a personal inbox, so this session reads none. Use ${user}/<name> for a session inbox.`, "warning");
 			}
 		} else if (inbox && user) {
-			inboxRead = readInbox(entry, job, cwd, user);
+			inboxRead = readInbox(entry, job, cwd, undefined, () => user);
 		}
 		const done = Promise.all([entry.pending, inboxRead]).then(() => undefined);
 		return { entry, done };
 	}
 
 	// Only requests from the session's own actor reach the prompt. A failed read (or actor lookup) keeps the last inbox;
-	// no trusted request removes the section.
-	function readInbox(entry: Warm, job: Job, cwd: string, user?: string, delegate?: { ref?: string; teammate: string }): Promise<void> {
+	// no trusted request removes the section. `ref` picks the actor's project; `addressFor` names the inbox from that actor.
+	function readInbox(entry: PromptReads, job: Job, cwd: string, ref: string | undefined, addressFor: (actor: string) => string): Promise<void> {
 		const read = (): Promise<void> => {
 			const running: Promise<void> = (async () => {
-				const mine = await actor(job, cwd, delegate?.ref);
-				const address = delegate ? `${mine}/${delegate.teammate}` : user!;
+				const mine = await actor(job, cwd, ref);
+				const address = entry.address = addressFor(mine);
 				const out = JSON.parse(await kata.run(job, ["inbox", "--for", address], cwd));
 				entry.inbox = trustedInbox(out?.requests, mine, address);
 			})().catch(debug).finally(() => { if (entry.inboxPending === running) entry.inboxPending = undefined; });
@@ -2260,7 +2270,7 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 		if (main(ctx)) await bounded(serial(job => enter(job, ctx)));
 		return lead();
 	};
-	const warmFor = (ctx: HostContext) => warm(ctx, delegates.assignment(ctx)?.workspace || ctx.cwd, !(main(ctx) && liveInbox !== undefined));
+	const warmFor = (ctx: HostContext, inbox = true) => warm(ctx, delegates.assignment(ctx)?.workspace || ctx.cwd, inbox && !(main(ctx) && liveInbox !== undefined));
 	const prefetch = (ctx: HostContext) => { if (options.prefetch) void warmFor(ctx); };
 
 	// A pi child that starts before its lead planned (a session-start extension can spawn it) finds the lead's automatic parent, or
@@ -2328,7 +2338,6 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 	async function shutdown(ctx: HostContext, closing: { delegate?: { id: string; ended: boolean; report?: string }; continues?: boolean; forking?: boolean } = {}): Promise<void> {
 		see(ctx);
 		if (!main(ctx) && !closing.delegate) return;
-		if (closing.delegate) cache.delete(delegateKey(closing.delegate.id));
 		stopFollower();
 		// Left for the fork before the bounded work: pi starts the fork's instance once this shutdown returns or times out.
 		const forking = main(ctx) && closing.forking ? leaving() : undefined;
@@ -2374,8 +2383,8 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 				see(ctx);
 				const explicit = configuredRef(), id = sid(ctx);
 				stopFollower();
-				// The lead's entry goes when the session switches; delegates' entries go when they end.
-				if (leadWarm !== id) { cache.delete(leadWarm ?? ""); leadWarm = id; }
+				// The reads of the session this one replaces go.
+				for (const other of [...leadReads.keys()]) if (other !== (id ?? "")) leadReads.delete(other);
 				const user = setting("KATA_INBOX_USER");
 				const live = !!host.liveInbox && !!user && isSessionAddress(user);
 				if (live) liveInbox = "";
@@ -2409,14 +2418,14 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 				return owing();
 			},
 			shutdown,
-			// What the next prompt carries. `context: false` leaves the contract and inbox to another extension.
-			async beforePrompt(ctx: HostContext, prompt: { after?: Promise<unknown>; context?: boolean } = {}): Promise<{ sections: PromptSections; lead: Lead }> {
+			// What the next prompt carries. `context: false` leaves the contract and inbox to another extension; `inbox: false` says the host shows a delegate no inbox section, so none is read nor named.
+			async beforePrompt(ctx: HostContext, prompt: { after?: Promise<unknown>; context?: boolean; inbox?: boolean } = {}): Promise<{ sections: PromptSections; lead: Lead }> {
 				see(ctx);
 				const context = prompt.context !== false;
 				// A delegate cannot learn its assignment later, so its prompt waits for it (`after`) up to DELEGATE_BIND_MS. The
 				// contract and inbox reads keep their usual budget; a slower read lands in the cache for the next turn.
 				if (!main(ctx)) await bounded(Promise.resolve(prompt.after), DELEGATE_BIND_MS);
-				const warmed = context ? warmFor(ctx) : undefined;
+				const warmed = context ? warmFor(ctx, prompt.inbox !== false) : undefined;
 				await bounded(Promise.all([
 					main(ctx) && currentId !== sid(ctx) ? serial(job => enter(job, ctx)) : undefined,
 					warmed?.done,
@@ -2430,8 +2439,8 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 				}
 				const record = !main(ctx) ? host.delegateStore.of(ctx) : undefined;
 				const assigned = record ? delegates.assignment(ctx) : undefined;
-				const mailbox = record && context && isSessionAddress(setting("KATA_INBOX_USER") ?? "") ? await actor(NO_JOB, assigned?.workspace || ctx.cwd, assigned?.ref).catch(() => undefined) : undefined;
-				const inboxAddress = mailbox && record ? `${mailbox}/${record.teammate}` : undefined;
+				// Known once the inbox read resolved it; a read still running leaves the line out.
+				const inboxAddress = record ? warmed?.entry.address : undefined;
 				if (record && assigned) sections.assignment = delegateContext(options.executable, nameOf(record), assigned.ref, assigned.teammate, assigned.binding, inboxAddress);
 				else if (isUntracked(record)) sections.assignment = untrackedDelegateContext(nameOf(record), inboxAddress);
 				if (options.native) sections.todo = plan.parent || plan.local || plan.tasks.some(t => t.ticket) ? `${NATIVE_TODO_RULES}\nCurrent plan (refs in parentheses):\n${render(plan, wording)}` : NATIVE_TODO_RULES;
@@ -2464,10 +2473,7 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 			guard,
 		},
 		delegates: {
-			apply: (event: Parameters<typeof delegates.apply>[0], within: Job) => {
-				if (event.type === "exited") cache.delete(delegateKey(event.id));
-				return delegates.apply(event, within);
-			},
+			apply: delegates.apply,
 			start: delegates.start,
 			assignment: delegates.assignment,
 			check: delegates.check,

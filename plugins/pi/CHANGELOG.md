@@ -4,6 +4,12 @@ All notable changes to `@dangerboi/kata-pi` are listed here. The format follows 
 
 ## [Unreleased]
 
+### Changed
+
+#### Inbox and attention
+
+- A child's assignment or `<kata_binding>` note names its inbox address, `<actor>/<teammate>`, when `KATA_INBOX_USER` is a session address.
+
 ## [1.12.2] - 2026-11-23
 
 ### Fixed

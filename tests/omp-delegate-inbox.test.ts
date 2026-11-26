@@ -39,7 +39,9 @@ test("a delegate's inbox holds what was sent to its own address, not the lead's 
   expect(seenB).not.toContain("for-the-lead-6022");
   expect(seenLead).toContain("for-the-lead-6022");
   expect(seenLead).not.toContain("for-delegate-a-6021");
-  expect(a.calls.filter(c => c[0] === "inbox").every(c => c[2] === addressA)).toBe(true);
+  const reads = a.calls.filter(c => c[0] === "inbox");
+  expect(reads.length).toBeGreaterThan(0);
+  expect(reads.every(c => c[2] === addressA)).toBe(true);
   await kata(["notify", ref, "--to", addressA!, "--clear", "--json"]);
   await kata(["notify", ref, "--to", "v2-builder/lead-box", "--clear", "--json"]);
 });
@@ -54,6 +56,7 @@ test("a lead and a delegate preparing their prompts together each get their own 
   await notify(ref, "v2-builder/lead-race", "lead-race-7032");
   for (let round = 0; round < 3; round++) {
     const [fromLead, fromWorker] = await Promise.all([prompt(lead), prompt(worker)]);
+    // The first round only starts the reads: a request sent before a turn is shown by the next one.
     if (round === 0) continue;
     expect(fromLead).toContain("lead-race-7032");
     expect(fromLead).not.toContain("delegate-race-7031");
@@ -93,4 +96,18 @@ test("an assigned delegate's note names its inbox and it reads that address", as
   await notify(ref, `v2-builder/${teammate}`, "assigned-ping-9051");
   expect(await turn(worker)).toContain("assigned-ping-9051");
   await kata(["notify", ref, "--to", `v2-builder/${teammate}`, "--clear", "--json"]);
+});
+
+test("a sub-agent context with no delegate record reads no inbox, not even the lead's", async () => {
+  process.env.KATA_INBOX_USER = "v2-builder/lead-stray";
+  const lead = host(); await lead.event("session_start"); await lead.contractReady;
+  const ref = await issue();
+  await notify(ref, "v2-builder/lead-stray", "for-the-lead-stray-9061");
+  const stray = host({ agent: { kind: "sub", id: "stray-advisor", parentId: lead.ctx.agent.id } });
+  const seen = await turn(stray);
+  expect(seen).not.toContain("<kata_inbox>");
+  expect(seen).not.toContain("for-the-lead-stray-9061");
+  expect(stray.calls.filter(c => c[0] === "inbox")).toEqual([]);
+  expect(await turn(lead)).toContain("for-the-lead-stray-9061");
+  await kata(["notify", ref, "--to", "v2-builder/lead-stray", "--clear", "--json"]);
 });
