@@ -4,6 +4,8 @@ All notable changes to the `kata-cc` Claude Code plugin are listed here. The for
 
 ## [Unreleased]
 
+## [1.2.0] - 2026-11-26
+
 ### Added
 
 #### Repository content
@@ -74,6 +76,7 @@ All notable changes to the `kata-cc` Claude Code plugin are listed here. The for
 
 - `bun run validate:claude` and `bun run test:claude` run `claude plugin validate` and `claude plugin test`, and `bun run smoke:claude` runs a real headless `claude -p` on haiku against a throwaway Kata store. The smoke run needs a Claude Code login and is paid; none of them runs in CI.
 
-[Unreleased]: https://github.com/Dangerboi/kata-plugin/compare/claude-code-v1.1.0...HEAD
+[Unreleased]: https://github.com/Dangerboi/kata-plugin/compare/claude-code-v1.2.0...HEAD
+[1.2.0]: https://github.com/Dangerboi/kata-plugin/compare/claude-code-v1.1.0...claude-code-v1.2.0
 [1.1.0]: https://github.com/Dangerboi/kata-plugin/compare/claude-code-v1.0.0...claude-code-v1.1.0
 [1.0.0]: https://github.com/Dangerboi/kata-plugin/releases/tag/claude-code-v1.0.0
