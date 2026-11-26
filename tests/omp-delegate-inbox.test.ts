@@ -111,3 +111,17 @@ test("a sub-agent context with no delegate record reads no inbox, not even the l
   expect(await turn(lead)).toContain("for-the-lead-stray-9061");
   await kata(["notify", ref, "--to", "v2-builder/lead-stray", "--clear", "--json"]);
 });
+
+test("omp's advisor shares the lead's session and shows none of the lead's inbox", async () => {
+  process.env.KATA_INBOX_USER = "v2-builder/lead-advisor";
+  const lead = host(); await lead.event("session_start"); await lead.contractReady;
+  const ref = await issue();
+  await notify(ref, "v2-builder/lead-advisor", "lead-only-advisor-9071");
+  expect(await turn(lead)).toContain("lead-only-advisor-9071");
+  // The advisor runs as its own sub identity inside the session it advises, with no delegate record.
+  const advisor = { ...lead.ctx, agent: { kind: "sub", id: "Advisor" } };
+  const seen = ((await lead.event("before_agent_start", { systemPrompt: ["base"] }, advisor))?.systemPrompt ?? []).join("\n");
+  expect(seen).not.toContain("<kata_inbox>");
+  expect(seen).not.toContain("lead-only-advisor-9071");
+  await kata(["notify", ref, "--to", "v2-builder/lead-advisor", "--clear", "--json"]);
+});
