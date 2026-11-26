@@ -22,7 +22,7 @@ export const PREFIXES = ["if", "then", "elif", "do", "else", "!", "command", "en
 // command whose line holds its `<<`); this lexer never infers whether a test/commit command proves completion.
 export function commandSegments(command: string): Segment[] {
 	const segments: Segment[] = [{ words: [], bodies: [] }];
-	let i = 0, heredoc: string | undefined, owner: Segment | undefined, wantDelimiter = false;
+	let i = 0, heredoc: string | undefined, owner: Segment | undefined, wantDelimiter = false, hereString = false;
 	while (i < command.length) {
 		if (command[i] === "\n" && heredoc) {
 			const end = command.indexOf(`\n${heredoc}`, i);
@@ -35,6 +35,7 @@ export function commandSegments(command: string): Segment[] {
 		if (/\s/.test(command[i])) { if (command[i] === "\n") segments.push({ words: [], bodies: [] }); i++; continue; }
 		if (command[i] === "#") { const end = command.indexOf("\n", i); if (end < 0) break; i = end; continue; }
 		if (";&|()".includes(command[i])) { segments.push({ words: [], bodies: [] }); i++; continue; }
+		if (command.slice(i, i + 3) === "<<<") { i += 3; hereString = true; continue; }
 		if (command.slice(i, i + 2) === "<<") { i += command[i + 2] === "-" ? 3 : 2; wantDelimiter = true; continue; }
 		const start = i;
 		let value = "", open = "";
@@ -46,6 +47,8 @@ export function commandSegments(command: string): Segment[] {
 			if (!open && (char === "'" || char === '"')) { open = char; i++; continue; }
 			value += char; i++;
 		}
+		// A here-string is the next word, fed to the command as its input.
+		if (hereString) { segments.at(-1)!.bodies.push(value); hereString = false; continue; }
 		if (wantDelimiter) { heredoc = value; owner = segments.at(-1); wantDelimiter = false; continue; }
 		segments.at(-1)!.words.push({ value, start, end: i });
 	}

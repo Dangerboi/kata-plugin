@@ -7,9 +7,12 @@ assertIsolated();
 const refs = new Set(["demo#ab3d", "demo#k9m2"]);
 // Files under /work or src/ are in the workspace; `files` is what they currently hold.
 const files: Record<string, string> = {};
-const locate = async (file: string) => file === "/work" || file.startsWith("/work/") || file.startsWith("src/") ? file : undefined;
+const locate = async (file: string, from?: string) => {
+  const at = from && !file.startsWith("/") ? `${from}/${file}` : file;
+  return at === "/work" || at.startsWith("/work/") || at.startsWith("src/") ? at : undefined;
+};
 const read = async (file: string) => { if (file in files) return files[file]; throw new Error("no such file"); };
-const check = (tool: string, input: unknown, known = refs) => offendingRefs({ tool, input, refs: known, locate, read });
+const check = (tool: string, input: unknown, known = refs) => offendingRefs({ tool, input, known: async () => known, locate, read });
 
 test("each way of adding text to a file flags a known ref", async () => {
   const text = "// see demo#ab3d for why";
@@ -48,7 +51,7 @@ test("look-alikes of unknown projects and unknown ids pass", async () => {
 test("a hashline header tag is not flagged, only the added rows", async () => {
   const known = new Set(["a.md#1234"]);
   const input = { input: "[a.md#1234]\nPUT 1:\n+plain text" };
-  expect(await offendingRefs({ tool: "edit", input, refs: known, locate, read })).toEqual([]);
+  expect(await offendingRefs({ tool: "edit", input, known: async () => known, locate, read })).toEqual([]);
   expect(await check("edit", { input: "[src/a.md#1234]\nPUT 1:\n+plain" })).toEqual([]);
   expect(await check("edit", { input: "[src/a.md#1234]\nCUT 2=3\nPUT 1:\n+plain" })).toEqual([]);
 });
@@ -84,7 +87,7 @@ test("files outside the workspace and internal URLs are not repository content",
 });
 
 test("a session that knows no refs refuses nothing", async () => {
-  expect(await offendingRefs({ tool: "write", input: { path: "src/a.ts", content: "demo#ab3d" }, refs: new Set(), locate, read })).toEqual([]);
+  expect(await offendingRefs({ tool: "write", input: { path: "src/a.ts", content: "demo#ab3d" }, known: async () => new Set(), locate, read })).toEqual([]);
 });
 
 test("a ref the file or the replaced text already holds is not added", async () => {
@@ -96,14 +99,7 @@ test("a ref the file or the replaced text already holds is not added", async () 
   expect(await check("edit", { path: "src/held.md", oldString: "ab3d", newString: "ab3d ab3d" })).toEqual([]);
   expect(await check("edit", { input: "[src/held.md#1a2b]\nPUT 1.=1:\n+see demo#ab3d for more\n" })).toEqual([]);
   expect(await check("apply_patch", { input: "*** Update File: src/held.md\n-see demo#ab3d for details\n+see demo#ab3d for more\n" })).toEqual([]);
-  expect(await check("edit", { path: "src/held.md", old_string: "details", new_string: "demo#ab3d details" })).toEqual(["demo#ab3d"]);
-});
-
-test("a leading ~ is the home folder, not a folder of the workspace", async () => {
-  const located: string[] = [];
-  const home = async (file: string) => { located.push(file); return file.startsWith("~") ? undefined : file; };
-  expect(await offendingRefs({ tool: "write", input: { path: "~/notes.md", content: "demo#ab3d" }, refs, locate: home, read })).toEqual([]);
-  expect(located).toEqual(["~/notes.md"]);
+  expect(await check("edit", { path: "src/held.md", old_string: "details", new_string: "demo#ab3d details" })).toEqual([]);
 });
 
 test("a created file's patch body is checked whole, an updated file's only by its + rows", async () => {
@@ -129,4 +125,43 @@ test("only the commit message is checked, in a workspace repo", async () => {
   expect(await check("bash", { command: `git commit --message=demo#ab3d` })).toEqual(["demo#ab3d"]);
   expect(await check("bash", { command: `git -C /tmp/elsewhere commit -m "demo#ab3d"` })).toEqual([]);
   expect(await check("bash", { command: `git -C /work commit -m "demo#ab3d"` })).toEqual(["demo#ab3d"]);
+});
+
+test("held refs are the replaced text's and the file's, for every kind of edit", async () => {
+  files["src/h2.md"] = "demo#k9m2 sits elsewhere\nline two\n";
+  const gone = "src/gone.md";
+  files[gone] = "old demo#k9m2\n";
+  expect(await check("edit", { path: "src/h2.md", old_string: "line two", new_string: "line two demo#k9m2" })).toEqual([]);
+  expect(await check("edit", { path: "src/h2.md", edits: [{ oldText: "line two", newText: "demo#k9m2" }] })).toEqual([]);
+  expect(await check("edit", { path: "src/h2.md", oldText: "line two", newText: "demo#k9m2" })).toEqual([]);
+  expect(await check("edit", { input: "[src/h2.md#1a2b]\nPUT 2.=2:\n+demo#k9m2 two" })).toEqual([]);
+  expect(await check("apply_patch", { input: "*** Update File: src/h2.md\n+demo#k9m2\n" })).toEqual([]);
+  expect(await check("apply_patch", { input: `*** Update File: ${gone}\n*** Move to: src/moved.md\n+demo#k9m2 kept\n` })).toEqual([]);
+  expect(await check("edit", { path: "src/h2.md", old_string: "line two", new_string: "demo#ab3d" })).toEqual(["demo#ab3d"]);
+});
+
+test("omp's sloppy edit mode is checked: the replacement text, not the find side", async () => {
+  files["src/s.ts"] = "const a = 1;\n";
+  const patch = (body: string) => ({ input: `*** Edit File: src/s.ts\n${body}` });
+  expect(await check("edit", patch("*** Find\nconst a = 1;\n*** Replace\nconst a = 2; // demo#ab3d\n"))).toEqual(["demo#ab3d"]);
+  expect(await check("edit", patch("*** Find\nconst a = 1; // demo#ab3d\n*** Replace\nconst a = 2;\n"))).toEqual([]);
+  expect(await check("edit", patch("*** Find\nconst a = 1;\n*** Paste After\n// demo#k9m2\n"))).toEqual(["demo#k9m2"]);
+  expect(await check("edit", patch("*** Replace Block: function f() {\n  return 1; // demo#k9m2\n}\n"))).toEqual(["demo#k9m2"]);
+  expect(await check("edit", patch("*** Find\nconst a = 1;\n*** Cut\n"))).toEqual([]);
+  expect(await check("edit", { input: "*** Edit File: /tmp/out.ts\n*** Find\na\n*** Replace\ndemo#ab3d\n" })).toEqual([]);
+});
+
+test("a commit runs where the bash call's cwd is, and -C is relative to it", async () => {
+  const commit = `git commit -m "demo#ab3d"`;
+  expect(await check("bash", { command: commit, cwd: "/tmp/elsewhere" })).toEqual([]);
+  expect(await check("bash", { command: commit, cwd: "/work/sub" })).toEqual(["demo#ab3d"]);
+  expect(await check("bash", { command: `git -C ../x commit -m "demo#ab3d"`, cwd: "/tmp/elsewhere" })).toEqual([]);
+  expect(await check("bash", { command: `git -C sub commit -m "demo#ab3d"`, cwd: "/work" })).toEqual(["demo#ab3d"]);
+});
+
+test("a commit message attached to its flag, or given as a here-string, is checked", async () => {
+  for (const command of [`git commit -m"fix demo#ab3d"`, `git commit -am"fix demo#ab3d"`, `git commit -a -m'demo#ab3d'`, `git commit -F - <<< "fix demo#ab3d"`, `git commit --file=- <<<'demo#ab3d'`])
+    expect(await check("bash", { command }), command).toEqual(["demo#ab3d"]);
+  expect(await check("bash", { command: `git commit -m"fix" -- ab3d.ts` })).toEqual([]);
+  expect(await check("bash", { command: `git commit -F msg.txt <<< "demo#ab3d"` })).toEqual([]);
 });

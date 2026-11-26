@@ -323,6 +323,18 @@ test("omp refuses a write or commit that names a ref of the plan, for the lead a
   finally { delete process.env.KATA_REF_GUARD; }
 });
 
+test("omp keeps the refs a shell claim named across /tree and qualifies a bare claimed id", async () => {
+  const app = host(); await app.event("session_start");
+  const short = await issue(), ref = `v2test#${short}`;
+  const write = (content: string) => app.event("tool_call", { toolName: "write", input: { path: `${cwd}/claimed.ts`, content } });
+  // A claim inside a compound command is recorded, not adopted; a bare id is recorded with the project it resolves in.
+  await app.event("tool_result", { toolName: "bash", input: { command: `kata claim ${short} && echo claimed` }, isError: false, details: { exitCode: 0 } });
+  expect(await write(`// ${ref}`)).toMatchObject({ block: true });
+  expect(await write(`// ${short} on its own`)).toMatchObject({ block: true });
+  await app.event("session_tree");
+  expect(await write(`// ${ref}`)).toMatchObject({ block: true });
+});
+
 test("pinned plan survives cwd changes and ignores another session's saved binding", async () => {
   const app = host(); await app.event("session_start"); const parent = await app.init(["Pinned task"]);
   app.ctx.cwd = outside;

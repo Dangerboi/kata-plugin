@@ -21,6 +21,7 @@ export async function readEnv($: EngineInterface): Promise<Map<string, string>> 
 	note("KATA_ATTENTION_HOST", await $.env.get("KATA_ATTENTION_HOST"));
 	note("KATA_CLOSE_TRANSCRIPT_ENABLED", await $.env.get("KATA_CLOSE_TRANSCRIPT_ENABLED"));
 	note("KATA_REF_GUARD", await $.env.get("KATA_REF_GUARD"));
+	note("HOME", await $.env.get("HOME"));
 	note("USER", await $.env.get("USER"));
 	note("KATA_CLAUDE_EXECUTABLE", await $.env.get("KATA_CLAUDE_EXECUTABLE"));
 	note("KATA_CLAUDE_DEBUG", await $.env.get("KATA_CLAUDE_DEBUG"));

@@ -88,7 +88,7 @@ delegateChannel.unref();
 // How long the main thread waits for a lead's started event that has not arrived yet, and a worker for an answer.
 const RECORD_WAIT_MS = 3000;
 const ANSWER_WAIT_MS = 30_000;
-// A worker's ref guard gives up on the lead's refs after this, well inside the guard's own bound.
+// A worker's ref guard gives up on the lead's refs after this; the core asks inside its own 2 s bound, and only for a call that adds text.
 const REFS_WAIT_MS = 1000;
 const arrivals = new Map<string, (() => void)[]>();
 function putRecord(record: DelegateRecord) {
@@ -401,7 +401,7 @@ export default function ompKata(pi: any) {
 		const record = ctx.agent?.kind === "sub" ? await recordOf(ctx) : undefined;
 		if (record) ranTool(record);
 		const key = !isMainThread && ctx.agent?.kind === "sub" ? sessionKeyOf(ctx) : undefined;
-		const refused = await core.tools.guard(ctx, { tool: event.toolName, input: event.input }, key ? await askRefs(key) : []);
+		const refused = await core.tools.guard(ctx, { tool: event.toolName, input: event.input }, () => key ? askRefs(key) : []);
 		if (refused) return { block: true, reason: refused };
 		if (event.toolName === "todo" && await kataBackend() === BACKEND_ID) {
 			const owner = main(ctx) ? core : record && !isUntracked(record) ? core.delegate(record.id) : undefined;

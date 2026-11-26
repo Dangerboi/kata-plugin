@@ -130,27 +130,28 @@ function childName(sessionName: string | undefined, reserved: Reservation | unde
 	return short(sessionName?.trim()) ?? short(slug(reserved?.title)) ?? `pi-${id.replace(/[^a-z0-9]/gi, "").slice(-6).toLowerCase()}`;
 }
 
+// `file` against `cwd` with symlinks resolved: the path itself when it exists, else the nearest existing ancestor within `levels` folders up
+// with the rest appended, else the path as written.
+async function resolvedPath(host: Pick<Platform, "path" | "realpath">, file: string, cwd: string, levels: number): Promise<string> {
+	const { path, realpath } = host, absolute = path.resolve(cwd, file), rest: string[] = [];
+	for (let at = absolute, up = 0; up <= levels; up++) {
+		try { return rest.length ? path.join(await realpath(at), ...rest) : await realpath(at); }
+		catch { /* climb */ }
+		const parent = path.dirname(at);
+		if (parent === at) break;
+		rest.unshift(path.basename(at));
+		at = parent;
+	}
+	return absolute;
+}
+
 // The path as the host's filesystem names it: `file` against `cwd`, with symlinks resolved. A file that does not exist yet
 // resolves through its folder, and a folder that does not either stays as written. Two workspaces are the same when their
 // canonical paths are.
-// Like `canonicalPath`, but a path under folders that do not exist yet resolves through its nearest existing ancestor.
-async function canonicalNew(host: Pick<Platform, "path" | "realpath">, file: string, cwd: string): Promise<string> {
-	const { path, realpath } = host, absolute = path.resolve(cwd, file), rest: string[] = [];
-	for (let at = absolute; ;) {
-		try { return rest.length ? path.join(await realpath(at), ...rest.reverse()) : await realpath(at); }
-		catch { /* climb */ }
-		const parent = path.dirname(at);
-		if (parent === at) return absolute;
-		rest.push(path.basename(at));
-		at = parent;
-	}
-}
+export const canonicalPath = (host: Pick<Platform, "path" | "realpath">, file: string, cwd: string): Promise<string> => resolvedPath(host, file, cwd, 1);
 
-export async function canonicalPath(host: Pick<Platform, "path" | "realpath">, file: string, cwd: string): Promise<string> {
-	const { path, realpath } = host, absolute = path.resolve(cwd, file);
-	try { return await realpath(absolute); }
-	catch { try { return path.join(await realpath(path.dirname(absolute)), path.basename(absolute)); } catch { return absolute; } }
-}
+// The same for a file in folders that do not exist yet (a write creates them): the nearest existing ancestor decides.
+const canonicalNew = (host: Pick<Platform, "path" | "realpath">, file: string, cwd: string): Promise<string> => resolvedPath(host, file, cwd, Infinity);
 
 // The workspace name Kata would infer, read from the project_not_initialized
 // error's structured data: the project it names, else its alias ("local://" and
@@ -833,9 +834,11 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 		const isNew = currentId !== id;
 		currentId = id;
 		if (isNew && main(ctx)) { host.switched?.(ctx); newSession(); shown.clear(); }
+		// The shell claims belong to the session: /tree and a branch switch keep it, a new session starts with none.
+		if (isNew) claimed.clear();
 		lastSnapshot = undefined;
 		currentCtx = ctx;
-		plan = { tasks: [], workspace: path.resolve(ctx.cwd) }; named = []; aliases.clear(); claimed.clear(); deletedParent = undefined;
+		plan = { tasks: [], workspace: path.resolve(ctx.cwd) }; named = []; aliases.clear(); deletedParent = undefined;
 		scope = "unknown"; refusal = undefined; outage = "";
 		// A delegate restores nothing from the session's saved entries: they are its lead's.
 		const branch: readonly any[] = main(ctx) ? ctx.sessionManager?.getBranch?.() ?? [] : [];
@@ -2039,20 +2042,23 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 	// Called before a tool runs: the text that refuses a call that would put a Kata ref into the repository, or undefined to let it run. It
 	// never rejects: an error, a slow check or an off switch (KATA_REF_GUARD=off or 0) lets the call through. `also`: refs a host knows
 	// that this core does not (a delegate on another thread asks its lead).
-	function refGuard(ctx: HostContext, call: { tool: string; input: unknown }, also: Iterable<string> = []): Promise<string | undefined> {
+	function refGuard(ctx: HostContext, call: { tool: string; input: unknown }, also: () => Promise<Iterable<string>> | Iterable<string> = () => []): Promise<string | undefined> {
 		if (refGuardOff(setting("KATA_REF_GUARD"))) return Promise.resolve(undefined);
 		return bounded((async () => {
-			const refs = knownRefs(ctx);
-			for (const ref of also) refs.add(ref);
 			const cwd = ctx.cwd ?? platform.cwd();
 			const workspaces = await Promise.all([...new Set([cwd, plan.workspace])].map(root => canonicalPath(platform, ".", root)));
 			const prefix = (root: string) => path.join(root, "x").slice(0, -1);
 			const found = await offendingRefs({
-				...call, refs,
-				async locate(file) {
+				...call,
+				async known() {
+					const refs = knownRefs(ctx);
+					for (const ref of await also()) refs.add(ref);
+					return refs;
+				},
+				async locate(file, from) {
 					// `~` is the home folder, as the host's own tools read it; a host that knows none cannot place the file.
 					if (file === "~" || file.startsWith("~/")) { if (!platform.home) return undefined; file = path.join(platform.home, file.slice(1)); }
-					const canonical = await canonicalNew(platform, file, cwd);
+					const canonical = await canonicalNew(platform, file, from ? path.resolve(cwd, from) : cwd);
 					return workspaces.some(root => canonical === root || canonical.startsWith(prefix(root))) ? canonical : undefined;
 				},
 				read: file => platform.readFile(file),
@@ -2129,10 +2135,15 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 			let ref = args[0] === "claim" ? args[1] : args[0] === "meta" && args[1] === "set" && args[3] === "work.attention" && args[4] === "ok" ? args[2] : undefined;
 			if (!ref || parsed.options.has("--as")) continue;
 			if (!ref.includes("#") && parsed.value("--project")) ref = `${parsed.value("--project")}#${ref}`;
-			// A word the shell expands (`$ref`, a glob) names nothing yet; only the shape of a ref counts.
-			if (args[0] === "claim" && (QUALIFIED_REF_ONLY.test(ref) || SHORT_ID_ONLY.test(ref))) claimed.add(ref);
-			if (!adopting) continue;
 			const workspace = path.resolve(event.input.cwd || ctx.cwd, parsed.value("--workspace") || ".");
+			// A word the shell expands (`$ref`, a glob) names nothing yet; only the shape of a ref counts, and a bare id is recorded with its project.
+			if (args[0] === "claim" && QUALIFIED_REF_ONLY.test(ref)) claimed.add(ref);
+			else if (args[0] === "claim" && SHORT_ID_ONLY.test(ref)) {
+				const bare = ref;
+				const pinned = await bounded(serial(job => kata.pin(job, bare, workspace)), 2000);
+				if (pinned) claimed.add(pinned);
+			}
+			if (!adopting) continue;
 			const target = ref;
 			await bounded(serial(async job => {
 				if (plan.tasks.some(t => hasRef(t, target))) return;
