@@ -644,6 +644,27 @@ test("a call another plugin's hook refused does not bind a later child with the 
 	expect(assignmentOf((await host.context(next.child.id)).system.join("\n")).ref).toBe(qref(await item(id, "Implement parser module")));
 });
 
+test("a background call another plugin's hook refused is dropped at the turn end and does not bind a later child with the same prompt", async () => {
+	let refuse = true;
+	const withRefusal: typeof opencode = { id: opencode.id, async setup(ctx: any) {
+		const cleanup = await opencode.setup(ctx);
+		await ctx.tool.hook("execute.before", (event: any) => { if (event.tool === "subagent" && refuse) throw new Error("Refused by another plugin."); });
+		return cleanup;
+	} };
+	const { host, id } = await startLead({ plugin: withRefusal });
+	await write(host, id, todos(["Implement parser module", "pending"]));
+	const refused = await spawn(host, id, { prompt: "Implement parser module in the background.", description: "Old call", background: true });
+	expect(refused.result.executed).toBe(false);
+	await turnEnd(host, id);
+	refuse = false;
+	const next = await spawn(host, id, { prompt: "Implement parser module in the background.", description: "New call", detached: true });
+	await turnEnd(host, id);
+	// Both calls are past the lead's turn: the refused one never ran, so only the new one can bind the child.
+	const system = (await host.context(next.child.id)).system.join("\n");
+	expect(system).toContain("You are subagent New call.");
+	expect(assignmentOf(system).ref).toBe(qref(await item(id, "Implement parser module")));
+});
+
 test("a background delegate whose session is gone when its end event is handled still exits, and its issue goes back to the lead", async () => {
 	const { host, id } = await startLead();
 	await write(host, id, todos(["Implement parser module", "pending"]));

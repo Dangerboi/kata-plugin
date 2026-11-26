@@ -21,6 +21,8 @@ interface Call {
 	// The agent the call starts (`general`, `explore`, ...), when it names one.
 	agent?: string;
 	background: boolean;
+	// Its result said it was still running (`execute.after`): the child runs on after the call returned.
+	running?: boolean;
 	// A follow-up: the delegate record (the child's session id) it goes on with.
 	followUp?: string;
 	// The lead's turn ended with the call still without a child: what it reserved is free, and it binds a late child, losing a tie to a newer call.
@@ -134,7 +136,7 @@ export function install(seam: Seam): void {
 		if (role.kind !== "lead" || !call) return;
 		const running = event.status !== "error" && (event.result?.metadata?.status ?? event.result?.output?.status) === "running";
 		// OpenCode 2.4.2 has no `background` input: a result that is still running says the call is a background one.
-		if (running) call.background = true;
+		if (running) call.background = call.running = true;
 		if (running && !call.run) return;
 		drop(role.lead, call);
 		if (!call.run || running) return;
@@ -153,7 +155,7 @@ export function install(seam: Seam): void {
 			// binds from it, and the core resolves its text again.
 			for (const call of [...callsOf(role.lead.id)]) {
 				if (call.run) continue;
-				if (call.background) { call.late = true; role.lead.releaseSpawn(call.id); }
+				if (call.running) { call.late = true; role.lead.releaseSpawn(call.id); }
 				else drop(role.lead, call);
 			}
 			return;
