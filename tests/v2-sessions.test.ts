@@ -1,6 +1,6 @@
 import { expect, setSystemTime, test } from "bun:test";
 import { execFile } from "node:child_process";
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, symlinkSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { promisify } from "node:util";
 import { eventually, finishes, holdKata, later } from "./kata-fixture";
@@ -295,6 +295,61 @@ test("subagent bash attribution ignores quoted data, replaces teammates and refu
   expect(result.input.command).toContain("--body '--as is just prose'");
   expect(result.input.command).not.toContain("--teammate other");
   expect(result.input.command.match(/--teammate/g)).toHaveLength(2);
+});
+
+test("omp refuses a write or commit that names a ref of the plan, for the lead and a subagent, until KATA_REF_GUARD is off", async () => {
+  const app = host(); await app.event("session_start");
+  const ref = await app.init(["Guarded plan task"]);
+  const write = (who: typeof app, content: string) => who.event("tool_call", { toolName: "write", input: { path: `${cwd}/notes.ts`, content } });
+  const refused = await write(app, `// tracked as ${ref}`);
+  expect(refused).toMatchObject({ block: true });
+  expect(refused.reason).toContain(ref);
+  expect(refused.reason).toContain("KATA_REF_GUARD=off");
+  expect(await write(app, "// tracked as README.md#tasks")).toBeUndefined();
+  expect(await app.event("tool_call", { toolName: "write", input: { path: `${outside}/notes.ts`, content: ref } })).toBeUndefined();
+  expect(await app.event("tool_call", { toolName: "bash", input: { command: `git commit -m "fix ${ref}"` } })).toMatchObject({ block: true });
+  expect(await app.event("tool_call", { toolName: "bash", input: { command: `kata comment ${ref} -m "note ${ref}"` } })).toBeUndefined();
+  const child = { ...app.ctx, agent: { kind: "sub", id: "guard-child", parentId: app.ctx.agent.id } };
+  expect(await app.event("tool_call", { toolName: "write", input: { path: `${cwd}/child.ts`, content: `// ${ref}` } }, child)).toMatchObject({ block: true });
+  // What the file already holds is not added; a new folder under a symlinked cwd and a path in the home folder are judged by where they land.
+  writeFileSync(`${cwd}/held.md`, `see ${ref} here\n`);
+  expect(await app.event("tool_call", { toolName: "write", input: { path: `${cwd}/held.md`, content: `see ${ref} here, and more\n` } })).toBeUndefined();
+  expect(await app.event("tool_call", { toolName: "edit", input: { path: `${cwd}/held.md`, old_string: `see ${ref}`, new_string: `read ${ref}` } })).toBeUndefined();
+  const link = `${scratch}/cwd-link`; symlinkSync(cwd, link);
+  expect(await app.event("tool_call", { toolName: "write", input: { path: `${link}/new/dir/x.ts`, content: `// ${ref}` } })).toMatchObject({ block: true });
+  expect(await app.event("tool_call", { toolName: "write", input: { path: "~/kata-guard-notes.md", content: `// ${ref}` } })).toBeUndefined();
+  process.env.KATA_REF_GUARD = "off";
+  try { expect(await write(app, `// tracked as ${ref}`)).toBeUndefined(); }
+  finally { delete process.env.KATA_REF_GUARD; }
+});
+
+test("omp keeps the refs a shell claim named across /tree and qualifies a bare claimed id", async () => {
+  const app = host(); await app.event("session_start");
+  const short = await issue(), ref = `v2test#${short}`;
+  const write = (content: string) => app.event("tool_call", { toolName: "write", input: { path: `${cwd}/claimed.ts`, content } });
+  // A claim inside a compound command is recorded, not adopted; a bare id is recorded with the project it resolves in.
+  await app.event("tool_result", { toolName: "bash", input: { command: `kata claim ${short} && echo claimed` }, isError: false, details: { exitCode: 0 } });
+  expect(await write(`// ${short} on its own`)).toMatchObject({ block: true });
+  await eventually(async () => !!(await write(`// ${ref}`))?.block, true);
+  await app.event("session_tree");
+  expect(await write(`// ${ref}`)).toMatchObject({ block: true });
+  // A fork shares its source's claims; any other new session starts with none.
+  await app.switchSession("claims-fork", { fork: true });
+  expect(await write(`// ${ref}`)).toMatchObject({ block: true });
+  await app.switchSession("claims-new");
+  expect(await write(`// ${ref} and ${short}`)).toBeUndefined();
+});
+
+test("a claimed bare id is known at once, though Kata is slow to resolve it, and the hook does not wait", async () => {
+  let slow = false;
+  const held = holdKata(() => slow, () => ({ code: 1, stderr: "offline", stdout: "" }));
+  const app = host({ before: held.before }); await app.event("session_start");
+  const short = await issue();
+  slow = true;
+  try {
+    expect(await finishes(app.event("tool_result", { toolName: "bash", input: { command: `kata claim ${short} && echo claimed` }, isError: false, details: { exitCode: 0 } }), 1000)).toBe(true);
+    expect(await app.event("tool_call", { toolName: "write", input: { path: `${cwd}/slow.ts`, content: `// ${short}` } })).toMatchObject({ block: true });
+  } finally { held.release(); }
 });
 
 test("pinned plan survives cwd changes and ignores another session's saved binding", async () => {

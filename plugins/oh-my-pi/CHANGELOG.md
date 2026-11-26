@@ -13,6 +13,11 @@ All notable changes to `@dangerboi/kata-omp` are listed here. The format follows
   - A ticket flagged `stuck` or `needs-human` keeps its flag and gets no start, including the flag Kata wrote when an earlier session ended, after a quit and `/resume`. `kata meta set <ref> work.attention ok` run by the lead in its shell clears it and starts attention; run elsewhere it only clears the flag until the lead next claims or names the ticket. Kata leaves the old hand-off message in place.
   - A fork restarts attention for the parent it keeps; a resume in a new process does so only while the issue is still `ok` (after a crash), not after a quit.
 
+#### Repository content
+
+- A `write`, `edit`, `ast_edit` or `bash` `git commit` call that adds a Kata ref the session works to a file under the project folder or to a commit message is refused, for the lead and its delegates, and the reason tells the model to describe the behaviour instead. Kata refs only resolve in the local tracker.
+  - Set `KATA_REF_GUARD=off` (or `0`) to turn it off.
+
 ### Fixed
 
 #### Inbox and attention

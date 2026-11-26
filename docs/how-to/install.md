@@ -100,7 +100,7 @@ To load a checkout instead of the npm package, point `package` (or a plain strin
 
 The directory's `package.json` `exports` resolves the plugin, so no wrapper file is needed. OpenCode refuses a bare file path such as `plugins/opencode/kata.ts`. Keep `plugins/opencode` intact: every `.ts` file next to its `kata.ts` is a required module.
 
-Plugin options (all optional) go in the `options` object: `executable`, `ref`, `defaultProject`, `author`, `teammate`, `debugFile`. Each falls back to a variable in the server's environment (see the [reference](../reference/opencode.md#settings)):
+Plugin options (all optional) go in the `options` object: `executable`, `ref`, `defaultProject`, `author`, `teammate`, `refGuard`, `debugFile`. Each falls back to a variable in the server's environment (see the [reference](../reference/opencode.md#settings)):
 
 ```json
 { "package": "@dangerboi/kata-opencode", "options": { "defaultProject": "vault", "teammate": "lead" } }
@@ -163,6 +163,6 @@ Then run `/reload-plugins` in a running session. A change reaches an installed c
 
 For one run without installing, load the folder: `claude --plugin-dir /path/to/kata-plugin/plugins/claude-code`.
 
-Run `kata agent-hook install claude --attention` for Kata's contract, inbox and attention; the plugin does not add them unless its `contract` option is on. See [Use with Kata agent hooks](use-with-kata-agent-hooks.md#claude-code). Options (`liveInbox`, `contract`, `kataExecutable`, `debugFile`) are listed in the [reference](../reference/claude-code.md#settings). Optional: send the plans of repos that have no Kata project to one Kata project by exporting `KATA_DEFAULT_PROJECT` where Claude Code runs. The close of each task records the Claude Code session ([Record agent sessions on closes](record-session-transcripts.md)).
+Run `kata agent-hook install claude --attention` for Kata's contract, inbox and attention; the plugin does not add them unless its `contract` option is on. See [Use with Kata agent hooks](use-with-kata-agent-hooks.md#claude-code). Options (`liveInbox`, `refGuard`, `contract`, `kataExecutable`, `debugFile`) are listed in the [reference](../reference/claude-code.md#settings). Optional: send the plans of repos that have no Kata project to one Kata project by exporting `KATA_DEFAULT_PROJECT` where Claude Code runs. The close of each task records the Claude Code session ([Record agent sessions on closes](record-session-transcripts.md)).
 
 Tested with Claude Code 2.1.326. To check another release, run `bun run validate:claude` and `bun run test:claude`, and, when a login and a few cents of spend are acceptable, `bun run smoke:claude` from a checkout (see [development](../development.md#smoke-test-against-a-real-claude-code)).

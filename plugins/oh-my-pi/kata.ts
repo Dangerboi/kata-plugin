@@ -49,6 +49,8 @@ type TaskCall = { texts: string[]; jobs?: Set<string> };
 // the lead Delegates that own them. A delegate's session file is the correlation key: agent names alone can collide across simultaneous sessions.
 const recordsBySession = new Map<string, DelegateRecord>();
 const leads = new Map<string, DelegateEvents>();
+// The refs each lead session works, read by the ref guard of a delegate on a worker thread (see askRefs).
+const leadRefs = new Map<string, () => string[]>();
 
 // The `todo.backend` setting, found once per module copy (per thread), and one settings listener that only feeds the
 // main session's off-notice through `backendWatchers`. Whether the backend is Kata is read through `setting` against the
@@ -77,6 +79,8 @@ function followBackend(settings: unknown, debug: (error: unknown) => void): Prom
 type DelegateWire =
 	| { kind: "nextUse"; req: string; key: string; id: string }
 	| { kind: "record"; req: string; record?: DelegateRecord }
+	| { kind: "refsAsk"; req: string; key: string }
+	| { kind: "refsAnswer"; req: string; refs: string[] }
 	| { kind: "ranTool"; key: string; id: string };
 const delegateChannel = new BroadcastChannel("kata-plugin:omp-delegates:1");
 // Never keep omp alive for the channel.
@@ -84,6 +88,8 @@ delegateChannel.unref();
 // How long the main thread waits for a lead's started event that has not arrived yet, and a worker for an answer.
 const RECORD_WAIT_MS = 3000;
 const ANSWER_WAIT_MS = 30_000;
+// A worker's ref guard gives up on the lead's refs after this; the core asks inside its own 2 s bound, and only for a call that adds text.
+const REFS_WAIT_MS = 1000;
 const arrivals = new Map<string, (() => void)[]>();
 function putRecord(record: DelegateRecord) {
 	recordsBySession.set(record.sessionId, record);
@@ -104,9 +110,10 @@ function recordArrival(key: string): Promise<void> {
 	});
 }
 async function answerWorker(message: DelegateWire) {
-	if (message.kind === "record") return;
+	if (message.kind === "record" || message.kind === "refsAnswer") return;
 	if (!recordsBySession.has(message.key)) await recordArrival(message.key);
 	const record = recordsBySession.get(message.key);
+	if (message.kind === "refsAsk") return delegateChannel.postMessage({ kind: "refsAnswer", req: message.req, refs: record ? leadRefs.get(record.leadSessionId)?.() ?? [] : [] } satisfies DelegateWire);
 	if (record?.id !== message.id) return message.kind === "nextUse" ? delegateChannel.postMessage({ kind: "record", req: message.req } satisfies DelegateWire) : undefined;
 	await leads.get(record.leadSessionId)?.apply({ type: message.kind, id: message.id }, NO_JOB);
 	if (message.kind === "nextUse") delegateChannel.postMessage({ kind: "record", req: message.req, record: recordsBySession.get(message.key) } satisfies DelegateWire);
@@ -138,7 +145,19 @@ delegateChannel.onmessage = (event: { data: unknown }) => {
 	const message = event.data as DelegateWire;
 	if (isMainThread) void answerWorker(message).catch(() => { /* the worker's wait ends on its own */ });
 	else if (message.kind === "record") { awaitingAnswer.get(message.req)?.(message.record); awaitingAnswer.delete(message.req); }
+	else if (message.kind === "refsAnswer") { awaitingRefs.get(message.req)?.(message.refs); awaitingRefs.delete(message.req); }
 };
+const awaitingRefs = new Map<string, (refs: string[]) => void>();
+// A worker's copy knows only its delegate's own issue; the lead's refs (its plan and its other delegates) come from the main thread. Empty when it does not answer in time.
+function askRefs(key: string): Promise<string[]> {
+	const req = `${threadId}:${++requestCount}`;
+	return new Promise(resolve => {
+		const timer = setTimeout(() => { awaitingRefs.delete(req); resolve([]); }, REFS_WAIT_MS);
+		timer.unref?.();
+		awaitingRefs.set(req, refs => { clearTimeout(timer); resolve(refs); });
+		delegateChannel.postMessage({ kind: "refsAsk", req, key } satisfies DelegateWire);
+	});
+}
 
 // ------------------------------------------------------------- live inbox stream feed
 
@@ -331,7 +350,7 @@ export default function ompKata(pi: any) {
 	const leadOf = (ctx: any): { id: string; delegates?: DelegateEvents } | undefined => {
 		if (main(ctx)) {
 			const id = sessionId(ctx);
-			if (id) { leads.set(id, core.delegates); return { id, delegates: core.delegates }; }
+			if (id) { leads.set(id, core.delegates); leadRefs.set(id, () => { try { return core.tools.refs(seen); } catch (error) { debug(error); return []; } }); return { id, delegates: core.delegates }; }
 			return undefined;
 		}
 		const owner = store.of(ctx);
@@ -381,6 +400,9 @@ export default function ompKata(pi: any) {
 		await core.tools.call(ctx);
 		const record = ctx.agent?.kind === "sub" ? await recordOf(ctx) : undefined;
 		if (record) ranTool(record);
+		const key = !isMainThread && ctx.agent?.kind === "sub" ? sessionKeyOf(ctx) : undefined;
+		const refused = await core.tools.guard(ctx, { tool: event.toolName, input: event.input }, () => key ? askRefs(key) : []);
+		if (refused) return { block: true, reason: refused };
 		if (event.toolName === "todo" && await kataBackend() === BACKEND_ID) {
 			const owner = main(ctx) ? core : record && !isUntracked(record) ? core.delegate(record.id) : undefined;
 			// A delegate's guard waits for its queued next use, inside the guard's own time bound.

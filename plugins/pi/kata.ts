@@ -145,6 +145,8 @@ export default async function piKata(pi: ExtensionAPI) {
 
 	pi.on("tool_call", async (event, ctx) => {
 		if (inherited && current) void core.delegates.apply({ type: "ranTool", id: current.id }, NO_JOB);
+		const refused = await core.tools.guard(ctx, { tool: event.toolName, input: event.input });
+		if (refused) return { block: true, reason: refused };
 		const bash = event.toolName === "bash" && typeof event.input.command === "string";
 		// A bash command that launches pi may start a child that needs the lead's parent.
 		const next = await core.tools.call(ctx, { startsChild: !inherited && bash && launchesPi(event.input.command as string) });

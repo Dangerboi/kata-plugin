@@ -61,6 +61,8 @@ export function contextOf($: EngineInterface, rt: Runtime, session: Session, del
 async function create($: EngineInterface): Promise<Runtime> {
 	const env = await readEnv($);
 	const settings = resolveSettings(options, env);
+	// The core reads the switch from its environment, where the option becomes the variable.
+	if (!settings.refGuard) env.set("KATA_REF_GUARD", "off");
 	const state = { cwd: "" };
 	const platform = platformOf($, env, state);
 	const exec = execOf($, env, () => rt.latest);

@@ -1,11 +1,11 @@
 import { expect, test } from "bun:test";
 import { userMessage, type FakeSession, type OpenCodeInstance } from "./opencode-host";
 import { assignmentOf } from "./kata-fixture";
-import { openCodeKata, todos } from "./opencode-fixture";
+import { openCodeKata, qref, todos } from "./opencode-fixture";
 import { SUBAGENT_PREFIX } from "../plugins/opencode/subagents";
 import { teammateFor } from "../core/delegates";
 
-const { binary, kata, sh, closeEvents, startHost, startLead } = openCodeKata("opencode-shell");
+const { binary, cwd, kata, sh, closeEvents, startHost, startLead, parentOf } = openCodeKata("opencode-shell");
 
 // A foreground delegate bound to a plan item. `work` gets its session and its prompt's system text; what it throws fails
 // the test, because the host turns an error thrown inside a tool's execute into an error result the caller never sees.
@@ -128,4 +128,39 @@ test("shell kata commands carry the configured author and teammate when the serv
 	const close = (await closeEvents()).find(e => e.issue_uid === issue.uid);
 	expect(close.actor).toBe("configured-author");
 	expect(close.payload.transcript).toMatchObject({ agent: "opencode", session_id: childID });
+});
+
+test("the refGuard option accepts a JSON boolean false", async () => {
+	const { host, id } = await startLead({ refGuard: false });
+	await host.callTool(id, "todowrite", todos(["Guarded plan item", "in_progress"]));
+	const ref = qref(await parentOf(id));
+	const result = await host.callTool(id, "write", { path: `${cwd}/notes.ts`, content: `// ${ref}` }, { execute: () => "ok" });
+	expect(result.status, result.text).toBe("completed");
+});
+
+test("a write, patch or commit that names a ref of the plan is refused until the refGuard option is off", async () => {
+	const call = (host: OpenCodeInstance, id: string, tool: string, input: Record<string, unknown>) => host.callTool(id, tool, input, { execute: () => "ok" });
+	for (const off of [false, true]) {
+		const { host, id } = await startLead(off ? { refGuard: "off" } : {});
+		await host.callTool(id, "todowrite", todos(["Guarded plan item", "in_progress"]));
+		const ref = qref(await parentOf(id));
+		const file = `${cwd}/notes.ts`;
+		const attempts = [
+			call(host, id, "write", { path: file, content: `// tracked as ${ref}` }),
+			call(host, id, "edit", { path: file, oldString: "x", newString: `// ${ref}` }),
+			call(host, id, "patch", { patchText: `*** Begin Patch\n*** Update File: ${file}\n+// ${ref}\n*** End Patch` }),
+			call(host, id, "shell", { command: `git commit -m "fix ${ref}"` }),
+		];
+		for (const result of await Promise.all(attempts)) {
+			if (off) { expect(result.status, result.text).toBe("completed"); continue; }
+			expect(result.status).toBe("error");
+			expect(result.executed).toBe(false);
+			expect(result.text).toContain(ref);
+			expect(result.text).toContain("KATA_REF_GUARD=off");
+		}
+		for (const [tool, input] of [["write", { path: file, content: "// README.md#tasks" }], ["write", { path: "/tmp/outside-notes.ts", content: ref }], ["shell", { command: `kata comment ${ref} -m "note ${ref}"` }]] as const) {
+			const result = await call(host, id, tool, { ...input });
+			expect(result.status, result.text).toBe("completed");
+		}
+	}
 });

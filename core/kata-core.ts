@@ -2,10 +2,11 @@ import { decidePlanParent, explicitParent, isExplicitParent, namesPlanParent } f
 import { createInboxFollower, knownProjectHead, trustedInbox, type InboxFollower, type LiveInbox } from "./inbox";
 import { createDelegates, FINAL, heldByDelegate as heldBy, isUntracked, nameOf, Refusal, teammateFor, type DelegateAssignment, type DelegateStore, type Refused, type Reservation, type SavedDelegate, type Who } from "./delegates";
 import { createSettlement, MAX_FAILURES, openChildren, type PendingClose, type SettlementSnapshot } from "./settlement";
-import { createKata, debugTo, type CORE_ENV, isKataCode, isUnusable, KataError, NO_JOB, waitAtMost, type Batch, type Exec, type Job, type PathOps, type Platform, type Timers } from "./kata-cli";
+import { createKata, debugTo, type CORE_ENV, isKataCode, refGuardOff, isUnusable, KataError, NO_JOB, waitAtMost, type Batch, type Exec, type Job, type PathOps, type Platform, type Timers } from "./kata-cli";
 import { createTicketCompletion } from "./autocomplete";
+import { offendingRefs } from "./ref-guard";
 import { kataCommands, quote, shellOptions } from "./shell";
-import { closedTaskStatus, digest, FULL_ID_REF, hasLabel, heldBySession, heldMessage, itemTicket, NATIVE_WORDING, OPEN, PROOF_MIN, projectOf, proofProblem, QUALIFIED_REF_ONLY, qualifiedRef, SESSION_KEY, sessionParentKeys, slug, tasksOf, textOf, TITLE_MAX, TODO_WORDING, WONTFIX_MIN, WORKING, type Binding, type Change, type KataIssue, type KataShow, type Plan, type Status, type Task, type ToolWording } from "./model";
+import { closedTaskStatus, digest, FULL_ID_REF, hasLabel, heldBySession, heldMessage, itemTicket, NATIVE_WORDING, OPEN, PROOF_MIN, projectOf, proofProblem, QUALIFIED_REF_ONLY, qualifiedRef, SESSION_KEY, SHORT_ID_ONLY, sessionParentKeys, slug, tasksOf, textOf, TITLE_MAX, TODO_WORDING, WONTFIX_MIN, WORKING, type Binding, type Change, type KataIssue, type KataShow, type Plan, type Status, type Task, type ToolWording } from "./model";
 import { diffNativeList, nativeOpen, nativeTargets, type NativeItem, type NativePhase, type NativeStatus } from "./todo-list";
 
 // What omp's own todo list holds, as `todo.mirror` takes it.
@@ -128,14 +129,28 @@ function childName(sessionName: string | undefined, reserved: Reservation | unde
 	return short(sessionName?.trim()) ?? short(slug(reserved?.title)) ?? `pi-${id.replace(/[^a-z0-9]/gi, "").slice(-6).toLowerCase()}`;
 }
 
+// `file` against `cwd` with symlinks resolved: the path itself when it exists, else the nearest existing ancestor within `levels` folders up
+// with the rest appended, else the path as written.
+async function resolvedPath(host: Pick<Platform, "path" | "realpath">, file: string, cwd: string, levels: number): Promise<string> {
+	const { path, realpath } = host, absolute = path.resolve(cwd, file), rest: string[] = [];
+	for (let at = absolute, up = 0; up <= levels; up++) {
+		try { return rest.length ? path.join(await realpath(at), ...rest) : await realpath(at); }
+		catch { /* climb */ }
+		const parent = path.dirname(at);
+		if (parent === at) break;
+		rest.unshift(path.basename(at));
+		at = parent;
+	}
+	return absolute;
+}
+
 // The path as the host's filesystem names it: `file` against `cwd`, with symlinks resolved. A file that does not exist yet
 // resolves through its folder, and a folder that does not either stays as written. Two workspaces are the same when their
 // canonical paths are.
-export async function canonicalPath(host: Pick<Platform, "path" | "realpath">, file: string, cwd: string): Promise<string> {
-	const { path, realpath } = host, absolute = path.resolve(cwd, file);
-	try { return await realpath(absolute); }
-	catch { try { return path.join(await realpath(path.dirname(absolute)), path.basename(absolute)); } catch { return absolute; } }
-}
+export const canonicalPath = (host: Pick<Platform, "path" | "realpath">, file: string, cwd: string): Promise<string> => resolvedPath(host, file, cwd, 1);
+
+// The same for a file in folders that do not exist yet (a write creates them): the nearest existing ancestor decides.
+const canonicalNew = (host: Pick<Platform, "path" | "realpath">, file: string, cwd: string): Promise<string> => resolvedPath(host, file, cwd, Infinity);
 
 // The workspace name Kata would infer, read from the project_not_initialized
 // error's structured data: the project it names, else its alias ("local://" and
@@ -389,6 +404,8 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 	let assignedRef: string | undefined;
 	const configuredRef = () => options.explicitRef?.() ?? setting("KATA_REF");
 	const aliases = new Set<string>(); // refs the plan's parent was rehomed from: they still name it
+	// Refs this session claimed in its shell or named with `/todo ref`: its work, though the plan may never hold them. Read by `tools.guard`.
+	const claimed = new Set<string>();
 	let requestedRef: string | undefined;
 	// A native host's list says what is in progress, so the core never starts a pending task itself (see nextTask).
 	const autoStart = options.autoStart !== false && !options.native;
@@ -820,7 +837,7 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 		requestedRef = requested;
 		const id = sid(ctx);
 		// Only a bind that starts a session this core did not already hold restores delegates: /tree and a branch switch keep the same one.
-		const isNew = currentId !== id;
+		const isNew = currentId !== id, previous = currentId;
 		currentId = id;
 		if (isNew && main(ctx)) { host.switched?.(ctx); newSession(); shown.clear(); }
 		lastSnapshot = undefined;
@@ -833,6 +850,8 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 		// adopt its parent and ticket items, but not its retries (the source still owns those closes)
 		// nor its local plan (replaying that would make a second automatic parent).
 		const { snapshot, source } = savedSnapshot(ctx, branch, id, onBranch(branch));
+		// The shell claims belong to the session: /tree and a branch switch keep it, a fork of it shares them, any other new session starts with none.
+		if (isNew && !(source && source === previous)) claimed.clear();
 		// A forked session keeps the source id as the parent's owner: the parent's session_id metadata names it.
 		const parentOwner = source ?? id;
 		// A resumed lead keeps its saved sessions; a fork adds itself to its source's, so it works on what its source started.
@@ -2028,6 +2047,51 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 		return bounded((async () => { await after?.catch(debug); if (!main(ctx) && !delegates.assignment(ctx)) return undefined; return serial(job => guardText(job, ctx, call), { ctx }); })(), GUARD_MS);
 	}
 
+	type MoreRefs = () => Promise<Iterable<string>> | Iterable<string>;
+	// How long `tools.guard` waits for its checks (the canonical path of each file the call writes): past it the call goes through unchecked.
+	const REF_GUARD_MS = 2_000;
+
+	// Every ref this session works: the plan, its items, the assignment, a claim or `/todo ref`, and the delegates' issues.
+	function knownRefs(ctx: HostContext): Set<string> {
+		const refs = new Set<string>();
+		const add = (...found: (string | undefined)[]) => { for (const ref of found) if (ref) refs.add(ref); };
+		add(plan.parent, assignedRef, configuredRef(), requestedRef, ...aliases, ...claimed);
+		if (!plan.local) for (const t of plan.tasks) add(t.ref, t.ticket);
+		for (const t of named) add(t.ref, t.ticket);
+		for (const r of [...host.delegateStore.records(), host.delegateStore.of(ctx)]) add(r?.ref, r?.planRef, r?.mission?.ref, r?.binding?.parent, r?.parent);
+		add(delegates.assignment(ctx)?.ref);
+		return refs;
+	}
+
+	// Called before a tool runs: the text that refuses a call that would put a Kata ref into the repository, or undefined to let it run. It
+	// never rejects: an error, a slow check or an off switch (KATA_REF_GUARD=off or 0) lets the call through. `also`: refs a host knows that
+	// this core does not (a delegate on another thread asks its lead); called once, inside the bound, and only for a call that adds text.
+	function refGuard(ctx: HostContext, call: { tool: string; input: unknown }, also: MoreRefs = () => []): Promise<string | undefined> {
+		if (refGuardOff(setting("KATA_REF_GUARD"))) return Promise.resolve(undefined);
+		return bounded((async () => {
+			const cwd = ctx.cwd ?? platform.cwd();
+			const workspaces = await Promise.all([...new Set([cwd, plan.workspace])].map(root => canonicalPath(platform, ".", root)));
+			const prefix = (root: string) => path.join(root, "x").slice(0, -1);
+			const found = await offendingRefs({
+				...call,
+				async known() {
+					const refs = knownRefs(ctx);
+					for (const ref of await also()) refs.add(ref);
+					return refs;
+				},
+				async locate(file) {
+					// `~` is the home folder, as the host's own tools read it; a host that knows none cannot place the file.
+					if (file === "~" || file.startsWith("~/")) { if (!platform.home) return undefined; file = path.join(platform.home, file.slice(1)); }
+					const canonical = await canonicalNew(platform, file, cwd);
+					return workspaces.some(root => canonical === root || canonical.startsWith(prefix(root))) ? canonical : undefined;
+				},
+				read: file => platform.readFile(file),
+			});
+			if (!found.length) return undefined;
+			return `Refused: this ${call.tool} call puts ${found.join(", ")} into the repository. Kata refs only resolve in the local tracker, so code, comments, tests, docs and commit messages should describe the behaviour instead. Rewrite it without the ref and retry. To turn this check off, set KATA_REF_GUARD=off.`;
+		})(), REF_GUARD_MS);
+	}
+
 	// `/todo ref <id>`: makes the Kata issue the plan's parent at once, loading its open children. A plan that already has a parent keeps it.
 	function pinRef(ctx: HostContext, ref: string | undefined): Promise<string> {
 		if (!ref) return Promise.resolve("/todo ref needs the Kata issue the todo plan serves: /todo ref <project>#<id>.");
@@ -2036,6 +2100,7 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 			try {
 				await enterPlan(job, ctx, false);
 				const pinned = await kata.pin(job, ref, path.resolve(ctx.cwd));
+				claimed.add(pinned);
 				const explicit = configuredRef();
 				if (explicit && await kata.pin(job, explicit, path.resolve(ctx.cwd)) !== pinned) return `KATA_REF is set to ${explicit}, which fixes the plan parent; ${ref} is not used.`;
 				if (plan.parent) {
@@ -2085,15 +2150,25 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 
 	async function observeToolResult(event: any, ctx: HostContext) {
 		progressed = true;
-		if (!main(ctx) || configuredRef() || event.toolName !== "bash" || event.isError || (event.details?.exitCode !== undefined && event.details.exitCode !== 0)) return;
+		if (!main(ctx) || event.toolName !== "bash" || event.isError || (event.details?.exitCode !== undefined && event.details.exitCode !== 0)) return;
 		const command = event.input?.command;
-		if (typeof command !== "string" || /[;|\n]/.test(command)) return;
+		if (typeof command !== "string") return;
+		const adopting = !configuredRef() && !/[;|\n]/.test(command);
 		for (const invocation of kataCommands(path, command, options.executable, options.executableVars)) {
 			const parsed = shellOptions(invocation.words), args = parsed.args;
 			let ref = args[0] === "claim" ? args[1] : args[0] === "meta" && args[1] === "set" && args[3] === "work.attention" && args[4] === "ok" ? args[2] : undefined;
 			if (!ref || parsed.options.has("--as")) continue;
 			if (!ref.includes("#") && parsed.value("--project")) ref = `${parsed.value("--project")}#${ref}`;
 			const workspace = path.resolve(event.input.cwd || ctx.cwd, parsed.value("--workspace") || ".");
+			// A word the shell expands (`$ref`, a glob) names nothing yet; only the shape of a ref counts. A bare id is recorded at once (with the
+			// plan's project when the workspace is its own) and replaced by the ref Kata resolves it to, in the background: the hook never waits.
+			if (args[0] === "claim" && QUALIFIED_REF_ONLY.test(ref)) claimed.add(ref);
+			else if (args[0] === "claim" && SHORT_ID_ONLY.test(ref)) {
+				const bare = ref, session = currentId;
+				claimed.add(plan.parent && plan.workspace === workspace ? `${projectOf(plan.parent)}#${bare}` : bare);
+				void serial(job => kata.pin(job, bare, workspace)).then(pinned => { if (currentId === session) { claimed.delete(bare); claimed.add(pinned); } }).catch(debug);
+			}
+			if (!adopting) continue;
 			const target = ref;
 			await bounded(serial(async job => {
 				if (plan.tasks.some(t => hasRef(t, target))) return;
@@ -2514,6 +2589,10 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 				await observeToolResult(event, ctx);
 				return lead();
 			},
+			// A tool is about to run: the text that refuses it for putting a Kata ref into the repository, or undefined (see `refGuard`).
+			guard: refGuard,
+			// The refs this session works, for a delegate's host that checks calls against its lead's.
+			refs: (ctx: HostContext): string[] => [...knownRefs(ctx)],
 		},
 		todo: {
 			apply: (ctx: HostContext, op: string, params: any, within: Job) => execute({ ...params, op }, ctx, within),

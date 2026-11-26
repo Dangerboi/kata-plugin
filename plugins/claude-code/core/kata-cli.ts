@@ -33,7 +33,7 @@ export interface PathOps {
 export type Timers = Pick<Platform, "setTimer" | "clearTimer">;
 
 // Every environment variable the core reads or sets (see `setting` in kata-core.ts); a host asks its own environment for exactly these.
-export const CORE_ENV = ["KATA_REF", "KATA_TEAMMATE", "KATA_AUTHOR", "USER", "KATA_DEFAULT_PROJECT", "KATA_INBOX_USER", "KATA_HOME", "KATA_ATTENTION_HOST", "KATA_CLOSE_TRANSCRIPT_ENABLED"] as const;
+export const CORE_ENV = ["KATA_REF", "KATA_TEAMMATE", "KATA_AUTHOR", "USER", "KATA_DEFAULT_PROJECT", "KATA_INBOX_USER", "KATA_HOME", "KATA_ATTENTION_HOST", "KATA_CLOSE_TRANSCRIPT_ENABLED", "KATA_REF_GUARD"] as const;
 
 // What the core needs from the machine it runs on, so that it imports nothing from Node. A Node host passes node-host.ts's
 // `nodePlatform`; a host without a process environment, timers or a synchronous filesystem supplies what it has.
@@ -52,7 +52,14 @@ export interface Platform {
 	realpath(path: string): Promise<string>;
 	// Appends to the debug file.
 	appendFile(file: string, text: string): void;
+	// A file's text, rejecting when it cannot be read (the ref guard compares an edit with what the file holds). Read whole: callers bound the wait.
+	readFile(file: string): Promise<string>;
+	// The user's home folder, where a leading `~` of a path points; absent when the host knows none.
+	home?: string;
 }
+
+// Whether a KATA_REF_GUARD value (or a host option's text) switches the ref guard off: `off` or `0`.
+export const refGuardOff = (value: string | undefined): boolean => ["off", "0"].includes((value ?? "").trim().toLowerCase());
 
 // The sink for errors the plugin survives: a line in `file`, nothing without one. Debugging must never interrupt work.
 export const debugTo = (file: string | undefined, append: Platform["appendFile"]) => (error: unknown) => {

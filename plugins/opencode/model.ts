@@ -161,6 +161,8 @@ const ID_CHAR = "[0-9a-hjkmnp-tv-z]";
 // whole-token refs (`qualifiedRefs`).
 const QUALIFIED_REF = `(?<![\\w./#-])[A-Za-z0-9_][\\w.-]*#${ID_CHAR}{4,26}(?![\\w-])`;
 export const QUALIFIED_REF_ONLY = new RegExp(`^${QUALIFIED_REF}$`, "i");
+// An issue's short id on its own; a shell word that holds `$` or a glob is no ref.
+export const SHORT_ID_ONLY = new RegExp(`^${ID_CHAR}{4,26}$`, "i");
 // A ref that ends in an issue's full 26-character id, bare or after a project: a plan task's ref carries the short id, so Kata resolves this one.
 export const FULL_ID_REF = new RegExp(`(?:^|#)${ID_CHAR}{26}$`, "i");
 // Distinct qualified refs in order of appearance. Prose holds look-alikes

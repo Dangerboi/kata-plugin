@@ -13,6 +13,7 @@ Session start exports `KATA_CLOSE_TRANSCRIPT_ENABLED=true` (unless already set),
 | `KATA_INBOX_USER` | The session's inbox address, `<actor>/<name>`. A bare `<actor>` is a personal inbox: the session reads none and says so once. Only requests from the session's own actor are shown. |
 | `KATA_OMP_LIVE_INBOX` | `0` turns off live delivery of inbox requests to the main session and keeps the per-turn read. tern-kata sets it for the agents it starts, because it delivers there itself. |
 | `KATA_CLOSE_TRANSCRIPT_ENABLED` | `false` in the environment that launches omp stops closes recording the session; unset, session start sets `true`. |
+| `KATA_REF_GUARD` | `off` or `0` stops the refusal of writes and commits that name a Kata ref ([below](#kata-refs-in-repository-content)). On by default. |
 | `KATA_OMP_DEBUG` | Optional append-only diagnostic log. |
 
 ## omp's todo and the Kata backend
@@ -43,6 +44,10 @@ The guard waits up to 10 seconds for Kata; past that, or while the plan is local
 omp has had no `blocked` status since 18.20.0, so there is no `block` or `unblock` on omp: record a wait with `kata comment`. omp's own stop reminder still fires while tasks are open. The plan section of the system prompt states these rules and lists the plan with each task's ref. Local plans, queued close retries and unfinished delegate cleanups persist in custom session entries and resume with a saved session.
 
 When a person deletes the automatic parent (`kata delete`, or `X` in Kata 0.22's TUI), the plan goes with it, together with its pending closes, also for a resumed session. The parent's tasks stay in Kata as they were, and the next list omp saves starts a new automatic parent. An explicit parent (`KATA_REF`, `/todo ref`, a claimed or adopted issue) that was deleted stays an error until someone runs `kata restore`.
+
+## Kata refs in repository content
+
+Kata refs resolve only in the local tracker, so the plugin refuses a `write`, `edit` (hashline, replace, patch, `apply_patch` and sloppy modes; the guard reads the hashline, `apply_patch` and sloppy patch formats, and a patch syntax it cannot parse is let through), `ast_edit` replacement or `bash` call that puts a ref the session works (the plan parent and items, the assigned or claimed issue, a delegate's issue) into a file under the session's folder or into a `git commit` message, and the model rewrites it to describe the behaviour. A commit counts where the `bash` call runs (its `cwd`, a `cd` before it, or `git -C`), so one in a folder outside the session's is not refused. A qualified ref counts only when its project is one the session knows, so `README.md#tasks` passes. A bare short id counts only when the session knows it. Only added text is checked: refs the replaced text or the file already holds, removed and context lines, hashline headers, files outside the folder, internal URLs and the bodies of `kata comment`, `kata close` and `kata create` are not. The check waits at most 2 seconds and lets the call through on an error. `KATA_REF_GUARD=off` (or `0`) turns it off. The lead's and every delegate's `tool_call` is checked against the lead's refs, so a delegate cannot write the ref of its own issue either; a delegate in a worker thread asks the main thread for the lead's refs, only for a call that adds text and waits up to a second, and checks only its own assignment when none arrives. The refusal is the tool's error.
 
 ## Delegates
 

@@ -185,6 +185,27 @@ test("pi mutates Bash input in place to use the selected executable without chan
   expect(input.command).toContain("echo 'kata claim prose'"); expect(input.command).toContain("\nkata close quoted\n");
 });
 
+test("pi refuses a write or commit that names a ref of the plan until KATA_REF_GUARD is off", async () => {
+  const app = await host(); await app.event("session_start", { reason: "startup" });
+  const ref = await app.init(["Guarded pi task"]);
+  const write = (content: string, file = path.join(cwd, "notes.ts")) => app.event("tool_call", { toolName: "write", input: { path: file, content } });
+  const refused = await write(`// tracked as ${ref}`);
+  expect(refused).toMatchObject({ block: true });
+  expect(refused.reason).toContain(ref);
+  expect(refused.reason).toContain("KATA_REF_GUARD=off");
+  expect(await app.event("tool_call", { toolName: "edit", input: { path: path.join(cwd, "a.ts"), edits: [{ oldText: "x", newText: `// ${ref}` }] } })).toMatchObject({ block: true });
+  expect(await app.event("tool_call", { toolName: "bash", input: { command: `git commit -m "fix ${ref}"` } })).toMatchObject({ block: true });
+  expect(await write("// tracked as README.md#tasks")).toBeUndefined();
+  expect(await write(ref, path.join(outside, "notes.ts"))).toBeUndefined();
+  expect(await app.event("tool_call", { toolName: "bash", input: { command: `kata comment ${ref} -m "note ${ref}"` } })).toBeUndefined();
+  // A claim of a shell variable names nothing: the literal word is no ref.
+  await app.event("tool_result", { toolName: "bash", isError: false, input: { command: 'kata claim "$ref"' }, content: [] });
+  expect(await write("echo $ref; echo ${ref}")).toBeUndefined();
+  process.env.KATA_REF_GUARD = "0";
+  try { expect(await write(`// tracked as ${ref}`)).toBeUndefined(); }
+  finally { delete process.env.KATA_REF_GUARD; }
+});
+
 test("pi adopts a successful Bash claim using isError without OMP exitCode details", async () => {
   const ref = await issue("Pi adopted parent");
   await kata(["claim", ref, "--json"]);
