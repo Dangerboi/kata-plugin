@@ -23,6 +23,9 @@ interface Call {
 	background: boolean;
 	// A follow-up: the delegate record (the child's session id) it goes on with.
 	followUp?: string;
+	// The lead's turn ended with the call still without a child: what it reserved is free, and it binds a late child only
+	// when no newer call fits.
+	late?: boolean;
 	// The run it started, once the child's first context hook bound it.
 	run?: Run;
 }
@@ -34,7 +37,8 @@ const textFor = (call: Call) => [call.prompt, call.description].filter(Boolean).
 function callFor(calls: Call[], message: any): Call | undefined {
 	// A user message keeps its text in `text`, an assistant message in content parts.
 	const text = textOf(message?.text ?? message?.content);
-	const fresh = calls.filter(call => !call.followUp && call.prompt && text.endsWith(call.prompt));
+	const matching = calls.filter(call => !call.followUp && call.prompt && text.endsWith(call.prompt));
+	const fresh = matching.some(call => !call.late) ? matching.filter(call => !call.late) : matching;
 	return fresh.find(call => text === SUBAGENT_PREFIX + call.prompt) ?? fresh.sort((a, b) => b.prompt.length - a.prompt.length)[0];
 }
 
@@ -127,6 +131,8 @@ export function install(seam: Seam): void {
 		const call = role.kind === "lead" ? callsOf(role.lead.id).find(other => other.id === event.id) : undefined;
 		if (role.kind !== "lead" || !call) return;
 		const running = event.status !== "error" && (event.result?.metadata?.status ?? event.result?.output?.status) === "running";
+		// OpenCode 2.4.2 has no `background` input: a result that is still running says the call is a background one.
+		if (running) call.background = true;
 		if (running && !call.run) return;
 		drop(role.lead, call);
 		if (!call.run || running) return;
@@ -139,10 +145,11 @@ export function install(seam: Seam): void {
 	seam.events(Object.keys(EXECUTION_ENDED), async (event, role) => {
 		const sessionID = event.data.sessionID;
 		if (role.kind === "lead") {
-			// The lead's turn ended. A call still without a child is over: a later hook refused it (neither the tool nor
-			// `execute.after` ran), or its background child never reached a context hook. What it reserved is free again, so the
-			// item can be delegated anew; a background child that reaches its first context hook only now is not tracked.
-			for (const call of [...callsOf(role.lead.id)]) if (!call.run) drop(role.lead, call);
+			// The lead's turn ended. A call still without a child either was refused by a later hook (neither the tool nor
+			// `execute.after` ran) or has a background child that has not reached a context hook yet (every call on OpenCode 2.4.2).
+			// What it reserved is free again, but the call stays matchable until the lead's session ends: a child that starts now
+			// binds from it, and the core resolves its text again.
+			for (const call of callsOf(role.lead.id)) if (!call.run) { call.late = true; role.lead.releaseSpawn(call.id); }
 			return;
 		}
 		// A child's end ends the run it is in. With no run, a call's result ended it already; and an event OpenCode made

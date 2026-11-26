@@ -39,7 +39,7 @@ function inheritsModel(argv: string[]): { model: boolean; thinking: boolean } {
 const PI_LAUNCH = /(?:^|[;&|(`\n]|\$\(|\b(?:ba|z|da|k)?sh\s+(?:-[a-z]+\s+)*-[a-z]*c\s+['"])\s*(?:(?:env|nohup|exec|command|time|setsid|caffeinate)\s+|[A-Za-z_][A-Za-z0-9_]*=(?:'[^']*'|"[^"]*"|[^\s;&|]*)\s+)*(?:[^\s;&|()'"`]*\/)?pi(?=$|[\s;&|)])/;
 export const launchesPi = (command: string) => PI_LAUNCH.test(command);
 
-/** The text that starts a run: the user prompt, or on pi 1.6+ a custom-message run's message text. */
+/** The text that starts a run: the user prompt, or on pi 1.2+ a custom-message run's message text. */
 function startingText(event: BeforeAgentStartEvent): string {
 	if ("prompt" in event && typeof event.prompt === "string") return event.prompt;
 	const content = "message" in event ? event.message?.content : undefined;

@@ -21,7 +21,7 @@ All notable changes to `@dangerboi/kata-pi` are listed here. The format follows 
 
 #### Requirements
 
-- The plugin works with pi 1.6, whose `before_agent_start` also fires for runs that start from a custom message.
+- The plugin works with pi 1.2 and later, whose `before_agent_start` also fires for runs that start from a custom message.
 
 #### Delegates
 

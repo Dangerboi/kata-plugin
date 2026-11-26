@@ -11,6 +11,12 @@ All notable changes to `@dangerboi/kata-opencode` are listed here. The format fo
 - A `write`, `edit`, `patch` or `shell` `git commit` call that adds a Kata ref the session works to a file under the project folder or to a commit message is refused, for the lead and its delegates, and the reason tells the model to describe the behaviour instead. Kata refs only resolve in the local tracker.
   - Set the `refGuard` option to `off`, `0` or JSON `false`, or `KATA_REF_GUARD` to `off` or `0`, to turn it off.
 
+### Fixed
+
+#### Delegates
+
+- On OpenCode 2.4.2, where every subagent runs in the background, a subagent that starts after the lead's turn ended still works its plan item: it gets its assignment, and its report and hand back are recorded. A second spawn naming that item is refused while it runs.
+
 ## [1.2.2] - 2026-11-23
 
 ### Fixed
