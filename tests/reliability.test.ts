@@ -3,6 +3,7 @@ import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { createKataCore, type Job } from "../core/kata-core";
 import { NO_JOB } from "../core/kata-cli";
+import { teammateFor } from "../core/delegates";
 import { nodePlatform } from "../core/node-host";
 import { EVIDENCE, isolatedKata, later, memoryDelegateStore, MESSAGE as message, planOf, planParent, realKata, retryNote, until } from "./kata-fixture";
 import { daemonUnavailable, notInitialized, notInitializedBound, notInitializedNoData, notInitializedProject, siblingThrottle } from "./kata-errors";
@@ -693,8 +694,10 @@ test("a job held after its batch ended queues like any other call", async () => 
 
 test("a turn's inbox section shows a request sent while an earlier inbox read was still answering", async () => {
   // A delegate's prompt waits up to 3 s for the inbox, so the held read below decides the result, not the machine's speed.
-  const address = `actor-a/inflight-${++seq}`, note = `inflight-note-${seq}`;
-  process.env.KATA_INBOX_USER = address;
+  const teammate = teammateFor("inflight-delegate", "inflight-lead");
+  const address = `actor-a/${teammate}`, note = `inflight-note-${++seq}`;
+  // The lead's setting only opts delegates in; a delegate reads its own address.
+  process.env.KATA_INBOX_USER = "actor-a/inflight-lead";
   let holding = true, answered = false;
   const { promise: released, resolve: release } = Promise.withResolvers<void>();
   const a = app({ isMain: () => false, before: async (args: string[]) => {
@@ -706,6 +709,7 @@ test("a turn's inbox section shows a request sent while an earlier inbox read wa
     await released;
     return out;
   } });
+  await a.core.delegates.start({ id: "inflight-delegate", sessionId: a.ctx.sessionManager.getSessionId(), leadSessionId: "inflight-lead", text: "Survey the tree", untracked: true }, NO_JOB);
   const ref = await issue("In-flight inbox read");
   const first = a.core.session.beforePrompt(a.ctx);
   expect(await until(() => answered)).toBe(true);

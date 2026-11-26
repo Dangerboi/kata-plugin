@@ -10,13 +10,13 @@ const { scratch, cwd, run, kata } = store;
 const issue = () => store.issue(`Live inbox ${unique()}`);
 const children = () => Bun.spawnSync(["pgrep", "-f", `events --tail --json --workspace ${cwd}`]).stdout.toString().split("\n").filter(Boolean);
 
-function host(options: { agent?: object } = {}) {
+function host(options: { agent?: object; sessionFile?: string } = {}) {
 	const sid = `live-${unique()}`, sent: any[][] = [];
-	const app = ompHost({ run: (args, opts) => run(args, opts.cwd, opts.timeout), cwd, sid, sessionFile: `${scratch}/${sid}.jsonl`, agent: options.agent,
+	const app = ompHost({ run: (args, opts) => run(args, opts.cwd, opts.timeout), cwd, sid, sessionFile: options.sessionFile ?? `${scratch}/${sid}.jsonl`, agent: options.agent,
 		sendUserMessage: (...args) => { sent.push(args); },
 		afterEvent: () => { for (const key of TRANSCRIPT_ENV) delete process.env[key]; } });
 	const section = async () => ((await app.event("before_agent_start", { systemPrompt: ["base"] }))?.systemPrompt ?? []).join("\n");
-	return { sent, calls: app.calls, event: app.event, section };
+	return { sent, calls: app.calls, event: app.event, section, emit: app.emit, ctx: app.ctx };
 }
 
 const apps: ReturnType<typeof host>[] = [];
@@ -78,15 +78,22 @@ test("a session switch kills the old stream child and leaves exactly one", async
 	expect(children()).toHaveLength(1);
 });
 
-test("a delegate starts no follower and keeps the per-turn section", async () => {
-	const address = "v2-builder/live-delegate";
-	const app = await open(address, { agent: { kind: "sub", id: "Worker" } });
+test("a delegate starts no follower and keeps the per-turn section of its own address", async () => {
+	const lead = await open("v2-builder/live-delegate-lead");
+	const sessionFile = `${scratch}/live-delegate.jsonl`;
+	lead.emit("task:subagent:lifecycle", { id: "Worker", agent: "scout", status: "started", sessionFile, description: "Survey the tree" });
+	await lead.section();
+	const worker = host({ sessionFile, agent: { kind: "sub", id: "Worker", parentId: lead.ctx.agent.id } }); apps.push(worker);
+	await worker.event("session_start");
+	const address = /Your Kata inbox is (\S+?);/.exec(await worker.section())?.[1];
+	expect(address).toMatch(/^v2-builder\/.+/);
+	expect(address).not.toBe("v2-builder/live-delegate-lead");
 	const ref = await issue();
-	await kata(["notify", ref, "--to", address, "--message", "delegate-note-6602", "--json"]);
-	expect(await app.section()).toContain("delegate-note-6602");
-	expect(app.calls.some(a => a[0] === "events")).toBe(false);
-	expect(app.sent).toEqual([]);
-	await kata(["notify", ref, "--to", address, "--clear", "--json"]);
+	await kata(["notify", ref, "--to", address!, "--message", "delegate-note-6602", "--json"]);
+	expect(await worker.section()).toContain("delegate-note-6602");
+	expect(worker.calls.some(a => a[0] === "events")).toBe(false);
+	expect(worker.sent).toEqual([]);
+	await kata(["notify", ref, "--to", address!, "--clear", "--json"]);
 });
 
 test("KATA_OMP_LIVE_INBOX=0 delivers nothing live and keeps the per-turn section", async () => {
