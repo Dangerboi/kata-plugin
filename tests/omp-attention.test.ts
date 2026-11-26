@@ -138,7 +138,7 @@ test("native child whitespace and cwd resolution match the producer identity", a
 
 // A ticket the lead claims or names mid-session (no KATA_REF): attention starts for it and ends with the session.
 const meta = async (ref: string) => (await kata(["show", ref, "--json"])).issue;
-const attention = async (ref: string) => { const m = (await meta(ref)).metadata ?? {}; return { state: m["work.attention"], owner: m["work.attention_session"], message: m["work.attention_msg"] }; };
+const attention = async (ref: string) => { const m = (await meta(ref)).metadata ?? {}; return { state: m["work.attention"], session: m["work.attention_session"], message: m["work.attention_msg"] }; };
 const fresh = async () => `omptest#${await store.issue("OMP mid-session attention")}`;
 const claimed = async (app: ReturnType<typeof host>, ref: string) => {
   await text(["claim", ref]);
@@ -150,7 +150,7 @@ test("a ticket the lead claims mid-session gets attention, and shutdown leaves i
   const ref = await fresh(); const app = host(); await app.event("session_start");
   await claimed(app, ref);
   const live = await attention(ref);
-  expect(live.state).toBe("ok"); expect(live.owner).toBeTruthy();
+  expect(live.state).toBe("ok"); expect(live.session).toBeTruthy();
   await app.event("session_shutdown");
   expect(await attention(ref)).toMatchObject({ state: "needs-human", message: "session ended without hand-off" });
 });
@@ -181,7 +181,42 @@ test("a ticket already flagged needs-human keeps its flag when the lead claims i
   const app = host(); await app.event("session_start");
   await claimed(app, ref);
   expect(app.calls.some(a => a[1] === "attention-native")).toBe(false);
-  expect(await attention(ref)).toMatchObject({ state: "needs-human", owner: undefined });
+  expect(await attention(ref)).toMatchObject({ state: "needs-human", session: undefined });
+  const stuck = await fresh(); await text(["meta", "set", stuck, "work.attention", "stuck"]);
+  await claimed(app, stuck);
+  expect(app.calls.some(a => a[1] === "attention-native")).toBe(false);
+  expect(await attention(stuck)).toMatchObject({ state: "stuck", session: undefined });
+});
+
+test("a needs-human a person sets on the attended ticket survives a fork", async () => {
+  delete process.env.KATA_REF;
+  const ref = await fresh(); const app = host(); await app.event("session_start");
+  await claimed(app, ref);
+  await text(["meta", "set", ref, "work.attention", "needs-human"]);
+  const starts = () => app.calls.filter(a => a[1] === "attention-native" && a[3] === "start").length;
+  const before = starts();
+  await app.event("session_switch", { reason: "fork" }, switched(app, "attention-person-fork", app.sid));
+  expect(starts()).toBe(before);
+  expect((await attention(ref)).state).toBe("needs-human");
+});
+
+test("a fork whose start fails leaves the ticket ok, and the next claim takes it over", async () => {
+  delete process.env.KATA_REF;
+  let failing = false;
+  const ref = await fresh();
+  const app = host(args => failing && args[1] === "attention-native" && args[3] === "start" ? { code: 1, stdout: "", stderr: "fixture failure" } : undefined);
+  await app.event("session_start");
+  await claimed(app, ref);
+  const first = (await attention(ref)).session;
+  failing = true;
+  await app.event("session_switch", { reason: "fork" }, switched(app, "attention-fail-fork", app.sid));
+  expect(await attention(ref)).toMatchObject({ state: "ok", session: first });
+  failing = false;
+  await claimed(app, ref);
+  const taken = await attention(ref);
+  expect(taken.state).toBe("ok"); expect(taken.session).not.toBe(first);
+  await app.event("session_shutdown");
+  expect((await attention(ref)).state).toBe("needs-human");
 });
 
 test("a session switch ends the refs the old session started attention for", async () => {
@@ -197,10 +232,10 @@ test("a fork whose plan parent is the claimed ticket keeps it ok under the new s
   delete process.env.KATA_REF;
   const ref = await fresh(); const app = host(); await app.event("session_start");
   await claimed(app, ref);
-  const before = (await attention(ref)).owner;
+  const before = (await attention(ref)).session;
   await app.event("session_switch", { reason: "fork" }, switched(app, "attention-fork", app.sid));
   const after = await attention(ref);
-  expect(after.state).toBe("ok"); expect(after.owner).toBeTruthy(); expect(after.owner).not.toBe(before);
+  expect(after.state).toBe("ok"); expect(after.session).toBeTruthy(); expect(after.session).not.toBe(before);
   await app.event("session_shutdown");
   expect((await attention(ref)).state).toBe("needs-human");
 });
@@ -224,7 +259,7 @@ test("kata meta set work.attention ok clears a needs-human flag and starts atten
   await text(["meta", "set", ref, "work.attention", "ok"]);
   await app.event("tool_result", { toolName: "bash", input: { command: `kata meta set ${ref} work.attention ok`, cwd }, isError: false });
   const live = await attention(ref);
-  expect(live.state).toBe("ok"); expect(live.owner).toBeTruthy();
+  expect(live.state).toBe("ok"); expect(live.session).toBeTruthy();
   await app.event("session_shutdown");
   expect((await attention(ref)).state).toBe("needs-human");
 });

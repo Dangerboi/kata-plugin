@@ -1427,11 +1427,18 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 		const previous = attentionSession;
 		if (options.attentionHarness && id && previous?.id !== id) {
 			if (previous) await attention(job, "end", previous);
-			attentionSession = { id, cwd: plan.workspace, ref: explicit && plan.parent, hostCwd: path.resolve(ctx.cwd), hostRef: explicit, attended: new Map() };
-			await attention(job, "start", attentionSession);
-			// A parent this session restored (a fork, a resume) starts under the new attention owner before the previous session's end runs: Kata keeps the
-			// newest attention owner, so that end then does nothing to it.
-			await startParentAttention(job);
+			const current = attentionSession = { id, cwd: plan.workspace, ref: explicit && plan.parent, hostCwd: path.resolve(ctx.cwd), hostRef: explicit, attended: new Map() };
+			await attention(job, "start", current);
+			// A parent this session restored (a fork, or a resume of a ticket still `ok`) starts under the new attention session before the previous session's end runs: Kata keeps
+			// the newest attention session, so that end then does nothing to it. When the start failed, the previous session still holds the parent:
+			// it is not ended here but carried, and the next start or the end of this session takes it over.
+			const started = await startParentAttention(job);
+			if (previous && !started && plan.parent && previous.attended.has(plan.parent)) {
+				const carried = previous.attended.get(plan.parent)!;
+				const held = current.attended.get(plan.parent);
+				if (held) held.sessions.add(previous.id); else current.attended.set(plan.parent, carried);
+				previous.attended.delete(plan.parent);
+			}
 			if (previous) await endAttended(job, previous);
 		}
 		await moveMarks(job, ending, undefined);
@@ -2212,32 +2219,37 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 	// --------------------------------------------------------------- attention
 
 	// Kata owns session attention semantics; the harness name only selects payload parsing and the session token.
-	// `attended`: refs (with their workspace) whose attention this session started after it began: a ticket the lead claimed, named with
-	// `/todo ref` or marked with `kata meta set ... work.attention ok`, and the explicit parent a fork or resume restored. Each stays until
-	// the session ends or switches: Kata's end flags a ticket still on `ok`, and does nothing to a closed one.
-	let attentionSession: { id: string; cwd: string; ref?: string; hostCwd: string; hostRef?: string; marker?: string; attended: Map<string, string> } | undefined;
+	// `attended`: refs this session started attention for after it began (a ticket the lead claimed, named with `/todo ref` or marked with
+	// `kata meta set ... work.attention ok`, and the explicit parent a fork or resume restored), with the workspace and the attention sessions
+	// to end them under: this session's, and the previous one's when a fork's start failed and the previous session may still hold the ref.
+	// Each stays until the session ends or switches: Kata's end flags a ticket still on `ok`, and does nothing to a closed one.
+	type Attended = Map<string, { cwd: string; sessions: Set<string> }>;
+	let attentionSession: { id: string; cwd: string; ref?: string; hostCwd: string; hostRef?: string; marker?: string; attended: Attended } | undefined;
 	const logSkip = (error: unknown) => debug(`Kata attention skipped: ${(error as Error).message}`);
-	const attentionHook = (job: Job, mode: "start" | "end", session: NonNullable<typeof attentionSession>, ref: string, cwd: string) =>
-		kata.run(job, ["agent-hook", "attention-native", options.attentionHarness!, mode, "--session", session.id, "--host-pid", String(platform.pid), "--ref", ref], cwd, { timeout: mode === "start" ? 3000 : 1500 });
-	// Kata ends only what this session is the attention owner of, so no ownership check is needed here. Together, not one by one: omp gives a shutdown handler 2 s.
+	const attentionHook = (job: Job, mode: "start" | "end", sessionId: string, ref: string, cwd: string) =>
+		kata.run(job, ["agent-hook", "attention-native", options.attentionHarness!, mode, "--session", sessionId, "--host-pid", String(platform.pid), "--ref", ref], cwd, { timeout: mode === "start" ? 3000 : 1500 });
+	// Kata ends only what the given attention session holds, so no ownership check is needed here. Together, not one by one: omp gives a shutdown handler 2 s.
 	async function endAttended(job: Job, session: NonNullable<typeof attentionSession>) {
-		await Promise.all([...session.attended].map(([ref, cwd]) => attentionHook(job, "end", session, ref, cwd).catch(logSkip)));
+		await Promise.all([...session.attended].flatMap(([ref, { cwd, sessions }]) => [...sessions].map(id => attentionHook(job, "end", id, ref, cwd).catch(logSkip))));
 		session.attended.clear();
 	}
-	// Starts attention for the plan's explicit parent. Kata's start would reset any `stuck` or `needs-human` to ok, Kata's own session-ended
-	// flag included, so those issues are skipped; `kata meta set <ref> work.attention ok` clears the flag and starts attention. A repeat
-	// start with the same attention owner changes nothing.
-	async function startParentAttention(job: Job) {
+	// Starts attention for the plan's explicit parent; false when the start failed. Kata's start would reset any `stuck` or `needs-human`
+	// to ok, Kata's own session-ended flag included, so those issues are skipped; `kata meta set <ref> work.attention ok` clears the flag and
+	// starts attention. A repeat start with the same attention session changes nothing.
+	async function startParentAttention(job: Job): Promise<boolean> {
 		const session = attentionSession, parent = plan.parent;
-		if (!session || !options.attentionHarness || configuredRef() || !parent || plan.auto) return;
+		if (!session || !options.attentionHarness || configuredRef() || !parent || plan.auto) return true;
 		try {
 			const flag = (await owned(job, parent, plan.workspace)).metadata?.["work.attention"];
-			if (flag === "stuck" || flag === "needs-human") return;
+			if (flag === "stuck" || flag === "needs-human") return true;
 			// Recorded first: a start that times out after Kata wrote ok must still be ended.
-			session.attended.set(parent, plan.workspace);
-			await attentionHook(job, "start", session, parent, plan.workspace);
+			const held = session.attended.get(parent) ?? { cwd: plan.workspace, sessions: new Set<string>() };
+			held.sessions.add(session.id); session.attended.set(parent, held);
+			await attentionHook(job, "start", session.id, parent, plan.workspace);
+			return true;
 		} catch (err) {
 			logSkip(err);
+			return false;
 		}
 	}
 	const adoptParent = async (job: Job, ref: string, ctx: HostContext, workspace?: string) => { await adopt(job, ref, ctx, workspace); await startParentAttention(job); };
@@ -2247,7 +2259,7 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 		try {
 			// The native hook guards revisions, not the actor or teammate.
 			await owned(job, ref, session.cwd);
-			await attentionHook(job, mode, session, ref, session.cwd);
+			await attentionHook(job, mode, session.id, ref, session.cwd);
 			if (mode === "start" && session.hostRef) {
 				const route = JSON.parse(await kata.run(job, ["daemon", "locate"], session.hostCwd, { timeout: 1500 }));
 				const daemon = route.request_base_url || route.address;
