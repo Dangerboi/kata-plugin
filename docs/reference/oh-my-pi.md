@@ -7,7 +7,7 @@ Session start exports `KATA_CLOSE_TRANSCRIPT_ENABLED=true` (unless already set),
 | Variable | Meaning |
 | --- | --- |
 | `KATA_OMP_EXECUTABLE` | Kata executable; defaults to `kata`. |
-| `KATA_REF` | Explicit main parent and main session-attention target. |
+| `KATA_REF` | Explicit main parent and main session-attention target. A ticket the lead claims, or an issue it names with `/todo ref`, gets session attention too (below). |
 | `KATA_DEFAULT_PROJECT` | Existing Kata project that collects the plans of folders without a project. Issues carry a label naming the repo. omp gives extensions no per-plugin settings, so this variable is the only switch. |
 | `KATA_AUTHOR`, `KATA_TEAMMATE` | Existing actor and optional main teammate. |
 | `KATA_INBOX_USER` | The session's inbox address, `<actor>/<name>`. A bare `<actor>` is a personal inbox: the session reads none and says so once. Only requests from the session's own actor are shown. |
@@ -75,6 +75,8 @@ A missing executable or an unreachable or unresponsive daemon (a Kata call that 
 ## Hooks
 
 The plugin injects the contract Kata gives for the session folder and runs `kata agent-hook attention-native` itself; no `kata agent-hook install` step is needed. Kata 0.23.0 has no `omp` installer, so nothing else adds the contract to omp. Kata gives a contract only in a folder with a `.kata.toml` (or below one); elsewhere the contract section is left out. The inbox section needs the folder to resolve to a Kata project: it works through a `.kata.toml`, or a git remote that `kata init` linked to a project in another clone. A session that plans in `KATA_DEFAULT_PROJECT`, or in the inferred project the plugin registers, gets the plan and assignment sections but no inbox. Run `kata init --project <name>` in the folder to get the contract; this also moves the folder's new plans from `KATA_DEFAULT_PROJECT` to that project. If something else already put the contract in the system prompt, the plugin skips its own copy.
+
+Without `KATA_REF`, the lead's session attention starts for the ticket it binds mid-session, by a standalone `kata claim <ref>` or `/todo ref <ref>`, unless that issue's `work.attention` is already `stuck` or `needs-human`, which a start would reset to `ok`. A later bound ticket takes its place and ends the first's attention. Attention ends at session end or switch; Kata then flags an open issue still on `ok` as `needs-human`, and leaves a closed one alone. The `KATA_ATTENTION_HOST` marker is set for `KATA_REF` only. Subagents never start attention of their own.
 
 Qualified explicit issue references and saved bindings take precedence over directory probing, including in unbound worktrees. An unavailable explicit issue is an error.
 

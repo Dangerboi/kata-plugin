@@ -131,3 +131,62 @@ test("native child whitespace and cwd resolution match the producer identity", a
     expect((await nativeCalls(r, dir, d)).some(a => a.includes("attention-native") && a.includes("start"))).toBe(true);
   }
 });
+
+// A ticket the lead binds mid-session (no KATA_REF): attention starts for it and ends with the session.
+const meta = async (ref: string) => (await kata(["show", ref, "--json"])).issue;
+const attention = async (ref: string) => { const m = (await meta(ref)).metadata ?? {}; return { state: m["work.attention"], owner: m["work.attention_session"], message: m["work.attention_msg"] }; };
+const fresh = async () => `omptest#${await store.issue("OMP late attention")}`;
+const claimed = async (app: ReturnType<typeof host>, ref: string) => {
+  await text(["claim", ref]);
+  await app.event("tool_result", { toolName: "bash", input: { command: `kata claim ${ref}`, cwd }, isError: false });
+};
+
+test("a ticket the lead claims mid-session gets attention, and shutdown leaves it for a human", async () => {
+  delete process.env.KATA_REF;
+  const ref = await fresh(); const app = host(); await app.event("session_start");
+  await claimed(app, ref);
+  const live = await attention(ref);
+  expect(live.state).toBe("ok"); expect(live.owner).toBeTruthy();
+  await app.event("session_shutdown");
+  expect(await attention(ref)).toMatchObject({ state: "needs-human", message: "session ended without hand-off" });
+});
+
+test("/todo ref starts attention for the issue it pins", async () => {
+  delete process.env.KATA_REF;
+  const ref = await fresh(); await text(["claim", ref]);
+  const app = host(); await app.event("session_start");
+  await app.event("input", { text: `/todo ref ${ref}`, source: "interactive" });
+  expect((await attention(ref)).state).toBe("ok");
+  await app.event("session_shutdown");
+  expect((await attention(ref)).state).toBe("needs-human");
+});
+
+test("a claimed ticket closed before shutdown stays closed and is not flagged", async () => {
+  delete process.env.KATA_REF;
+  const ref = await fresh(); const app = host(); await app.event("session_start");
+  await claimed(app, ref);
+  await text(["close", ref, "--done", "--message", "Finished the work before the session ended.", "--commit", "deadbeef"]);
+  await app.event("session_shutdown");
+  expect((await meta(ref)).status).toBe("closed");
+  expect((await attention(ref)).state).not.toBe("needs-human");
+});
+
+test("a ticket already flagged needs-human keeps its flag when the lead claims it", async () => {
+  delete process.env.KATA_REF;
+  const ref = await fresh(); await text(["meta", "set", ref, "work.attention", "needs-human"]);
+  const app = host(); await app.event("session_start");
+  await claimed(app, ref);
+  expect(app.calls.some(a => a[1] === "attention-native")).toBe(false);
+  expect(await attention(ref)).toMatchObject({ state: "needs-human", owner: undefined });
+});
+
+test("a session switch ends the refs the old session started attention for", async () => {
+  delete process.env.KATA_REF;
+  const ref = await fresh(); const app = host(); await app.event("session_start");
+  await claimed(app, ref);
+  expect((await attention(ref)).state).toBe("ok");
+  const sm = app.ctx.sessionManager;
+  const next = { ...app.ctx, sessionManager: { getSessionFile: () => sm.getSessionFile(), getEntries: () => sm.getEntries(), getBranch: () => sm.getBranch(), getHeader: () => sm.getHeader(), getSessionId: () => "attention-late-switched" } };
+  await app.event("session_switch", {}, next);
+  expect((await attention(ref)).state).toBe("needs-human");
+});

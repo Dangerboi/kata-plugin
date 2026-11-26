@@ -1426,8 +1426,8 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 		reminders = 0;
 		const previous = attentionSession;
 		if (options.attentionHarness && id && previous?.id !== id) {
-			if (previous) await attention(job, "end", previous);
-			attentionSession = { id, cwd: plan.workspace, ref: explicit && plan.parent, hostCwd: path.resolve(ctx.cwd), hostRef: explicit };
+			if (previous) await endAttention(job, previous);
+			attentionSession = { id, cwd: plan.workspace, ref: explicit && plan.parent, hostCwd: path.resolve(ctx.cwd), hostRef: explicit, late: new Map() };
 			await attention(job, "start", attentionSession);
 		}
 		await moveMarks(job, ending, undefined);
@@ -2020,11 +2020,13 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 					// Naming the automatic parent makes it explicit: it no longer closes by itself, and the plan keeps it.
 					requestedRef = plan.parent;
 					await adopt(job, plan.parent, ctx);
+					await followParent(job);
 					persist(job);
 					return `${plan.parent} is now this plan's parent, and it will not close automatically.`;
 				}
 				requestedRef = pinned;
 				await adopt(job, pinned, ctx);
+				await followParent(job);
 				persist(job);
 				return `${pinned} is now this plan's parent.`;
 			} catch (error) {
@@ -2075,6 +2077,7 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 				if (plan.tasks.some(t => hasRef(t, target))) return;
 				await owned(job, target, workspace);
 				await adopt(job, target, ctx, workspace);
+				await followParent(job);
 			}));
 		}
 	}
@@ -2208,14 +2211,46 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 	// --------------------------------------------------------------- attention
 
 	// Kata owns session attention semantics; the harness name only selects payload parsing and the session token.
-	let attentionSession: { id: string; cwd: string; ref?: string; hostCwd: string; hostRef?: string; marker?: string } | undefined;
+	// `late`: refs (with their workspace) the lead bound after the session began, by claiming a ticket or `/todo ref`; the session's
+	// attention started for each, and ends with it.
+	let attentionSession: { id: string; cwd: string; ref?: string; hostCwd: string; hostRef?: string; marker?: string; late: Map<string, string> } | undefined;
+	async function endAttention(job: Job, session: NonNullable<typeof attentionSession>) {
+		await attention(job, "end", session);
+		// Kata ends only what this session started, and never a closed issue, so no ownership check is needed.
+		for (const [ref, cwd] of session.late) await attentionHook(job, "end", session, ref, cwd).catch(error => debug(`Kata attention skipped: ${(error as Error).message}`));
+		session.late.clear();
+	}
+	const attentionHook = (job: Job, mode: "start" | "end", session: NonNullable<typeof attentionSession>, ref: string, cwd: string) =>
+		kata.run(job, ["agent-hook", "attention-native", options.attentionHarness!, mode, "--session", session.id, "--host-pid", String(platform.pid), "--ref", ref], cwd, { timeout: mode === "start" ? 3000 : 1500 });
+	// Keeps attention on the plan parent the lead bound mid-session: the parent it replaced ends, the new one starts unless it is
+	// already flagged (Kata's start would reset `stuck` or `needs-human` to ok). An explicit ref has its own start in `enterSession`.
+	async function followParent(job: Job) {
+		const session = attentionSession;
+		if (!session || !options.attentionHarness || configuredRef()) return;
+		const parent = plan.parent;
+		for (const [ref, cwd] of session.late) {
+			if (ref === parent) continue;
+			session.late.delete(ref);
+			await attentionHook(job, "end", session, ref, cwd).catch(error => debug(`Kata attention skipped: ${(error as Error).message}`));
+		}
+		if (!parent || session.late.has(parent)) return;
+		try {
+			const issue = await owned(job, parent, plan.workspace);
+			const flag = issue.metadata?.["work.attention"];
+			if (flag === "stuck" || flag === "needs-human") return;
+			await attentionHook(job, "start", session, parent, plan.workspace);
+			session.late.set(parent, plan.workspace);
+		} catch (err) {
+			debug(`Kata attention skipped: ${(err as Error).message}`);
+		}
+	}
 	async function attention(job: Job, mode: "start" | "end", session: NonNullable<typeof attentionSession>) {
 		const ref = session.ref;
 		if (!ref || !options.attentionHarness) return;
 		try {
 			// The native hook guards revisions, not the actor or teammate.
 			await owned(job, ref, session.cwd);
-			await kata.run(job, ["agent-hook", "attention-native", options.attentionHarness, mode, "--session", session.id, "--host-pid", String(platform.pid), "--ref", ref], session.cwd, { timeout: mode === "start" ? 3000 : 1500 });
+			await attentionHook(job, mode, session, ref, session.cwd);
 			if (mode === "start" && session.hostRef) {
 				const route = JSON.parse(await kata.run(job, ["daemon", "locate"], session.hostCwd, { timeout: 1500 }));
 				const daemon = route.request_base_url || route.address;
@@ -2327,7 +2362,7 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 				}
 				await sweep(job, options.closeParent !== "shutdown" || ends);
 				const ending = ends ? leaving() : undefined;
-				if (session) await attention(job, "end", session);
+				if (session) await endAttention(job, session);
 				await moveMarks(job, ending, undefined);
 			});
 			if (closing.delegate?.report) await delegates.apply({ type: "reported", id: closing.delegate.id, text: closing.delegate.report }, NO_JOB);
