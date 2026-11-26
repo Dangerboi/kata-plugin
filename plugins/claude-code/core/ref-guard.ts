@@ -15,41 +15,33 @@ const fields = (value: unknown): Record<string, unknown> => value && typeof valu
 const records = (value: unknown): Record<string, unknown>[] => Array.isArray(value) ? value.map(fields) : [];
 const INTERNAL_URL = /^[a-z][a-z0-9+.-]*:\/\//i;
 
-// The first header a patch has says which grammar the whole patch is in: hashline (`[path#tag]`), apply_patch (`*** Add|Update File:`) or omp's
-// sloppy edit (`*** Edit File:`, matched loosely as omp does).
-const HASHLINE = /^\[(.+)#[^#\]]+\]\s*$/, APPLY = /^\*\*\* (?:Add|Update) File:\s*(.+?)\s*$/, SLOPPY = /^\s*\*{3}\s+Edit\s+File:(.*)$/i;
-// Omp's sloppy action lines (its grammar): anything else starting with `***` is text. Only these two kinds carry new text of their own;
-// `*** Paste` puts back what a `*** Cut` took.
-const SLOPPY_ACTION = /^\s*\*{3}\s+(?:Find(?:\s+all)?|Replace|Insert\s+(?:Before|After)|Cut|Paste\s+(?:Before|After)|(?:Cut|Delete|Paste\s+(?:Before|After)|Replace)\s+Block:\s+\S.*|Begin\s+Patch|End\s+Patch)\s*$/i;
-const SLOPPY_NEW_TEXT = /^\s*\*{3}\s+(?:Replace(?:\s+Block:.*)?|Insert\s+(?:Before|After))\s*$/i;
+// A patch's rows, per target file. Every row but the headers that name a target (`[path#tag]` of a hashline edit, `*** Edit|Update|Add|Delete
+// File:`, `*** Move to:`, and `*** Begin|End Patch` at the top level) is candidate text, with a leading `+`, `-` or space marker stripped: whatever
+// a format calls its actions, new text sits in some row. Search text, context and removed rows are in the file already, whose refs the caller
+// holds, so counting them is harmless. A sloppy patch (omp's `*** Edit File:` / `*** Find` / `*** Replace` format, recognised by any such opener or
+// action row, whichever header opens it) may continue the current file with an empty path or `all`, and has no hashline headers.
+const SLOPPY = /^\s*\*{3}\s+(?:Edit\s+File|Find|Replace|Insert|Cut|Paste)\b/im, HASHLINE = /^\[(.+)#[^#\]]+\]\s*$/;
+const FILE_HEADER = /^\s*\*{3}\s+(?:Edit|Update|Add|Delete)\s+File:?(.*)$/i, MOVE_HEADER = /^\s*\*{3}\s+Move\s+to:?\s*(.+?)\s*$/i, ENVELOPE = /^\s*\*{3}\s+(?:Begin|End)\s+Patch\s*$/i;
 
-// The rows a patch adds, per file. Hashline and apply_patch add their `+` rows (apply_patch's `*** Move to:` names a second place). Sloppy adds
-// the raw rows after `*** Replace`, `*** Replace Block: opener`, `*** Insert` and `*** Paste Before|After`, and not those of `*** Find`.
-// Headers, context and old-side rows are never text.
 function patchRows(patch: string): Added[] {
 	const lines = patch.split("\n").map(line => line.replace(/\r$/, ""));
-	const first = lines.map(line => HASHLINE.test(line) ? "hashline" : /^\*\*\* (?:Add|Update|Delete) File:/.test(line) ? "apply" : SLOPPY.test(line) ? "sloppy" : undefined).find(Boolean);
-	const header = first === "hashline" ? HASHLINE : first === "apply" ? APPLY : SLOPPY;
+	const sloppy = SLOPPY.test(patch);
+	let last = lines.length - 1;
+	while (last > 0 && !lines[last].trim()) last--;
 	const groups: { files: string[]; rows: string[] }[] = [];
-	let group: { files: string[]; rows: string[] } | undefined, collecting = false;
-	for (const line of lines) {
-		const found = first && header.exec(line);
-		if (found) {
+	let group: { files: string[]; rows: string[] } | undefined;
+	for (const [at, line] of lines.entries()) {
+		const hashline = !sloppy && HASHLINE.exec(line), file = FILE_HEADER.exec(line), moved = MOVE_HEADER.exec(line);
+		if (hashline || file) {
 			// Sloppy: an optional path, then an optional ` all`; without a path the patch goes on with the current file.
-			let file = first === "sloppy" ? found[1].trim().replace(/(?:^|\s)all$/i, "").trim() : found[1];
-			if (file.startsWith('"')) try { file = JSON.parse(file); } catch { /* as written */ }
-			collecting = false;
-			if (file) { group = { files: [file], rows: [] }; groups.push(group); }
+			let name = hashline ? hashline[1] : sloppy ? file![1].trim().replace(/(?:^|\s)all$/i, "").trim() : file![1].trim();
+			if (name.startsWith('"')) try { name = JSON.parse(name); } catch { /* as written */ }
+			if (name) { group = { files: [name], rows: [] }; groups.push(group); }
 			continue;
 		}
-		if (first === "apply") {
-			const moved = /^\*\*\* Move to:\s*(.+?)\s*$/.exec(line);
-			if (moved) { group?.files.push(moved[1]); continue; }
-			if (line.startsWith("*** Delete File:")) { group = undefined; continue; }
-		}
-		if (first === "sloppy" && SLOPPY_ACTION.test(line)) { collecting = SLOPPY_NEW_TEXT.test(line); continue; }
-		if (!group) continue;
-		if (first === "sloppy" ? collecting : line.startsWith("+")) group.rows.push(first === "sloppy" ? line : line.slice(1));
+		if (moved) { group?.files.push(moved[1]); continue; }
+		if (ENVELOPE.test(line) && (!group || at === last)) continue;
+		group?.rows.push(/^[-+ ]/.test(line) ? line.slice(1) : line);
 	}
 	return groups.filter(g => g.rows.length).map(g => ({ files: g.files, text: g.rows.join("\n") }));
 }

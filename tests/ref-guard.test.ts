@@ -56,6 +56,7 @@ test("a hashline header tag is not flagged, only the added rows", async () => {
 });
 
 test("removed and context lines of a patch are not added text", async () => {
+  files["src/a.ts"] = "demo#ab3d old\ncontext demo#ab3d\n";
   const input = { input: "*** Update File: src/a.ts\n-demo#ab3d old\n context demo#ab3d\n+clean" };
   expect(await check("apply_patch", input)).toEqual([]);
 });
@@ -143,7 +144,6 @@ test("omp's sloppy edit mode is checked: the replacement text, not the find side
   files["src/s.ts"] = "const a = 1;\n";
   const patch = (body: string) => ({ input: `*** Edit File: src/s.ts\n${body}` });
   expect(await check("edit", patch("*** Find\nconst a = 1;\n*** Replace\nconst a = 2; // demo#ab3d\n"))).toEqual(["demo#ab3d"]);
-  expect(await check("edit", patch("*** Find\nconst a = 1; // demo#ab3d\n*** Replace\nconst a = 2;\n"))).toEqual([]);
   expect(await check("edit", patch("*** Find\nconst a = 1;\n*** Insert After\n// demo#k9m2\n"))).toEqual(["demo#k9m2"]);
   expect(await check("edit", patch("*** Replace Block: function f() {\n  return 1; // demo#k9m2\n}\n"))).toEqual(["demo#k9m2"]);
   expect(await check("edit", patch("*** Find\nconst a = 1;\n*** Cut\n"))).toEqual([]);
@@ -175,7 +175,6 @@ test("each patch format is read with its own grammar", async () => {
   expect(await check("edit", { input: '*** Edit File: "/tmp/s.ts"\n*** Find\nx\n*** Replace\ndemo#ab3d\n' })).toEqual([]);
   // A sloppy patch's `+` row is not special; an apply_patch's raw row is not text.
   expect(await check("edit", { input: "*** Edit File: src/s.ts\n*** Replace\n+demo#ab3d\n" })).toEqual(["demo#ab3d"]);
-  expect(await check("apply_patch", { input: "*** Begin Patch\n*** Update File: src/s.ts\n@@\n*** Replace\ndemo#ab3d\n*** End Patch" })).toEqual([]);
 });
 
 test("git -C values fold in order, and a cd moves the folder of later commands", async () => {
@@ -205,9 +204,8 @@ test("a sloppy opener without a path continues the current file", async () => {
 test("a sloppy action line is read as loosely as its opener", async () => {
   expect(await check("edit", { input: "*** Edit File: src/s.ts\n  *** Find\nx\n\t*** REPLACE\ndemo#ab3d\n" })).toEqual(["demo#ab3d"]);
   expect(await check("edit", { input: "*** Edit File: src/s.ts\n *** insert after\ndemo#k9m2\n" })).toEqual(["demo#k9m2"]);
-  // Paste puts back what a Cut took, so it carries no text of its own.
+  // Action rows hold no refs.
   expect(await check("edit", { input: "*** Edit File: src/s.ts\n *** Find\nx\n*** Cut\n*** Paste After\n" })).toEqual([]);
-  expect(await check("edit", { input: "*** Edit File: src/s.ts\n  *** Find\ndemo#ab3d\n  *** Cut\n" })).toEqual([]);
 });
 
 test("a sloppy patch with CRLF line ends is read, and only omp's own action names are headers", async () => {
@@ -217,4 +215,18 @@ test("a sloppy patch with CRLF line ends is read, and only omp's own action name
   // Any other `***` row inside a replacement is text, so the rows after it still count.
   expect(await check("edit", { input: "*** Edit File: src/s.ts\n*** Find\nx\n*** Replace\n*** Note\n  *** see below\n// demo#ab3d\n" })).toEqual(["demo#ab3d"]);
   expect(await check("edit", { input: "*** Edit File: src/s.ts\n*** Find\nx\n*** Replace\n*** Note: demo#ab3d\n" })).toEqual(["demo#ab3d"]);
+});
+
+test("a patch's every row but its target headers is candidate text, whatever omp calls the action", async () => {
+  files["src/s.ts"] = "const a = 1; // demo#k9m2\n";
+  const sloppy = (body: string, opener = "*** Edit File: src/s.ts") => ({ input: `${opener}\n${body}` });
+  for (const action of ["*** Replace:", "*** Insert Before:", "*** Insert After", "*** Replace Block:function f() {", "*** replace block: function f() {"])
+    expect(await check("edit", sloppy(`*** Find\nconst a\n${action}\n// demo#ab3d\n`)), action).toEqual(["demo#ab3d"]);
+  // Envelope rows inside an Insert body are text; the ref after them still counts.
+  expect(await check("edit", sloppy("*** Find\nx\n*** Insert After\n*** Begin Patch\n*** End Patch\n// demo#ab3d\n"))).toEqual(["demo#ab3d"]);
+  // omp applies a sloppy patch opened with `*** Update File:` too.
+  expect(await check("edit", sloppy("*** Find\nx\n*** Replace\n// demo#ab3d\n", "*** Update File: src/s.ts"))).toEqual(["demo#ab3d"]);
+  // Search text, context and removed rows come from the file, whose refs are held.
+  expect(await check("edit", sloppy("*** Find\nconst a = 1; // demo#k9m2\n*** Replace\nconst a = 2;\n"))).toEqual([]);
+  expect(await check("apply_patch", { input: "*** Update File: src/s.ts\n-const a = 1; // demo#k9m2\n+const a = 2;\n" })).toEqual([]);
 });
