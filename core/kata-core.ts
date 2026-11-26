@@ -1429,12 +1429,12 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 		const previous = attentionSession;
 		if (options.attentionHarness && id && previous?.id !== id) {
 			if (previous) await attention(job, "end", previous);
-			attentionSession = { id, cwd: plan.workspace, ref: explicit && plan.parent, hostCwd: path.resolve(ctx.cwd), hostRef: explicit, claimed: new Map() };
+			attentionSession = { id, cwd: plan.workspace, ref: explicit && plan.parent, hostCwd: path.resolve(ctx.cwd), hostRef: explicit, attended: new Map() };
 			await attention(job, "start", attentionSession);
 			// A parent this session restored (a fork, a resume) starts under the new owner before the previous session's end runs: Kata keeps the
 			// newest owner, so that end then does nothing to it.
 			await startParentAttention(job);
-			if (previous) await endClaimed(job, previous);
+			if (previous) await endAttended(job, previous);
 		}
 		await moveMarks(job, ending, undefined);
 		// No tasks left by a pi source: the fork's own view of the tasks the source holds in the plan it bound.
@@ -2214,30 +2214,38 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 	// --------------------------------------------------------------- attention
 
 	// Kata owns session attention semantics; the harness name only selects payload parsing and the session token.
-	// `claimed`: refs (with their workspace) whose attention this session started after it began, because the lead claimed the ticket or
-	// named it with `/todo ref`. Each stays until the session ends or switches: Kata's end flags a ticket still open, and does nothing to a closed one.
-	let attentionSession: { id: string; cwd: string; ref?: string; hostCwd: string; hostRef?: string; marker?: string; claimed: Map<string, string> } | undefined;
+	// `attended`: refs (with their workspace) whose attention this session started after it began: a ticket the lead claimed, named with
+	// `/todo ref` or marked with `kata meta set ... work.attention ok`, and the explicit parent a fork or resume restored. Each stays until
+	// the session ends or switches: Kata's end flags a ticket still on `ok`, and does nothing to a closed one.
+	let attentionSession: { id: string; cwd: string; ref?: string; hostCwd: string; hostRef?: string; marker?: string; attended: Map<string, string> } | undefined;
+	const skipped = (error: unknown) => debug(`Kata attention skipped: ${(error as Error).message}`);
 	const attentionHook = (job: Job, mode: "start" | "end", session: NonNullable<typeof attentionSession>, ref: string, cwd: string) =>
 		kata.run(job, ["agent-hook", "attention-native", options.attentionHarness!, mode, "--session", session.id, "--host-pid", String(platform.pid), "--ref", ref], cwd, { timeout: mode === "start" ? 3000 : 1500 });
-	// Kata ends only what this session owns, so no ownership check is needed here.
-	async function endClaimed(job: Job, session: NonNullable<typeof attentionSession>) {
-		for (const [ref, cwd] of session.claimed) await attentionHook(job, "end", session, ref, cwd).catch(error => debug(`Kata attention skipped: ${(error as Error).message}`));
-		session.claimed.clear();
+	// Kata ends only what this session owns, so no ownership check is needed here. Together, not one by one: omp gives a shutdown handler 2 s.
+	async function endAttended(job: Job, session: NonNullable<typeof attentionSession>) {
+		await Promise.all([...session.attended].map(([ref, cwd]) => attentionHook(job, "end", session, ref, cwd).catch(skipped)));
+		session.attended.clear();
 	}
-	// Starts attention for the plan's explicit parent when this session has not: Kata's start would reset `stuck` or a person's
-	// `needs-human` to ok, so those are skipped; Kata's own session-ended flag is attention a session owned, so it is taken back.
+	// Kata writes the session-ended message and an `ended:` owner in one patch; a start by this session replaces the owner, so a later
+	// `needs-human` (a person's, a delegate's hand back) is not mistaken for it.
+	const sessionEnded = (meta: Record<string, unknown> | undefined) =>
+		meta?.["work.attention_msg"] === SESSION_ENDED_MESSAGE && String(meta?.["work.attention_session"] ?? "").startsWith("ended:");
+	// Starts attention for the plan's explicit parent. Kata's start would reset `stuck` or a person's `needs-human` to ok, so those are
+	// skipped; Kata's own session-ended flag is attention a session owned, so it is taken back. A repeat start by the same owner changes nothing.
 	async function startParentAttention(job: Job) {
 		const session = attentionSession, parent = plan.parent;
-		if (!session || !options.attentionHarness || configuredRef() || !parent || plan.auto || session.claimed.has(parent)) return;
+		if (!session || !options.attentionHarness || configuredRef() || !parent || plan.auto) return;
 		try {
 			const meta = (await owned(job, parent, plan.workspace)).metadata;
 			const flag = meta?.["work.attention"];
-			if (flag === "stuck" || (flag === "needs-human" && meta?.["work.attention_msg"] !== SESSION_ENDED_MESSAGE)) return;
+			if (flag === "stuck" || (flag === "needs-human" && !sessionEnded(meta))) return;
 			// Recorded first: a start that times out after Kata wrote ok must still be ended.
-			session.claimed.set(parent, plan.workspace);
+			session.attended.set(parent, plan.workspace);
 			await attentionHook(job, "start", session, parent, plan.workspace);
+			// Kata's start leaves the old message on the issue; cleared, a later person's `needs-human` is never mistaken for Kata's own.
+			if (flag === "needs-human") await kata.run(job, ["meta", "unset", parent, "work.attention_msg", "--if-value", JSON.stringify(SESSION_ENDED_MESSAGE), "--json-value"], plan.workspace).catch(skipped);
 		} catch (err) {
-			debug(`Kata attention skipped: ${(err as Error).message}`);
+			skipped(err);
 		}
 	}
 	const adoptParent = async (job: Job, ref: string, ctx: HostContext, workspace?: string) => { await adopt(job, ref, ctx, workspace); await startParentAttention(job); };
@@ -2257,7 +2265,7 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 				}
 			}
 		} catch (err) {
-			debug(`Kata attention skipped: ${(err as Error).message}`);
+			skipped(err);
 		} finally {
 			if (mode === "end" && session.marker && platform.env.get("KATA_ATTENTION_HOST") === session.marker) platform.env.set("KATA_ATTENTION_HOST", undefined);
 		}
@@ -2359,7 +2367,7 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 				}
 				await sweep(job, options.closeParent !== "shutdown" || ends);
 				const ending = ends ? leaving() : undefined;
-				if (session) { await attention(job, "end", session); await endClaimed(job, session); }
+				if (session) { await attention(job, "end", session); await endAttended(job, session); }
 				await moveMarks(job, ending, undefined);
 			});
 			if (closing.delegate?.report) await delegates.apply({ type: "reported", id: closing.delegate.id, text: closing.delegate.report }, NO_JOB);

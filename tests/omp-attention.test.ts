@@ -136,10 +136,10 @@ test("native child whitespace and cwd resolution match the producer identity", a
   }
 });
 
-// A ticket the lead binds mid-session (no KATA_REF): attention starts for it and ends with the session.
+// A ticket the lead claims or names mid-session (no KATA_REF): attention starts for it and ends with the session.
 const meta = async (ref: string) => (await kata(["show", ref, "--json"])).issue;
 const attention = async (ref: string) => { const m = (await meta(ref)).metadata ?? {}; return { state: m["work.attention"], owner: m["work.attention_session"], message: m["work.attention_msg"] }; };
-const fresh = async () => `omptest#${await store.issue("OMP late attention")}`;
+const fresh = async () => `omptest#${await store.issue("OMP mid-session attention")}`;
 const claimed = async (app: ReturnType<typeof host>, ref: string) => {
   await text(["claim", ref]);
   await app.event("tool_result", { toolName: "bash", input: { command: `kata claim ${ref}`, cwd }, isError: false });
@@ -212,7 +212,7 @@ test("a ticket Kata flagged when its session ended gets attention again when the
   expect(await attention(ref)).toMatchObject({ state: "needs-human", message: "session ended without hand-off" });
   const second = host(); await second.event("session_start");
   await second.event("tool_result", { toolName: "bash", input: { command: `kata claim ${ref.split("#")[1]}`, cwd }, isError: false });
-  expect((await attention(ref)).state).toBe("ok");
+  expect(await attention(ref)).toMatchObject({ state: "ok", message: undefined });
 });
 
 test("two claimed tickets keep attention until shutdown, then both are flagged", async () => {
@@ -222,4 +222,44 @@ test("two claimed tickets keep attention until shutdown, then both are flagged",
   expect((await attention(one)).state).toBe("ok"); expect((await attention(two)).state).toBe("ok");
   await app.event("session_shutdown");
   expect((await attention(one)).state).toBe("needs-human"); expect((await attention(two)).state).toBe("needs-human");
+});
+
+test("after a take-back, a person's needs-human without a message is kept by a re-claim and a fork", async () => {
+  delete process.env.KATA_REF;
+  const ref = await fresh(); const first = host(); await first.event("session_start");
+  await claimed(first, ref); await first.event("session_shutdown");
+  const app = host(); await app.event("session_start");
+  await claimed(app, ref);
+  expect((await attention(ref)).state).toBe("ok");
+  await text(["meta", "set", ref, "work.attention", "needs-human"]);
+  await claimed(app, ref);
+  expect((await attention(ref)).state).toBe("needs-human");
+  await app.event("session_switch", { reason: "fork" }, switched(app, "attention-person-fork", app.sid));
+  expect((await attention(ref)).state).toBe("needs-human");
+  await claimed(app, ref);
+  expect((await attention(ref)).state).toBe("needs-human");
+});
+
+test("a start that failed is retried by the next claim", async () => {
+  delete process.env.KATA_REF;
+  const ref = await fresh(); let failed = false;
+  const app = host(args => args[1] === "attention-native" && args[3] === "start" && !failed && (failed = true) ? { code: 1, stdout: "", stderr: "fixture failure" } : undefined);
+  await app.event("session_start");
+  await claimed(app, ref);
+  expect((await attention(ref)).state).toBeUndefined();
+  await claimed(app, ref);
+  expect((await attention(ref)).state).toBe("ok");
+});
+
+test("shutdown ends every claimed ticket together", async () => {
+  delete process.env.KATA_REF;
+  let running = 0, most = 0;
+  const app = host(async args => {
+    if (args[1] !== "attention-native" || args[3] !== "end") return;
+    most = Math.max(most, ++running); await new Promise(r => setTimeout(r, 150)); running--;
+  });
+  await app.event("session_start");
+  for (const ref of [await fresh(), await fresh()]) await claimed(app, ref);
+  await app.event("session_shutdown");
+  expect(most).toBe(2);
 });
