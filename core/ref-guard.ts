@@ -16,25 +16,26 @@ const INTERNAL_URL = /^[a-z][a-z0-9+.-]*:\/\//i;
 
 // A patch's rows, per target file. Every row but the headers that name a target is candidate text, with a leading `+`, `-` or space marker
 // stripped: whatever a format calls its actions, new text sits in some row. Search text, context and removed rows are in the file already, whose
-// refs the caller holds, so counting them is harmless. The format is chosen first, and only its own headers name targets (`*** Begin|End Patch`
-// at the top level are skipped in every format):
-// The format follows omp's own order: after a BOM, blank rows and an optional `*** Begin Patch`, the first row decides:
-// - `[path#tag]`: hashline, whose rows are those headers;
-// - `*** Edit File:`, or `*** Update File:` with an unindented sloppy action row (`*** Find`, `*** Replace`, ...) after it, or `*** Find`: sloppy
-//   (omp's `*** Edit File:` / `*** Find` / `*** Replace`), whose targets are `*** Edit File:` rows, which may continue the current file with an
-//   empty path or `all`, and the first-row `*** Update File:`; its other `***` rows are text;
-// - anything else: apply_patch: `*** Add|Update|Delete File:` and `*** Move to:` (naming a second place for the file).
-const HASHLINE = /^\[(.+)#[^#\]]+\]\s*$/, SLOPPY_ACTION = /^\*{3}\s+(?:Find|Replace|Insert|Cut|Paste)\b/im;
-const SLOPPY_FILE = /^\s*\*{3}\s+Edit\s+File(?::(.*)|\s*)$/i, SLOPPY_FIRST = /^\s*\*{3}\s+Update\s+File(?::(.*)|\s*)$/i;
+// refs the caller holds, so counting them is harmless. The format is chosen as omp chooses it, and only its own headers name targets. After a BOM,
+// blank rows and any `*** Begin Patch` rows, the first row decides:
+// - `[path#tag]`: hashline, whose headers are those rows;
+// - `*** Edit File` (a colon or whitespace after it), `*** Find`, or `*** Update File:` when some row, trimmed, is a sloppy action and no row is an
+//   `@@` hunk header: sloppy. Its targets are `*** Edit File` rows, which may continue the current file with an empty path or `all`, and the
+//   first-row `*** Update File:`; its other `***` rows are text;
+// - anything else: apply_patch, with `*** Add|Update|Delete File:` and `*** Move to:` (naming a second place for the file).
+// `*** Begin|End Patch` rows at the top level are skipped in every format. A syntax this does not parse is read as apply_patch and may be missed:
+// the guard is a hygiene check that lets a call through when it cannot read it.
+const HASHLINE = /^\[(.+)#[^#\]]+\]\s*$/, SLOPPY_ACTION = /^\*{3}\s+(?:Find|Replace|Insert|Cut|Paste)\b/i;
+const SLOPPY_FILE = /^\s*\*{3}\s+Edit\s+File(?![^\s:])\s*:?(.*)$/i, SLOPPY_FIRST = /^\s*\*{3}\s+Update\s+File(?::(.*)|\s*)$/i;
 const APPLY_FILE = /^\s*\*{3}\s+(?:Add|Update|Delete)\s+File:(.*)$/i, MOVE_HEADER = /^\s*\*{3}\s+Move\s+to:\s*(.+?)\s*$/i, ENVELOPE = /^\s*\*{3}\s+(?:Begin|End)\s+Patch\s*$/i;
 
 function patchRows(patch: string): Added[] {
 	const lines = patch.replace(/^\uFEFF/, "").split("\n").map(line => line.replace(/\r$/, ""));
 	let start = lines.findIndex(line => line.trim());
-	if (start >= 0 && /^\s*\*{3}\s+Begin\s+Patch\s*$/i.test(lines[start])) start = lines.findIndex((line, at) => at > start && line.trim());
+	while (start >= 0 && /^\s*\*{3}\s+Begin\s+Patch\s*$/i.test(lines[start])) start = lines.findIndex((line, at) => at > start && line.trim());
 	const first = start >= 0 ? lines[start] : "";
-	// `Edit File` is no apply_patch header, so it opens a sloppy patch alone; `Update File` is apply_patch's unless sloppy action rows follow.
-	const sloppy = SLOPPY_FILE.test(first) || /^\*{3}\s+Find\b/i.test(first) || (SLOPPY_FIRST.test(first) && SLOPPY_ACTION.test(lines.slice(start + 1).join("\n")));
+	const rest = lines.slice(start + 1).map(line => line.trim());
+	const sloppy = SLOPPY_FILE.test(first) || /^\*{3}\s+Find\b/i.test(first) || (SLOPPY_FIRST.test(first) && rest.some(row => SLOPPY_ACTION.test(row)) && !rest.some(row => row.startsWith("@@")));
 	const format = HASHLINE.test(first) ? "hashline" : sloppy ? "sloppy" : "apply";
 	let last = lines.length - 1;
 	while (last > 0 && !lines[last].trim()) last--;

@@ -251,7 +251,7 @@ test("the patch format is chosen as omp chooses it", async () => {
   files["src/s.ts"] = "const a = 1;\n";
   files["src/m.md"] = "# notes\n*** Find\nx\n";
   const edit = (input: string) => check("edit", { input });
-  // An envelope or a BOM before the first row changes nothing.
+  // An envelope or a BOM before the first row changes nothing (omp itself rejects a BOM before an Update File sloppy patch; flagging it is harmless).
   expect(await edit("*** Begin Patch\n[src/s.ts#1a2b]\nPUT 1.=1:\n+// demo#ab3d\n*** End Patch\n")).toEqual(["demo#ab3d"]);
   expect(await edit("\uFEFF[src/s.ts#1a2b]\nPUT 1.=1:\n+// demo#ab3d\n")).toEqual(["demo#ab3d"]);
   expect(await edit("*** Begin Patch\n\n*** Update File: src/s.ts\n*** Find\nconst a = 1;\n*** Replace\n// demo#ab3d\n*** End Patch\n")).toEqual(["demo#ab3d"]);
@@ -264,4 +264,17 @@ test("the patch format is chosen as omp chooses it", async () => {
   // `*** Edit Filed` and `*** Edit Files` are text.
   expect(await edit("*** Edit File: src/s.ts\n*** Find\nconst a = 1;\n*** Replace\n*** Edit Filed demo#ab3d\n")).toEqual(["demo#ab3d"]);
   expect(await edit("*** Edit File: src/s.ts\n*** Find\nconst a = 1;\n*** Insert After\n*** Edit Files /tmp/x\n// demo#ab3d\n")).toEqual(["demo#ab3d"]);
+});
+
+test("a spaced Edit File header, indented sloppy actions after Update File, and repeated Begin Patch rows are read", async () => {
+  files["src/s.ts"] = "const a = 1;\n";
+  files["src/h.ts"] = "const h = 1;\n";
+  const edit = (input: string) => check("edit", { input });
+  expect(await edit("*** Edit File src/s.ts\n*** Find\nconst a = 1;\n*** Replace\n// demo#ab3d\n")).toEqual(["demo#ab3d"]);
+  expect(await edit("*** Edit File\t/tmp/o.ts\n*** Find\nx\n*** Replace\n// demo#ab3d\n")).toEqual([]);
+  // Indentation does not decide an Update File patch: an action row and no `@@` hunk does.
+  expect(await edit("*** Update File: src/h.ts\n\t*** Find\nconst h = 1;\n\t*** Replace\n// demo#ab3d\n")).toEqual(["demo#ab3d"]);
+  expect(await edit("*** Update File: src/h.ts\n *** Find\nconst h = 1;\n *** Replace\n// demo#ab3d\n")).toEqual(["demo#ab3d"]);
+  expect(await edit("*** Update File: src/h.ts\n@@\n *** Find\n-const h = 1;\n+// demo#ab3d\n")).toEqual(["demo#ab3d"]);
+  expect(await edit("*** Begin Patch\n*** Begin Patch\n[src/s.ts#1a2b]\nPUT 1.=1:\n+// demo#ab3d\n")).toEqual(["demo#ab3d"]);
 });
