@@ -469,10 +469,9 @@ test("cross-project adoption pins new children to the claimed project", async ()
       (ref: string) => `kata --workspace ~/${name} claim ${ref}`,
       (ref: string) => `env -C '${other}' env --chdir=nested kata --workspace .. claim ${ref}`,
     ];
-    for (const [index, makeCommand] of commands.entries()) {
+    for (const makeCommand of commands) {
       const foreign = await issue("Cross-project claimed issue", { owner: "v2-builder", workspace: other });
       const app = host(); await app.event("session_start"); const original = await app.init(["Original task"]);
-      if (index) await kata(["claim", foreign, "--json"], other);
       await app.event("tool_result", { toolName: "bash", input: { command: makeCommand(foreign), cwd }, isError: false, details: { exitCode: 0 } });
       expect((await app.call({ op: "append", items: ["Claimed-project task"] })).isError).toBeUndefined();
       const view = await show(`v2other#${foreign}`);

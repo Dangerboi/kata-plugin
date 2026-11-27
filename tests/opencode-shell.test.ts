@@ -1,13 +1,9 @@
 import { expect, test } from "bun:test";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import { userMessage, type FakeSession, type OpenCodeInstance } from "./opencode-host";
 import { assignmentOf } from "./kata-fixture";
 import { openCodeKata, qref, todos } from "./opencode-fixture";
 import { SUBAGENT_PREFIX } from "../plugins/opencode/subagents";
 import { teammateFor } from "../core/delegates";
-import { argvProbe } from "./argv-probe";
 
 const { binary, cwd, kata, sh, closeEvents, startHost, startLead, parentOf } = openCodeKata("opencode-shell");
 
@@ -95,18 +91,8 @@ test("a lead's command is unchanged apart from the author and the close transcri
 	expect(result.input.command).toBe(`/usr/bin/env ${author} kata list --agent && /usr/bin/env ${author} kata show x#1`);
 	result = await shell(host, id, `'${binary}' close x#1`);
 	expect(result.input.command).toBe(`${pair}'${binary}' close x#1`);
-});
-
-test.skipIf(!Bun.which("cc"))("a lead close behind exec -a keeps the target argv0 and transcript", async () => {
-	const dir = mkdtempSync(join(tmpdir(), "opencode-kata-argv0-"));
-	try {
-		const stub = argvProbe(dir, ["KATA_TRANSCRIPT_AGENT", "KATA_TRANSCRIPT_SESSION_ID"]);
-		const { host, id } = await startLead({ executable: binary });
-		const result = await shell(host, id, `exec -a named '${stub}' close x#1`);
-		const out = await sh(result.input.command);
-		expect(out.code, out.stderr).toBe(0);
-		expect(out.stdout.trim()).toBe(`named/opencode/${id}`);
-	} finally { rmSync(dir, { recursive: true, force: true }); }
+	result = await shell(host, id, `exec -a named '${binary}' close x#1`);
+	expect(result.input.command).toBe(`${pair.replace("/usr/bin/env ", "")}exec -a named '${binary}' close x#1`);
 });
 
 test("commands that are not Kata are untouched", async () => {

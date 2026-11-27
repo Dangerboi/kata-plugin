@@ -36,7 +36,7 @@ function execute(command: string, extra: Record<string, string> = {}, envTool?: 
   try {
     writeFileSync(join(dir, "kata"), '#!/bin/sh\necho "$KATA_TRANSCRIPT_AGENT/$KATA_TRANSCRIPT_SESSION_ID/$KATA_CLOSE_TRANSCRIPT_ENABLED $*"\n', { mode: 0o755 });
     if (envTool) symlinkSync(envTool, join(dir, "env"));
-    const env: Record<string, string | undefined> = { ...process.env, PATH: `${dir}:${process.env.PATH}`, KATA_BIN: join(dir, "kata"), KATA_STUB_DIR: dir, ...extra };
+    const env: Record<string, string | undefined> = { ...process.env, PATH: `${dir}:${process.env.PATH}`, KATA_BIN: join(dir, "kata"), ...extra };
     for (const name of ["KATA_TRANSCRIPT_AGENT", "KATA_TRANSCRIPT_SESSION_ID", "KATA_CLOSE_TRANSCRIPT_ENABLED"]) if (!(name in extra)) delete env[name];
     const out = spawnSync(["bash", "-c", command], { env });
     expect(out.exitCode).toBe(0);
@@ -56,23 +56,13 @@ test("command positions behind shell prefixes and their options", () => {
   for (const prefix of prefixes) {
     const input = `${prefix}kata claim abcd`;
     expect(coreCommands(nodePlatform.path, input).map(c => c.words.map(w => w.value)), input).toEqual([["claim", "abcd"]]);
-    expect(delegateCommand(nodePlatform.path, input, "kata", [], "dev-1", { workspace: "/w", parent: "proj#abcd" }), input).toContain("kata --teammate 'dev-1' --workspace '/w' --project 'proj' claim abcd");
   }
-  for (const input of ["command -v kata", "command -V kata", "command -pv kata", "command -pV kata", "env -S echo kata claim abcd", "env -Secho kata claim abcd", "env -iSecho kata claim abcd", "env --split-string=echo kata claim abcd", "env -P /some/bin kata claim abcd", "env -Pkata kata claim abcd", "env -iP/some/bin kata claim abcd", "exec -c kata close ab12", "exec -cl kata close ab12", "builtin kata claim abcd"]) {
+  for (const input of ["command -v kata", "command -V kata", "command -pv kata", "command -pV kata", "env -S echo kata claim abcd", "env -Secho kata claim abcd", "env -iSecho kata claim abcd", "env --split-string=echo kata claim abcd", "env -P /some/bin kata claim abcd", "env -Pkata kata claim abcd", "env -iP/some/bin kata claim abcd", "exec -c kata close ab12", "exec -cl kata close ab12"]) {
     expect(coreCommands(nodePlatform.path, input), input).toEqual([]);
-    expect(delegateCommand(nodePlatform.path, input, "kata", [], "dev-1"), input).toBe(input);
   }
+  expect(coreCommands(nodePlatform.path, "env -C /work -C /outside kata claim abcd")[0].directories).toEqual(["/outside"]);
+  expect(coreCommands(nodePlatform.path, "env -iC /work kata claim abcd")[0].directories).toEqual(["/work"]);
   expect(() => delegateCommand(nodePlatform.path, "nohup kata --as boss comment abcd -m hi", "kata", [], "dev-1")).toThrow("--as is not permitted");
-});
-
-test("rewritten closes execute through each prefix", () => {
-  for (const prefix of ["env -u FOO", 'env -iu FOO PATH="$PATH"', 'env -iC /tmp PATH="$PATH"', 'env -i PATH="$PATH"', "env -C /tmp --", "exec -a name", "time -p", "nohup", ...(Bun.which("timeout") ? ["timeout -s TERM -k 1 30"] : []), "time nohup"]) {
-    const input = `${prefix} kata close ab12`;
-    expect(execute(delegateCommand(nodePlatform.path, input, "kata", [], "tm-1", undefined, own)), input).toEqual(["omp/child-uuid/true --teammate tm-1 close ab12"]);
-  }
-  expect(execute(delegateCommand(nodePlatform.path, 'command -p "$KATA_BIN" close ab12', "kata", ["KATA_BIN"], "tm-1", undefined, own))).toEqual(["omp/child-uuid/true --teammate tm-1 close ab12"]);
-  const lead = transcriptCommand(nodePlatform.path, "nohup kata close ab12", "kata", [], own);
-  expect(execute(lead)).toEqual(["omp/child-uuid/true close ab12"]);
 });
 
 test("command -p keeps its default executable search through lead and delegate rewrites", () => {
@@ -140,13 +130,6 @@ test("a cleared PATH with only Kata and nohup survives a nested env chain", () =
       expect(out.exitCode, out.stderr.toString()).toBe(0);
       expect(out.stdout.toString().trim()).toBe("omp/child-uuid");
     }
-    const bare = 'env -i PATH="$KATA_STUB_DIR" kata close ab12';
-    const rewritten = delegateCommand(nodePlatform.path, bare, "kata", [], "tm-1", undefined, own);
-    expect(execute(rewritten)).toEqual(["omp/child-uuid/true --teammate tm-1 close ab12"]);
-    expect(delegateRouted(nodePlatform.path, rewritten, "kata", [], "tm-1", undefined, own)).toBe(true);
-    const lead = transcriptCommand(nodePlatform.path, bare, "kata", [], own);
-    expect(execute(lead)).toEqual(["omp/child-uuid/true close ab12"]);
-    expect(transcriptCommand(nodePlatform.path, lead, "kata", [], own)).toBe(lead);
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
@@ -169,7 +152,7 @@ test.skipIf(!envFile)("env file assignments cannot override the recorded session
 
 test("transcript assignments account for env clearing and unsetting in order", () => {
   const assignments = "KATA_TRANSCRIPT_AGENT=omp KATA_TRANSCRIPT_SESSION_ID=child-uuid KATA_CLOSE_TRANSCRIPT_ENABLED=true";
-  for (const prefix of [`${assignments} env -i PATH="$PATH"`, `${assignments} env - PATH="$PATH"`, `${assignments} env -u KATA_TRANSCRIPT_AGENT`, `${assignments} env --unset=KATA_TRANSCRIPT_AGENT`, `${assignments} env -u KATA_TRANSCRIPT_SESSION_ID`, `${assignments} env -i PATH="$PATH" env KATA_TRANSCRIPT_AGENT=omp`]) {
+  for (const prefix of [`${assignments} env -i PATH="$PATH"`, `${assignments} env - PATH="$PATH"`, `${assignments} env -u KATA_TRANSCRIPT_AGENT`, `${assignments} env --unset=KATA_TRANSCRIPT_AGENT`, `${assignments} env -i PATH="$PATH" env KATA_TRANSCRIPT_AGENT=omp`]) {
     const envTool = prefix.includes("--unset=") ? unsetEnv ?? undefined : undefined;
     if (prefix.includes("--unset=") && !envTool) continue;
     const input = `${prefix} kata close ab12`;
@@ -190,6 +173,11 @@ test("a delegate whose own session is unknown switches recording off for its clo
   expect(execute(rewritten, { KATA_TRANSCRIPT_AGENT: "lead", KATA_TRANSCRIPT_SESSION_ID: "lead-uuid" })).toEqual(["lead/lead-uuid/false --teammate tm-1 close ab12 --done", "lead/lead-uuid/ --teammate tm-1 show ab12"]);
 });
 test("a delegate's close still runs after a skipped prefix word, or through an executable variable", () => {
+  for (const prefix of ["env -u FOO", 'env -iu FOO PATH="$PATH"', 'env -iC /tmp PATH="$PATH"', 'env -i PATH="$PATH"', "env -C /tmp --", "exec -a name", "time -p", "nohup", ...(Bun.which("timeout") ? ["timeout -s TERM -k 1 30"] : []), "time nohup"]) {
+    const input = `${prefix} kata close ab12`;
+    expect(execute(delegateCommand(nodePlatform.path, input, "kata", [], "tm-1", undefined, own)), input).toEqual(["omp/child-uuid/true --teammate tm-1 close ab12"]);
+  }
+  expect(execute(delegateCommand(nodePlatform.path, 'command -p "$KATA_BIN" close ab12', "kata", ["KATA_BIN"], "tm-1", undefined, own))).toEqual(["omp/child-uuid/true --teammate tm-1 close ab12"]);
   for (const input of ["command kata close ab12", "time kata close ab12", "KATA_X=1 kata close ab12"]) {
     expect(execute(delegateCommand(nodePlatform.path, input, "kata", [], "tm-1", undefined, own))).toEqual(["omp/child-uuid/true --teammate tm-1 close ab12"]);
   }

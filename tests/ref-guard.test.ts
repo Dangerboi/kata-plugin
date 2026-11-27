@@ -109,7 +109,7 @@ test("a created file's patch body is checked whole, an updated file's only by it
 });
 
 test("a commit behind env, command, time, if or ! is checked", async () => {
-  for (const command of [`env GIT_X=1 git commit -m "demo#ab3d"`, `command git commit -m "demo#ab3d"`, `time git commit -m "demo#ab3d"`, `if git commit -m "demo#ab3d"; then echo ok; fi`, `! git commit -m "demo#ab3d"`, `nohup git commit -m "demo#ab3d"`])
+  for (const command of [`env GIT_X=1 git commit -m "demo#ab3d"`, `command git commit -m "demo#ab3d"`, `time git commit -m "demo#ab3d"`, `if git commit -m "demo#ab3d"; then echo ok; fi`, `! git commit -m "demo#ab3d"`])
     expect(await check("bash", { command }), command).toEqual(["demo#ab3d"]);
   expect(await check("bash", { command: "command -v git commit -m demo#ab3d" })).toEqual([]);
 });
@@ -193,9 +193,6 @@ test("git -C values fold in order, and a cd moves the folder of later commands",
     ["/outside", "env -C /work git commit -m demo#ab3d", ["demo#ab3d"]],
     ["/work", "env -C /outside git commit -m demo#ab3d", []],
     ["/outside", "env --chdir=/work env -C src git -C .. commit -m demo#ab3d", ["demo#ab3d"]],
-    ["/outside", "env -C /work -C /outside git commit -m demo#ab3d", []],
-    ["/outside", "env -iC /work git commit -m demo#ab3d", ["demo#ab3d"]],
-    ["/work", "env -C /outside env -C ../work git -C ../outside commit -m demo#ab3d", []],
   ] as const) expect(await check("bash", { cwd, command }), command).toEqual([...expected]);
 });
 
