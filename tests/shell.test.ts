@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { spawnSync } from "bun";
 import { assertIsolated } from "./isolation";
 import { kataCommands } from "../plugins/oh-my-pi/kata";
-import { delegateCommand, kataCommands as coreCommands } from "../core/shell";
+import { VALUE_OPTIONS, delegateCommand, kataCommands as coreCommands } from "../core/shell";
 import { nodePlatform } from "../core/node-host";
 assertIsolated();
 
@@ -57,4 +57,24 @@ test("a delegate's close still runs after a skipped prefix word, or through an e
     expect(execute(delegateCommand(nodePlatform.path, input, "kata", [], "tm-1", undefined, own))).toEqual(["omp/child-uuid/true --teammate tm-1 close ab12"]);
   }
   expect(execute(delegateCommand(nodePlatform.path, '"$KATA_BIN" close ab12', "kata", ["KATA_BIN"], "tm-1", undefined, own))).toEqual(["omp/child-uuid/true --teammate tm-1 close ab12"]);
+});
+
+test("typed Kata command options are understood by the shell parser", () => {
+  if (!process.env.KATA_TEST_EXECUTABLE) return;
+  const paths = [
+    ..."assign unassign claim close comment delete edit notify deadline schedule purge restore reopen status show wait move".split(" "), "comment edit",
+    ..."add rm".split(" ").map(op => `label ${op}`), ..."get set unset".split(" ").map(op => `meta ${op}`),
+    ..."bind show reconcile pause resume resolve-field resolve-comment unbind".split(" ").map(op => `bridge ${op}`),
+    ..."acquire renew release force-release steal".split(" ").map(op => `federation lease ${op}`),
+    ..."link add get rm ls".split(" ").map(op => `docbank attachments ${op}`),
+  ];
+  for (const command of paths) {
+    const result = spawnSync([process.env.KATA_TEST_EXECUTABLE, ...command.split(" "), "--help"]);
+    expect(result.exitCode, command).toBe(0);
+    for (const line of result.stdout.toString().split("\n")) {
+      const match = /^\s*(?:-\w,\s*)?(--[\w-]+)\s+(?:string(?:Slice|Array)?|int\w*|duration|ref(?:Slice)?|float\w*)\b/.exec(line);
+      if (match && !line.includes("[=")) expect(VALUE_OPTIONS.has(match[1]), `${command} ${line}`).toBe(true);
+    }
+  }
+  expect(VALUE_OPTIONS.has("--inbound")).toBe(false);
 });

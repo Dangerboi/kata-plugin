@@ -318,3 +318,10 @@ test("a spaced Edit File header, indented sloppy actions after Update File, and 
   expect(await edit("*** Begin Patch\n*** Update File: src/m.md\n@@\n *** Find\n x\n+y\n*** Add File: /tmp/n.ts\n+// demo#ab3d\n*** End Patch\n")).toEqual([]);
   expect(await edit("*** Begin Patch\n*** Begin Patch\n[src/s.ts#1a2b]\nPUT 1.=1:\n+// demo#ab3d\n")).toEqual(["demo#ab3d"]);
 });
+
+test("a workspace project guards qualified refs before any issue is known", async () => {
+  const known = async () => new Set<string>();
+  const projects = async () => ['demo'];
+  expect(await offendingRefs({ tool: 'write', input: { path: 'a.ts', content: 'demo#q7x2' }, known, projects, locate, read } as any)).toEqual(['demo#q7x2']);
+  expect(await offendingRefs({ tool: 'write', input: { path: 'a.ts', content: 'q7x2' }, known, projects, locate, read } as any)).toEqual([]);
+});

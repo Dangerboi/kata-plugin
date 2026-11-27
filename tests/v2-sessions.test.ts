@@ -337,7 +337,8 @@ test("omp keeps the refs a shell claim named across /tree and qualifies a bare c
   await app.switchSession("claims-fork", { fork: true });
   expect(await write(`// ${ref}`)).toMatchObject({ block: true });
   await app.switchSession("claims-new");
-  expect(await write(`// ${ref} and ${short}`)).toBeUndefined();
+  expect(await write(`// ${ref}`)).toMatchObject({ block: true });
+  expect(await write(`// ${short}`)).toBeUndefined();
 });
 
 test("a claimed bare id is known at once, though Kata is slow to resolve it, and the hook does not wait", async () => {
@@ -474,4 +475,12 @@ test("typed automatic parent can be recovered after losing the session entry", a
   expect((await recovered.call({ op: "init", items: ["Durable existing task", "Recovered task"] })).isError).toBeUndefined();
   expect((await show(parent)).children.map((c: any) => c.title).sort()).toEqual(["Durable existing task", "Recovered task"]);
   expect(await sessionParents(app.sid)).toHaveLength(1);
+});
+
+test("omp learns call arguments and lone issue output", async () => {
+  const app = host(); await app.event("session_start");
+  const call = (command: string) => app.event("tool_call", { toolName: "bash", input: { command } });
+  expect(await call('kata comment q7x2 -m done && git commit -m "fix q7x2"')).toMatchObject({ block: true });
+  await app.event("tool_result", { toolName: "bash", input: { command: "kata next --agent" }, content: [{ type: "text", text: "OK next issue=z7x2" }] });
+  expect(await call('git commit -m "fix z7x2"')).toMatchObject({ block: true });
 });

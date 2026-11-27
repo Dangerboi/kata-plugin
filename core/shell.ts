@@ -1,5 +1,5 @@
 import { closeEnv, type PathOps, type Platform } from "./kata-cli";
-import { projectOf, type Binding } from "./model";
+import { projectOf, QUALIFIED_REF_ONLY, SHORT_ID_ONLY, type Binding } from "./model";
 
 // Kata invocations inside a bash command, and the rewrite that pins a delegate's to its teammate.
 
@@ -14,7 +14,7 @@ export function envPrefix(vars: Record<string, string>): string {
 
 type ShellWord = { value: string; start: number; end: number };
 // One Kata invocation: its executable, the words after it, and the `NAME=value` assignments before it.
-type Invocation = { executable: ShellWord; words: ShellWord[]; assignments: ShellWord[] };
+type Invocation = { executable: ShellWord; words: ShellWord[]; assignments: ShellWord[]; dir?: string };
 export const ASSIGNMENT = /^[A-Za-z_][A-Za-z0-9_]*=/;
 // The words of one simple command, and the bodies of the heredocs fed to it.
 type Segment = { words: ShellWord[]; bodies: string[] };
@@ -57,19 +57,23 @@ export function commandSegments(command: string): Segment[] {
 	return segments;
 }
 
+export const foldDir = (base: string | undefined, dir: string) => dir.startsWith("/") || dir.startsWith("~") || !base ? dir : `${base.replace(/\/+$/, "")}/${dir}`;
+
 // Inspect command positions only.
-export function kataCommands(path: Pick<PathOps, "basename">, command: string, configuredExecutable = "kata", executableVars: readonly string[] = []): Invocation[] {
+export function kataCommands(path: Pick<PathOps, "basename">, command: string, configuredExecutable = "kata", executableVars: readonly string[] = [], callFolder?: string): Invocation[] {
 	const commands: Invocation[] = [];
+	let dir = callFolder;
 	for (const { words: segment } of commandSegments(command)) {
 		let j = 0;
 		while (j < segment.length && (ASSIGNMENT.test(segment[j].value) || PREFIXES.includes(segment[j].value))) j++;
 		const executable = segment[j];
-		if (executable && (path.basename(executable.value) === "kata" || executable.value === configuredExecutable || executableVars.some(name => executable.value === `$${name}` || executable.value === `\${${name}}`))) commands.push({ executable, words: segment.slice(j + 1), assignments: segment.slice(0, j).filter(word => ASSIGNMENT.test(word.value)) });
+		if (executable?.value === "cd" && segment[j + 1] && !segment[j + 1].value.startsWith("-")) dir = foldDir(dir, segment[j + 1].value);
+		if (executable && (path.basename(executable.value) === "kata" || executable.value === configuredExecutable || executableVars.some(name => executable.value === `$${name}` || executable.value === `\${${name}}`))) commands.push({ executable, words: segment.slice(j + 1), assignments: segment.slice(0, j).filter(word => ASSIGNMENT.test(word.value)), dir });
 	}
 	return commands;
 }
 
-const VALUE_OPTIONS = new Set(["--body", "--body-file", "--message", "-m", "--comment", "--evidence", "--test", "--commit", "--pr", "--reviewed", "--reason", "--idempotency-key", "--parent", "--related", "--blocked-by", "--blocks", "--meta", "--owner", "--label", "--priority", "--if-match", "--if-value", "--workspace", "--project", "--teammate", "--as", "--for", "--format", "--daemon"]);
+export const VALUE_OPTIONS = new Set(["--body", "--body-file", "--message", "-m", "--comment", "--evidence", "--test", "--commit", "--pr", "--reviewed", "--reason", "--idempotency-key", "--parent", "--related", "--blocked-by", "--blocks", "--meta", "--owner", "--label", "--priority", "--if-match", "--if-value", "--workspace", "--project", "--teammate", "--as", "--for", "--format", "--daemon", "--title", "--ttl", "--since", "--kind", "--thread", "--until", "--reply", "--refute", "--supersede", "--re", "--to", "--repeat", "--timezone", "--confirm", "--expect-owner", "--docbank", "--duplicate-of", "--superseded-by", "--refs-from", "--poll-interval", "--timeout", "--connector", "--external", "--use", "--adopt", "--version", "--remove-parent", "--remove-related", "--remove-blocked-by", "--remove-blocks", "--issue", "-o", "--output"]);
 export function shellOptions(words: ShellWord[]) {
 	const options = new Map<string, ShellWord[]>(), occurrences = new Map<string, ShellWord[][]>(), args: string[] = [];
 	for (let i = 0; i < words.length; i++) {
@@ -84,6 +88,28 @@ export function shellOptions(words: ShellWord[]) {
 	}
 	const value = (key: string) => { const pair = options.get(key); return pair?.[1]?.value ?? pair?.[0]?.value.slice(key.length + 1); };
 	return { options, occurrences, args, value };
+}
+
+// Ref-bearing operands and options, as named by Kata's command forms.
+const REF_AFTER: Record<string, "one" | "all" | "move"> = Object.fromEntries([
+	..."assign unassign claim close comment delete edit notify deadline schedule purge restore reopen status show".split(" ").map(key => [key, "one"]),
+	["wait", "all"], ["move", "move"], ["comment edit", "one"],
+	..."add rm".split(" ").map(op => [`label ${op}`, "one"]),
+	..."get set unset".split(" ").map(op => [`meta ${op}`, "one"]),
+	..."bind show reconcile pause resume resolve-field resolve-comment unbind".split(" ").map(op => [`bridge ${op}`, "one"]),
+	..."acquire renew release force-release steal".split(" ").map(op => [`federation lease ${op}`, "one"]),
+	..."link add get rm ls".split(" ").map(op => [`docbank attachments ${op}`, "one"]),
+]);
+const REF_OPTIONS = ["--parent", "--related", "--blocked-by", "--blocks", "--remove-parent", "--remove-related", "--remove-blocked-by", "--remove-blocks", "--issue", "--duplicate-of", "--superseded-by"];
+export function callRefs(words: ShellWord[]): string[] {
+	const refs = new Set<string>();
+	const add = (value: string, qualifiedOnly = false) => { for (const part of value.split(",")) { const ref = part.trim(); if (QUALIFIED_REF_ONLY.test(ref) || (!qualifiedOnly && SHORT_ID_ONLY.test(ref))) refs.add(ref); } };
+	for (const word of words) add(word.value.replace(/^--[^=]+=([^]*)$/, "$1"), true);
+	const parsed = shellOptions(words);
+	for (const option of REF_OPTIONS) for (const pair of parsed.occurrences.get(option) ?? []) add(pair[1]?.value ?? pair[0].value.slice(option.length + 1));
+	const key = Object.keys(REF_AFTER).sort((a, b) => b.length - a.length).find(key => key.split(" ").every((part, index) => parsed.args[index] === part));
+	if (key) { const operands = parsed.args.slice(key.split(" ").length), arity = REF_AFTER[key]; for (const value of arity === "one" ? operands.slice(0, 1) : arity === "move" ? operands.slice(0, -1) : operands) add(value); }
+	return [...refs];
 }
 
 // Whose session a close records: `id` under `agent`, with the recording switch read from `env` (see `closeEnv`).
