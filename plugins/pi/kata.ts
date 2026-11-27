@@ -176,6 +176,9 @@ export default async function piKata(pi: ExtensionAPI) {
 	pi.on("tool_result", async (event, ctx) => {
 		const next = await core.tools.result(ctx, { ...event, details: undefined });
 		if (!inherited) lead = next;
+		if (event.toolName === "task" || (event as any).parentToolCallId || (!inherited && nativeContractActive(ctx.cwd))) return;
+		const notice = core.tools.inbox(ctx);
+		if (notice) return { content: [...event.content, { type: "text", text: notice }], structuredContent: event.structuredContent };
 	});
 
 	pi.on("before_agent_start", async (event, ctx) => {
