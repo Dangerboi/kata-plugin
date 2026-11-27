@@ -43,6 +43,12 @@ function execute(command: string, extra: Record<string, string> = {}): string[] 
   } finally { rmSync(dir, { recursive: true, force: true }); }
 }
 const own = { env: { get: () => undefined }, agent: "omp", id: "child-uuid" };
+const envWith = (option: string) => [Bun.which("genv"), Bun.which("env")].find(binary => {
+  if (!binary) return false;
+  const help = spawnSync([binary, "--help"], { stderr: "ignore" });
+  return help.exitCode === 0 && help.stdout.toString().includes(option);
+});
+const argvEnv = envWith("--argv0"), envFile = envWith("--env0-from");
 
 test("command positions behind shell prefixes and their options", () => {
   const prefixes = ["", "X=1 ", "time nohup ", "( ", "{ ", "while ", "until ", "time -p ", "env -u FOO ", "env -iu FOO ", "env -iC /tmp ", "env -iCu/tmp ", "env -i PATH=/usr/bin ", "env - PATH=/usr/bin ", "env -a name ", "env -aname ", "env --argv0 name ", "env --argv0=name ", "env --unset=FOO -C /tmp -- ", "exec -a name ", "command -p ", "timeout -s TERM -k 1 30 "];
@@ -108,11 +114,11 @@ test.skipIf(!Bun.which("cc"))("exec -a keeps the target argv0 through lead and d
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
-test.skipIf(!Bun.which("cc") || !Bun.which("genv"))("env -a keeps argv0 on Kata when the transcript is added", () => {
+test.skipIf(!Bun.which("cc") || !argvEnv)("env -a keeps argv0 on Kata when the transcript is added", () => {
   const dir = mkdtempSync(join(tmpdir(), "kata-env-argv0-"));
   try {
     const binary = argvProbe(dir);
-    symlinkSync(Bun.which("genv")!, join(dir, "env"));
+    symlinkSync(argvEnv!, join(dir, "env"));
     const input = `env -a named '${binary}' close ab12`;
     for (const command of [transcriptCommand(nodePlatform.path, input, "kata", [], own), delegateCommand(nodePlatform.path, input, "kata", [], "tm-1", undefined, own)]) {
       const out = spawnSync(["/bin/bash", "-c", command], { env: { HOME: dir, PATH: dir }, stderr: "pipe" });
@@ -136,10 +142,10 @@ test("a cleared PATH with only Kata and nohup survives a nested env chain", () =
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
-test.skipIf(!Bun.which("genv"))("env file assignments cannot override the recorded session", () => {
+test.skipIf(!envFile)("env file assignments cannot override the recorded session", () => {
   const dir = mkdtempSync(join(tmpdir(), "kata-envfile-"));
   try {
-    symlinkSync(Bun.which("genv")!, join(dir, "env"));
+    symlinkSync(envFile!, join(dir, "env"));
     writeFileSync(join(dir, "kata"), '#!/bin/sh\nprintf "%s/%s\\n" "$KATA_TRANSCRIPT_AGENT" "$KATA_TRANSCRIPT_SESSION_ID"\n', { mode: 0o755 });
     const file = join(dir, "vars");
     writeFileSync(file, "KATA_TRANSCRIPT_AGENT=other\0KATA_TRANSCRIPT_SESSION_ID=wrong\0");
