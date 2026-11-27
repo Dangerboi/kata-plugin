@@ -209,9 +209,11 @@ test("refGuard warn refuses script-made calls but permits clean ones", async () 
 	const { host, id } = await startLead({ refGuard: "warn" });
 	await host.callTool(id, "todowrite", todos(["Guarded warning task", "in_progress"]));
 	const ref = qref(await parentOf(id));
-	const result = await host.callTool(id, "shell", { command: `git commit -m "fix ${ref}"` }, { codemode: true, execute: () => "ok" });
-	expect(result.status).toBe("error");
-	expect(result.executed).toBe(false);
-	expect(result.text).toContain("Refused:");
-	expect((await host.callTool(id, "shell", { command: "echo clean" }, { codemode: true, execute: () => "ok" })).status).toBe("completed");
+	for (const codemode of [true, "absent"] as const) {
+		const result = await host.callTool(id, "shell", { command: `git commit -m "fix ${ref}"` }, { codemode, execute: () => "ok" });
+		expect(result.status).toBe("error");
+		expect(result.executed).toBe(false);
+		expect(result.text).toContain("Refused:");
+		expect((await host.callTool(id, "shell", { command: "echo clean" }, { codemode, execute: () => "ok" })).status).toBe("completed");
+	}
 });

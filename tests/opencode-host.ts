@@ -46,7 +46,7 @@ export interface CreateSessionInput {
 }
 
 export interface ToolCallOptions {
-	codemode?: boolean;
+	codemode?: boolean | "absent";
 	/** Executor for this call only; takes precedence over the registered tool. */
 	execute?: ToolExecute;
 }
@@ -292,7 +292,7 @@ async function start(options: OpenCodeHostOptions, shared: Shared): Promise<Open
 		requireSession(sessionID);
 		const id = nextID("call");
 		const base = { sessionID, agent: "build", messageID: nextID("msg"), id };
-		const before = { tool: name, ...base, codemode: opts.codemode === true, input: clone(rawInput) as any };
+		const before = { tool: name, ...base, ...(opts.codemode === "absent" ? {} : { codemode: opts.codemode === true }), input: clone(rawInput) as any };
 		const fail = (error: { message: string }, input: unknown, executed: boolean): ToolCallResult =>
 			({ status: "error", text: error.message, input, executed });
 
