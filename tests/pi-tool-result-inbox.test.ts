@@ -4,7 +4,7 @@ import { eventually } from "./kata-fixture";
 import { piFixture } from "./pi-fixture";
 const pi = piFixture();
 
-test("pi child appends the inbox while preserving structured content", async () => {
+test("pi child receives its own inbox on a tool result", async () => {
   process.env.KATA_INBOX_USER = "pi-builder/lead-result";
   process.env.KATA_INBOX_POLL_SECONDS = "0";
   const parent = await pi.host(); await parent.event("session_start", { reason: "startup" });
@@ -17,13 +17,11 @@ test("pi child appends the inbox while preserving structured content", async () 
   expect(record?.teammate).toBeTruthy();
   const ref = await pi.issue("Pi result request");
   await pi.kata(["notify", ref, "--to", `pi-builder/${record.teammate}`, "--message", "pi-mid-run-96", "--json"]);
-  const structuredContent = { answer: 42 };
   let delivered: any;
   await eventually(async () => {
-    delivered = await child.event("tool_result", { toolName: "read", content: [{ type: "text", text: "original" }], structuredContent, isError: false });
+    delivered = await child.event("tool_result", { toolName: "read", content: [{ type: "text", text: "original" }], isError: false });
     return JSON.stringify(delivered ?? {}).includes("pi-mid-run-96");
   }, true);
-  expect(delivered.structuredContent).toEqual(structuredContent);
   expect(delivered.content[0].text).toBe("original");
   expect(delivered.content[1].text).toContain("<kata_inbox>");
 });
@@ -42,8 +40,11 @@ test("a pi main with an active native contract receives a mid-run request", asyn
   await app.event("before_agent_start", { prompt: "work", systemPromptOptions: { sections: {} } });
   const ref = await pi.issue("native request");
   await pi.kata(["notify", ref, "--to", "pi-builder/native-result", "--message", "native-midrun", "--json"]);
-  const event = { toolName: "task", content: [{ type: "text", text: "original" }], isError: false };
+  const structuredContent = { answer: 42 };
+  const event = { toolName: "task", content: [{ type: "text", text: "original" }], structuredContent, isError: false };
   let result: any;
   await eventually(async () => { result = await app.event("tool_result", event); return JSON.stringify(result ?? {}).includes("native-midrun"); }, true);
   expect(result.content[0].text).toBe("original");
+  expect(result.content[1].text).toContain("<kata_inbox>");
+  expect(result.structuredContent).toEqual(structuredContent);
 });

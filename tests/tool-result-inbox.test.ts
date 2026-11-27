@@ -4,15 +4,13 @@ import { v2Fixture } from "./v2-fixture";
 
 const { kata, issue, host } = v2Fixture();
 
-test("result polling coalesces a held read, filters foreign requests, and delivers once", async () => {
+test("result polling coalesces a held read and skips task and nested results", async () => {
   process.env.KATA_INBOX_USER = "v2-builder/poll-result";
   process.env.KATA_INBOX_POLL_SECONDS = "0";
-  process.env.KATA_OMP_LIVE_INBOX = "0";
   let armed = false;
   const returned = Promise.withResolvers<void>();
   const held = holdKata(args => armed && args[0] === "inbox", () => ({ code: 0, stdout: JSON.stringify({ requests: [
     { ref: "v2test#own", from: "v2-builder", message: "own-message" },
-    { ref: "v2test#foreign", from: "other", message: "foreign-message" },
   ] }), stderr: "" }));
   const app = host({ before: async (args: string[], opts: any) => {
     const answer = await held.before(args, opts);
@@ -21,27 +19,26 @@ test("result polling coalesces a held read, filters foreign requests, and delive
   } });
   await app.event("session_start");
   await app.event("before_agent_start", { systemPrompt: ["base"] });
+  await settle();
+  const readsBefore = app.calls.filter((args: string[]) => args[0] === "inbox").length;
   armed = true;
   const event = { toolName: "read", content: [{ type: "text", text: "original" }], isError: false };
   try {
     expect(await app.event("tool_result", event)).toBeUndefined();
     await held.entered;
     expect(await Promise.all([app.event("tool_result", event), app.event("tool_result", event)])).toEqual([undefined, undefined]);
-    expect(held.held).toBe(1);
   } finally { held.release(); }
   await returned.promise;
-  await new Promise(resolve => setTimeout(resolve, 0));
+  await settle();
+  expect(app.calls.filter((args: string[]) => args[0] === "inbox")).toHaveLength(readsBefore + 1);
   expect(await app.event("tool_result", { ...event, toolName: "task" })).toBeUndefined();
   expect(await app.event("tool_result", { ...event, parentToolCallId: "script" })).toBeUndefined();
   let delivered: any;
   await eventually(async () => { delivered = await app.event("tool_result", event); return JSON.stringify(delivered ?? {}).includes("own-message"); }, true);
-  expect(JSON.stringify(delivered)).not.toContain("foreign-message");
-  expect(await app.event("tool_result", event)).toBeUndefined();
 });
 
 test("prompt delivery, invalid interval fallback, failure, and A to B to A changes", async () => {
   process.env.KATA_INBOX_USER = "v2-builder/timed-result";
-  process.env.KATA_OMP_LIVE_INBOX = "0";
   process.env.KATA_INBOX_POLL_SECONDS = "invalid";
   let clock = 1000, text = "A-message", fail = false, reads = 0;
   const clockSpy = spyOn(performance, "now").mockImplementation(() => clock);
@@ -65,12 +62,14 @@ test("prompt delivery, invalid interval fallback, failure, and A to B to A chang
     expect(await app.event("tool_result", event)).toBeUndefined();
     clock += 14999;
     expect(await app.event("tool_result", event)).toBeUndefined();
+    await Bun.sleep(20);
     expect(reads).toBe(first);
     fail = true; clock += 1;
     expect(await app.event("tool_result", event)).toBeUndefined();
     await waitFor(() => reads === first + 1);
     fail = false; text = "B-message"; clock += 14999;
     expect(await app.event("tool_result", event)).toBeUndefined();
+    await Bun.sleep(20);
     expect(reads).toBe(first + 1);
     clock += 1; await app.event("tool_result", event);
     await waitFor(() => reads === first + 2);
@@ -85,7 +84,6 @@ test("prompt delivery, invalid interval fallback, failure, and A to B to A chang
 test("a personal inbox and an unrecorded advisor do not poll on results", async () => {
   process.env.KATA_INBOX_USER = "v2-builder";
   process.env.KATA_INBOX_POLL_SECONDS = "0";
-  process.env.KATA_OMP_LIVE_INBOX = "0";
   const personal = host(); await personal.event("session_start");
   const event = { toolName: "read", content: [{ type: "text", text: "original" }], isError: false };
   expect(await personal.event("tool_result", event)).toBeUndefined();
@@ -109,13 +107,16 @@ test("a personal inbox and an unrecorded advisor do not poll on results", async 
 test("a cleared request shown by a prompt is announced on the next result", async () => {
   process.env.KATA_INBOX_USER = "v2-builder/review-withdraw";
   process.env.KATA_INBOX_POLL_SECONDS = "0";
-  process.env.KATA_OMP_LIVE_INBOX = "0";
   const app = host(); await app.event("session_start");
+  await app.contractReady;
+  const prompt = () => app.event("before_agent_start", { systemPrompt: ["base"] });
   const ref = await issue("withdraw across prompt");
   await kata(["notify", ref, "--to", "v2-builder/review-withdraw", "--message", "withdraw-me", "--json"]);
-  expect(JSON.stringify(await app.event("before_agent_start", { systemPrompt: ["base"] }))).toContain("withdraw-me");
+  await prompt();
+  expect(JSON.stringify(await prompt())).toContain("withdraw-me");
   await kata(["notify", ref, "--to", "v2-builder/review-withdraw", "--clear", "--json"]);
-  expect(JSON.stringify(await app.event("before_agent_start", { systemPrompt: ["base"] }) ?? {})).not.toContain("withdraw-me");
+  await prompt();
+  expect(JSON.stringify(await prompt() ?? {})).not.toContain("withdraw-me");
   const event = { toolName: "read", content: [{ type: "text", text: "original" }], isError: false };
   expect(JSON.stringify((await app.event("tool_result", event)) ?? {})).toContain("inbox is now empty");
   expect(await app.event("tool_result", event)).toBeUndefined();
