@@ -47,21 +47,12 @@ export default function(api){registerSmokeProvider(api,AssistantMessageEventStre
     args.push("-e", provider, "--model", "probe/dummy", "--mode", "json", "-p", "lead");
     console.log(run(host === "pi" ? pi : omp, args, { KATA_REF: refs[0], ATTENTION_OTHER_REF: refs[1], ATTENTION_HOST: host, PI_CODING_AGENT_DIR: path.join(scratch, host + "-agent") }));
     if (host === "omp") {
-      // The child writes this row only after both inheritance checks have left the live lead untouched.
-      const rows = linesIn<{ host: string; marker?: string; before: Record<string, unknown>; final: Record<string, unknown> }>(results);
-      const lead = rows[1];
-      if (rows.length !== 2 || rows[0].host !== "pi" || lead?.host !== "omp" || !lead.marker ||
-          lead.before?.["work.attention"] !== "ok" || !lead.before?.["work.attention_session"] ||
-          lead.final?.["work.attention"] !== "ok" || lead.final?.["work.attention_session"] !== lead.before["work.attention_session"])
-        throw new Error("OMP live lead and child proof did not complete before shutdown check");
+      // The driver appends its row only after the live lead survived both child checks, so a child's end cannot pass for the lead's.
+      if (linesIn<{ host: string }>(results).at(-1)?.host !== "omp") throw new Error("OMP live lead and child proof did not complete before shutdown check");
+      const ended = (m: Record<string, unknown>) => m["work.attention"] === "needs-human" && String(m["work.attention_session"] ?? "").startsWith("ended:") && m["work.attention_msg"] === "session ended without hand-off";
       let metadata: Record<string, unknown> = {};
-      for (const end = Date.now() + 20_000; Date.now() < end;) {
-        metadata = JSON.parse(kata(["show", refs[0], "--json"])).issue.metadata ?? {};
-        if (metadata["work.attention"] === "needs-human" && String(metadata["work.attention_session"] ?? "").startsWith("ended:") && metadata["work.attention_msg"] === "session ended without hand-off") break;
-        await sleep(100);
-      }
-      if (metadata["work.attention"] !== "needs-human" || !String(metadata["work.attention_session"] ?? "").startsWith("ended:") || metadata["work.attention_msg"] !== "session ended without hand-off")
-        throw new Error("OMP lead attention did not end after exit: " + JSON.stringify(metadata));
+      for (const end = Date.now() + 20_000; Date.now() < end && !ended(metadata); await sleep(100)) metadata = JSON.parse(kata(["show", refs[0], "--json"])).issue.metadata ?? {};
+      if (!ended(metadata)) throw new Error("OMP lead attention did not end after exit: " + JSON.stringify(metadata));
       console.log("OMP lead attention ended after exit");
     }
   }

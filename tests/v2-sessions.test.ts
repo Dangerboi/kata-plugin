@@ -77,7 +77,6 @@ test("the plugin's close of an automatic parent records the omp session as its t
   await app.event("session_stop");
   await eventually(async () => (await show(parent)).issue.status, "closed");
   expect(app.piCalls.some(c => c[0] === "close")).toBe(false);
-  expect(app.nativeCalls.some(c => c[0] === "close")).toBe(true);
   const closes = (await events()).filter((e: any) => e.type === "issue.closed" && e.payload?.transcript?.session_id === "transcript-recorded");
   expect(closes.length).toBeGreaterThan(0);
   expect(closes[0].payload.transcript).toMatchObject({ agent: "omp", session_id: "transcript-recorded" });

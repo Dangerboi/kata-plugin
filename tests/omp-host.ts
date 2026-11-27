@@ -82,11 +82,11 @@ function loadAdapter(options: OmpHostOptions, makeManager?: (entries: any[]) => 
   ctx.agent = options.agent || { kind: "main", id: `main-${options.sid}` };
   ctx.getAsyncJobSnapshot = () => options.snapshot?.() || { running: [], recent: [] };
   void setBackend("kata");
-  const piCalls: string[][] = [], nativeCalls: string[][] = [];
+  const piCalls: string[][] = [];
   const detached: Promise<any>[] = [];
   const detachedCalls: { args: string[]; guard?: { show: string[]; owner: string; teammate: string } }[] = [];
   const runtime = {
-    execKata: (file: string, args: string[], opts: any) => { nativeCalls.push(args); return host.api.exec(file, args, opts); },
+    execKata: (file: string, args: string[], opts: any) => host.api.exec(file, args, opts),
     spawnDetached: (file: string, args: string[], opts: any) => {
       detachedCalls.push({ args, guard: opts.guard });
       detached.push(host.api.exec(file, args, opts));
@@ -97,7 +97,7 @@ function loadAdapter(options: OmpHostOptions, makeManager?: (entries: any[]) => 
   ompKata({ ...host.api, ...extra, exec, pi: { settings }, events: { on: bus.on }, ...options.sendUserMessage && { sendUserMessage: options.sendUserMessage } }, runtime);
   const event = host.event;
   host.event = async (...args: Parameters<typeof event>) => { const result = await event(...args); await Promise.all(detached.splice(0)); return result; };
-  return { host, bus, detachedCalls, piCalls, nativeCalls };
+  return { host, bus, detachedCalls, piCalls };
 }
 
 /**
@@ -153,7 +153,7 @@ export function kataViews(show: (ref: string) => Promise<any>) {
  * `contractReady` settles once the adapter's contract read has answered.
  */
 export function ompHost(options: OmpHostOptions) {
-  const { host, bus, detachedCalls, piCalls, nativeCalls } = loadAdapter(options);
+  const { host, bus, detachedCalls, piCalls } = loadAdapter(options);
   const { ctx } = host;
   const manager = ctx.sessionManager as FakeSessionManager;
 
@@ -255,7 +255,7 @@ export function ompHost(options: OmpHostOptions) {
     return ref;
   }
 
-  const app = { ctx, get sid() { return manager.getSessionId(); }, entries: host.entries, calls: host.calls, piCalls, nativeCalls, detachedCalls, notices: host.notices, widgets: host.widgets,
+  const app = { ctx, get sid() { return manager.getSessionId(); }, entries: host.entries, calls: host.calls, piCalls, detachedCalls, notices: host.notices, widgets: host.widgets,
     contractReady: host.answered("agent-contract-hook"),
     /** Every warning the adapter showed except the backend-off one: a failing or refused mirror shows only here, because the adapter catches a failing `replace` and tells the user. */
     mirrorFailures: () => mirrorFailures(host.notices),
