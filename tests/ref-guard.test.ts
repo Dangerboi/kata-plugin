@@ -122,7 +122,8 @@ test("a heredoc body belongs to the command whose line holds its <<", async () =
 test("commit messages and trailers are checked in a workspace repo", async () => {
   expect(await check("bash", { command: `git commit --author "ab3d <a@b.c>" --trailer "Ref: demo#k9m2" -m "fix" ab3d.ts` })).toEqual(["demo#k9m2"]);
   expect(await check("bash", { command: `git commit -m "fix" -- ab3d.ts` })).toEqual([]);
-  expect(await check("bash", { command: `git commit -- -m demo#ab3d` })).toEqual(["demo#ab3d"]);
+  expect(await check("bash", { command: `git commit -m fix -- --trailer demo#ab3d` })).toEqual([]);
+  expect(await check("bash", { command: `git tag -a v1 -- -m demo#ab3d` })).toEqual([]);
   expect(await check("bash", { command: `git commit --message=demo#ab3d` })).toEqual(["demo#ab3d"]);
   expect(await check("bash", { command: `git -C /tmp/elsewhere commit -m "demo#ab3d"` })).toEqual([]);
   expect(await check("bash", { command: `git -C /work commit -m "demo#ab3d"` })).toEqual(["demo#ab3d"]);
@@ -131,6 +132,7 @@ test("commit messages and trailers are checked in a workspace repo", async () =>
 test("git message options and stdin are checked for commits, merges, tags and notes", async () => {
   const commands = [
     `git commit --trailer=Ref:demo#ab3d -m fix`,
+    `git commit --author "A <a@b>" --trailer=Ref:demo#ab3d -m fix`,
     `git merge -m "merge demo#ab3d"`,
     `git merge --message=demo#ab3d`,
     `git merge -F/dev/stdin <<< "demo#ab3d"`,
@@ -161,6 +163,7 @@ test("git message options and stdin are checked for commits, merges, tags and no
 
 test("git non-message arguments and messages outside the workspace pass", async () => {
   for (const command of [
+    `git commit --author '--trailer=Ref:demo#ab3d <a@b>' -m fix`,
     `git commit --author "ab3d <a@b.c>" -m fix ab3d.ts`,
     `git tag v1`, `git merge feature`, `git notes show`, `git constructor -m demo#ab3d`,
     `git merge -smy-strategy demo#ab3d`, `git tag -uuser-m demo#ab3d`,
