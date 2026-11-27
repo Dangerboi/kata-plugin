@@ -36,6 +36,7 @@ const slot = (message: string, extra: object = {}) => ({ from: "lead", message, 
 function follower(options: { requests?: () => unknown[]; read?: () => Promise<unknown>; head?: () => Promise<number>; actor?: () => Promise<string>; spawn?: (cursor?: number) => any } = {}) {
 	const streams: ReturnType<typeof fakeStream>[] = [], cursors: (number | undefined)[] = [];
 	const delivered: string[] = [], published: string[] = [], timers: (() => void)[] = [], delays: number[] = [], debugged: unknown[] = [];
+	const counts: { trusted: number; foreign: number }[] = [];
 	let reads = 0;
 	const clock = { now: 0 };
 	const deps: InboxFollowerDeps = {
@@ -50,15 +51,33 @@ function follower(options: { requests?: () => unknown[]; read?: () => Promise<un
 			return { lines: s.lines(), exited: s.exited, kill: () => { s.killed++; s.end(); } };
 		},
 		deliver: text => delivered.push(text),
-		publish: text => published.push(summary(text)),
+		publish: (text, count) => { published.push(summary(text)); counts.push(count); },
 		head: options.head ?? (async () => 0),
 		now: () => clock.now,
 		setTimer: (fn, ms) => { timers.push(fn); delays.push(ms); return timers.length; },
 		clearTimer: () => { timers.length = 0; },
 		debug: error => debugged.push(error),
 	};
-	return { follow: createInboxFollower(deps), streams, cursors, delivered, published, timers, delays, clock, debugged, reads: () => reads };
+	return { follow: createInboxFollower(deps), streams, cursors, delivered, published, counts, timers, delays, clock, debugged, reads: () => reads };
 }
+
+test("refreshing the actor updates counts without replaying delivered slots", async () => {
+	let actor = "lead";
+	const t = follower({ actor: async () => actor });
+	t.follow.start(); await tick();
+	t.streams[0].push(slotLine(1, "old", slot("first")));
+	t.streams[0].push(slotLine(2, "new", { from: "other", message: "second" }));
+	await tick();
+	expect(t.delivered).toHaveLength(1);
+	expect(t.counts.at(-1)).toEqual({ trusted: 1, foreign: 1 });
+	actor = "other"; t.follow.refreshActor(); await tick();
+	expect(t.counts.at(-1)).toEqual({ trusted: 1, foreign: 1 });
+	expect(t.published.at(-1)).toBe("new:second");
+	t.streams[0].push(slotLine(3, "new", { from: "other", message: "third" }));
+	await tick();
+	expect(t.delivered).toHaveLength(2);
+	t.follow.stop();
+});
 
 test("parseStreamLine reads a slot write, a clear and a reset frame, and ignores other keys", () => {
 	expect(parseStreamLine(slotLine(5, "abcd", slot("hi", { re: "c:1", kind: "reply" })), KEY)).toMatchObject({ type: "slot", key: "abcd", ref: "proj#abcd", eventId: 5, to: { from: "lead", message: "hi", re: "c:1", kind: "reply" } });

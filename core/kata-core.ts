@@ -1,5 +1,5 @@
 import { decidePlanParent, explicitParent, isExplicitParent, namesPlanParent } from "./plan-parent";
-import { createInboxFollower, knownProjectHead, trustedInbox, type InboxFollower, type LiveInbox } from "./inbox";
+import { countInbox, createInboxFollower, knownProjectHead, trustedInbox, type InboxCounts, type InboxFollower, type LiveInbox } from "./inbox";
 import { createDelegates, FINAL, heldByDelegate as heldBy, isUntracked, nameOf, Refusal, teammateFor, type DelegateAssignment, type DelegateStore, type Refused, type Reservation, type SavedDelegate, type Who } from "./delegates";
 import { createSettlement, MAX_FAILURES, openChildren, type PendingClose, type SettlementSnapshot } from "./settlement";
 import { createKata, debugTo, type CORE_ENV, isKataCode, refGuardOff, isUnusable, KataError, NO_JOB, waitAtMost, type Batch, type Exec, type Job, type PathOps, type Platform, type Timers } from "./kata-cli";
@@ -18,6 +18,7 @@ export type { NativePhase, NativeStatus } from "./todo-list";
 // The context of a host event, as the core reads it. omp and pi pass their extension context; a host with none builds this.
 export interface HostContext {
 	cwd: string;
+	hasUI?: boolean;
 	// The agent the event belongs to: a todo call from another agent than the one the plan is bound for is refused.
 	agent?: { kind?: string; id?: string };
 	sessionManager?: {
@@ -30,8 +31,17 @@ export interface HostContext {
 		getHeader?(): { parentSession?: unknown } | null | undefined;
 	};
 	// The main session's UI: the plan widget and warnings.
-	ui?: { setWidget?(key: string, content: unknown): void; notify?(message: string, level?: string): void };
+	ui?: { setWidget?(key: string, content: unknown): void; setStatus?(key: string, content: string | undefined): void; notify?(message: string, level?: string): void };
 }
+
+export type SessionView = {
+	workspace: string; scope: string; outage: string; project?: string;
+	actor?: string; actorError?: string; teammate: string;
+	inbox: { address?: string; none?: "unset" | "personal"; delivery?: "live" | "per prompt" | "failed" };
+	refs: string[]; contract: "off" | "not-fetched" | number; counts?: InboxCounts; inboxFailed?: string;
+	settings: { executable: string; refGuard: boolean; liveInbox: boolean; debug: boolean };
+};
+export type InboxView = { address?: string; none?: "unset" | "personal"; text?: string; counts?: InboxCounts; failed?: string };
 
 // The host's callbacks get the context back as the host passed it, so they see their own type.
 interface CoreHost {
@@ -315,8 +325,16 @@ export type KataCore = ReturnType<typeof buildCore> & {
 
 export function createKataCore(host: CoreHost, options: CoreOptions): KataCore {
 	const delegateCores = new Map<string, KataCore>();
+	const core = buildCore(host, options, () => delegateCores.clear());
 	return {
-		...buildCore(host, options, () => delegateCores.clear()),
+		...core,
+		session: { ...core.session, clearContract() {
+			core.session.clearContract();
+			for (const delegate of delegateCores.values()) delegate.session.clearContract();
+		}, refresh() {
+			core.session.refresh();
+			for (const delegate of delegateCores.values()) delegate.session.refresh();
+		} },
 		delegate(id) {
 			let known = delegateCores.get(id);
 			if (!known) delegateCores.set(id, known = createKataCore(delegateHost(host, id), options));
@@ -406,6 +424,9 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 	const aliases = new Set<string>(); // refs the plan's parent was rehomed from: they still name it
 	// Refs this session claimed in its shell or named with `/todo ref`: its work, though the plan may never hold them. Read by `tools.guard`.
 	const claimed = new Set<string>();
+	const closedMarks = new Set<string>();
+	let claimStamp = 0, footerGeneration = 0;
+	let reconciledAt = 0, reconciling: Promise<void> | undefined;
 	let requestedRef: string | undefined;
 	// A native host's list says what is in progress, so the core never starts a pending task itself (see nextTask).
 	const autoStart = options.autoStart !== false && !options.native;
@@ -432,7 +453,7 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 	let progressed = true;
 	// What one session's prompt reads from Kata, kept between turns. A core serves the lead and every delegate running in its
 	// process, so each has its own: the lead's by session id ("" when the host gives none), a delegate's by delegate id.
-	type PromptReads = { cwd: string; contract?: string; inbox?: string; address?: string; pending?: Promise<void>; inboxPending?: Promise<void>; inboxNext?: Promise<void>; personInbox?: boolean };
+	type PromptReads = { cwd: string; contract?: string; inbox?: string; address?: string; pending?: Promise<void>; inboxPending?: Promise<void>; inboxNext?: Promise<void>; personInbox?: boolean; count?: InboxCounts; failed?: string };
 	const leadReads = new Map<string, PromptReads>();
 	const delegateReads = new Map<string, PromptReads>();
 	const leadKey = (id: string | undefined) => id ?? "";
@@ -528,7 +549,9 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 	// workspace, project and author setting. With no ref (no plan parent yet) it is the author setting or the user, else
 	// git's user name, kept the same way. A failed read is not kept. Ownership checks and the inbox's trust rule share it.
 	const actors = new Map<string, Promise<string>>();
+	let actorEpoch = 0;
 	async function actor(job: Job, cwd: string, ref = plan.parent): Promise<string> {
+		const epoch = actorEpoch;
 		const author = setting("KATA_AUTHOR") || setting("USER");
 		if (!ref && author) return author;
 		const key = [currentId, path.resolve(cwd), ref ? projectOf(ref) : "", setting("KATA_AUTHOR")].join("\0");
@@ -544,7 +567,13 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 			actors.set(key, known);
 			known.catch(() => { if (actors.get(key) === known) actors.delete(key); });
 		}
-		return known;
+		try {
+			const result = await known;
+			return actors.get(key) === known ? result : actor(job, cwd, ref);
+		} catch (error) {
+			if (epoch !== actorEpoch || (actors.has(key) && actors.get(key) !== known)) return actor(job, cwd, ref);
+			throw error;
+		}
 	}
 
 	// Starting unowned work requires a successful claim. Already-owned tasks
@@ -839,7 +868,7 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 		// Only a bind that starts a session this core did not already hold restores delegates: /tree and a branch switch keep the same one.
 		const isNew = currentId !== id, previous = currentId;
 		currentId = id;
-		if (isNew && main(ctx)) { host.switched?.(ctx); newSession(); shown.clear(); }
+		if (isNew && main(ctx)) { host.switched?.(ctx); newSession(); shown.clear(); closedMarks.clear(); footerGeneration++; reconciledAt = 0; reconciling = undefined; }
 		lastSnapshot = undefined;
 		currentCtx = ctx;
 		plan = { tasks: [], workspace: path.resolve(ctx.cwd) }; named = []; aliases.clear(); deletedParent = undefined;
@@ -2162,11 +2191,12 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 			const workspace = path.resolve(event.input.cwd || ctx.cwd, parsed.value("--workspace") || ".");
 			// A word the shell expands (`$ref`, a glob) names nothing yet; only the shape of a ref counts. A bare id is recorded at once (with the
 			// plan's project when the workspace is its own) and replaced by the ref Kata resolves it to, in the background: the hook never waits.
+			if (args[0] === "claim") { claimStamp++; closedMarks.delete(ref); }
 			if (args[0] === "claim" && QUALIFIED_REF_ONLY.test(ref)) claimed.add(ref);
 			else if (args[0] === "claim" && SHORT_ID_ONLY.test(ref)) {
 				const bare = ref, session = currentId;
 				claimed.add(plan.parent && plan.workspace === workspace ? `${projectOf(plan.parent)}#${bare}` : bare);
-				void serial(job => kata.pin(job, bare, workspace)).then(pinned => { if (currentId === session) { claimed.delete(bare); claimed.add(pinned); } }).catch(debug);
+				void serial(job => kata.pin(job, bare, workspace)).then(pinned => { if (currentId === session) { claimed.delete(bare); claimed.add(pinned); closedMarks.delete(pinned); } }).catch(debug);
 			}
 			if (!adopting) continue;
 			const target = ref;
@@ -2250,12 +2280,14 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 			reads.set(key, entry = { cwd: folder, contract: record && leadEntry?.cwd === folder ? leadEntry.contract : undefined });
 		}
 		if (!entry.pending && !entry.contract) {
-			entry.pending = (async () => {
+			let running!: Promise<void>;
+			running = (async () => {
 				if (!await probe(job, cwd)) return;
 				// Exactly these arguments: some Kata builds print nothing for any other form.
 				const out = await kata.run(job, ["agent-contract-hook", "--source", "kata-agent-contract-hook"], cwd, { timeout: 1000, workspace: false }).then(out => JSON.parse(out)?.hookSpecificOutput?.additionalContext);
-				if (typeof out === "string") entry.contract = out;
-			})().catch(debug).finally(() => { entry.pending = undefined; });
+				if (entry.pending === running && typeof out === "string") entry.contract = out;
+			})().catch(debug).finally(() => { if (entry.pending === running) entry.pending = undefined; });
+			entry.pending = running;
 		}
 		const user = setting("KATA_INBOX_USER");
 		let inboxRead: Promise<void> | undefined;
@@ -2289,7 +2321,8 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 				const address = entry.address = addressFor(mine);
 				const out = JSON.parse(await kata.run(job, ["inbox", "--for", address], cwd));
 				entry.inbox = trustedInbox(out?.requests, mine, address);
-			})().catch(debug).finally(() => { if (entry.inboxPending === running) entry.inboxPending = undefined; });
+				entry.count = countInbox(out?.requests, mine); entry.failed = undefined;
+			})().catch(error => { entry.failed = (error as Error)?.message ?? String(error); debug(error); }).finally(() => { if (entry.inboxPending === running) entry.inboxPending = undefined; });
 			return entry.inboxPending = running;
 		};
 		// A read already running may have begun before a request this call must show, so one more read follows it,
@@ -2300,11 +2333,13 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 	// ------------------------------------------------------------ live inbox
 
 	// While the follower runs, `liveInbox` is the main session's `<kata_inbox>` text and the per-turn read is skipped for it.
-	let liveInbox: string | undefined, follower: InboxFollower | undefined;
+	let liveInbox: string | undefined, liveCounts: InboxCounts | undefined, follower: InboxFollower | undefined;
+	let footerFormat: ((view: SessionView) => string | undefined) | undefined;
 	function stopFollower() {
 		follower?.stop();
 		follower = undefined;
 		liveInbox = undefined;
+		liveCounts = undefined;
 	}
 
 	// Requests are delivered as an aside: an idle session starts a turn on them, a working one takes them at its
@@ -2317,7 +2352,7 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 			read: async () => JSON.parse(await kata.run(job, ["inbox", "--for", address], cwd)),
 			spawn: cursor => live.spawn([options.executable, "events", "--tail", "--json", "--workspace", cwd, ...(cursor ? ["--last-event-id", String(cursor)] : [])], cwd),
 			deliver: text => { try { Promise.resolve(live.deliver(text)).catch(debug); } catch (error) { debug(error); } },
-			publish: text => { liveInbox = text; },
+			publish: (text, counts) => { liveInbox = text; liveCounts = counts; if (footerFormat) void footer(ctx, "throttle", footerFormat); },
 			head: () => knownProjectHead(cwd, args => kata.run(job, args, cwd), platform.env.get("KATA_HOME")),
 			now: () => performance.now(),
 			setTimer: (fn, ms) => platform.setTimer(fn, ms),
@@ -2462,6 +2497,8 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 	// `continues`: this shutdown does not end the lead's work (pi's reload: the same session goes on), so it keeps its tasks.
 	// `forking`: a fork replaces this session in a new instance (pi's /fork into a saved session); the tasks are left for it.
 	async function shutdown(ctx: HostContext, closing: { delegate?: { id: string; ended: boolean; report?: string }; continues?: boolean; forking?: boolean } = {}): Promise<void> {
+		footerGeneration++; footerFormat = undefined;
+		if (main(ctx) && ctx.hasUI === true) ctx.ui?.setStatus?.("kata", undefined);
 		see(ctx);
 		// A delegate's reads live in its own core (the lead's core never holds them) and go when its own session ends.
 		if (!main(ctx)) { const own = host.delegateStore.of(ctx); if (own) delegateReads.delete(own.id); }
@@ -2492,10 +2529,71 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 		})(), closing.delegate ? DELEGATE_SHUTDOWN_MS : SHUTDOWN_BOUND_MS);
 	}
 
+	const displayRefs = () => [...new Set([plan.parent, configuredRef(), requestedRef, ...claimed].filter((ref): ref is string => !!ref))].filter(ref => !closedMarks.has(ref));
+	function reconcile(ctx: HostContext, force: boolean): Promise<void> {
+		if (reconciling) return reconciling;
+		if (!force && Date.now() - reconciledAt < 15_000) return Promise.resolve();
+		const id = currentId, stamp = claimStamp;
+		const running = (async () => {
+			const mine = await actor(NO_JOB, ctx.cwd).catch(() => undefined);
+			await Promise.all(displayRefs().map(async ref => {
+				try {
+					const issue = (await kata.show(NO_JOB, ref, ctx.cwd)).issue;
+					if (id === currentId && stamp === claimStamp && (issue.status === "closed" || (issue.owner && mine && issue.owner !== mine))) closedMarks.add(ref);
+				} catch (error) { if (id === currentId && stamp === claimStamp && isKataCode(error, "issue_not_found")) closedMarks.add(ref); }
+			}));
+		})().finally(() => { if (reconciling === running) { reconciling = undefined; reconciledAt = Date.now(); } });
+		return reconciling = running;
+	}
+	const inboxAddress = (): SessionView["inbox"] => {
+		const user = setting("KATA_INBOX_USER");
+		return !user ? { none: "unset" } : !isSessionAddress(user) ? { none: "personal" } : { address: user, delivery: host.liveInbox ? "live" : "per prompt" };
+	};
+	async function sessionView(ctx: HostContext, opts: { reconcile?: boolean; context?: boolean } = {}): Promise<SessionView | undefined> {
+		if (!main(ctx)) return undefined;
+		await bounded(probe(NO_JOB, ctx.cwd)).catch(debug);
+		if (opts.reconcile) await bounded(reconcile(ctx, false));
+		const identity = await bounded(actor(NO_JOB, ctx.cwd).then(who => ({ who, error: undefined as string | undefined }), error => ({ who: undefined, error: (error as Error)?.message ?? String(error) })));
+		const entry = leadReads.get(leadKey(sid(ctx))), inbox = inboxAddress();
+		if (inbox.address && !host.liveInbox && entry?.failed) inbox.delivery = "failed";
+		return { workspace: path.resolve(ctx.cwd), scope, outage, project: plan.parent ? projectOf(plan.parent) : candidate(ctx.cwd).project,
+			actor: identity?.who, actorError: identity?.error, teammate: ownTeammate(), inbox, refs: displayRefs(),
+			contract: opts.context === false ? "off" : entry?.contract ? new TextEncoder().encode(entry.contract).length : "not-fetched",
+			counts: host.liveInbox && inbox.address ? liveCounts : entry?.count, inboxFailed: entry?.failed,
+			settings: { executable: options.executable, refGuard: !refGuardOff(setting("KATA_REF_GUARD")), liveInbox: !!host.liveInbox, debug: !!options.debugFile } };
+	}
+	async function sessionInbox(ctx: HostContext): Promise<InboxView> {
+		const inbox = inboxAddress();
+		if (!inbox.address) return { none: inbox.none };
+		try {
+			const mine = await actor(NO_JOB, ctx.cwd);
+			const out = JSON.parse(await kata.run(NO_JOB, ["inbox", "--for", inbox.address], ctx.cwd));
+			return { address: inbox.address, text: trustedInbox(out?.requests, mine, inbox.address, ""), counts: countInbox(out?.requests, mine) };
+		} catch (error) { return { address: inbox.address, failed: (error as Error)?.message ?? String(error) }; }
+	}
+	async function footer(ctx: HostContext, mode: "force" | "throttle", format: (view: SessionView) => string | undefined): Promise<void> {
+		if (!main(ctx) || ctx.hasUI !== true || !ctx.ui?.setStatus) return;
+		footerFormat = format;
+		const id = sid(ctx), generation = footerGeneration;
+		await bounded(reconcile(ctx, mode === "force"));
+		const view = await sessionView(ctx);
+		if (generation === footerGeneration && id === currentId && view) ctx.ui.setStatus("kata", view.scope === "down" ? undefined : format(view));
+	}
+
 	const completion = createTicketCompletion(kata, () => ({ session: currentId, cwd: path.resolve(currentCtx?.cwd ?? platform.cwd()), defaultProject: setting("KATA_DEFAULT_PROJECT") }), debug, platform);
 
 	return {
 		session: {
+			clearContract(): void {
+				for (const entry of [...leadReads.values(), ...delegateReads.values()]) {
+					entry.contract = undefined;
+					entry.pending = undefined;
+				}
+			},
+			refresh(): void { this.clearContract(); actorEpoch++; actors.clear(); follower?.refreshActor(); },
+			view: sessionView,
+			inbox: sessionInbox,
+			footer,
 			// The session began or switched: bind the plan, follow the inbox live when the host can, start attention.
 			// `after` is host work (a delegate's assignment retry) the first context read waits for.
 			// `child`: the workspace of a pi child still to join its parent; when Kata does not answer there, nothing starts and the result is undefined: the host runs the session as a main session and starts it again.
