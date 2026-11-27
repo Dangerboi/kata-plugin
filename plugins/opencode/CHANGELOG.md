@@ -8,7 +8,7 @@ All notable changes to `@dangerboi/kata-opencode` are listed here. The format fo
 
 #### Repository content
 
-- The `refGuard` option `warn` (or `KATA_REF_GUARD=warn`) lets a call the ref guard would refuse run, and adds the reason to that call's result, once (to the error message of a call that fails).
+- The `refGuard` option `warn` (or `KATA_REF_GUARD=warn`) lets a call the ref guard would refuse run, and adds the reason to that call's result, once (to the error message of a call that fails). A call a Code Mode script makes is refused instead, since the script would not pass the reason on.
 
 ### Fixed
 
