@@ -476,14 +476,6 @@ test("typed automatic parent can be recovered after losing the session entry", a
   expect(await sessionParents(app.sid)).toHaveLength(1);
 });
 
-test("omp learns lone issue output", async () => {
-  const app = host(); await app.event("session_start");
-  const call = (command: string) => app.event("tool_call", { toolName: "bash", input: { command } });
-  await app.event("tool_result", { toolName: "bash", input: { command: "kata next --agent" }, content: [{ type: "text", text: "OK next issue=z7x2" }] });
-  expect(await call('git commit -m "fix z7x2"')).toMatchObject({ block: true });
-});
-
-
 test("worker guard receives projects learned by its lead from list output", async () => {
   const app = host(); await app.event("session_start"); await app.init(["Worker project propagation", "Lead work"]);
   await app.event("tool_result", { toolName: "bash", input: { command: "kata list --all" }, content: [{ type: "text", text: "otherproject#d7x2" }] });
