@@ -9,6 +9,7 @@ function fixture(hook: () => Promise<string> = async () => "contract") {
   const ctx = { cwd: "/tmp/kata-status-fixture", hasUI: true, ui: { setStatus: (_key: string, _value: string | undefined) => {} } };
   const core = createKataCore({ platform: nodePlatform, appendEntry() {}, delegateStore: memoryDelegateStore(), exec: async (_file, args) => {
     calls.push(args);
+    if (args[0] === "version") return { code: 0, stdout: JSON.stringify({ kata_api_version: 1, version: "0.23.0" }), stderr: "" };
     if (args[0] === "agent-contract-hook") return { code: 0, stdout: JSON.stringify({ hookSpecificOutput: { additionalContext: await hook() } }), stderr: "" };
     if (args[0] === "inbox") return { code: 0, stdout: JSON.stringify({ requests: [{ ref: "p#1", from: "alice", message: "hello" }, { ref: "p#2", from: "other", message: "private" }] }), stderr: "" };
     return { code: 0, stdout: JSON.stringify({ issues: [] }), stderr: "" };
@@ -32,16 +33,23 @@ test("refresh rejects a stale contract and its finalizer while a new read is run
   let count = 0;
   const { core, ctx } = fixture(() => ++count === 1 ? first.promise : second.promise);
   const old = core.session.beforePrompt(ctx);
-  while (count < 1) await Bun.sleep(1);
-  core.session.refresh();
-  const next = core.session.beforePrompt(ctx);
-  while (count < 2) await Bun.sleep(1);
-  first.resolve("old");
-  await old;
-  second.resolve("new");
-  expect((await next).sections.contract).toBe("new");
-  expect((await core.session.beforePrompt(ctx)).sections.contract).toBe("new");
-  expect(count).toBe(2);
+  const waitForCount = async (wanted: number) => {
+    const deadline = Date.now() + 2_000;
+    while (count < wanted && Date.now() < deadline) await Bun.sleep(1);
+    expect(count).toBe(wanted);
+  };
+  try {
+    await waitForCount(1);
+    core.session.refresh();
+    const next = core.session.beforePrompt(ctx);
+    await waitForCount(2);
+    first.resolve("old");
+    await old;
+    second.resolve("new");
+    expect((await next).sections.contract).toBe("new");
+    expect((await core.session.beforePrompt(ctx)).sections.contract).toBe("new");
+    expect(count).toBe(2);
+  } finally { first.resolve("old"); second.resolve("new"); }
 });
 
 test("inbox counts and custom heading share the trusted request filter", async () => {
