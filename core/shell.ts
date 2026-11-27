@@ -72,10 +72,7 @@ export function commandContext(words: ShellWord[]): { index: number; assignments
 			}
 		}
 		if (directory !== undefined) directories.push(directory);
-		if (prefix === "timeout") {
-			if (at >= words.length) return undefined;
-			at++;
-		}
+		if (prefix === "timeout") at++;
 	}
 	return undefined;
 }
