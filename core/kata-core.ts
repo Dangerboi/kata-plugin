@@ -2580,7 +2580,13 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 	async function sessionView(ctx: HostContext, opts: { reconcile?: boolean; context?: boolean; nativeInbox?: boolean } = {}): Promise<SessionView | undefined> {
 		if (!main(ctx)) return undefined;
 		const probeError = await bounded(probe(NO_JOB, ctx.cwd).then(() => undefined, error => error));
-		if (opts.reconcile) await reconcile(ctx, true);
+		if (opts.reconcile) {
+			const id = currentId, generation = footerGeneration;
+			await reconcile(ctx, true);
+			// A claim or close of a shown ref while that check ran voided its result and left the throttle open: check once more,
+			// unless the session moved on (switch, refresh, shutdown).
+			if (!reconciledAt && id === currentId && generation === footerGeneration) await reconcile(ctx, true);
+		}
 		const identity = await bounded(actor(NO_JOB, ctx.cwd).then(who => ({ who, error: undefined as string | undefined }), error => ({ who: undefined, error: (error as Error)?.message ?? String(error) })));
 		const entry = leadReads.get(leadKey(sid(ctx))), inbox = inboxAddress();
 		if (inbox.address && opts.nativeInbox) inbox.delivery = "kata";
