@@ -94,7 +94,8 @@ test("detached spawn reports asynchronous and synchronous failures without throw
   const reported = Promise.withResolvers<void>();
   const debug = debugTo("/log", (_file, line) => { errors.push(line); reported.resolve(); });
   expect(() => spawnDetached("/no-such-kata-executable", [], { cwd: process.cwd() }, debug)).not.toThrow();
-  await Promise.race([reported.promise, new Promise((_, reject) => setTimeout(() => reject(new Error("spawn error was not reported")), 1000))]);
+  const timer = setTimeout(() => reported.reject(new Error("spawn error was not reported")), 1000);
+  try { await reported.promise; } finally { clearTimeout(timer); }
   expect(String(errors[0])).toContain("ENOENT");
   expect(() => spawnDetached("bad\0file", [], { cwd: process.cwd() }, debug)).not.toThrow();
   expect(errors).toHaveLength(2);
