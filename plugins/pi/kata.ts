@@ -1,6 +1,6 @@
 import path from "node:path";
 import type { BeforeAgentStartEvent, ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { createKataCore, DESCRIPTION, PROMPT_TAGS, TODO_OPS, TODO_PARAMS, type Lead, type ChildParent } from "./kata-core";
+import { createKataCore, DESCRIPTION, PROMPT_TAGS, tagged, TODO_OPS, TODO_PARAMS, type Lead, type ChildParent } from "./kata-core";
 import { NO_JOB } from "./kata-cli";
 import { exportTranscriptSession, nodePlatform } from "./node-host";
 import { delegateCommand, kataCommands, quote } from "./shell";
@@ -94,7 +94,7 @@ export default async function piKata(pi: ExtensionAPI) {
 	}, { namespace: NAMESPACE, executable, executableVars: EXECUTABLE_VARS, explicitRef: () => inherited ? undefined : explicit, debugFile: process.env.KATA_PI_DEBUG || process.env.KATA_OMP_DEBUG });
 
 	// Where the lead's plan lives, as the latest core call reported it.
-	let lead: Lead = { workspace: path.resolve(process.cwd()) };
+	let lead: Lead = { workspace: path.resolve(process.cwd()) }, prompted: Record<string, string> | undefined; // the last prompt's sections: a later extension may still fill them
 	// The lead moved: the main session exports where its plan lives now.
 	function follow(next: Lead, ctx: ExtensionContext) {
 		if (!inherited) { lead = next; exportParent(ctx); }
@@ -177,7 +177,7 @@ export default async function piKata(pi: ExtensionAPI) {
 		const next = await core.tools.result(ctx, { ...event, details: undefined });
 		if (!inherited) lead = next;
 		if (event.parentToolCallId) return;
-		const notice = core.tools.inbox(ctx);
+		const notice = core.tools.inbox(ctx, [prompted?.[PROMPT_TAGS.inbox]].find(shown => shown && ctx.getSystemPrompt().includes(tagged("inbox", shown))));
 		if (notice) return { content: [...event.content, { type: "text", text: notice }], structuredContent: event.structuredContent };
 	});
 
@@ -188,7 +188,7 @@ export default async function piKata(pi: ExtensionAPI) {
 		const native = !inherited && nativeContractActive(ctx.cwd);
 		const { sections: text, lead: next } = await core.session.beforePrompt(ctx, { context: !native });
 		if (!inherited) lead = next;
-		const sections = event.systemPromptOptions.sections;
+		const sections = prompted = event.systemPromptOptions.sections;
 		if (text.contract) sections[PROMPT_TAGS.contract] = text.contract;
 		if (text.inbox) sections[PROMPT_TAGS.inbox] = text.inbox;
 		if (text.assignment) sections[PROMPT_TAGS.assignment] = text.assignment;

@@ -1,5 +1,5 @@
 import { decidePlanParent, explicitParent, isExplicitParent, namesPlanParent } from "./plan-parent";
-import { createInboxFollower, knownProjectHead, trustedInbox, type InboxFollower, type LiveInbox } from "./inbox";
+import { createInboxFollower, escapeMarkup, knownProjectHead, trustedInbox, type InboxFollower, type LiveInbox } from "./inbox";
 import { createDelegates, FINAL, heldByDelegate as heldBy, isUntracked, nameOf, Refusal, teammateFor, type DelegateAssignment, type DelegateStore, type Refused, type Reservation, type SavedDelegate, type Who } from "./delegates";
 import { createSettlement, MAX_FAILURES, openChildren, type PendingClose, type SettlementSnapshot } from "./settlement";
 import { createKata, debugTo, type CORE_ENV, isKataCode, refGuardOff, isUnusable, KataError, NO_JOB, waitAtMost, type Batch, type Exec, type Job, type PathOps, type Platform, type Timers } from "./kata-cli";
@@ -2585,7 +2585,7 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 		},
 		tools: {
 			// Return a ready change immediately and start a due read for a later result.
-			inbox(ctx: HostContext): string | undefined {
+			inbox(ctx: HostContext, shown?: string): string | undefined {
 				if (main(ctx) && liveInbox !== undefined) return undefined;
 				if (!main(ctx) && !host.delegateStore.of(ctx)) return undefined;
 				const cwd = delegates.assignment(ctx)?.workspace || ctx.cwd;
@@ -2594,7 +2594,7 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 				let notice: string | undefined;
 				if (inbox !== (entry.delivered ?? "")) {
 					entry.delivered = inbox;
-					notice = tagged("inbox", inbox || "The Kata inbox is now empty: the requests shown earlier were handled or withdrawn, so they no longer need action.");
+					notice = inbox && shown !== undefined && inbox === escapeMarkup(shown.replace(/\n$/, "")) ? undefined : tagged("inbox", inbox || "The Kata inbox is now empty: the requests shown earlier were handled or withdrawn, so they no longer need action.");
 				}
 				const raw = setting("KATA_INBOX_POLL_SECONDS");
 				const seconds = raw?.trim() ? Number(raw) : NaN;
