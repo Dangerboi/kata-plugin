@@ -38,7 +38,7 @@ export type SessionView = {
 	workspace: string; scope: string; outage: string; project?: string;
 	actor?: string; actorError?: string; teammate: string;
 	inbox: { address?: string; none?: "unset" | "personal"; delivery?: "live" | "per prompt" | "failed" | "kata" };
-	refs: string[]; contract: "off" | "not-fetched" | number; counts?: InboxCounts; inboxFailed?: string;
+	refs: string[]; contract: "off" | "not-fetched" | number; counts?: InboxCounts;
 	settings: { executable: string; refGuard: boolean; liveInbox: boolean; debug: boolean };
 };
 export type InboxView = { address?: string; none?: "unset" | "personal"; text?: string; counts?: InboxCounts; failed?: string; native?: true };
@@ -421,10 +421,10 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 	const aliases = new Set<string>(); // refs the plan's parent was rehomed from: they still name it
 	// Refs this session claimed in its shell or named with `/todo ref`: its work, though the plan may never hold them. Read by `tools.guard`.
 	const claimed = new Set<string>();
-	const closedMarks = new Set<string>();
-	const claimRevisions = new Map<string, number>();
+	let closed = new Set<string>();
+	const claimedAt = new Map<string, number>();
 	let footerGeneration = 0;
-	let reconciledAt = 0, reconciling: Promise<void> | undefined, reconcileNext: Promise<void> | undefined;
+	let checkedAt = 0, checking: Promise<void> | undefined, checkNext: Promise<void> | undefined;
 	let requestedRef: string | undefined;
 	// A native host's list says what is in progress, so the core never starts a pending task itself (see nextTask).
 	const autoStart = options.autoStart !== false && !options.native;
@@ -451,7 +451,7 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 	let progressed = true;
 	// What one session's prompt reads from Kata, kept between turns. A core serves the lead and every delegate running in its
 	// process, so each has its own: the lead's by session id ("" when the host gives none), a delegate's by delegate id.
-	type PromptReads = { cwd: string; contract?: string; inbox?: string; address?: string; pending?: Promise<void>; inboxPending?: Promise<void>; inboxNext?: Promise<void>; personInbox?: boolean; count?: InboxCounts; failed?: string };
+	type PromptReads = { cwd: string; contract?: string; inbox?: string; address?: string; pending?: Promise<void>; inboxPending?: Promise<void>; inboxNext?: Promise<void>; personInbox?: boolean; count?: InboxCounts };
 	const leadReads = new Map<string, PromptReads>();
 	const delegateReads = new Map<string, PromptReads>();
 	const leadKey = (id: string | undefined) => id ?? "";
@@ -858,7 +858,7 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 		// Only a bind that starts a session this core did not already hold restores delegates: /tree and a branch switch keep the same one.
 		const isNew = currentId !== id, previous = currentId;
 		currentId = id;
-		if (isNew && main(ctx)) { host.switched?.(ctx); newSession(); shown.clear(); closedMarks.clear(); claimRevisions.clear(); footerGeneration++; reconciledAt = 0; reconciling = undefined; reconcileNext = undefined; }
+		if (isNew && main(ctx)) { host.switched?.(ctx); newSession(); shown.clear(); closed.clear(); claimedAt.clear(); footerGeneration++; footerActor = undefined; footerPainted = false; checkedAt = 0; checking = undefined; checkNext = undefined; }
 		lastSnapshot = undefined;
 		currentCtx = ctx;
 		plan = { tasks: [], workspace: path.resolve(ctx.cwd) }; named = []; aliases.clear(); deletedParent = undefined;
@@ -2119,7 +2119,7 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 			try {
 				await enterPlan(job, ctx, false);
 				const pinned = await kata.pin(job, ref, path.resolve(ctx.cwd));
-				claimed.add(pinned);
+				markClaim(pinned);
 				const explicit = configuredRef();
 				if (explicit && await kata.pin(job, explicit, path.resolve(ctx.cwd)) !== pinned) return `KATA_REF is set to ${explicit}, which fixes the plan parent; ${ref} is not used.`;
 				if (plan.parent) {
@@ -2180,19 +2180,19 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 			if (!ref.includes("#") && parsed.value("--project")) ref = `${parsed.value("--project")}#${ref}`;
 			const workspace = path.resolve(event.input.cwd || ctx.cwd, parsed.value("--workspace") || ".");
 			if (args[0] === "close") {
-				for (const candidate of candidateRefs()) if (candidate === ref || (SHORT_ID_ONLY.test(ref) && candidate.endsWith(`#${ref}`))) claimRevisions.set(candidate, (claimRevisions.get(candidate) ?? 0) + 1);
-				reconciledAt = 0;
+				for (const candidate of candidateRefs()) if (candidate === ref || (SHORT_ID_ONLY.test(ref) && candidate.endsWith(`#${ref}`))) touchRef(candidate);
+				checkedAt = 0;
+				if (checking) void checkRefs(ctx, true);
+				if (footerFormat) void footer(footerCtx ?? ctx, "force", footerFormat);
 				continue;
 			}
-			// A word the shell expands (`$ref`, a glob) names nothing yet; only the shape of a ref counts. A bare id is recorded at once (with the
-			// plan's project when the workspace is its own) and replaced by the ref Kata resolves it to, in the background: the hook never waits.
-			if (args[0] === "claim") { claimRevisions.set(ref, (claimRevisions.get(ref) ?? 0) + 1); closedMarks.delete(ref); reconciledAt = 0; }
-			if (args[0] === "claim" && QUALIFIED_REF_ONLY.test(ref)) claimed.add(ref);
+			if (args[0] === "claim" && QUALIFIED_REF_ONLY.test(ref)) markClaim(ref);
 			else if (args[0] === "claim" && SHORT_ID_ONLY.test(ref)) {
 				const bare = ref, session = currentId;
-				claimed.add(plan.parent && plan.workspace === workspace ? `${projectOf(plan.parent)}#${bare}` : bare);
-				void serial(job => kata.pin(job, bare, workspace)).then(pinned => { if (currentId === session) { claimed.delete(bare); claimed.add(pinned); claimRevisions.set(pinned, (claimRevisions.get(pinned) ?? 0) + 1); closedMarks.delete(pinned); reconciledAt = 0; } }).catch(debug);
+				markClaim(plan.parent && plan.workspace === workspace ? `${projectOf(plan.parent)}#${bare}` : bare);
+				void serial(job => kata.pin(job, bare, workspace)).then(pinned => { if (currentId === session) { claimed.delete(bare); markClaim(pinned); if (checking) void checkRefs(ctx, true); } }).catch(debug);
 			}
+			if (args[0] === "claim") { if (checking) void checkRefs(ctx, true); if (footerFormat) void footer(footerCtx ?? ctx, "force", footerFormat); }
 			if (!adopting) continue;
 			const target = ref;
 			await bounded(serial(async job => {
@@ -2305,7 +2305,7 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 		}
 		if (main(ctx) && inboxRead) {
 			const gen = footerGeneration;
-			void inboxRead.then(() => { if (gen === footerGeneration && footerFormat) void footer(ctx, "throttle", footerFormat); });
+			void inboxRead.then(() => { if (gen === footerGeneration && footerFormat) void footer(footerCtx ?? ctx, "throttle", footerFormat); });
 		}
 		const done = Promise.all([entry.pending, inboxRead]).then(() => undefined);
 		return { entry, record, showsInbox: main(ctx) || !!record, done };
@@ -2319,12 +2319,13 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 			running = (async () => {
 				const mine = await actor(job, cwd, ref);
 				if (entry.inboxPending !== running) return;
+				if (entry === leadReads.get(leadKey(currentId))) footerActor = mine;
 				const address = entry.address = addressFor(mine);
 				const out = JSON.parse(await kata.run(job, ["inbox", "--for", address], cwd));
 				if (entry.inboxPending !== running) return;
 				entry.inbox = trustedInbox(out?.requests, mine, address);
-				entry.count = countInbox(out?.requests, mine); entry.failed = undefined;
-			})().catch(error => { if (entry.inboxPending === running) { entry.failed = (error as Error)?.message ?? String(error); debug(error); } }).finally(() => { if (entry.inboxPending === running) entry.inboxPending = undefined; });
+				entry.count = countInbox(out?.requests, mine);
+			})().catch(error => { if (entry.inboxPending === running) debug(error); }).finally(() => { if (entry.inboxPending === running) entry.inboxPending = undefined; });
 			return entry.inboxPending = running;
 		};
 		// A read already running may have begun before a request this call must show, so one more read follows it,
@@ -2338,14 +2339,13 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 	// ------------------------------------------------------------ live inbox
 
 	// While the follower runs, `liveInbox` is the main session's `<kata_inbox>` text and the per-turn read is skipped for it.
-	let liveInbox: string | undefined, liveCounts: InboxCounts | undefined, liveFailed: string | undefined, follower: InboxFollower | undefined;
-	let footerFormat: ((view: SessionView) => string | undefined) | undefined;
+	let liveInbox: string | undefined, liveCounts: InboxCounts | undefined, follower: InboxFollower | undefined;
+	let footerFormat: ((view: SessionView) => string | undefined) | undefined, footerCtx: HostContext | undefined;
 	function stopFollower() {
 		follower?.stop();
 		follower = undefined;
 		liveInbox = undefined;
 		liveCounts = undefined;
-		liveFailed = undefined;
 	}
 
 	// Requests are delivered as an aside: an idle session starts a turn on them, a working one takes them at its
@@ -2358,8 +2358,7 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 			read: async () => JSON.parse(await kata.run(job, ["inbox", "--for", address], cwd)),
 			spawn: cursor => live.spawn([options.executable, "events", "--tail", "--json", "--workspace", cwd, ...(cursor ? ["--last-event-id", String(cursor)] : [])], cwd),
 			deliver: text => { try { Promise.resolve(live.deliver(text)).catch(debug); } catch (error) { debug(error); } },
-			publish: (text, counts) => { liveInbox = text; liveCounts = counts; if (footerFormat) void footer(ctx, "throttle", footerFormat); },
-			readState: error => { liveFailed = error === undefined ? undefined : (error as Error)?.message ?? String(error); if (error !== undefined && footerFormat) void footer(ctx, "throttle", footerFormat); },
+			publish: (text, counts) => { liveInbox = text; liveCounts = counts; if (footerFormat) void footer(footerCtx ?? ctx, "throttle", footerFormat); },
 			head: () => knownProjectHead(cwd, args => kata.run(job, args, cwd), platform.env.get("KATA_HOME")),
 			now: () => performance.now(),
 			setTimer: (fn, ms) => platform.setTimer(fn, ms),
@@ -2504,7 +2503,7 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 	// `continues`: this shutdown does not end the lead's work (pi's reload: the same session goes on), so it keeps its tasks.
 	// `forking`: a fork replaces this session in a new instance (pi's /fork into a saved session); the tasks are left for it.
 	async function shutdown(ctx: HostContext, closing: { delegate?: { id: string; ended: boolean; report?: string }; continues?: boolean; forking?: boolean } = {}): Promise<void> {
-		footerGeneration++; footerFormat = undefined; reconciling = undefined; reconcileNext = undefined;
+		footerGeneration++; footerFormat = undefined; footerCtx = undefined; footerPainted = false; checking = undefined; checkNext = undefined; lastFooter = undefined;
 		if (main(ctx) && ctx.hasUI === true) ctx.ui?.setStatus?.("kata", undefined);
 		see(ctx);
 		// A delegate's reads live in its own core (the lead's core never holds them) and go when its own session ends.
@@ -2536,67 +2535,80 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 		})(), closing.delegate ? DELEGATE_SHUTDOWN_MS : SHUTDOWN_BOUND_MS);
 	}
 
-	const candidateRefs = () => [...new Set([plan.parent, configuredRef(), requestedRef, ...claimed].filter((ref): ref is string => !!ref))];
-	const displayRefs = () => candidateRefs().filter(ref => !closedMarks.has(ref));
-	function reconcile(ctx: HostContext, force: boolean): Promise<void> {
-		if (reconciling) {
-			if (!force) return reconciling;
-			if (reconcileNext) return reconcileNext;
+	const candidateRefs = () => [...new Set([plan.parent, configuredRef(), ...claimed].filter((ref): ref is string => !!ref))];
+	const displayRefs = () => candidateRefs().filter(ref => !closed.has(ref));
+	function touchRef(ref: string) { claimedAt.set(ref, (claimedAt.get(ref) ?? 0) + 1); checkedAt = 0; }
+	function markClaim(ref: string) { claimed.add(ref); touchRef(ref); closed.delete(ref); }
+	function checkRefs(ctx: HostContext, force: boolean): Promise<void> {
+		if (checking) {
+			if (!force) return checking;
+			if (checkNext) return checkNext;
 			const id = currentId, generation = footerGeneration;
-			const next = reconciling.then(() => {
-				if (reconcileNext !== next || id !== currentId || generation !== footerGeneration) return;
-				reconcileNext = undefined;
-				return reconcile(ctx, true);
+			const next = checking.then(() => {
+				if (checkNext !== next || id !== currentId || generation !== footerGeneration) return;
+				checkNext = undefined;
+				return checkRefs(ctx, true);
 			});
-			return reconcileNext = next;
+			return checkNext = next;
 		}
-		if (!force && Date.now() - reconciledAt < 15_000) return Promise.resolve();
-		const id = currentId, generation = footerGeneration, refs = candidateRefs();
-		const revisions = new Map(refs.map(ref => [ref, claimRevisions.get(ref) ?? 0]));
-		let invalidated = false;
-		const current = (ref: string) => {
-			const valid = id === currentId && generation === footerGeneration && revisions.get(ref) === (claimRevisions.get(ref) ?? 0);
-			if (!valid) invalidated = true;
-			return valid;
-		};
+		if (!force && Date.now() - checkedAt < 15_000) return Promise.resolve();
+		const id = currentId, generation = footerGeneration;
 		const running = (async () => {
-			const mine = await actor(NO_JOB, ctx.cwd).catch(() => undefined);
-			await Promise.all(refs.map(async ref => {
-				try {
-					const issue = (await kata.show(NO_JOB, ref, ctx.cwd, 3000)).issue;
-					if (!current(ref)) return;
-					const ownershipMatters = claimed.has(ref) || (ref === requestedRef && ref !== configuredRef());
-					if (issue.status === "closed" || (ownershipMatters && issue.owner && mine && issue.owner !== mine)) closedMarks.add(ref);
-					else closedMarks.delete(ref);
-				} catch (error) { if (current(ref) && isKataCode(error, "issue_not_found")) closedMarks.add(ref); }
-			}));
-		})().finally(() => { if (reconciling === running) { reconciling = undefined; reconciledAt = invalidated || candidateRefs().some(ref => !revisions.has(ref)) ? 0 : Date.now(); } });
-		return reconciling = running;
+			for (;;) {
+				const refs = candidateRefs(), stamps = new Map(refs.map(ref => [ref, claimedAt.get(ref) ?? 0]));
+				const results = await Promise.all(refs.map(async ref => {
+					try {
+						const result = JSON.parse(await kata.run(NO_JOB, ["status", ref], ctx.cwd, { timeout: 3000 }));
+						if (result?.kata_api_version !== 1 || typeof result.issue_status !== "string") return false;
+						return result.issue_status === "closed" || (claimed.has(ref) && typeof result.owner === "string" && typeof result.actor === "string" && !!result.owner && !!result.actor && result.owner !== result.actor);
+					} catch (error) { return isKataCode(error, "issue_not_found"); }
+				}));
+				if (generation !== footerGeneration || id !== currentId) return;
+				const current = candidateRefs();
+				const changed = current.length !== refs.length || current.some(ref => !stamps.has(ref) || stamps.get(ref) !== (claimedAt.get(ref) ?? 0));
+				closed = new Set(refs.filter((ref, index) => results[index] && stamps.get(ref) === (claimedAt.get(ref) ?? 0)));
+				if (!changed) { checkedAt = Date.now(); break; }
+			}
+		})().finally(() => { if (checking === running) checking = undefined; });
+		return checking = running;
 	}
 	const inboxAddress = (): SessionView["inbox"] => {
 		const user = setting("KATA_INBOX_USER");
 		return !user ? { none: "unset" } : !isSessionAddress(user) ? { none: "personal" } : { address: user, delivery: host.liveInbox ? "live" : "per prompt" };
 	};
-	async function sessionView(ctx: HostContext, opts: { reconcile?: boolean; context?: boolean; nativeInbox?: boolean } = {}): Promise<SessionView | undefined> {
-		if (!main(ctx)) return undefined;
-		const probeError = await bounded(probe(NO_JOB, ctx.cwd).then(() => undefined, error => error));
-		if (opts.reconcile) {
-			const id = currentId, generation = footerGeneration;
-			await reconcile(ctx, true);
-			// A claim or close of a shown ref while that check ran voided its result and left the throttle open: check once more,
-			// unless the session moved on (switch, refresh, shutdown).
-			if (!reconciledAt && id === currentId && generation === footerGeneration) await reconcile(ctx, true);
-		}
-		const identity = await bounded(actor(NO_JOB, ctx.cwd).then(who => ({ who, error: undefined as string | undefined }), error => ({ who: undefined, error: (error as Error)?.message ?? String(error) })));
+	let footerActor: string | undefined, lastFooter: string | undefined, footerPainted = false;
+	function viewData(ctx: HostContext, opts: { context?: boolean; nativeInbox?: boolean } = {}): SessionView {
 		const entry = leadReads.get(leadKey(sid(ctx))), inbox = inboxAddress();
 		if (inbox.address && opts.nativeInbox) inbox.delivery = "kata";
-		else if (inbox.address && (host.liveInbox ? liveFailed : entry?.failed)) inbox.delivery = "failed";
-		return { workspace: path.resolve(ctx.cwd), scope: isKataCode(probeError, "unsupported_version") ? "down" : scope,
-			outage: isKataCode(probeError, "unsupported_version") ? (probeError as Error).message : outage, project: plan.parent ? projectOf(plan.parent) : candidate(ctx.cwd).project,
-			actor: identity?.who, actorError: identity?.error, teammate: ownTeammate(), inbox, refs: displayRefs(),
+		return { workspace: path.resolve(ctx.cwd), scope, outage, project: plan.parent ? projectOf(plan.parent) : candidate(ctx.cwd).project,
+			actor: footerActor ?? (!plan.parent ? setting("KATA_AUTHOR") || setting("USER") : undefined), teammate: ownTeammate(), inbox, refs: displayRefs(),
 			contract: opts.context === false ? "off" : entry?.contract ? new TextEncoder().encode(entry.contract).length : "not-fetched",
-			counts: opts.nativeInbox ? undefined : host.liveInbox && inbox.address ? liveCounts : entry?.count, inboxFailed: opts.nativeInbox ? undefined : host.liveInbox && inbox.address ? liveFailed : entry?.failed,
+			counts: opts.nativeInbox ? undefined : host.liveInbox && inbox.address ? liveCounts : entry?.count,
 			settings: { executable: options.executable, refGuard: !refGuardOff(setting("KATA_REF_GUARD")), liveInbox: !!host.liveInbox, debug: !!options.debugFile } };
+	}
+	function paint(ctx: HostContext, view?: SessionView) {
+		if (!footerFormat || !main(ctx) || ctx.hasUI !== true || !ctx.ui?.setStatus) return;
+		const value = footerFormat(view ?? viewData(ctx));
+		if (!footerPainted || value !== lastFooter) { footerPainted = true; lastFooter = value; ctx.ui.setStatus("kata", value); }
+	}
+	async function sessionView(ctx: HostContext, opts: { reconcile?: boolean; context?: boolean; nativeInbox?: boolean } = {}): Promise<SessionView | undefined> {
+		if (!main(ctx)) return undefined;
+		const id = currentId, generation = footerGeneration;
+		const probeError = await bounded(probe(NO_JOB, ctx.cwd).then(() => undefined, error => error));
+		if (generation !== footerGeneration || id !== currentId) return undefined;
+		if (opts.reconcile) await checkRefs(ctx, true);
+		if (generation !== footerGeneration || id !== currentId) return undefined;
+		const identity = await bounded(actor(NO_JOB, ctx.cwd).then(who => ({ who, error: undefined as string | undefined }), error => ({ who: undefined, error: (error as Error)?.message ?? String(error) })));
+		if (generation !== footerGeneration || id !== currentId) return undefined;
+		footerActor = identity?.who;
+		const read = opts.reconcile && !opts.nativeInbox ? await sessionInbox(ctx) : undefined;
+		const view = viewData(ctx, opts);
+		view.actor = identity?.who; view.actorError = identity?.error;
+		if (isKataCode(probeError, "unsupported_version")) { view.scope = "down"; view.outage = (probeError as Error).message; }
+		if (read?.failed !== undefined) view.inbox.delivery = "failed";
+		else if (read?.counts) view.counts = read.counts;
+		if (generation === footerGeneration && id === currentId) paint(footerCtx ?? ctx, view);
+		return view;
 	}
 	async function sessionInbox(ctx: HostContext, opts: { nativeInbox?: boolean } = {}): Promise<InboxView> {
 		const inbox = inboxAddress();
@@ -2611,24 +2623,22 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 				const key = leadKey(sid(ctx));
 				let entry = leadReads.get(key);
 				if (!entry) leadReads.set(key, entry = { cwd: path.resolve(ctx.cwd) });
-				entry.count = counts; entry.failed = undefined;
+				entry.count = counts;
+				paint(footerCtx ?? ctx);
 			}
 			return { address: inbox.address, text: trustedInbox(out?.requests, mine, inbox.address, ""), counts, ...native };
 		} catch (error) { return { address: inbox.address, failed: (error as Error)?.message ?? String(error), ...native }; }
 	}
 	async function footer(ctx: HostContext, mode: "force" | "throttle", format: (view: SessionView) => string | undefined): Promise<void> {
 		if (!main(ctx) || ctx.hasUI !== true || !ctx.ui?.setStatus) return;
-		footerFormat = format;
-		const id = sid(ctx), generation = footerGeneration;
-		const pending = reconcile(ctx, mode === "force");
+		footerFormat = format; footerCtx = ctx;
+		const id = currentId, generation = footerGeneration;
+		const pending = checkRefs(ctx, mode === "force");
 		let finished = false;
 		void pending.then(() => { finished = true; }).catch(debug);
-		const draw = async () => {
-			const view = await sessionView(ctx);
-			if (generation === footerGeneration && id === currentId && view) ctx.ui!.setStatus!("kata", view.scope === "down" ? undefined : format(view));
-		};
+		const draw = () => { if (generation === footerGeneration && id === currentId) paint(footerCtx ?? ctx); };
 		await bounded(pending);
-		await draw();
+		draw();
 		if (!finished) void pending.then(draw).catch(debug);
 	}
 
@@ -2637,11 +2647,13 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 	return {
 		session: {
 			refresh(): void {
-				footerGeneration++; reconciling = undefined; reconcileNext = undefined; reconciledAt = 0; actors.clear();
+				footerGeneration++; checking = undefined; checkNext = undefined; checkedAt = 0; actors.clear();
 				for (const entry of [...leadReads.values(), ...delegateReads.values()]) {
-					entry.contract = undefined; entry.pending = undefined; entry.inbox = undefined; entry.count = undefined; entry.failed = undefined; entry.inboxPending = undefined; entry.inboxNext = undefined;
+					entry.contract = undefined; entry.pending = undefined; entry.inbox = undefined; entry.count = undefined; entry.inboxPending = undefined; entry.inboxNext = undefined;
 				}
-				if (follower) { liveInbox = ""; liveCounts = undefined; liveFailed = undefined; follower.refreshActor(); }
+				footerActor = undefined;
+				if (follower) { liveInbox = ""; liveCounts = undefined; follower.refreshActor(); }
+				if (footerCtx) paint(footerCtx);
 			},
 			view: sessionView,
 			inbox: sessionInbox,
@@ -2755,7 +2767,10 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 			guard,
 		},
 		delegates: {
-			apply: delegates.apply,
+			async apply(event: Parameters<typeof delegates.apply>[0], job: Job) {
+				await delegates.apply(event, job);
+				if (event.type === "exited" && footerCtx && footerFormat) void footer(footerCtx, "force", footerFormat);
+			},
 			start: delegates.start,
 			assignment: delegates.assignment,
 			check: delegates.check,

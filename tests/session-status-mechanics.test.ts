@@ -11,7 +11,7 @@ function fixture(hook: () => Promise<string> = async () => "contract", issue?: (
   const core = createKataCore({ platform: nodePlatform, appendEntry() {}, delegateStore: memoryDelegateStore(), exec: async (_file, args) => {
     calls.push(args);
     if (args[0] === "version") return { code: 0, stdout: JSON.stringify({ kata_api_version: 1, version: "0.23.0" }), stderr: "" };
-    if (args[0] === "show") return { code: 0, stdout: JSON.stringify({ issue: issue?.() }), stderr: "" };
+    if (args[0] === "status") { const item = issue?.(); return { code: 0, stdout: JSON.stringify({ kata_api_version: 1, issue_status: item?.status, owner: item?.owner, actor: "alice" }), stderr: "" }; }
     if (args[0] === "agent-contract-hook") return { code: 0, stdout: JSON.stringify({ hookSpecificOutput: { additionalContext: await hook() } }), stderr: "" };
     if (args[0] === "inbox") return { code: 0, stdout: JSON.stringify({ requests: [{ ref: "p#1", from: "alice", message: "hello" }, { ref: "p#2", from: "other", message: "private" }] }), stderr: "" };
     return { code: 0, stdout: JSON.stringify({ issues: [] }), stderr: "" };
@@ -87,11 +87,11 @@ test("configured refs survive other ownership, reappear after a slow close and r
   const ctx = { cwd: "/tmp/kata-review-synthetic", hasUI: true };
   const core = createKataCore({ platform: nodePlatform, appendEntry() {}, delegateStore: memoryDelegateStore(), exec: async (_file, args) => {
     if (args[0] === "version") return { code: 0, stdout: JSON.stringify({ kata_api_version: 1, version: "0.23.0" }), stderr: "" };
-    if (args[0] === "show") {
+    if (args[0] === "status") {
       const seen = status, held = hold;
       if (held) { held.entered.resolve(); await held.gate.promise; }
       if (slow) await Bun.sleep(350);
-      return { code: 0, stdout: JSON.stringify({ issue: { status: seen, owner: "other" } }), stderr: "" };
+      return { code: 0, stdout: JSON.stringify({ kata_api_version: 1, issue_status: seen, owner: "other", actor: "alice" }), stderr: "" };
     }
     return { code: 0, stdout: JSON.stringify({ issues: [] }), stderr: "" };
   } }, { namespace: "test", executable: "/tmp/kata-fixture", executableVars: [], explicitRef: () => "test#one", env: name => name === "KATA_AUTHOR" ? "alice" : undefined });
@@ -116,7 +116,7 @@ test("unrelated claim while checking several refs does not hide a closure", asyn
   let hold = false;
   const core = createKataCore({ platform: nodePlatform, appendEntry() {}, delegateStore: memoryDelegateStore(), exec: async (_file, args) => {
     if (args[0] === "version") return { code: 0, stdout: JSON.stringify({ kata_api_version: 1, version: "0.23.0" }), stderr: "" };
-    if (args[0] === "show") { if (hold) await gate.promise; return { code: 0, stdout: JSON.stringify({ issue: { status: args[1] === "test#abcd" && hold ? "closed" : "open" } }), stderr: "" }; }
+    if (args[0] === "status") { if (hold) await gate.promise; return { code: 0, stdout: JSON.stringify({ kata_api_version: 1, issue_status: args[1] === "test#abcd" && hold ? "closed" : "open", actor: "alice" }), stderr: "" }; }
     return { code: 0, stdout: JSON.stringify({ issues: [] }), stderr: "" };
   } }, { namespace: "test", executable: "/tmp/kata-fixture", executableVars: [], explicitRef: () => "test#one", env: name => name === "KATA_AUTHOR" ? "alice" : undefined });
   const claim = (ref: string) => core.tools.result(ctx, {toolName:"bash", input:{command:`kata claim ${ref}`}});
@@ -138,7 +138,7 @@ test("a claim added during reconciliation leaves the footer throttle open", asyn
   const ctx = { cwd: "/tmp/kata-review-synthetic", hasUI: true, ui: { setStatus() {} } };
   const core = createKataCore({ platform: nodePlatform, appendEntry() {}, delegateStore: memoryDelegateStore(), exec: async (_file, args) => {
     if (args[0] === "version") return { code: 0, stdout: JSON.stringify({ kata_api_version: 1, version: "0.23.0" }), stderr: "" };
-    if (args[0] === "show") { shows.push(args[1]!); if (hold) await gate.promise; return { code: 0, stdout: JSON.stringify({ issue: { status: "open" } }), stderr: "" }; }
+    if (args[0] === "status") { shows.push(args[1]!); if (hold) await gate.promise; return { code: 0, stdout: JSON.stringify({ kata_api_version: 1, issue_status: "open", actor: "alice" }), stderr: "" }; }
     return { code: 0, stdout: JSON.stringify({ issues: [] }), stderr: "" };
   } }, { namespace: "test", executable: "/tmp/kata-fixture", executableVars: [], explicitRef: () => "test#one", env: name => name === "KATA_AUTHOR" ? "alice" : undefined });
   try {
@@ -149,9 +149,8 @@ test("a claim added during reconciliation leaves the footer throttle open", asyn
     expect(shows).toContain("test#one");
     await core.tools.result(ctx, { toolName: "bash", input: { command: "kata claim test#abcd" } });
     gate.resolve(); await checking; hold = false;
-    shows.length = 0;
-    await core.session.footer(ctx, "throttle", () => "");
     expect(shows).toContain("test#abcd");
+    await core.session.footer(ctx, "throttle", () => "");
   } finally { gate.resolve(); }
 });
 
@@ -169,7 +168,7 @@ test("a parent explicitly named with todo ref is hidden after another actor take
     if (args[0] === "version") return { code: 0, stdout: JSON.stringify({ kata_api_version: 1, version: "0.23.0" }), stderr: "" };
     if (args[0] === "show") return { code: 0, stdout: JSON.stringify({ issue: { short_id: "abcd", project_id: "p1", status: "open", owner, metadata: {}, revision: 1 }, children: [] }), stderr: "" };
     if (args[0] === "projects") return { code: 0, stdout: JSON.stringify({ projects: [{ id: "p1", name: "test" }] }), stderr: "" };
-    if (args[0] === "status") return { code: 0, stdout: JSON.stringify({ actor: "alice" }), stderr: "" };
+    if (args[0] === "status") return { code: 0, stdout: JSON.stringify({ kata_api_version: 1, issue_status: "open", owner, actor: "alice" }), stderr: "" };
     return { code: 0, stdout: JSON.stringify({ issues: [] }), stderr: "" };
   } }, { namespace: "test", native: true, executable: "/tmp/kata-fixture", executableVars: [], env: name => name === "KATA_AUTHOR" ? "alice" : undefined });
   expect(await core.todo.command(ctx, "ref test#abcd")).toContain("is now this plan's parent");
@@ -185,7 +184,7 @@ test("a slow footer reconciliation redraws after it completes", async () => {
   const ctx = { cwd: "/tmp/kata-review-synthetic", hasUI: true, ui: { setStatus: (_key: string, value: string | undefined) => writes.push(value ?? "") } };
   const core = createKataCore({ platform: nodePlatform, appendEntry() {}, delegateStore: memoryDelegateStore(), exec: async (_file, args) => {
     if (args[0] === "version") return { code: 0, stdout: JSON.stringify({ kata_api_version: 1, version: "0.23.0" }), stderr: "" };
-    if (args[0] === "show") { if (hold) await gate.promise; return { code: 0, stdout: JSON.stringify({ issue: { status } }), stderr: "" }; }
+    if (args[0] === "status") { if (hold) await gate.promise; return { code: 0, stdout: JSON.stringify({ kata_api_version: 1, issue_status: status, actor: "alice" }), stderr: "" }; }
     return { code: 0, stdout: JSON.stringify({ issues: [] }), stderr: "" };
   } }, { namespace: "test", executable: "/tmp/kata-fixture", executableVars: [], explicitRef: () => "test#one", env: name => name === "KATA_AUTHOR" ? "alice" : undefined });
   try {
@@ -213,11 +212,8 @@ test("status reports a failed live inbox read", async () => {
     } }, { namespace: "test", executable: "/tmp/kata-fixture", executableVars: [], env: name => ({ KATA_AUTHOR: "alice", KATA_INBOX_USER: "alice/worker" } as Record<string, string>)[name] });
   try {
     await core.session.start(ctx, { wait: 0 });
-    const deadline = Date.now() + 2_000;
-    let view = await core.session.view(ctx);
-    while (view?.inbox.delivery !== "failed" && Date.now() < deadline) { await Bun.sleep(1); view = await core.session.view(ctx); }
+    const view = await core.session.view(ctx, { reconcile: true });
     expect(view?.inbox.delivery).toBe("failed");
-    expect(view?.inboxFailed).toContain("inbox read failed");
   } finally { await core.session.shutdown(ctx); stopped.resolve(); }
 });
 
@@ -303,7 +299,7 @@ for (const outcome of ["success", "failure", "shutdown"] as const) test(`slow pe
     expect(writes.at(-1)).toBe("inbox 0");
     if (outcome === "shutdown") await core.session.shutdown(ctx);
     gate.resolve();
-    const expected = outcome === "shutdown" ? "" : outcome === "failure" ? "failed" : "inbox 1";
+    const expected = outcome === "shutdown" ? "" : outcome === "failure" ? "inbox 0" : "inbox 1";
     const deadline = Date.now() + 2_000;
     if (outcome === "shutdown") await Bun.sleep(30);
     else while (writes.at(-1) !== expected && Date.now() < deadline) await Bun.sleep(1);
@@ -317,7 +313,7 @@ test("forced status callers share a fresh read after an older reconciliation", a
   const ctx = { cwd: "/tmp/kata-status-race", hasUI: true, ui: { setStatus() {} } };
   const core = createKataCore({ platform: nodePlatform, appendEntry() {}, delegateStore: memoryDelegateStore(), exec: async (_file, args) => {
     if (args[0] === "version") return { code: 0, stdout: JSON.stringify({ kata_api_version: 1, version: "0.24.0" }), stderr: "" };
-    if (args[0] === "show") { const snapshot = closed ? "closed" : "open"; if (++shows === 1) { started = true; await gate.promise; } return { code: 0, stdout: JSON.stringify({ issue: { status: snapshot } }), stderr: "" }; }
+    if (args[0] === "status") { const snapshot = closed ? "closed" : "open"; if (++shows === 1) { started = true; await gate.promise; } return { code: 0, stdout: JSON.stringify({ kata_api_version: 1, issue_status: snapshot, actor: "alice" }), stderr: "" }; }
     return { code: 0, stdout: JSON.stringify({ issues: [] }), stderr: "" };
   } }, { namespace: "test", executable: "/tmp/kata-fixture", executableVars: [], explicitRef: () => "test#one", env: n => n === "KATA_AUTHOR" ? "alice" : undefined });
   try {
@@ -350,10 +346,10 @@ test("a shell close invalidates the footer while retaining the claim", async () 
   expect(core.tools.refs(ctx)).toContain("test#abcd");
 });
 
-test("diagnostic reconciliation bounds each show call", async () => {
+test("diagnostic reconciliation bounds each status call", async () => {
   const timeouts: number[] = [];
   const core = createKataCore({ platform: nodePlatform, appendEntry() {}, delegateStore: memoryDelegateStore(), exec: async (_file, args, options) => {
-    if (args[0] === "show") timeouts.push(options.timeout);
+    if (args[0] === "status") timeouts.push(options.timeout);
     return { code: 0, stdout: JSON.stringify(args[0] === "version" ? { kata_api_version: 1, version: "0.24.0" } : { issue: { status: "open" } }), stderr: "" };
   } }, { namespace: "test", executable: "/tmp/kata-fixture", executableVars: [], explicitRef: () => "test#one", env: n => n === "KATA_AUTHOR" ? "alice" : undefined });
   await core.session.view({ cwd: "/tmp/kata-status-timeout" }, { reconcile: true });
@@ -366,7 +362,7 @@ test("refresh cancels a forced reconcile queued behind an older read", async () 
   const ctx = { cwd: "/tmp/kata-status-refresh-race", hasUI: true, ui: { setStatus() {} } };
   const core = createKataCore({ platform: nodePlatform, appendEntry() {}, delegateStore: memoryDelegateStore(), exec: async (_file, args) => {
     if (args[0] === "version") return { code: 0, stdout: JSON.stringify({ kata_api_version: 1, version: "0.24.0" }), stderr: "" };
-    if (args[0] === "show") { shows++; started = true; await gate.promise; return { code: 0, stdout: JSON.stringify({ issue: { status: "open" } }), stderr: "" }; }
+    if (args[0] === "status") { shows++; started = true; await gate.promise; return { code: 0, stdout: JSON.stringify({ kata_api_version: 1, issue_status: "open", actor: "alice" }), stderr: "" }; }
     return { code: 0, stdout: JSON.stringify({ issues: [] }), stderr: "" };
   } }, { namespace: "test", executable: "/tmp/kata-fixture", executableVars: [], explicitRef: () => "test#one", env: n => n === "KATA_AUTHOR" ? "alice" : undefined });
   try {
@@ -379,4 +375,36 @@ test("refresh cancels a forced reconcile queued behind an older read", async () 
     await Promise.all([old, queued]);
     expect(shows).toBe(1);
   } finally { gate.resolve(); }
+});
+
+test("a claimed ref uses the effective actor from its status response", async () => {
+  const ctx = { cwd: "/tmp/kata-status-effective-actor" };
+  let response: Record<string, unknown> = { kata_api_version: 1, issue_status: "open", actor: "daemon-actor", owner: "daemon-actor" };
+  const core = createKataCore({ platform: nodePlatform, appendEntry() {}, delegateStore: memoryDelegateStore(), exec: async (_file, args) => {
+    if (args[0] === "version") return { code: 0, stdout: JSON.stringify({ kata_api_version: 1, version: "0.24.0" }), stderr: "" };
+    if (args[0] === "status") return { code: 0, stdout: JSON.stringify(response), stderr: "" };
+    if (args[0] === "show") return { code: 0, stdout: JSON.stringify({ issue: { status: "open", owner: "daemon-actor" } }), stderr: "" };
+    return { code: 0, stdout: JSON.stringify({ issues: [] }), stderr: "" };
+  } }, { namespace: "test", executable: "/tmp/kata-fixture", executableVars: [], env: n => n === "USER" ? "local-user" : undefined });
+  await core.tools.result(ctx, { toolName: "bash", input: { command: "kata claim beta#abcd; true" } });
+  expect((await core.session.view(ctx, { reconcile: true }))?.refs).toContain("beta#abcd");
+  response = { kata_api_version: 1, issue_status: "open", actor: "daemon-actor", owner: "other" };
+  expect((await core.session.view(ctx, { reconcile: true }))?.refs).not.toContain("beta#abcd");
+  response = { kata_api_version: 2, issue_status: "closed", actor: "daemon-actor", owner: "other" };
+  expect((await core.session.view(ctx, { reconcile: true }))?.refs).toContain("beta#abcd");
+  response = { kata_api_version: 1, issue_status: "open", actor: "daemon-actor" };
+  expect((await core.session.view(ctx, { reconcile: true }))?.refs).toContain("beta#abcd");
+});
+
+test("status reads the inbox now and reports failure then recovery", async () => {
+  let fail = false;
+  const ctx = { cwd: "/tmp/kata-status-fresh-inbox" };
+  const core = createKataCore({ platform: nodePlatform, appendEntry() {}, delegateStore: memoryDelegateStore(), exec: async (_file, args) => {
+    if (args[0] === "version") return { code: 0, stdout: JSON.stringify({ kata_api_version: 1, version: "0.24.0" }), stderr: "" };
+    if (args[0] === "inbox") return fail ? { code: 1, stdout: "", stderr: "offline" } : { code: 0, stdout: JSON.stringify({ requests: [{ ref: "p#1", from: "alice", message: "one" }] }), stderr: "" };
+    return { code: 0, stdout: JSON.stringify({ issues: [] }), stderr: "" };
+  } }, { namespace: "test", executable: "/tmp/kata-fixture", executableVars: [], env: n => ({ KATA_AUTHOR: "alice", KATA_INBOX_USER: "alice/worker" } as Record<string, string>)[n] });
+  expect((await core.session.view(ctx, { reconcile: true }))?.counts?.trusted).toBe(1);
+  fail = true; expect((await core.session.view(ctx, { reconcile: true }))?.inbox.delivery).toBe("failed");
+  fail = false; expect((await core.session.view(ctx, { reconcile: true }))?.inbox.delivery).toBe("per prompt");
 });

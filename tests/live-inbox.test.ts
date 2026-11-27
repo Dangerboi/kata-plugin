@@ -37,7 +37,6 @@ function follower(options: { requests?: () => unknown[]; read?: () => Promise<un
 	const streams: ReturnType<typeof fakeStream>[] = [], cursors: (number | undefined)[] = [];
 	const delivered: string[] = [], published: string[] = [], timers: (() => void)[] = [], delays: number[] = [], debugged: unknown[] = [];
 	const counts: { trusted: number; foreign: number }[] = [];
-	const readStates: unknown[] = [];
 	let reads = 0;
 	const clock = { now: 0 };
 	const deps: InboxFollowerDeps = {
@@ -53,14 +52,13 @@ function follower(options: { requests?: () => unknown[]; read?: () => Promise<un
 		},
 		deliver: text => delivered.push(text),
 		publish: (text, count) => { published.push(summary(text)); counts.push(count); },
-		readState: error => readStates.push(error),
 		head: options.head ?? (async () => 0),
 		now: () => clock.now,
 		setTimer: (fn, ms) => { timers.push(fn); delays.push(ms); return timers.length; },
 		clearTimer: () => { timers.length = 0; },
 		debug: error => debugged.push(error),
 	};
-	return { follow: createInboxFollower(deps), streams, cursors, delivered, published, counts, readStates, timers, delays, clock, debugged, reads: () => reads };
+	return { follow: createInboxFollower(deps), streams, cursors, delivered, published, counts, timers, delays, clock, debugged, reads: () => reads };
 }
 
 test("a failed actor refresh reconnects and delivers only new trusted requests once", async () => {
@@ -72,13 +70,12 @@ test("a failed actor refresh reconnects and delivers only new trusted requests o
 		requests = [{ ref: "old", ...slot("already delivered") }, { ref: "new", from: "new", message: "arrived during refresh" }];
 		t.follow.refreshActor(); await tick();
 		expect(t.streams[0].killed).toBe(1);
-		expect((t.readStates.at(-1) as Error).message).toBe("identity unavailable");
+		expect((t.debugged.at(-1) as Error).message).toBe("identity unavailable");
 		expect(t.delivered).toHaveLength(1);
 		t.timers[0]!(); await tick();
 		expect(t.cursors.at(-1)).toBe(1);
 		expect(t.delivered).toHaveLength(2);
 		expect(t.delivered[1]).toContain("arrived during refresh");
-		expect(t.readStates.at(-1)).toBeUndefined();
 	} finally { t.follow.stop(); }
 });
 
@@ -100,9 +97,9 @@ test("live inbox reports a failed read and clears the failure on recovery", asyn
 	let fail = true;
 	const t = follower({ read: async () => { if (fail) throw new Error("read failed"); return { requests: [] }; } });
 	t.follow.start(); await tick();
-	expect((t.readStates.at(-1) as Error).message).toBe("read failed");
+	expect((t.debugged.at(-1) as Error).message).toBe("read failed");
 	fail = false; t.timers[0]!(); await tick();
-	expect(t.readStates.at(-1)).toBeUndefined();
+	expect(t.reads()).toBe(2);
 	t.follow.stop();
 });
 
@@ -502,5 +499,19 @@ test("a snapshot publishes its complete counts once and stream changes publish i
 		t.streams[0]!.push(slotLine(1, "new", slot("live"))); await tick();
 		expect(t.published).toHaveLength(2);
 		expect(t.delivered).toHaveLength(1);
+	} finally { t.follow.stop(); }
+});
+
+test("a failed refresh reseed retries while the stream stays open", async () => {
+	let reads = 0;
+	const t = follower({ read: async () => { if (++reads === 2) throw new Error("temporary"); return { requests: [{ ref: "proj#one", ...slot("first") }] }; } });
+	try {
+		t.follow.start(); await tick();
+		t.follow.refreshActor(); await tick();
+		expect(t.timers).toHaveLength(1);
+		t.timers[0]!(); await tick();
+		expect(reads).toBe(3);
+		expect(t.published.at(-1)).toBe("proj#one:first");
+		expect(t.delivered).toHaveLength(0);
 	} finally { t.follow.stop(); }
 });
