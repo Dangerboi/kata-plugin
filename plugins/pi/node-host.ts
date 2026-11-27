@@ -50,10 +50,11 @@ export function execKata(file: string, args: string[], options: { cwd: string; t
 }
 
 // A shutdown hook must survive the host exiting and must never keep it alive.
-export function spawnDetached(file: string, args: string[], options: { cwd: string; env?: Record<string, string> }): void {
+export function spawnDetached(file: string, args: string[], options: { cwd: string; env?: Record<string, string> }, onError?: (error: unknown) => void): void {
+	const report = (error: unknown) => { try { onError?.(error); } catch { /* Shutdown must not throw. */ } };
 	try {
 		const child = spawn(file, args, { cwd: options.cwd, env: { ...process.env, ...options.env }, detached: true, stdio: "ignore" });
-		child.on("error", () => {});
+		child.on("error", report);
 		child.unref();
-	} catch { /* The host is shutting down; an unavailable executable cannot block it. */ }
+	} catch (error) { report(error); }
 }
