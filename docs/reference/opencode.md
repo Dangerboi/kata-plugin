@@ -15,7 +15,7 @@ Plugin options sit next to the package in `opencode.json`. Each option falls bac
 | `defaultProject` | `KATA_DEFAULT_PROJECT` | Existing Kata project that collects the plans of folders without a project; issues carry a label naming the repo. |
 | `author` | `KATA_AUTHOR` | Existing actor; also set in the environment of every Kata process the plugin starts. |
 | `teammate` | `KATA_TEAMMATE` | Optional teammate for the lead; also set in the environment of every Kata process. |
-| `refGuard` | `KATA_REF_GUARD` | `off`, `0` or the JSON `false` stops the refusal of writes and commits that name a Kata ref ([below](#kata-refs-in-repository-content)). On by default. |
+| `refGuard` | `KATA_REF_GUARD` | `off`, `0` or the JSON `false` stops the refusal of writes and Git messages that name a Kata ref ([below](#kata-refs-in-repository-content)). On by default. |
 | `debugFile` | `KATA_OPENCODE_DEBUG` | Optional append-only diagnostic log. |
 
 Variables come from the OpenCode server process, not from the shell that starts a client. The default background service does not see variables set in the launching shell; only `opencode run --standalone` does. Use plugin options, or the service's own environment. `KATA_CLOSE_TRANSCRIPT_ENABLED` is read from the same server environment at each close (see below).

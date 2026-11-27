@@ -13,7 +13,7 @@ Session start exports `KATA_CLOSE_TRANSCRIPT_ENABLED=true` (unless already set),
 | `KATA_INBOX_USER` | The session's inbox address, `<actor>/<name>`. A bare `<actor>` is a personal inbox: the session reads none and says so once. Only requests from the session's own actor are shown. When this is a session address, each delegate reads `<actor>/<teammate>`, built from the lead's actor. |
 | `KATA_OMP_LIVE_INBOX` | `0` turns off live delivery of inbox requests to the main session and keeps the per-turn read. tern-kata sets it for the agents it starts, because it delivers there itself. |
 | `KATA_CLOSE_TRANSCRIPT_ENABLED` | `false` in the environment that launches omp stops closes recording the session; unset, session start sets `true`. |
-| `KATA_REF_GUARD` | `off` or `0` stops the refusal of writes and commits that name a Kata ref ([below](#kata-refs-in-repository-content)). On by default. |
+| `KATA_REF_GUARD` | `off` or `0` stops the refusal of writes and Git messages that name a Kata ref ([below](#kata-refs-in-repository-content)). On by default. |
 | `KATA_OMP_DEBUG` | Optional append-only diagnostic log. |
 
 ## omp's todo and the Kata backend

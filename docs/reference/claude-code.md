@@ -14,7 +14,7 @@ Plugin options are set with `claude plugin install kata-cc@kata-plugin --config 
 | --- | --- | --- |
 | `liveInbox` | `KATA_CLAUDE_LIVE_INBOX` | Default on. Delivers inbox requests to the main session as they arrive. Off, by the option or `KATA_CLAUDE_LIVE_INBOX=0`: no live follower runs, and the inbox reaches the model only through the per-prompt inbox section of Kata's hook (or the mod's, with `contract` on). |
 | `contract` | | Default off. On, the mod adds the Kata contract and the inbox to the prompt itself. Leave it off when `kata agent-hook install claude` is set up, which owns both: with both on the model reads the contract twice. The section's request text is escaped: `&`, `<` and `>` are written as `&amp;`, `&lt;` and `&gt;`. Not applied on the default inbox path (`kata agent-hook install claude`, `contract` off), where Kata writes the section. |
-| `refGuard` | `KATA_REF_GUARD` | Default on. Refuses a write or commit that names a Kata ref ([Kata refs in repository content](#kata-refs-in-repository-content)). Off, by the option or `KATA_REF_GUARD=off` (or `0`). |
+| `refGuard` | `KATA_REF_GUARD` | Default on. Refuses a write or Git message that names a Kata ref ([Kata refs in repository content](#kata-refs-in-repository-content)). Off, by the option or `KATA_REF_GUARD=off` (or `0`). |
 | `kataExecutable` | `KATA_CLAUDE_EXECUTABLE` | The Kata executable the mod runs; defaults to `kata`. The `Bash` tool is not rewritten to use it. |
 | `debugFile` | `KATA_CLAUDE_DEBUG` | Optional diagnostic log: the mod rewrites the file with its last 1,000,000 characters plus each new line, and writes the errors its hooks swallow there, except those of the plan band's state and toast writes and of stopping the live inbox's stream. |
 

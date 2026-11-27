@@ -53,7 +53,7 @@ Set with `/plugin configure kata-cc@kata-plugin` or `--config KEY=VALUE` at inst
 | Option | Variable | Default | Meaning |
 | --- | --- | --- | --- |
 | `liveInbox` | `KATA_CLAUDE_LIVE_INBOX` | on | Deliver inbox requests as they arrive. Either one set off turns it off. |
-| `refGuard` | `KATA_REF_GUARD` | on | Refuse writes and commits that name a Kata ref. Either one set off turns it off. |
+| `refGuard` | `KATA_REF_GUARD` | on | Refuse writes and Git messages that name a Kata ref. Either one set off turns it off. |
 | `contract` | | off | Add the Kata contract and inbox to each prompt. Leave off when `kata agent-hook install claude` is set up. |
 | `kataExecutable` | `KATA_CLAUDE_EXECUTABLE` | `kata` | The Kata executable the plugin runs. |
 | `debugFile` | `KATA_CLAUDE_DEBUG` | none | Path of the diagnostic log. |
