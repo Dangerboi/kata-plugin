@@ -141,7 +141,6 @@ export function createLead(deps: LeadDeps): Lead {
 		env: deps.settings.env,
 		// The todowrite list says what is in progress; Kata tasks start when it says so.
 		autoStart: false,
-		warn: true,
 		closeParent: "shutdown",
 		wording: WORDING,
 	});

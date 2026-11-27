@@ -1,5 +1,5 @@
-import { guardWarning } from "./ref-guard-warning";
 import { expect, setSystemTime, test } from "bun:test";
+import { guardWarning } from "./ref-guard-warning";
 import { execFile } from "node:child_process";
 import { mkdirSync, mkdtempSync, symlinkSync, writeFileSync } from "node:fs";
 import path from "node:path";

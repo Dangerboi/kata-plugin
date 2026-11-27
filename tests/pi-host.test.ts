@@ -1,5 +1,5 @@
-import { guardWarning } from "./ref-guard-warning";
 import { expect, test } from "bun:test";
+import { guardWarning } from "./ref-guard-warning";
 import fc from "fast-check";
 import { execFileSync } from "node:child_process";
 import { mkdirSync, realpathSync } from "node:fs";

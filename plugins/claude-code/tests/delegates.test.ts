@@ -67,7 +67,6 @@ test("a subagent that has no issue is told so when it calls todo", async ($, on)
 	expect(sub.isError).toBe(true);
 });
 
-
 test("warn returns prior tool result and context alongside its guard reason", async ($, on) => {
 	engine(on, { KATA_REF_GUARD: "warn", KATA_REF: "proj#ab3d", KATA_CLAUDE_LIVE_INBOX: "0" });
 	mock.clock(on);
@@ -77,9 +76,8 @@ test("warn returns prior tool result and context alongside its guard reason", as
 	expect(result.deny).toBeUndefined();
 	expect(result.result).toEqual({ output: "ok" });
 	expect(result.context?.[0]).toBe("earlier context");
-	expect(result.context?.[1]).toContain("This Bash call ran; it asked to put proj#ab3d");
+	expect(result.context?.[1]).toContain("This Bash call asked to put proj#ab3d");
 });
-
 
 test("a saved boolean false still turns off the guard", { options: { refGuard: false } }, async ($, on) => {
 	engine(on, { KATA_REF: "proj#ab3d", KATA_CLAUDE_LIVE_INBOX: "0" });
@@ -91,7 +89,6 @@ test("a saved boolean false still turns off the guard", { options: { refGuard: f
 	expect(result.result).toBe("ok");
 	expect(result.context).toBeUndefined();
 });
-
 
 test("a saved boolean true still blocks the guarded call", { options: { refGuard: true } }, async ($, on) => {
 	engine(on, { KATA_REF: "proj#ab3d", KATA_CLAUDE_LIVE_INBOX: "0" });

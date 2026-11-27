@@ -226,7 +226,7 @@ export default function ompKata(pi: any) {
 			return { spawn: spawnEvents, deliver: (text: string) => pi.sendUserMessage(text, { deliverAs: "aside", attribution: "agent" }) };
 		},
 	}, { namespace: NAMESPACE, executable: EXECUTABLE, executableVars: EXECUTABLE_VARS, debugFile: process.env.KATA_OMP_DEBUG, attentionHarness: "pi", prefetch: true,
-		native: true, warn: true });
+		native: true });
 	// The task calls of the lead session `callsLead` that are not over yet.
 	const taskCalls = new Map<string, TaskCall>();
 	let callsLead: string | undefined;

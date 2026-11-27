@@ -1,5 +1,5 @@
-import { guardWarning } from "./ref-guard-warning";
 import { expect, test } from "bun:test";
+import { guardWarning } from "./ref-guard-warning";
 import { savedSnapshot } from "../core/kata-core";
 import { claudeKata, entering, PROJECT, type ClaudeHost } from "./claude-fixture";
 import { EVIDENCE, eventually, holdKata, holdNext, MESSAGE, quote } from "./kata-fixture";
@@ -479,20 +479,17 @@ test("a delegate's note names no inbox: the Claude path shows a delegate none", 
 	expect(spawned.prompt).not.toContain("Your Kata inbox");
 });
 
-
 test("Claude warn preserves the tool result and previous context once", async () => {
-	for (const config of [{ env: { KATA_REF_GUARD: "warn" } }]) {
-		const h = host(config); await h.start();
-		await h.todo({ op: "init", items: ["Guarded warning task"] });
-		const ref = `${PROJECT}#${(await parentOf(h.state.session)).short_id}`;
-		const result = await h.fire("tool.call", { tool: "Bash", tool_use_id: crypto.randomUUID(), command: `git commit -m "fix ${ref}"` }, () => ({ result: { output: "ok" }, isError: true, context: ["earlier context"] }));
-		expect(result.deny).toBeUndefined();
-		expect(result.result).toEqual({ output: "ok" });
-		expect(result.isError).toBe(true);
-		expect(result.context[0]).toBe("earlier context");
-		expect(result.context).toHaveLength(2);
-		expect(result.context[1]).toBe(guardWarning("Bash", ref));
-		const clean = await h.fire("tool.call", { tool: "Bash", tool_use_id: crypto.randomUUID(), command: "echo clean" }, () => ({ result: "ok" }));
-		expect(clean.context).toBeUndefined();
-	}
+	const h = host({ env: { KATA_REF_GUARD: "warn" } }); await h.start();
+	await h.todo({ op: "init", items: ["Guarded warning task"] });
+	const ref = `${PROJECT}#${(await parentOf(h.state.session)).short_id}`;
+	const result = await h.fire("tool.call", { tool: "Bash", tool_use_id: crypto.randomUUID(), command: `git commit -m "fix ${ref}"` }, () => ({ result: { output: "ok" }, isError: true, context: ["earlier context"] }));
+	expect(result.deny).toBeUndefined();
+	expect(result.result).toEqual({ output: "ok" });
+	expect(result.isError).toBe(true);
+	expect(result.context[0]).toBe("earlier context");
+	expect(result.context).toHaveLength(2);
+	expect(result.context[1]).toBe(guardWarning("Bash", ref));
+	const clean = await h.fire("tool.call", { tool: "Bash", tool_use_id: crypto.randomUUID(), command: "echo clean" }, () => ({ result: "ok" }));
+	expect(clean.context).toBeUndefined();
 });

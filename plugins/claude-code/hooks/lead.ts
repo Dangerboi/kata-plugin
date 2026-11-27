@@ -96,7 +96,7 @@ async function create($: EngineInterface): Promise<Runtime> {
 				),
 				liveInbox: settings.liveInbox ? liveInboxOf($, () => rt.busy) : undefined
 			},
-			{ namespace: NAMESPACE, executable: settings.executable, executableVars: EXECUTABLE_VARS, debugFile: settings.debugFile, warn: true, widget: (_line, view) => view }
+			{ namespace: NAMESPACE, executable: settings.executable, executableVars: EXECUTABLE_VARS, debugFile: settings.debugFile, widget: (_line, view) => view }
 		)
 	};
 	return rt;

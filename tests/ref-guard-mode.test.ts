@@ -6,7 +6,6 @@ test("ref guard mode parses configured values", () => {
 	for (const [value, mode] of [["off", "off"], ["0", "off"], ["warn", "warn"], ["WARN ", "warn"], ["unknown", "block"], [undefined, "block"]] as const) expect(refGuardMode(value)).toBe(mode);
 });
 
-
 test("Claude guard settings retain booleans and combine options with environment", () => {
 	for (const [option, env, expected] of [
 		[false, "warn", "off"], [true, undefined, "block"], [undefined, "warn", "warn"],

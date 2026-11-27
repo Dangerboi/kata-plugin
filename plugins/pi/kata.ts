@@ -91,7 +91,7 @@ export default async function piKata(pi: ExtensionAPI) {
 		allowUI: ctx => ctx.hasUI === true,
 		isMain: () => !inherited,
 		delegateStore: store,
-	}, { namespace: NAMESPACE, executable, executableVars: EXECUTABLE_VARS, explicitRef: () => inherited ? undefined : explicit, debugFile: process.env.KATA_PI_DEBUG || process.env.KATA_OMP_DEBUG, warn: true });
+	}, { namespace: NAMESPACE, executable, executableVars: EXECUTABLE_VARS, explicitRef: () => inherited ? undefined : explicit, debugFile: process.env.KATA_PI_DEBUG || process.env.KATA_OMP_DEBUG });
 
 	// Where the lead's plan lives, as the latest core call reported it.
 	let lead: Lead = { workspace: path.resolve(process.cwd()) };
