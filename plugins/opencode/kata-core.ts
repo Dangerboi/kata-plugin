@@ -2230,6 +2230,14 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 			].join("\n");
 	}
 
+	function warnContract(ctx: HostContext, entry: PromptReads) {
+		const ui = uiOf(ctx);
+		if (entry.contractError && !entry.contractWarned && ui?.notify) {
+			entry.contractWarned = true;
+			ui.notify(`Kata contract is unavailable (${entry.contractError}). The plugin will retry on the next prompt.`, "warning");
+		}
+	}
+
 	// The contract is fetched until one arrives non-empty: Kata 0.23.0 sends an empty one outside a `.kata.toml`
 	// folder, so a mid-session `kata init` takes effect on the next turn. The inbox is read on every call, and a call
 	// waits for a read that began after it was made, so a request sent before a turn reaches that turn. A read slower
@@ -2252,7 +2260,7 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 		}
 		if (!entry.pending && !entry.contract) {
 			entry.pending = (async () => {
-				if (!await probe(job, cwd)) return;
+				if (!await probe(job, cwd)) throw new Error(outage);
 				// Exactly these arguments: some Kata builds print nothing for any other form.
 				const raw = await kata.run(job, ["agent-contract-hook", "--source", "kata-agent-contract-hook"], cwd, { timeout: 10_000, workspace: false });
 				let output: any;
@@ -2265,6 +2273,7 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 				debug(error);
 				if (isKataCode(error, "unsupported_version")) { entry.contractError = undefined; return; }
 				entry.contractError = ((error as Error)?.message ?? String(error)).split(/\r?\n/)[0].slice(0, 160);
+				warnContract(ctx, entry);
 			}).finally(() => { entry.pending = undefined; });
 		}
 		const user = setting("KATA_INBOX_USER");
@@ -2574,11 +2583,7 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 					if (entry.contract) sections.contract = entry.contract;
 					else if (entry.contractError) {
 						sections.contract = `Kata contract is unavailable (${entry.contractError}). Run \`kata quickstart --format contract\` before using kata.`;
-						const ui = uiOf(ctx);
-						if (!entry.contractWarned && ui?.notify) {
-							entry.contractWarned = true;
-							ui.notify(`Kata contract is unavailable (${entry.contractError}). The plugin will retry on the next prompt.`, "warning");
-						}
+						warnContract(ctx, entry);
 					}
 					const inbox = main(ctx) && liveInbox !== undefined ? liveInbox : entry.inbox;
 					if (inbox && turnReads.showsInbox) sections.inbox = inbox;
