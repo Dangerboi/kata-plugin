@@ -183,6 +183,14 @@ test("/kata is registered beside /todo and answers for the person only", async (
 	expect(await run("explode")).toEqual({ text: "Usage: /kata [status|inbox|refresh]", isTextDisplayOnly: true });
 });
 
+test("an unknown /kata subcommand answers with the usage before any session work", async () => {
+	const h = host();
+	engineUi(h);
+	const reply = await h.fire("command.run", { command: "kata", args: "explode", origin: { kind: "composer" } });
+	expect(reply).toEqual({ text: "Usage: /kata [status|inbox|refresh]", isTextDisplayOnly: true });
+	expect(h.calls).toEqual([]);
+});
+
 test("/todo takeover starts a ticket item of the plan", async () => {
 	const ticket = `${PROJECT}#${await issue("Held ticket")}`;
 	const first = host();

@@ -2,7 +2,7 @@ import type { EngineInterface, Hook, MatchedHook } from "claude-code";
 import { TODO_COMMANDS, type PlanView } from "../core/kata-core";
 import { enter, runtime, type Runtime } from "./lead";
 import { cardOf, planOf } from "./plan";
-import { KATA_DESCRIPTION, KATA_SUBCOMMANDS, kataCommand } from "../core/session-status";
+import { KATA_DESCRIPTION, KATA_SUBCOMMANDS, kataCommand, parseKataCommand, USAGE } from "../core/session-status";
 
 // What the lead sees of its Kata plan, as omp shows it: the progress band above the prompt, the checklist card under each
 // `todo` call, `#` ticket completion and the /todo command. Render hooks draw from `$.state` (plan.ts) and never run Kata.
@@ -151,6 +151,8 @@ export const onTodoCommand: Hook<"command.run"> = async ($, e) => {
 
 // /kata status|inbox|refresh, for the person only: the text never reaches the model, and Claude Code has no footer.
 export const onKataCommand: Hook<"command.run"> = async ($, e) => {
+	// The usage reply does no work at all: no session start or switch, no Kata.
+	if (!parseKataCommand(e.args)) return { text: USAGE, isTextDisplayOnly: true };
 	try {
 		const { rt, ctx } = await enter($);
 		return { text: await kataCommand(rt.core.session, ctx, e.args, { context: rt.settings.contract }), isTextDisplayOnly: true };
