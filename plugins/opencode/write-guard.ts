@@ -6,7 +6,15 @@ export function install(seam: Seam): void {
 	seam.before(async event => {
 		const role = await seam.roleOf(event.sessionID);
 		if (role.kind === "other") return;
-		const reason = await role.lead.guard(event.sessionID, { tool: event.tool, input: event.input });
+		const reason = await role.lead.guard(event.sessionID, { tool: event.tool, input: event.input, id: event.id });
 		if (reason) throw new CallRefused(reason);
+	});
+	seam.after(async event => {
+		const role = await seam.roleOf(event.sessionID);
+		if (role.kind === "other") return;
+		const warning = role.lead.warning(event.sessionID, event.id);
+		if (!warning) return;
+		if (event.status === "completed") event.result.content.push({ type: "text", text: warning });
+		else if (event.error) event.error.message += `\n${warning}`;
 	});
 }

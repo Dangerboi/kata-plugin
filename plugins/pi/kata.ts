@@ -91,7 +91,7 @@ export default async function piKata(pi: ExtensionAPI) {
 		allowUI: ctx => ctx.hasUI === true,
 		isMain: () => !inherited,
 		delegateStore: store,
-	}, { namespace: NAMESPACE, executable, executableVars: EXECUTABLE_VARS, explicitRef: () => inherited ? undefined : explicit, debugFile: process.env.KATA_PI_DEBUG || process.env.KATA_OMP_DEBUG });
+	}, { namespace: NAMESPACE, executable, executableVars: EXECUTABLE_VARS, explicitRef: () => inherited ? undefined : explicit, debugFile: process.env.KATA_PI_DEBUG || process.env.KATA_OMP_DEBUG, warn: true });
 
 	// Where the lead's plan lives, as the latest core call reported it.
 	let lead: Lead = { workspace: path.resolve(process.cwd()) };
@@ -154,7 +154,7 @@ export default async function piKata(pi: ExtensionAPI) {
 
 	pi.on("tool_call", async (event, ctx) => {
 		if (inherited && current) void core.delegates.apply({ type: "ranTool", id: current.id }, NO_JOB);
-		const refused = await core.tools.guard(ctx, { tool: event.toolName, input: event.input });
+		const refused = await core.tools.guard(ctx, { tool: event.toolName, input: event.input, id: event.toolCallId });
 		if (refused) return { block: true, reason: refused };
 		const bash = event.toolName === "bash" && typeof event.input.command === "string";
 		// A bash command that launches pi may start a child that needs the lead's parent.
@@ -176,6 +176,8 @@ export default async function piKata(pi: ExtensionAPI) {
 	pi.on("tool_result", async (event, ctx) => {
 		const next = await core.tools.result(ctx, { ...event, details: undefined });
 		if (!inherited) lead = next;
+		const warning = core.tools.warning(ctx, event.toolCallId);
+		if (warning) return { content: [...event.content, { type: "text" as const, text: warning }] };
 	});
 
 	pi.on("before_agent_start", async (event, ctx) => {

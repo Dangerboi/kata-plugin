@@ -164,3 +164,15 @@ test("a write, patch or commit that names a ref of the plan is refused until the
 		}
 	}
 });
+
+
+test("refGuard warn runs interleaved calls and appends each reason once", async () => {
+  const { host, id } = await startLead({ refGuard: "warn" });
+  await host.callTool(id, "todowrite", todos(["Guarded warning task", "in_progress"]));
+  const ref = qref(await parentOf(id));
+  const call = () => host.callTool(id, "shell", { command: `git commit -m "fix ${ref}"` }, { execute: () => "ok" });
+  for (const result of await Promise.all([call(), call()])) {
+    expect(result.status).toBe("completed"); expect(result.text).toContain(ref); expect(result.text).toContain("KATA_REF_GUARD=off");
+  }
+  expect((await shell(host, id, "echo clean")).text).toBe("ok");
+});

@@ -54,7 +54,8 @@ export interface Lead extends Planner {
 	// unusable) is no refusal and the spawn runs, its delegate decided when it starts.
 	checkSpawn(call: string, text: string): Promise<void>;
 	// The reason a tool call of the session (the lead's or a delegate's) is refused for putting a Kata ref into the repository, or undefined. Never rejects.
-	guard(sessionID: string, call: { tool: string; input: unknown }): Promise<string | undefined>;
+	guard(sessionID: string, call: { tool: string; input: unknown; id?: string }): Promise<string | undefined>;
+	warning(sessionID: string, id: string | undefined): string | undefined;
 	// The call is over: what it reserved and no child took is free again.
 	releaseSpawn(call: string): void;
 	// A run of a child session began: its first, for the call `call` of the lead, makes its record and takes what the call
@@ -140,6 +141,7 @@ export function createLead(deps: LeadDeps): Lead {
 		env: deps.settings.env,
 		// The todowrite list says what is in progress; Kata tasks start when it says so.
 		autoStart: false,
+		warn: true,
 		closeParent: "shutdown",
 		wording: WORDING,
 	});
@@ -207,6 +209,7 @@ export function createLead(deps: LeadDeps): Lead {
 		delegatePlan: sessionID => plannerOf(core.delegate(sessionID), contextOf(sessionID, true), sessionID),
 		checkSpawn: (call, text) => core.todo.batch(ctx, async job => { await core.delegates.check([text], call, undefined, job); }),
 		guard: (sessionID, call) => core.tools.guard(contextOf(sessionID, sessionID !== id), call),
+		warning: (sessionID, callID) => core.tools.warning(contextOf(sessionID, sessionID !== id), callID),
 		releaseSpawn: call => core.delegates.release(call),
 		began: (sessionID, spawn) => core.delegates.start({ id: sessionID, sessionId: sessionID, leadSessionId: id, ...spawn }, NO_JOB),
 		delegateEvent: event => core.delegates.apply(event, NO_JOB),

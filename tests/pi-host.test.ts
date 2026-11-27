@@ -276,3 +276,20 @@ test("real native adapter starts and ends attention once each on the lead's issu
   expect(attentionCalls(app)).toEqual([["start", `pitest#${ref}`], ["end", `pitest#${ref}`]]);
   globalRegistry[nativeKey] = { adapters: new Map(), active: new Map() };
 });
+
+
+test("pi warn attaches each guard reason once to its own result", async () => {
+  const app = await host(); await app.event("session_start", { reason: "startup" });
+  const ref = await app.init(["Guarded warning task"]);
+  const input = { command: `git commit -m "fix ${ref}"` };
+  const refused = await app.event("tool_call", { toolName: "bash", input });
+  process.env.KATA_REF_GUARD = "warn";
+  try {
+    for (const toolCallId of ["a", "b"]) expect(await app.event("tool_call", { toolCallId, toolName: "bash", input: { ...input } })).toBeUndefined();
+    for (const toolCallId of ["b", "a"]) {
+      const event = { toolCallId, toolName: "bash", input, isError: false, content: [{ type: "text", text: "ok" }] };
+      expect(await app.event("tool_result", event)).toEqual({ content: [...event.content, { type: "text", text: refused.reason }] });
+      expect(await app.event("tool_result", event)).toBeUndefined();
+    }
+  } finally { delete process.env.KATA_REF_GUARD; }
+});

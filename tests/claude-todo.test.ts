@@ -444,8 +444,8 @@ test("a switch ends the session it leaves with that session's own debts, also wh
 });
 
 test("Write, Edit and a git commit that name a ref of the plan are denied until the refGuard option is off", async () => {
-	for (const off of [false, true]) {
-		const h = host(off ? { options: { kataExecutable: binary, refGuard: false } } : {});
+	for (const off of [false, true, "warn"] as const) {
+		const h = host(off === true ? { options: { kataExecutable: binary, refGuard: false } } : off === "warn" ? { env: { KATA_REF_GUARD: "warn" } } : {});
 		await h.start();
 		await h.todo({ op: "init", items: ["Guarded plan item"] });
 		const ref = `${PROJECT}#${(await parentOf(h.state.session)).short_id}`;
@@ -458,7 +458,7 @@ test("Write, Edit and a git commit that name a ref of the plan are denied until 
 		];
 		for (const attempt of attempts) {
 			const result = await fire(attempt);
-			if (off) { expect(result.deny).toBeUndefined(); continue; }
+			if (off === true) { expect(result.deny).toBeUndefined(); continue; }
 			expect(result.deny).toContain(ref);
 			expect(result.deny).toContain("KATA_REF_GUARD=off");
 		}

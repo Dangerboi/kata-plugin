@@ -226,7 +226,7 @@ export default function ompKata(pi: any) {
 			return { spawn: spawnEvents, deliver: (text: string) => pi.sendUserMessage(text, { deliverAs: "aside", attribution: "agent" }) };
 		},
 	}, { namespace: NAMESPACE, executable: EXECUTABLE, executableVars: EXECUTABLE_VARS, debugFile: process.env.KATA_OMP_DEBUG, attentionHarness: "pi", prefetch: true,
-		native: true });
+		native: true, warn: true });
 	// The task calls of the lead session `callsLead` that are not over yet.
 	const taskCalls = new Map<string, TaskCall>();
 	let callsLead: string | undefined;
@@ -401,7 +401,7 @@ export default function ompKata(pi: any) {
 		const record = ctx.agent?.kind === "sub" ? await recordOf(ctx) : undefined;
 		if (record) ranTool(record);
 		const key = !isMainThread && ctx.agent?.kind === "sub" ? sessionKeyOf(ctx) : undefined;
-		const refused = await core.tools.guard(ctx, { tool: event.toolName, input: event.input }, () => key ? askRefs(key) : []);
+		const refused = await core.tools.guard(ctx, { tool: event.toolName, input: event.input, id: event.toolCallId }, () => key ? askRefs(key) : []);
 		if (refused) return { block: true, reason: refused };
 		if (event.toolName === "todo" && await kataBackend() === BACKEND_ID) {
 			const owner = main(ctx) ? core : record && !isUntracked(record) ? core.delegate(record.id) : undefined;
@@ -481,6 +481,8 @@ export default function ompKata(pi: any) {
 				await core.delegate(record.id).todo.mirror(ctx, event.details.phases);
 			}
 		}
+		const additionalContext = core.tools.warning(ctx, event.toolCallId);
+		if (additionalContext) return { additionalContext };
 	});
 	// omp's own todo tracker does the reminding; the mirror keeps Kata in step with it.
 	pi.on("session_stop", async (event: any, ctx: any) => {

@@ -475,3 +475,19 @@ test("typed automatic parent can be recovered after losing the session entry", a
   expect((await show(parent)).children.map((c: any) => c.title).sort()).toEqual(["Durable existing task", "Recovered task"]);
   expect(await sessionParents(app.sid)).toHaveLength(1);
 });
+
+
+test("omp warn attaches each guard reason once to its own result", async () => {
+  const app = host(); await app.event("session_start");
+  const ref = await app.init(["Guarded warning task"]);
+  const input = { command: `git commit -m "fix ${ref}"` };
+  const refused = await app.event("tool_call", { toolName: "bash", input });
+  process.env.KATA_REF_GUARD = "warn";
+  try {
+    for (const toolCallId of ["a", "b"]) expect(await app.event("tool_call", { toolCallId, toolName: "bash", input })).toBeUndefined();
+    for (const toolCallId of ["b", "a"]) {
+      expect(await app.event("tool_result", { toolCallId, toolName: "bash", input, isError: false })).toEqual({ additionalContext: refused.reason });
+      expect(await app.event("tool_result", { toolCallId, toolName: "bash", input, isError: false })).toBeUndefined();
+    }
+  } finally { delete process.env.KATA_REF_GUARD; }
+});
