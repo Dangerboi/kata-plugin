@@ -2264,7 +2264,7 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 						const session = leadKey(sid(ctx));
 						if (!contractSourceWarnings.has(session) && uiOf(ctx)?.notify) {
 							contractSourceWarnings.add(session);
-							uiOf(ctx)?.notify?.(`Kata contract source ${absolute} does not exist, so this session uses Kata's built-in contract.`, "warning");
+							uiOf(ctx)?.notify?.(`Kata contract source ${absolute} could not be checked. Kata uses its built-in contract when the file is missing.`, "warning");
 						}
 					}
 				}
