@@ -2075,9 +2075,9 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 			let text: string | undefined;
 			try { text = await platform.readFile(path.join(dir, ".kata.toml")); } catch { /* no config here */ }
 			if (text !== undefined) {
-				const version = /^version\s*=\s*1\s*(?:#.*)?$/m.test(text.split(/^[ \t]*\[/m, 1)[0]);
-				const section = /^\[project\][ \t]*(?:#.*)?$(?:\r?\n)([\s\S]*?)(?=^\[|$(?![\s\S]))/m.exec(text)?.[1] ?? "";
-				const match = /^name\s*=\s*(["'])([A-Za-z0-9_][\w.-]*)\1\s*(?:#.*)?$/m.exec(section);
+				const version = /^[ \t]*version\s*=\s*1\s*(?:#.*)?$/m.test(text.split(/^[ \t]*\[/m, 1)[0]);
+				const section = /^[ \t]*\[project\][ \t]*(?:#.*)?$(?:\r?\n)([\s\S]*?)(?=^[ \t]*\[|$(?![\s\S]))/m.exec(text)?.[1] ?? "";
+				const match = /^[ \t]*name\s*=\s*(["'])([A-Za-z0-9_][\w.-]*)\1\s*(?:#.*)?$/m.exec(section);
 				return version ? match?.[2] : undefined;
 			}
 			try { await platform.realpath(path.join(dir, ".git")); break; } catch { /* keep walking */ }
