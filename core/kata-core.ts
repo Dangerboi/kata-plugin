@@ -2231,7 +2231,7 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 			].join("\n");
 	}
 
-	// A contract failure reaches the user once, through the current main session's UI: when it settles, else at that session's next prompt.
+	// Warn once in the current main session while the contract is still unavailable.
 	function warnContract(ctx: HostContext | undefined, entry: PromptReads) {
 		const ui = uiOf(ctx);
 		if (sid(currentCtx) !== sid(ctx) || leadReads.get(leadKey(sid(ctx))) !== entry || entry.contractWarned || !entry.contractError || !ui?.notify) return;

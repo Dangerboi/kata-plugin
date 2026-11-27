@@ -121,8 +121,8 @@ test("an unreachable Kata keeps omp's list and a local plan, and replays the pla
   expect(first.isError).toBeUndefined();
   await app.call({ op: "done", task: "Written offline" });
   expect(app.list()[0].tasks.map(t => t.status)).toEqual(["completed", "in_progress"]);
-  expect(warnings(app)).toHaveLength(1);
-  expect(warnings(app)[0][0]).toContain("Kata is unreachable");
+  expect(warnings(app).map(n => String(n[0]))).toEqual(expect.arrayContaining([expect.stringContaining("Kata is unreachable"), expect.stringContaining("Kata contract was unavailable")]));
+  expect(warnings(app)).toHaveLength(2);
   expect(await projects()).not.toContain("outagerepo");
   down = false;
   // The next change of omp's list reaches Kata and brings the local plan with it.
@@ -133,7 +133,7 @@ test("an unreachable Kata keeps omp's list and a local plan, and replays the pla
   expect(shown.children.map((c: any) => c.title).sort()).toEqual(["Also offline", "Online again", "Written offline"]);
   // Completed while Kata was away, with no evidence: the replay cannot close it.
   expect(shown.children.find((c: any) => c.title === "Written offline").status).toBe("open");
-  expect(warnings(app)).toHaveLength(1);
+  expect(warnings(app)).toHaveLength(2);
 });
 
 test("a replay that fails partway keeps the local plan and finishes on the next change", async () => {
@@ -190,7 +190,8 @@ test("a missing executable is an outage too", async () => {
   await app.event("session_start");
   await app.call({ op: "init", items: ["No binary"] });
   expect(app.list()[0].tasks.map(t => t.content)).toEqual(["No binary"]);
-  expect(warnings(app)).toHaveLength(1);
+  expect(warnings(app).map(n => String(n[0]))).toEqual(expect.arrayContaining([expect.stringContaining("Kata is unreachable"), expect.stringContaining("Kata contract was unavailable")]));
+  expect(warnings(app)).toHaveLength(2);
 });
 
 test("the contract is injected once even when something already put it in the prompt", async () => {

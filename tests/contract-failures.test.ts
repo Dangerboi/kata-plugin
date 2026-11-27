@@ -48,13 +48,19 @@ test("a late failure warns when it settles, and recovery does not warn again", a
 
 for (const origin of ["advisor", "no-ui"] as const) test(`${origin} failure warns only if it persists until a main prompt with UI`, async () => {
   for (const recovered of [true, false]) {
-    const a = fixture(n => n > 1 && recovered ? success("recovered") : fail());
+    const gate = Promise.withResolvers<void>();
+    const a = fixture(async n => {
+      if (n > 1 && !recovered) await gate.promise;
+      return n > 1 && recovered ? success("recovered") : fail();
+    });
     const first = origin === "advisor" ? a.context("lead", "advisor") : a.context("lead", "main", false);
     expect((await a.core.session.beforePrompt(first)).sections.contract).toContain("boom");
     expect(a.warnings).toEqual([]);
-    const section = (await a.core.session.beforePrompt(a.context())).sections.contract;
-    if (recovered) { expect(section).toBe("recovered"); expect(a.warnings).toEqual([]); }
-    else { expect(section).toContain("boom"); expect(a.warnings).toHaveLength(1); }
+    try {
+      const section = (await a.core.session.beforePrompt(a.context())).sections.contract;
+      if (recovered) { expect(section).toBe("recovered"); expect(a.warnings).toEqual([]); }
+      else { expect(a.attempts()).toBe(2); expect(section).toContain("boom"); expect(a.warnings).toHaveLength(1); }
+    } finally { gate.resolve(); await nextTick(); }
   }
 });
 

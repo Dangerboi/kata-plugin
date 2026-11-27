@@ -95,14 +95,14 @@ test("the plugin's close of an automatic parent records no transcript when KATA_
   expect(await closeSessions(parent)).toEqual([undefined]);
 });
 
-test("an unreachable Kata keeps the native list working, makes no Kata mutations and warns once", async () => {
+test("an unreachable Kata keeps the native list working and warns once for each outage", async () => {
   const app = host({ cwd: outside, before: down }); await app.event("session_start");
   expect((await app.call({ op: "init", items: ["Implement fixture", "Verify fixture"] })).isError).toBeUndefined();
   expect((await app.call({ op: "done", task: "Implement fixture" })).isError).toBeUndefined();
   expect(app.list().flatMap(p => p.tasks.map(t => [t.content, t.status]))).toEqual([["Implement fixture", "completed"], ["Verify fixture", "in_progress"]]);
   expect(app.calls.some(a => ["create", "claim", "meta", "close"].includes(a[0]))).toBe(false);
-  expect(app.mirrorFailures().map(args => String(args[0]))).toEqual([expect.stringContaining("Kata is unreachable")]);
-  expect(app.notices).toHaveLength(1);
+  expect(app.mirrorFailures().map(args => String(args[0]))).toEqual(expect.arrayContaining([expect.stringContaining("Kata is unreachable"), expect.stringContaining("Kata contract was unavailable")]));
+  expect(app.notices).toHaveLength(2);
 });
 
 test("KATA_REF beats stored session binding and is qualified", async () => {
@@ -137,7 +137,7 @@ test("a session with no id never creates an unknown automatic parent", async () 
   expect(app.calls.some(a => a[0] === "create")).toBe(false);
 });
 
-test("contract is cached verbatim, inbox read every turn, slow hooks bounded and failures quiet", async () => {
+test("contract is cached verbatim, inbox read every turn, and pending hooks stay quiet and bounded", async () => {
   process.env.KATA_INBOX_USER = "v2-builder/lead";
   const app = host(); await app.event("session_start"); await app.contractReady;
   const first = await app.event("before_agent_start", { systemPrompt: ["base"] });

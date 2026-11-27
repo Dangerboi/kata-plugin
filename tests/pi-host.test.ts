@@ -214,13 +214,13 @@ test("pi adopts a successful Bash claim using isError without OMP exitCode detai
   expect((await app.call({ op: "view" })).details.kata.parent).toBe(`pitest#${ref}`);
 });
 
-test("pi keeps an unreachable Kata local and failures quiet with bounded hooks", async () => {
+test("pi keeps an unreachable Kata local, shows a contract stub and bounds hooks", async () => {
   const app = await host({ cwd: outside, before: down }); await app.event("session_start", { reason: "startup" });
   await app.init(["Local pi task"]);
   expect((await app.call({ op: "done" })).isError).toBeUndefined();
   const prompt = { systemPromptOptions: { sections: {} } };
   await app.event("before_agent_start", prompt);
-  expect(prompt.systemPromptOptions.sections).toEqual({});
+  expect(prompt.systemPromptOptions.sections).toEqual({ kata_contract: expect.stringContaining("Kata contract is unavailable (kata version failed: selected daemon is unavailable while connecting). Before using kata, run:") });
   expect(app.calls.some(a => ["create", "claim", "meta", "close"].includes(a[0]))).toBe(false);
   // Kata does not answer until the test lets it: the hooks must return on their own bound, not on Kata's answer.
   const held = holdKata(() => true, () => ({ code: 1, stdout: "", stderr: "offline" }));
