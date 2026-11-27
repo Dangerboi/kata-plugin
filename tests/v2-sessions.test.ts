@@ -501,6 +501,7 @@ test("proven claims adopt in order and invalid refs never reach show", async () 
   await exec("/bin/bash", ["-c", command.replaceAll("kata", `\"${binary}\"`)], { cwd, env });
   const start = app.calls.length;
   await app.event("tool_result", { toolName: "bash", input: { command }, isError: false });
+  await eventually(async () => refs.every(ref => app.entries.some(e => e.customType === "io.kata.omp.parent" && e.data?.parent === ref)), true);
   const shown = app.calls.slice(start).filter(c => c[0] === "show" && refs.includes(c[1])).map(c => c[1]);
   expect([...new Set(shown)]).toEqual(refs);
   const adopted = app.entries.filter(e => e.customType === "io.kata.omp.parent" && refs.includes(e.data?.parent)).map(e => e.data.parent);
