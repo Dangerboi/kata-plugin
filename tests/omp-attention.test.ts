@@ -142,9 +142,11 @@ test("native child whitespace and cwd resolution match the producer identity", a
 const meta = async (ref: string) => (await kata(["show", ref, "--json"])).issue;
 const attention = async (ref: string) => { const m = (await meta(ref)).metadata ?? {}; return { state: m["work.attention"], session: m["work.attention_session"], message: m["work.attention_msg"] }; };
 const fresh = async () => `omptest#${await store.issue("OMP mid-session attention")}`;
-const claimed = async (app: ReturnType<typeof host>, ref: string) => {
+const claimed = async (app: ReturnType<typeof host>, ref: string, waitForAttention = true) => {
   await text(["claim", ref]);
   await app.event("tool_result", { toolName: "bash", input: { command: `kata claim ${ref}`, cwd }, isError: false });
+  // The tool-result handler can return while its serialized adoption is still running.
+  if (waitForAttention) await eventually(async () => (await attention(ref)).state, "ok");
 };
 
 test("a ticket the lead claims mid-session gets attention, and shutdown leaves it for a human", async () => {
@@ -181,11 +183,11 @@ test("a ticket already flagged needs-human keeps its flag when the lead claims i
   delete process.env.KATA_REF;
   const ref = await fresh(); await text(["meta", "set", ref, "work.attention", "needs-human"]);
   const app = host(); await app.event("session_start");
-  await claimed(app, ref);
+  await claimed(app, ref, false);
   expect(app.calls.some(a => a[1] === "attention-native")).toBe(false);
   expect(await attention(ref)).toMatchObject({ state: "needs-human", session: undefined });
   const stuck = await fresh(); await text(["meta", "set", stuck, "work.attention", "stuck"]);
-  await claimed(app, stuck);
+  await claimed(app, stuck, false);
   expect(app.calls.some(a => a[1] === "attention-native")).toBe(false);
   expect(await attention(stuck)).toMatchObject({ state: "stuck", session: undefined });
 });
@@ -209,14 +211,13 @@ test("a fork whose start fails leaves the ticket ok, and the next claim takes it
   const app = host(args => failing && args[1] === "attention-native" && args[3] === "start" ? { code: 1, stdout: "", stderr: "fixture failure" } : undefined);
   await app.event("session_start");
   await claimed(app, ref);
-  // The tool-result handler is bounded; its queued adoption can finish after it returns.
-  await eventually(async () => (await attention(ref)).state, "ok");
   const first = (await attention(ref)).session;
   failing = true;
   await app.event("session_switch", { reason: "fork" }, switched(app, "attention-fail-fork", app.sid));
   expect(await attention(ref)).toMatchObject({ state: "ok", session: first });
   failing = false;
   await claimed(app, ref);
+  await eventually(async () => { const value = await attention(ref); return value.state === "ok" && !!value.session && value.session !== first; }, true);
   const taken = await attention(ref);
   expect(taken.state).toBe("ok"); expect(taken.session).not.toBe(first);
   await app.event("session_shutdown");
@@ -262,6 +263,7 @@ test("kata meta set work.attention ok clears a needs-human flag and starts atten
   expect((await attention(ref)).state).toBe("needs-human");
   await text(["meta", "set", ref, "work.attention", "ok"]);
   await app.event("tool_result", { toolName: "bash", input: { command: `kata meta set ${ref} work.attention ok`, cwd }, isError: false });
+  await eventually(async () => !!(await attention(ref)).session, true);
   const live = await attention(ref);
   expect(live.state).toBe("ok"); expect(live.session).toBeTruthy();
   await app.event("session_shutdown");
@@ -286,7 +288,8 @@ test("a start that failed is retried by the next claim", async () => {
     return { code: 1, stdout: "", stderr: "fixture failure" };
   });
   await app.event("session_start");
-  await claimed(app, ref);
+  await claimed(app, ref, false);
+  await eventually(async () => failed, true);
   expect((await attention(ref)).state).toBeUndefined();
   await claimed(app, ref);
   expect((await attention(ref)).state).toBe("ok");
@@ -370,20 +373,30 @@ test("core shutdown uses the detached production spawn after its host dies", asy
   const ref = await issue(); process.env.KATA_REF = ref;
   const processHost = Bun.spawn(["/bin/sleep", "30"], { stdout: "ignore", stderr: "ignore" });
   const session = `dead-host-${unique()}`, entries: any[] = [];
-  const ctx = { cwd, sessionManager: { getSessionId: () => session, getBranch: () => entries } };
+  const ctx = (id: string) => ({ cwd, sessionManager: { getSessionId: () => id, getBranch: () => entries } });
+  const hooks: { mode: string; launcher?: string }[] = [];
   const core = createKataCore({
     platform: { ...nodePlatform, pid: processHost.pid },
-    exec: (_file, args, opts) => run(args, opts.cwd, opts.timeout, opts.env),
+    exec: (_file, args, opts) => {
+      if (args[1] === "attention-native") hooks.push({ mode: args[3], launcher: opts.env?.KATA_SESSION_ID });
+      return run(args, opts.cwd, opts.timeout, opts.env);
+    },
     detached: spawnDetached,
     appendEntry: (customType, data) => entries.push({ type: "custom", customType, data }),
     delegateStore: memoryDelegateStore(),
   }, { namespace: "omp", executable: binary, executableVars: [], attentionHarness: "pi" });
   try {
-    await core.session.start(ctx);
+    await core.session.start(ctx(session));
+    const first = await attention(ref);
+    expect(first.state).toBe("ok");
+    await core.session.start(ctx(`${session}-switch`));
     const before = await attention(ref);
-    expect(before.state).toBe("ok");
+    expect(before.state).toBe("ok"); expect(before.session).not.toBe(first.session);
+    expect(hooks.map(hook => hook.mode)).toEqual(["start", "end", "start"]);
+    expect(new Set(hooks.map(hook => hook.launcher)).size).toBe(1);
+    expect(hooks[0].launcher).toBe(`omp-${processHost.pid}-${performance.timeOrigin}`);
     processHost.kill(); await processHost.exited;
-    await core.session.shutdown(ctx);
+    await core.session.shutdown(ctx(`${session}-switch`));
     await eventually(async () => (await attention(ref)).state, "needs-human");
     expect((await attention(ref)).session).toBe(`ended:${before.session}`);
   } finally { processHost.kill(); await processHost.exited; }
@@ -400,7 +413,7 @@ test("attention uses one launcher across session switches", async () => {
   await app.event("session_shutdown");
   expect(launches.map(x => x.mode)).toEqual(["start", "end", "start", "end"]);
   expect(new Set(launches.map(x => x.launcher)).size).toBe(1);
-  expect(launches[0].launcher).toBe(`omp-${process.pid}-${app.sid}`);
+  expect(launches[0].launcher).toBe(`omp-${process.pid}-${performance.timeOrigin}`);
   expect(launches.map(x => x.session)).toEqual([app.sid!, app.sid!, "other-session", "other-session"]);
 });
 
@@ -436,4 +449,34 @@ test("shutdown waits for an in-flight attention start before ending it", async (
     await Promise.all([start, stop]);
     await eventually(async () => (await attention(ref)).state, "needs-human");
   } finally { held.release(); await Promise.all([start, stop]); }
+});
+
+test("reused host pid and session in a new process cannot be ended by the old launcher", async () => {
+  const ref = await issue(), session = `generation-${unique()}`, pid = 424242;
+  const child = path.join(scratch, `generation-${unique()}.ts`);
+  writeFileSync(child, `import { createKataCore } from ${JSON.stringify(path.resolve("core/kata-core.ts"))};
+import { nodePlatform, execKata } from ${JSON.stringify(path.resolve("core/node-host.ts"))};
+const entries = [], ctx = { cwd: process.env.TEST_CWD, sessionManager: { getSessionId: () => process.env.TEST_SESSION, getBranch: () => entries } };
+const core = createKataCore({ platform: { ...nodePlatform, pid: Number(process.env.TEST_HOST_PID) },
+  exec: (file, args, opts) => { if (args[1] === 'attention-native') console.log(opts.env.KATA_SESSION_ID); return execKata(file, args, opts); },
+  appendEntry: (customType, data) => entries.push({ type: 'custom', customType, data }),
+  delegateStore: { of: () => undefined, records: () => [], get: () => undefined, put: () => {} } },
+  { namespace: 'omp', executable: process.env.TEST_BINARY, executableVars: [], attentionHarness: 'pi' });
+await core.session.start(ctx);`);
+  const launch = async () => {
+    const proc = Bun.spawn([process.execPath, child], { env: { ...env, KATA_REF: ref, TEST_CWD: cwd, TEST_SESSION: session, TEST_HOST_PID: String(pid), TEST_BINARY: binary }, stdout: "pipe", stderr: "pipe" });
+    const [stdout, stderr, status] = await Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text(), proc.exited]);
+    expect({ status, stderr }).toEqual({ status: 0, stderr: "" });
+    const launcher = stdout.trim(); expect(launcher).toContain(`omp-${pid}-`);
+    return launcher;
+  };
+  const first = await launch();
+  const firstOwner = (await attention(ref)).session;
+  const second = await launch();
+  const secondOwner = (await attention(ref)).session;
+  expect(second).not.toBe(first); expect(secondOwner).not.toBe(firstOwner);
+  const end = ["agent-hook", "attention-native", "pi", "end", "--session", session, "--host-pid", String(pid), "--ref", ref];
+  await text(end, cwd, { KATA_SESSION_ID: first });
+  expect(await attention(ref)).toMatchObject({ state: "ok", session: secondOwner });
+  await text(end, cwd, { KATA_SESSION_ID: second });
 });
