@@ -4,7 +4,7 @@ import { piFixture } from "./pi-fixture";
 import { USAGE } from "../core/session-status";
 
 // pi's `/kata` and `kata` footer: replies go to the person through notify, never to the model through sendMessage.
-const { host, kata, issue } = piFixture();
+const { host, kata, issue, nativeKey, globalRegistry } = piFixture();
 
 async function pi(options: any = {}) {
 	const app = await host(options);
@@ -48,6 +48,25 @@ test("pi /kata inbox redraws the footer with the trusted count it read", async (
 	expect(app.notes().at(-1)).toContain("pi-footer-ping-2207");
 	expect(await until(() => !!app.footer()?.endsWith(" · inbox 1"))).toBe(true);
 	expect(app.messages.filter(m => m[0]?.customType !== "kata.todo.command")).toEqual([]);
+	await kata(["notify", ref, "--to", address, "--clear", "--json"]);
+	await app.event("session_shutdown", { reason: "quit" });
+});
+
+test("pi under Kata's native adapter says Kata supplies the contract and the inbox, and counts nothing in the footer", async () => {
+	const address = "pi-builder/kata-native";
+	process.env.KATA_INBOX_USER = address;
+	globalRegistry[nativeKey].adapters.set("native", { options: { scope: "user", contract: true } });
+	const app = await pi();
+	await app.event("session_start", { reason: "startup" });
+	const ref = await issue("Pi native inbox");
+	await kata(["notify", ref, "--to", address, "--message", "pi-native-ping-3318", "--json"]);
+	await app.kata("status");
+	const rows = Object.fromEntries(app.notes().at(-1)!.split("\n").map(line => [line.slice(0, 11).trim(), line.slice(11)]));
+	expect(rows).toMatchObject({ inbox: `${address} · kata supplies it`, contract: "off — kata agent-hook supplies it", requests: "Kata supplies the inbox, without this plugin's actor filter" });
+	await app.kata("inbox");
+	expect(app.notes().at(-1)).toStartWith(`Kata inbox for "${address}" (this plugin's trusted view; Kata supplies the inbox without that filter)`);
+	expect(app.notes().at(-1)).toContain("pi-native-ping-3318");
+	expect(app.footer()).toBe("kata pi-builder/kata-native");
 	await kata(["notify", ref, "--to", address, "--clear", "--json"]);
 	await app.event("session_shutdown", { reason: "quit" });
 });

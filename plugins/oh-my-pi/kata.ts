@@ -333,13 +333,13 @@ export default function ompKata(pi: any) {
 			const at = main(ctx) ? ctx : !ctx?.agent && seen && main(seen) ? seen : undefined;
 			try {
 				ctx?.ui?.notify?.(at ? await kataCommand(core.session, at, args) : MAIN_ONLY, "info");
-				// The usage reply reads nothing, so it redraws nothing either.
-				if (at && parseKataCommand(args)) await drawFooter(at, "force");
+				// The usage reply reads nothing, so it redraws nothing either; status has just checked the refs, so no second forced check.
+				if (at && parseKataCommand(args)) await drawFooter(at, "throttle");
 			}
 			catch (error) { debug(error); ctx?.ui?.notify?.(`Kata could not answer /kata: ${error instanceof Error ? error.message : String(error)}`, "warning"); }
 		},
 	});
-	// The footer: redrawn at once at session start, before each prompt, after /kata and after a task call; other tool results are throttled.
+	// The footer: redrawn at once at session start, before each prompt and after a task call; after /kata and other tool results it is throttled.
 	const drawFooter = (ctx: any, mode: "force" | "throttle"): Promise<void> => main(ctx) ? core.session.footer(ctx, mode, footerText).catch(debug) : Promise.resolve();
 
 	// The Delegates that owns a delegate's record is the lead's, on the main thread; a worker's copy reaches it over the channel.

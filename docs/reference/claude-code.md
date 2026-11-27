@@ -80,7 +80,7 @@ The mod draws in the terminal UI, and in the desktop Code tab and the VS Code ch
 - **Checklist card** under each of the lead's `todo` calls, with the result's notice (a deleted parent, a close Kata deferred) above the checklist. A delegate's `todo` call keeps the engine's own row. A session-local plan (kept while Kata is unreachable) draws no band and no card.
 - **`#` ticket completion** in the prompt, with the same tokens as the [omp ticket references](oh-my-pi.md#ticket-references-in-the-prompt). A loaded list answers at once, whatever Kata is doing; only the first fill of a session's list waits, for 400 ms at most, beside the rows of other plugins.
 - **`/todo`** shows the plan; the subcommands `start`, `done`, `drop`, `rm`, `append`, `block`, `unblock` and `takeover` change it, as in Pi.
-- **`/kata`** (or `/kata status`), `/kata inbox` and `/kata refresh`, as in [Pi](pi.md), shown to the person only. The contract line says `off — kata agent-hook supplies it` unless the `contract` option is on. Claude Code has no footer.
+- **`/kata`** (or `/kata status`), `/kata inbox` and `/kata refresh`, as in [Pi](pi.md), shown to the person only. The contract line says `off — kata agent-hook supplies it` unless the `contract` option is on. With `contract` and `liveInbox` both off, Kata's agent hook reads the inbox into each prompt without this plugin's actor filter, and the inbox line says `kata supplies it`. Claude Code has no footer.
 
 ## Live inbox
 

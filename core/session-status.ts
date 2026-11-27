@@ -20,14 +20,16 @@ const firstLine = (text: string) => text.split("\n")[0]!.trim();
 const noInbox = (none: "unset" | "personal" | undefined) =>
 	none === "personal" ? "KATA_INBOX_USER names a personal inbox; set it to <user>/<name>" : "KATA_INBOX_USER is unset";
 const others = (n: number) => `${n} request${n === 1 ? "" : "s"} from another actor not shown`;
+const DELIVERY = { live: "live", "per prompt": "per prompt", failed: "last read failed", kata: "kata supplies it" } as const;
 
 export function statusText(view: SessionView): string {
 	const where = view.scope === "down" ? `${view.workspace} (Kata unavailable${view.outage ? `: ${firstLine(view.outage)}` : ""})`
 		: view.scope === "unbound" ? `${view.workspace} (not a Kata workspace — plans go to ${view.project ?? "the default project"})`
 		: `${view.workspace}${view.project ? ` (project ${view.project})` : ""}`;
-	const inbox = view.inbox.address ? `${view.inbox.address} · ${view.inbox.delivery === "failed" ? "last read failed" : view.inbox.delivery ?? "per prompt"}` : `none — ${noInbox(view.inbox.none)}`;
+	const inbox = view.inbox.address ? `${view.inbox.address} · ${DELIVERY[view.inbox.delivery ?? "per prompt"]}` : `none — ${noInbox(view.inbox.none)}`;
 	const counts = view.counts;
 	const requests = !view.inbox.address ? "none"
+		: view.inbox.delivery === "kata" ? "Kata supplies the inbox, without this plugin's actor filter"
 		: view.inbox.delivery === "failed" ? "read failed"
 		: !counts ? "not read yet"
 		: !counts.trusted && !counts.foreign ? "none"
@@ -61,25 +63,30 @@ export function inboxText(result: InboxView): string {
 	if (!result.address) return `No session inbox: ${noInbox(result.none)}`;
 	const name = JSON.stringify(result.address);
 	if (result.failed !== undefined) return `Kata inbox read failed: ${firstLine(result.failed)}`;
-	const foreign = result.counts?.foreign ? `\n${others(result.counts.foreign)}` : "";
+	// When Kata supplies the inbox, the prompt carries every request: the foreign ones are not "not shown".
+	const foreign = !result.native && result.counts?.foreign ? `\n${others(result.counts.foreign)}` : "";
 	const lines = (result.text ?? "").replace(/^\n/, "");
-	if (!lines) return `Kata inbox for ${name} is empty${foreign}`;
-	return `Kata inbox for ${name} (shown here only; the next prompt is unchanged)\n${lines}${foreign}`;
+	const native = "Kata supplies the inbox without that filter";
+	if (!lines) return result.native ? `Kata inbox for ${name}: this plugin's trusted view is empty; ${native}` : `Kata inbox for ${name} is empty${foreign}`;
+	return `Kata inbox for ${name} (${result.native ? `this plugin's trusted view; ${native}` : "shown here only; the next prompt is unchanged"})\n${lines}${foreign}`;
 }
 
 /** The part of a core's session `/kata` reads. */
 export type KataStatusSource = {
-	view(ctx: any, opts?: { reconcile?: boolean; context?: boolean }): Promise<SessionView | undefined>;
-	inbox(ctx: any): Promise<InboxView>;
+	view(ctx: any, opts?: { reconcile?: boolean; context?: boolean; nativeInbox?: boolean }): Promise<SessionView | undefined>;
+	inbox(ctx: any, opts?: { nativeInbox?: boolean }): Promise<InboxView>;
 	refresh(): void;
 };
 
-/** `/kata <args>` for the main session's `ctx`. The subcommand is checked before anything reads Kata. */
-export async function kataCommand(session: KataStatusSource, ctx: any, args: string, opts: { context?: boolean } = {}): Promise<string> {
+/**
+ * `/kata <args>` for the main session's `ctx`. The subcommand is checked before anything reads Kata. `context: false`: Kata
+ * supplies the contract; `nativeInbox`: Kata supplies the inbox, unfiltered. Each host passes what it knows.
+ */
+export async function kataCommand(session: KataStatusSource, ctx: any, args: string, opts: { context?: boolean; nativeInbox?: boolean } = {}): Promise<string> {
 	const sub = parseKataCommand(args);
 	if (!sub) return USAGE;
 	if (sub === "refresh") { session.refresh(); return REFRESHED; }
-	if (sub === "inbox") return inboxText(await session.inbox(ctx));
-	const view = await session.view(ctx, { reconcile: true, context: opts.context });
+	if (sub === "inbox") return inboxText(await session.inbox(ctx, { nativeInbox: opts.nativeInbox }));
+	const view = await session.view(ctx, { reconcile: true, context: opts.context, nativeInbox: opts.nativeInbox });
 	return view ? statusText(view) : MAIN_ONLY;
 }

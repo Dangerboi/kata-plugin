@@ -155,7 +155,9 @@ export const onKataCommand: Hook<"command.run"> = async ($, e) => {
 	if (!parseKataCommand(e.args)) return { text: USAGE, isTextDisplayOnly: true };
 	try {
 		const { rt, ctx } = await enter($);
-		return { text: await kataCommand(rt.core.session, ctx, e.args, { context: rt.settings.contract }), isTextDisplayOnly: true };
+		// With the mod's contract and live inbox both off, Kata's agent hook reads the inbox into each prompt, unfiltered.
+		const nativeInbox = !rt.settings.contract && !rt.settings.liveInbox;
+		return { text: await kataCommand(rt.core.session, ctx, e.args, { context: rt.settings.contract, nativeInbox }), isTextDisplayOnly: true };
 	} catch (error) {
 		return { text: `Kata could not answer /kata: ${error instanceof Error ? error.message : String(error)}`, isTextDisplayOnly: true };
 	}

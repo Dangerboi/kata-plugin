@@ -37,6 +37,7 @@ test("/kata status names each missing piece", () => {
 	expect(lines(view({ inbox: { address: "alice/lead", delivery: "live" }, counts: { trusted: 0, foreign: 0 } }))).toMatchObject({ inbox: "alice/lead · live", requests: "none" });
 	expect(lines(view({ inbox: { address: "alice/lead", delivery: "failed" } }))).toMatchObject({ inbox: "alice/lead · last read failed", requests: "read failed" });
 	expect(lines(view({ contract: "off" })).contract).toBe("off — kata agent-hook supplies it");
+	expect(lines(view({ inbox: { address: "alice/lead", delivery: "kata" }, counts: undefined }))).toMatchObject({ inbox: "alice/lead · kata supplies it", requests: "Kata supplies the inbox, without this plugin's actor filter" });
 	expect(lines(view({ settings: { executable: "/opt/kata", refGuard: false, liveInbox: true, debug: true } })).settings).toBe("executable=/opt/kata · ref guard off · live inbox on · debug on");
 });
 
@@ -45,12 +46,17 @@ test("the footer shows the address or actor, at most three refs and a nonzero in
 	expect(footerText(view({ inbox: { none: "unset" }, refs: [], counts: { trusted: 0, foreign: 3 } }))).toBe("kata alice");
 	expect(footerText(view({ refs: ["kp#1", "kp#2", "kp#3", "kp#4", "kp#5"], counts: undefined }))).toBe("kata alice/lead · kp#1, kp#2, kp#3 +2");
 	expect(footerText(view({ scope: "down" }))).toBeUndefined();
+	expect(footerText(view({ inbox: { address: "alice/lead", delivery: "kata" }, counts: undefined }))).toBe("kata alice/lead · kp#12, kp#14");
 });
 
 test("/kata inbox labels the trusted lines for the person and counts the rest", () => {
 	expect(inboxText({ address: "alice/lead", text: "\n- issue=\"kp#1\" message=\"hi\"", counts: { trusted: 1, foreign: 2 } }))
 		.toBe('Kata inbox for "alice/lead" (shown here only; the next prompt is unchanged)\n- issue="kp#1" message="hi"\n2 requests from another actor not shown');
 	expect(inboxText({ address: "alice/lead", text: "", counts: { trusted: 0, foreign: 0 } })).toBe('Kata inbox for "alice/lead" is empty');
+	expect(inboxText({ address: "alice/lead", native: true, text: "\n- issue=\"kp#1\" message=\"hi\"", counts: { trusted: 1, foreign: 2 } }))
+		.toBe('Kata inbox for "alice/lead" (this plugin\'s trusted view; Kata supplies the inbox without that filter)\n- issue="kp#1" message="hi"');
+	expect(inboxText({ address: "alice/lead", native: true, text: "", counts: { trusted: 0, foreign: 3 } }))
+		.toBe('Kata inbox for "alice/lead": this plugin\'s trusted view is empty; Kata supplies the inbox without that filter');
 	expect(inboxText({ none: "unset" })).toBe("No session inbox: KATA_INBOX_USER is unset");
 	expect(inboxText({ address: "alice/lead", failed: "daemon gone\nstack" })).toBe("Kata inbox read failed: daemon gone");
 });
@@ -104,6 +110,24 @@ test("omp registers /kata, answers status for the person and draws the footer", 
 	expect(app.calls.length).toBe(before);
 	await app.event("session_shutdown"); apps.length = 0;
 	expect(app.statuses.at(-1)).toEqual(["kata", undefined]);
+});
+
+/** Resolves once `calls` has not grown for `ms`: the background draws and reads a test started have finished. */
+async function quiet(calls: unknown[], ms = 400) {
+	for (let seen = -1; seen !== calls.length;) { seen = calls.length; await Bun.sleep(ms); }
+}
+
+test("omp /kata status checks each ref once, its footer redraw included", async () => {
+	const app = omp();
+	await app.event("session_start");
+	const parent = await app.init(["Reconcile task"]);
+	await app.event("before_agent_start", { systemPrompt: ["base"] });
+	await quiet(app.calls);
+	const before = app.calls.length;
+	await app.command("status");
+	const shows = app.calls.slice(before).filter(args => args[0] === "show");
+	expect(shows.map(args => args[1])).toEqual([parent]);
+	expect(app.notes().at(-1)).toContain(`refs       ${parent}`);
 });
 
 test("omp /kata inbox shows the trusted inbox without changing the next prompt", async () => {

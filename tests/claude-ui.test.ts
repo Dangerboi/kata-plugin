@@ -5,7 +5,7 @@ import { EVIDENCE, eventually, holdKata, MESSAGE, until } from "./kata-fixture";
 // The Claude mod's plan band, todo cards, `#` ticket completion and /todo, against a real Kata. A todo call writes `$.state`,
 // the render hooks read it back: the cards and the band are checked through `ui.render`, as the transcript would draw them.
 // How each surface lays them out is drawn in plugins/claude-code/tests/ui.test.tsx.
-const { host, issue, deleteIssue, sessionParents } = claudeKata("claude-ui");
+const { host, issue, deleteIssue, sessionParents, binary, author } = claudeKata("claude-ui");
 
 // The engine's JSX factory, which the render hooks call: an element is its type, props and children.
 (globalThis as any).h = (type: string, props: Record<string, unknown> | null, ...children: unknown[]) => ({ type, props, children });
@@ -189,6 +189,22 @@ test("an unknown /kata subcommand answers with the usage before any session work
 	const reply = await h.fire("command.run", { command: "kata", args: "explode", origin: { kind: "composer" } });
 	expect(reply).toEqual({ text: "Usage: /kata [status|inbox|refresh]", isTextDisplayOnly: true });
 	expect(h.calls).toEqual([]);
+});
+
+test("/kata says Kata supplies the inbox only with the mod's contract and live inbox both off", async () => {
+	const address = `${author}/kata-owner`;
+	const rows = async (contract: boolean, liveInbox: boolean) => {
+		const h = host({ env: { KATA_INBOX_USER: address }, options: { kataExecutable: binary, contract, liveInbox } });
+		engineUi(h);
+		await h.start();
+		const { text } = await h.fire("command.run", { command: "kata", args: "", origin: { kind: "composer" } });
+		await h.end();
+		const row = (label: string) => text.split("\n").find((line: string) => line.startsWith(label.padEnd(11)))?.slice(11);
+		return { inbox: row("inbox"), requests: row("requests") };
+	};
+	expect(await rows(false, false)).toEqual({ inbox: `${address} · kata supplies it`, requests: "Kata supplies the inbox, without this plugin's actor filter" });
+	expect((await rows(true, false)).inbox).toBe(`${address} · per prompt`);
+	expect((await rows(false, true)).inbox).toBe(`${address} · live`);
 });
 
 test("/todo takeover starts a ticket item of the plan", async () => {
