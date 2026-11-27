@@ -55,7 +55,7 @@ Set with `/plugin configure kata-cc@kata-plugin` or `--config KEY=VALUE` at inst
 | `liveInbox` | `KATA_CLAUDE_LIVE_INBOX` | on | Deliver inbox requests as they arrive. Either one set off turns it off. |
 | `refGuard` | `KATA_REF_GUARD` | on | Refuse writes and commits that name a Kata ref. Either one set off turns it off. |
 | `contract` | | off | Add the Kata contract and inbox to each prompt. Leave off when `kata agent-hook install claude` is set up. |
-| `contractSource` | `KATA_CONTRACT_SOURCE` | built-in | A file whose text replaces the Kata contract; applies only with `contract` on. An absolute path is used as given, a relative one is read from the session folder. Blank: Kata's built-in contract. A file that does not exist gets one warning per session, and the built-in contract is used. A folder without `.kata.toml` still gets no contract. |
+| `contractSource` | `KATA_CONTRACT_SOURCE` | built-in | A file whose text replaces the Kata contract; applies only with `contract` on. An absolute path is used as given, a relative one is read from the session folder. Blank: `KATA_CONTRACT_SOURCE`, else Kata's built-in contract. A file that does not exist gets one warning per session, and the built-in contract is used. A folder without `.kata.toml` still gets no contract. |
 | `kataExecutable` | `KATA_CLAUDE_EXECUTABLE` | `kata` | The Kata executable the plugin runs. |
 | `debugFile` | `KATA_CLAUDE_DEBUG` | none | Path of the diagnostic log. |
 
