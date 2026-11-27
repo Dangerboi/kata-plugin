@@ -328,10 +328,7 @@ export function createKataCore(host: CoreHost, options: CoreOptions): KataCore {
 	const core = buildCore(host, options, () => delegateCores.clear());
 	return {
 		...core,
-		session: { ...core.session, clearContract() {
-			core.session.clearContract();
-			for (const delegate of delegateCores.values()) delegate.session.clearContract();
-		}, refresh() {
+		session: { ...core.session, refresh() {
 			core.session.refresh();
 			for (const delegate of delegateCores.values()) delegate.session.refresh();
 		} },
@@ -2308,7 +2305,7 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 		}
 		if (main(ctx) && inboxRead) {
 			const gen = footerGeneration;
-			void inboxRead.then(() => { if (gen === footerGeneration && footerFormat) void footer(ctx, "throttle", footerFormat, footerOptions); });
+			void inboxRead.then(() => { if (gen === footerGeneration && footerFormat) void footer(ctx, "throttle", footerFormat); });
 		}
 		const done = Promise.all([entry.pending, inboxRead]).then(() => undefined);
 		return { entry, record, showsInbox: main(ctx) || !!record, done };
@@ -2343,7 +2340,6 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 	// While the follower runs, `liveInbox` is the main session's `<kata_inbox>` text and the per-turn read is skipped for it.
 	let liveInbox: string | undefined, liveCounts: InboxCounts | undefined, liveFailed: string | undefined, follower: InboxFollower | undefined;
 	let footerFormat: ((view: SessionView) => string | undefined) | undefined;
-	let footerOptions: { nativeInbox?: boolean } = {};
 	function stopFollower() {
 		follower?.stop();
 		follower = undefined;
@@ -2362,8 +2358,8 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 			read: async () => JSON.parse(await kata.run(job, ["inbox", "--for", address], cwd)),
 			spawn: cursor => live.spawn([options.executable, "events", "--tail", "--json", "--workspace", cwd, ...(cursor ? ["--last-event-id", String(cursor)] : [])], cwd),
 			deliver: text => { try { Promise.resolve(live.deliver(text)).catch(debug); } catch (error) { debug(error); } },
-			publish: (text, counts) => { liveInbox = text; liveCounts = counts; if (footerFormat) void footer(ctx, "throttle", footerFormat, footerOptions); },
-			readState: error => { liveFailed = error === undefined ? undefined : (error as Error)?.message ?? String(error); if (error !== undefined && footerFormat) void footer(ctx, "throttle", footerFormat, footerOptions); },
+			publish: (text, counts) => { liveInbox = text; liveCounts = counts; if (footerFormat) void footer(ctx, "throttle", footerFormat); },
+			readState: error => { liveFailed = error === undefined ? undefined : (error as Error)?.message ?? String(error); if (error !== undefined && footerFormat) void footer(ctx, "throttle", footerFormat); },
 			head: () => knownProjectHead(cwd, args => kata.run(job, args, cwd), platform.env.get("KATA_HOME")),
 			now: () => performance.now(),
 			setTimer: (fn, ms) => platform.setTimer(fn, ms),
@@ -2584,11 +2580,7 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 	async function sessionView(ctx: HostContext, opts: { reconcile?: boolean; context?: boolean; nativeInbox?: boolean } = {}): Promise<SessionView | undefined> {
 		if (!main(ctx)) return undefined;
 		const probeError = await bounded(probe(NO_JOB, ctx.cwd).then(() => undefined, error => error));
-		if (opts.reconcile) {
-			const id = currentId, generation = footerGeneration;
-			await reconcile(ctx, true);
-			if (!reconciledAt && id === currentId && generation === footerGeneration) await reconcile(ctx, true);
-		}
+		if (opts.reconcile) await reconcile(ctx, true);
 		const identity = await bounded(actor(NO_JOB, ctx.cwd).then(who => ({ who, error: undefined as string | undefined }), error => ({ who: undefined, error: (error as Error)?.message ?? String(error) })));
 		const entry = leadReads.get(leadKey(sid(ctx))), inbox = inboxAddress();
 		if (inbox.address && opts.nativeInbox) inbox.delivery = "kata";
@@ -2618,16 +2610,15 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 			return { address: inbox.address, text: trustedInbox(out?.requests, mine, inbox.address, ""), counts, ...native };
 		} catch (error) { return { address: inbox.address, failed: (error as Error)?.message ?? String(error), ...native }; }
 	}
-	async function footer(ctx: HostContext, mode: "force" | "throttle", format: (view: SessionView) => string | undefined, opts: { nativeInbox?: boolean } = {}): Promise<void> {
+	async function footer(ctx: HostContext, mode: "force" | "throttle", format: (view: SessionView) => string | undefined): Promise<void> {
 		if (!main(ctx) || ctx.hasUI !== true || !ctx.ui?.setStatus) return;
 		footerFormat = format;
-		footerOptions = opts;
 		const id = sid(ctx), generation = footerGeneration;
 		const pending = reconcile(ctx, mode === "force");
 		let finished = false;
 		void pending.then(() => { finished = true; }).catch(debug);
 		const draw = async () => {
-			const view = await sessionView(ctx, footerOptions);
+			const view = await sessionView(ctx);
 			if (generation === footerGeneration && id === currentId && view) ctx.ui!.setStatus!("kata", view.scope === "down" ? undefined : format(view));
 		};
 		await bounded(pending);
@@ -2639,16 +2630,10 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 
 	return {
 		session: {
-			clearContract(): void {
-				for (const entry of [...leadReads.values(), ...delegateReads.values()]) {
-					entry.contract = undefined;
-					entry.pending = undefined;
-				}
-			},
 			refresh(): void {
-				footerGeneration++; reconciling = undefined; reconcileNext = undefined; reconciledAt = 0; this.clearContract(); actors.clear();
+				footerGeneration++; reconciling = undefined; reconcileNext = undefined; reconciledAt = 0; actors.clear();
 				for (const entry of [...leadReads.values(), ...delegateReads.values()]) {
-					entry.inbox = undefined; entry.count = undefined; entry.failed = undefined; entry.inboxPending = undefined; entry.inboxNext = undefined;
+					entry.contract = undefined; entry.pending = undefined; entry.inbox = undefined; entry.count = undefined; entry.failed = undefined; entry.inboxPending = undefined; entry.inboxNext = undefined;
 				}
 				if (follower) { liveInbox = ""; liveCounts = undefined; liveFailed = undefined; follower.refreshActor(); }
 			},

@@ -19,30 +19,14 @@ function fixture(hook: () => Promise<string> = async () => "contract", issue?: (
   return { core, ctx, calls };
 }
 
-test("a requested status reconciliation sees a newly closed ref inside the throttle window", async () => {
-  let status = "open";
-  const { core, ctx } = fixture(undefined, () => ({ status }));
-  expect((await core.session.view(ctx, { reconcile: true }))?.refs).toEqual(["test#one"]);
-  status = "closed";
-  expect((await core.session.view(ctx, { reconcile: true }))?.refs).toEqual([]);
-});
-
-test("reading the inbox before any prompt publishes its counts for inspection", async () => {
+test("inspecting the inbox before any prompt publishes its counts and leaves the prompt's inbox", async () => {
   const { core, ctx } = fixture();
-  await core.session.inbox(ctx);
-  expect((await core.session.view(ctx))?.counts).toEqual({ trusted: 1, foreign: 1 });
-  expect((await core.session.beforePrompt(ctx)).sections.inbox).toContain("hello");
-});
-
-test("session inspection reads the inbox without consuming prompt state", async () => {
-  const { core, ctx } = fixture();
-  const before = await core.session.beforePrompt(ctx);
   const result = await core.session.inbox(ctx);
   expect(result.counts).toEqual({ trusted: 1, foreign: 1 });
   expect(result.text).toContain("hello");
   expect(result.text).not.toContain("private");
-  expect((await core.session.beforePrompt(ctx)).sections.inbox).toEqual(before.sections.inbox);
   expect((await core.session.view(ctx))?.counts).toEqual({ trusted: 1, foreign: 1 });
+  expect((await core.session.beforePrompt(ctx)).sections.inbox).toContain("hello");
 });
 
 test("refresh rejects a stale contract and its finalizer while a new read is running", async () => {
@@ -114,10 +98,9 @@ test("unrelated claim while checking several refs does not hide a closure", asyn
   const ctx = { cwd: "/tmp/kata-review-synthetic", hasUI: true };
   const gate = Promise.withResolvers<void>();
   let hold = false;
-  const times: number[] = [];
   const core = createKataCore({ platform: nodePlatform, appendEntry() {}, delegateStore: memoryDelegateStore(), exec: async (_file, args) => {
     if (args[0] === "version") return { code: 0, stdout: JSON.stringify({ kata_api_version: 1, version: "0.23.0" }), stderr: "" };
-    if (args[0] === "show") { const start = performance.now(); if (hold) await gate.promise; times.push(performance.now() - start); return { code: 0, stdout: JSON.stringify({ issue: { status: args[1] === "test#abcd" && hold ? "closed" : "open" } }), stderr: "" }; }
+    if (args[0] === "show") { if (hold) await gate.promise; return { code: 0, stdout: JSON.stringify({ issue: { status: args[1] === "test#abcd" && hold ? "closed" : "open" } }), stderr: "" }; }
     return { code: 0, stdout: JSON.stringify({ issues: [] }), stderr: "" };
   } }, { namespace: "test", executable: "/tmp/kata-fixture", executableVars: [], explicitRef: () => "test#one", env: name => name === "KATA_AUTHOR" ? "alice" : undefined });
   const claim = (ref: string) => core.tools.result(ctx, {toolName:"bash", input:{command:`kata claim ${ref}`}});
@@ -129,7 +112,6 @@ test("unrelated claim while checking several refs does not hide a closure", asyn
   await claim("test#jkmn");
   gate.resolve();
   const view = await checking;
-  console.log("other ref read durations (ms):", times.slice(-3).map(n => n.toFixed(1)).join(", "));
   expect(view?.refs).not.toContain("test#abcd");
 });
 
@@ -277,17 +259,13 @@ test("an inspection started before refresh cannot restore stale counts", async (
   } finally { gate.resolve(); }
 });
 
-test("native inbox is explicit and hides plugin counts from the view and footer", async () => {
+test("native inbox is explicit and hides plugin counts from the view", async () => {
   const { core, ctx } = fixture();
   await core.session.inbox(ctx);
   expect((await core.session.view(ctx, { context: false }))?.inbox.delivery).toBe("per prompt");
   const view = await core.session.view(ctx, { nativeInbox: true });
   expect(view?.inbox.delivery).toBe("kata"); expect(view?.counts).toBeUndefined();
   expect((await core.session.inbox(ctx, { nativeInbox: true })).native).toBe(true);
-  const writes: string[] = [];
-  const visible = { ...ctx, ui: { setStatus: (_key: string, value: string | undefined) => writes.push(value ?? "") } };
-  await core.session.footer(visible, "throttle", v => String(v.counts?.trusted ?? "none"), { nativeInbox: true });
-  expect(writes.at(-1)).toBe("none");
 });
 
 test("refresh preserves a personal-inbox warning and clears cached delegate contracts", async () => {

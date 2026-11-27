@@ -180,7 +180,6 @@ test("/kata is registered beside /todo and answers for the person only", async (
 	expect(status.text).toMatch(/^workspace  /);
 	expect(status.text).toContain("contract   off — kata agent-hook supplies it");
 	expect(await run("refresh")).toEqual({ text: "Kata contract and actor cleared; the next prompt reads both again.", isTextDisplayOnly: true });
-	expect(await run("explode")).toEqual({ text: "Usage: /kata [status|inbox|refresh]", isTextDisplayOnly: true });
 });
 
 test("an unknown /kata subcommand answers with the usage before any session work", async () => {

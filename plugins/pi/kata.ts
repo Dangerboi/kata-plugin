@@ -164,7 +164,7 @@ export default async function piKata(pi: ExtensionAPI) {
 		},
 	});
 	// The footer: redrawn at once at session start, before each prompt and after a bash command that may start a pi child; after /kata and other tool results it is throttled.
-	const drawFooter = (ctx: ExtensionContext, mode: "force" | "throttle"): Promise<void> => inherited ? Promise.resolve() : core.session.footer(ctx, mode, footerText, { nativeInbox: nativeContractActive(ctx.cwd) }).catch(() => {});
+	const drawFooter = (ctx: ExtensionContext, mode: "force" | "throttle"): Promise<void> => inherited ? Promise.resolve() : core.session.footer(ctx, mode, footerText).catch(() => {});
 	pi.on("input", async (event) => {
 		if (event.source === "interactive" && !event.text.trim().startsWith("/")) core.session.input();
 	});
