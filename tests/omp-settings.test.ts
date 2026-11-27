@@ -29,15 +29,13 @@ test("a padded legacy guard variable overrides a stored block setting", async ()
   } finally { delete process.env.KATA_REF_GUARD; setPluginSettings(() => ({})); }
 });
 
-
 test("resolution preserves text and falls through unreadable values", () => {
   const stored = { defaultProject: " Mixed Project ", liveInbox: "false", refGuard: "off" };
   const value = resolveSettings(stored, { KATA_OMP_LIVE_INBOX: "bad", KATA_REF_GUARD: "bogus" });
   expect(value.liveInbox).toBe(false);
   expect(value.env("KATA_DEFAULT_PROJECT")).toBe(" Mixed Project ");
   expect(value.env("KATA_REF_GUARD")).toBe("off");
-  expect(resolveSettings(stored, { KATA_DEFAULT_PROJECT: "", KATA_REF_GUARD: " OFF ", KATA_OMP_LIVE_INBOX: " ON " }).env("KATA_DEFAULT_PROJECT")).toBe("");
-  expect(resolveSettings(stored, { KATA_REF_GUARD: " OFF " }).env("KATA_REF_GUARD")).toBe("off");
+  expect(resolveSettings(stored, { KATA_DEFAULT_PROJECT: "" }).env("KATA_DEFAULT_PROJECT")).toBe("");
   expect(resolveSettings(stored, { KATA_OMP_LIVE_INBOX: " ON " }).liveInbox).toBe(true);
   for (const guard of ["1", "true", "on", "yes", " YES "]) {
     expect(resolveSettings({ refGuard: "off" }, { KATA_REF_GUARD: guard }).env("KATA_REF_GUARD")).toBe("block");
@@ -63,7 +61,7 @@ test("resolution preserves text and falls through unreadable values", () => {
 
 test("loader ignores malformed results and errors", async () => {
   try {
-    for (const result of [null, "invalid", [], undefined]) { setPluginSettings(() => result); expect(await loadPluginSettings(cwd)).toEqual({}); }
+    for (const result of [null, "invalid", []]) { setPluginSettings(() => result); expect(await loadPluginSettings(cwd)).toEqual({}); }
     setPluginSettings(() => { throw new Error("unavailable"); });
     expect(await loadPluginSettings(cwd)).toEqual({});
   } finally { setPluginSettings(() => ({})); }

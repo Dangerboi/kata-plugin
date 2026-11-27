@@ -32,7 +32,6 @@ for (const [initial, next] of [[false, true], [true, false]] as const) test(`bra
   }
 });
 
-
 test("an unchanged live setting keeps the existing follower on branch", async () => {
   process.env.KATA_INBOX_USER = "v2-builder/branch-unchanged";
   const host = fakeHost({ cwd: store.cwd, sid: "branch-unchanged", run: (args, opts) => store.run(args, opts.cwd, opts.timeout) });
