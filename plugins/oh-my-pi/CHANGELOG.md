@@ -4,6 +4,15 @@ All notable changes to `@dangerboi/kata-omp` are listed here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+#### Inbox and attention
+
+- A delegate, and the main session with `KATA_OMP_LIVE_INBOX=0`, checks its session inbox on tool results while it works, so a request sent mid-run, or to a revived delegate that keeps running tools, arrives on a later tool result without waiting for a new prompt.
+  - A new or changed inbox is appended to the first tool result after the read has answered as a `<kata_inbox>` text part, under the same own-actor filter and escaping as the prompt's section. A request already shown is not repeated, and an inbox that clears is announced once.
+  - At most one `kata inbox` read every 15 seconds, set with `KATA_INBOX_POLL_SECONDS` (`0` for every result). The read never holds up the result; a failed read sends nothing.
+  - `task` results and nested script calls carry no block. The main session with live delivery on is unchanged.
+
 ## [3.1.0] - 2026-11-26
 
 ### Added

@@ -1,4 +1,5 @@
 import { expect, test } from "bun:test";
+import { eventually } from "./kata-fixture";
 import { v2Fixture } from "./v2-fixture";
 
 // An omp delegate runs in the lead's process but reads its own session inbox, <actor>/<teammate>, never the lead's.
@@ -124,4 +125,31 @@ test("omp's advisor shares the lead's session and shows none of the lead's inbox
   expect(seen).not.toContain("<kata_inbox>");
   expect(seen).not.toContain("lead-only-advisor-9071");
   await kata(["notify", ref, "--to", "v2-builder/lead-advisor", "--clear", "--json"]);
+});
+
+test("a revived delegate polls and receives its own inbox without a prompt hook", async () => {
+  process.env.KATA_INBOX_USER = "v2-builder/lead-revive";
+  process.env.KATA_INBOX_POLL_SECONDS = "0";
+  const lead = host(); await lead.event("session_start");
+  await lead.init(["Implement widget"]);
+  await lead.event("tool_call", { toolName: "task", toolCallId: "revived-result", input: { name: "Widget", task: 'Complete "Implement widget"' } });
+  const sessionFile = `${scratch}/revived-result.jsonl`;
+  lead.emit("task:subagent:lifecycle", { id: "revived-result", status: "started", sessionFile, parentToolCallId: "revived-result", index: 0 });
+  const worker = host({ sessionFile, agent: { kind: "sub", id: "revived-result", parentId: lead.ctx.agent.id } });
+  const first = await prompt(worker);
+  expect(first).toContain("Your Kata issue is");
+  const readsBefore = worker.calls.filter((args: string[]) => args[0] === "inbox").length;
+  expect(readsBefore).toBeGreaterThan(0);
+  expect(await worker.event("before_agent_start", { reason: "revive", systemPrompt: ["base"] })).toBeUndefined();
+  const event = { toolName: "read", content: [{ type: "text", text: "original" }], isError: false };
+  await worker.event("tool_result", event);
+  await eventually(async () => worker.calls.filter((args: string[]) => args[0] === "inbox").length > readsBefore, true);
+  const address = worker.calls.filter((args: string[]) => args[0] === "inbox").at(-1)![2]!;
+  expect(address).toMatch(/^v2-builder\//);
+  const ref = await issue("revived notification");
+  await notify(ref, address, "revived-ping");
+  let delivered: any;
+  await eventually(async () => { delivered = await worker.event("tool_result", event); return JSON.stringify(delivered ?? {}).includes("revived-ping"); }, true);
+  expect(delivered.content[0].text).toBe("original");
+  expect(delivered.content[1].text).toContain("<kata_inbox>");
 });

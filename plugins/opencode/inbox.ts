@@ -11,7 +11,7 @@ type Capped = { text: string; truncated: boolean };
 const encoder = new TextEncoder();
 
 /** Request text must not close `<kata_inbox>` or open a tag: `&`, `<`, `>` become entities. */
-const escapeMarkup = (text: string) => text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+export const escapeMarkup = (text: string) => text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 const BASE64URL = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
 
 /** RFC 4648 §5 base64url of `bytes`, unpadded. Any length: nothing is spread into a call. */

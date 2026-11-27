@@ -4,6 +4,15 @@ All notable changes to `@dangerboi/kata-pi` are listed here. The format follows 
 
 ## [Unreleased]
 
+### Added
+
+#### Inbox and attention
+
+- Main sessions and child processes check their session inbox on tool results while they work, so a request sent mid-run arrives on a later tool result without waiting for a new prompt.
+  - A new or changed inbox is appended to the first tool result after the read has answered as a `<kata_inbox>` text part, under the same own-actor filter and escaping as the prompt's section, and the result keeps its `structuredContent`. A request this plugin's own prompt section already showed is not repeated, and an inbox that clears is announced once.
+  - At most one `kata inbox` read every 15 seconds, set with `KATA_INBOX_POLL_SECONDS` (`0` for every result). The read never holds up the result; a failed read sends nothing.
+  - Nested script calls carry no block. Under Kata's native pi adapter, which reads the inbox only at prompts, the main session's tool results check it too, with this plugin's filter and escaping. A first change identical to Kata's section in the effective system prompt is not repeated; one rendered differently, or with a newer request, is still delivered.
+
 ## [1.13.0] - 2026-11-26
 
 ### Added

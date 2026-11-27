@@ -43,6 +43,9 @@ test("a notify reaches the main session as an aside, the section is current with
 	expect(shown).toContain("<kata_inbox>");
 	expect(shown).toContain("live-ping-8841");
 	await app.section();
+	process.env.KATA_INBOX_POLL_SECONDS = "0";
+	expect(await app.event("tool_result", { toolName: "read", content: [], isError: false })).toBeUndefined();
+	await settle();
 	expect(app.calls.filter(a => a[0] === "inbox").length).toBe(reads);
 	await kata(["notify", ref, "--to", address, "--clear", "--json"]);
 	// The stream is ordered: a later notify is delivered after the clear, so the clear was processed before it reached us.

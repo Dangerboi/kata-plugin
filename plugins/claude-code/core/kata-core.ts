@@ -1,6 +1,6 @@
 // Generated from core/kata-core.ts; edit there.
 import { decidePlanParent, explicitParent, isExplicitParent, namesPlanParent } from "./plan-parent";
-import { createInboxFollower, knownProjectHead, trustedInbox, type InboxFollower, type LiveInbox } from "./inbox";
+import { createInboxFollower, escapeMarkup, knownProjectHead, trustedInbox, type InboxFollower, type LiveInbox } from "./inbox";
 import { createDelegates, FINAL, heldByDelegate as heldBy, isUntracked, nameOf, Refusal, teammateFor, type DelegateAssignment, type DelegateStore, type Refused, type Reservation, type SavedDelegate, type Who } from "./delegates";
 import { createSettlement, MAX_FAILURES, openChildren, type PendingClose, type SettlementSnapshot } from "./settlement";
 import { createKata, debugTo, type CORE_ENV, isKataCode, refGuardOff, isUnusable, KataError, NO_JOB, waitAtMost, type Batch, type Exec, type Job, type PathOps, type Platform, type Timers } from "./kata-cli";
@@ -433,7 +433,7 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 	let progressed = true;
 	// What one session's prompt reads from Kata, kept between turns. A core serves the lead and every delegate running in its
 	// process, so each has its own: the lead's by session id ("" when the host gives none), a delegate's by delegate id.
-	type PromptReads = { cwd: string; contract?: string; inbox?: string; address?: string; pending?: Promise<void>; inboxPending?: Promise<void>; inboxNext?: Promise<void>; personInbox?: boolean };
+	type PromptReads = { cwd: string; contract?: string; inbox?: string; address?: string; pending?: Promise<void>; inboxPending?: Promise<void>; inboxNext?: Promise<void>; personInbox?: boolean; delivered?: string; polledAt?: number };
 	const leadReads = new Map<string, PromptReads>();
 	const delegateReads = new Map<string, PromptReads>();
 	const leadKey = (id: string | undefined) => id ?? "";
@@ -2235,8 +2235,7 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 	// waits for a read that began after it was made, so a request sent before a turn reaches that turn. A read slower
 	// than the caller's budget keeps running and lands in the cache for the next turn. `inbox: false` leaves the
 	// inbox to a caller that keeps it current another way.
-	function warm(ctx: HostContext, cwd = ctx.cwd, inbox = true) {
-		const job = NO_JOB;
+	function promptEntry(ctx: HostContext, cwd: string) {
 		// Which reads this context gets: the lead's, a delegate's own, or (a non-main context with no record, such as omp's
 		// advisor, which shares the lead's session id) the lead's contract and no inbox.
 		const record = !main(ctx) ? host.delegateStore.of(ctx) : undefined;
@@ -2250,7 +2249,13 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 			const leadEntry = leadReads.get(leadKey(currentId));
 			reads.set(key, entry = { cwd: folder, contract: record && leadEntry?.cwd === folder ? leadEntry.contract : undefined });
 		}
-		if (!entry.pending && !entry.contract) {
+		return { entry, record };
+	}
+
+	function warm(ctx: HostContext, cwd = ctx.cwd, inbox = true, contract = true) {
+		const job = NO_JOB;
+		const { entry, record } = promptEntry(ctx, cwd);
+		if (contract && !entry.pending && !entry.contract) {
 			entry.pending = (async () => {
 				if (!await probe(job, cwd)) return;
 				// Exactly these arguments: some Kata builds print nothing for any other form.
@@ -2285,6 +2290,7 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 	// no trusted request removes the section. `ref` picks the actor's project; `addressFor` names the inbox from that actor.
 	function readInbox(entry: PromptReads, job: Job, cwd: string, ref: string | undefined, addressFor: (actor: string) => string): Promise<void> {
 		const read = (): Promise<void> => {
+			entry.polledAt = performance.now();
 			const running: Promise<void> = (async () => {
 				const mine = await actor(job, cwd, ref);
 				const address = entry.address = addressFor(mine);
@@ -2565,6 +2571,7 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 					if (entry.contract) sections.contract = entry.contract;
 					const inbox = main(ctx) && liveInbox !== undefined ? liveInbox : entry.inbox;
 					if (inbox && turnReads.showsInbox) sections.inbox = inbox;
+					if (sections.inbox) entry.delivered = sections.inbox;
 				}
 				const record = turnReads?.record ?? (!main(ctx) && !context ? host.delegateStore.of(ctx) : undefined);
 				const assigned = record ? delegates.assignment(ctx) : undefined;
@@ -2578,6 +2585,24 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 			},
 		},
 		tools: {
+			// Return a ready change immediately and start a due read for a later result.
+			inbox(ctx: HostContext, shown?: string): string | undefined {
+				if (main(ctx) && liveInbox !== undefined) return undefined;
+				if (!main(ctx) && !host.delegateStore.of(ctx)) return undefined;
+				const cwd = delegates.assignment(ctx)?.workspace || ctx.cwd;
+				const { entry } = promptEntry(ctx, cwd);
+				const inbox = entry.inbox ?? "";
+				let notice: string | undefined;
+				if (inbox !== (entry.delivered ?? "")) {
+					entry.delivered = inbox;
+					notice = inbox && shown !== undefined && inbox === escapeMarkup(shown.replace(/\n$/, "")) ? undefined : tagged("inbox", inbox || "The Kata inbox is now empty: the requests shown earlier were handled or withdrawn, so they no longer need action.");
+				}
+				const raw = setting("KATA_INBOX_POLL_SECONDS");
+				const seconds = raw?.trim() ? Number(raw) : NaN;
+				const interval = Number.isFinite(seconds) && seconds >= 0 ? seconds * 1000 : 15000;
+				if (!entry.inboxPending && (entry.polledAt === undefined || performance.now() - entry.polledAt >= interval)) void warm(ctx, cwd, true, false);
+				return notice;
+			},
 			// A tool is about to run. `startsChild`: it may start an agent that inherits this session's plan parent, so the parent is established first.
 			async call(ctx: HostContext, call: { startsChild?: boolean } = {}): Promise<Lead> {
 				see(ctx);
