@@ -56,8 +56,6 @@ interface CoreHost {
 	liveInbox?: LiveInbox;
 }
 interface CoreOptions {
-	// The host can attach a guard warning to its corresponding result.
-	warn?: true;
 	namespace: string;
 	executable: string;
 	// Environment variable names (without $) a shell command may use for the executable.
@@ -2072,6 +2070,7 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 	function refGuard(ctx: HostContext, call: { tool: string; input: unknown; id?: string }, also: MoreRefs = () => []): Promise<string | undefined> {
 		const mode = refGuardMode(setting("KATA_REF_GUARD"));
 		if (mode === "off") return Promise.resolve(undefined);
+		const warnId = mode === "warn" ? call.id : undefined;
 		return bounded((async () => {
 			const cwd = ctx.cwd ?? platform.cwd();
 			const workspaces = await Promise.all([...new Set([cwd, plan.workspace])].map(root => canonicalPath(platform, ".", root)));
@@ -2092,9 +2091,12 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 				read: file => platform.readFile(file),
 			});
 			if (!found.length) return undefined;
-			return `Refused: this ${call.tool} call puts ${found.join(", ")} into the repository. Kata refs only resolve in the local tracker, so code, comments, tests, docs and commit messages should describe the behaviour instead. Rewrite it without the ref and retry. To turn this check off, set KATA_REF_GUARD=off.`;
+			const refs = found.join(", "), why = "Kata refs only resolve in the local tracker, so code, comments, tests, docs and commit messages should describe the behaviour instead.";
+			return warnId
+				? `This ${call.tool} call asked to put ${refs} into the repository. ${why} To turn this check off, set KATA_REF_GUARD=off.`
+				: `Refused: this ${call.tool} call puts ${refs} into the repository. ${why} Rewrite it without the ref and retry. To turn this check off, set KATA_REF_GUARD=off.`;
 		})(), REF_GUARD_MS).then(reason => {
-			if (reason && mode === "warn" && options.warn && call.id) { warnings.set(call.id, reason.replace(/^Refused: this (.*?) call puts/, "This $1 call ran; it asked to put").replace(" Rewrite it without the ref and retry.", "")); return undefined; }
+			if (reason && warnId) { warnings.set(warnId, reason); return undefined; }
 			return reason;
 		});
 	}
