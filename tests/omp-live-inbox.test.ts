@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import { eventually, realKata, settle, unique, until } from "./kata-fixture";
+import { eventually, inboxChildren, realKata, settle, unique, until } from "./kata-fixture";
 import { ompHost } from "./omp-host";
 import { TRANSCRIPT_ENV } from "../core/kata-cli";
 
@@ -8,7 +8,7 @@ import { TRANSCRIPT_ENV } from "../core/kata-cli";
 const store = realKata({ prefix: "live", author: "v2-builder", project: "omp-v2-live", adopt: true });
 const { scratch, cwd, run, kata } = store;
 const issue = () => store.issue(`Live inbox ${unique()}`);
-const children = () => Bun.spawnSync(["pgrep", "-f", `events --tail --json --workspace ${cwd}`]).stdout.toString().split("\n").filter(Boolean);
+const children = () => inboxChildren(cwd);
 
 function host(options: { agent?: object; sessionFile?: string } = {}) {
 	const sid = `live-${unique()}`, sent: any[][] = [];

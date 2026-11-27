@@ -1,10 +1,10 @@
 import { afterEach, expect, test } from "bun:test";
-import { settle, until } from "./kata-fixture";
+import { inboxChildren, settle, until } from "./kata-fixture";
 import { piFixture } from "./pi-fixture";
 
 const { cwd, host, issue, kata, nativeKey, globalRegistry, asChild, down } = piFixture({ adopt: true });
 const apps: any[] = [];
-const children = () => Bun.spawnSync(["pgrep", "-f", `events --tail --json --workspace ${cwd}`]).stdout.toString().split("\n").filter(Boolean);
+const children = () => inboxChildren(cwd);
 async function open(address: string, options: any = {}) {
   process.env.KATA_INBOX_USER = address;
   const app = await host(options); apps.push(app);
