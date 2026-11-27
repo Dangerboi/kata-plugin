@@ -1,4 +1,5 @@
 import { expect, test } from "bun:test";
+import path from "node:path";
 import { savedSnapshot } from "../core/kata-core";
 import { claudeKata, entering, PROJECT, type ClaudeHost } from "./claude-fixture";
 import { EVIDENCE, eventually, holdKata, holdNext, MESSAGE, quote } from "./kata-fixture";
@@ -151,6 +152,14 @@ test("the contract section is added only when the plugin option asks for it", as
 	await on.start();
 	expect((await on.prompt()).context).toHaveLength(1);
 	expect((await on.prompt()).context).toBeUndefined();
+});
+
+test("contractSource option overrides the environment when contract is enabled", async () => {
+	const option = path.join(cwd, "option-contract.md"), fallback = path.join(cwd, "env-contract.md");
+	const h = host({ options: { kataExecutable: binary, contract: true, contractSource: option }, env: { KATA_CONTRACT_SOURCE: fallback } });
+	await h.start();
+	await h.prompt();
+	expect(h.calls.find((call: any) => call.argv.includes("agent-contract-hook"))?.argv).toContain(option);
 });
 
 test("stop reminds of open tasks three times at most, only after progress and not after a question", async () => {

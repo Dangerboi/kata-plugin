@@ -24,6 +24,11 @@
       "description": "Add the Kata contract and the inbox to each prompt from this plugin. Leave off when `kata agent-hook install claude` is set up: it owns both, and with both on the model reads the contract twice.",
       "default": false
     },
+    "contractSource": {
+      "type": "string",
+      "title": "Kata contract source",
+      "description": "A file whose text replaces the Kata contract. Applies only with `contract` on. A relative path is read from the session folder. Blank: KATA_CONTRACT_SOURCE, else Kata's built-in contract. A file that does not exist gets one warning and the built-in contract."
+    },
     "kataExecutable": {
       "type": "string",
       "title": "Kata executable",

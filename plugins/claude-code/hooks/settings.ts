@@ -21,6 +21,7 @@ export async function readEnv($: EngineInterface): Promise<Map<string, string>> 
 	note("KATA_ATTENTION_HOST", await $.env.get("KATA_ATTENTION_HOST"));
 	note("KATA_CLOSE_TRANSCRIPT_ENABLED", await $.env.get("KATA_CLOSE_TRANSCRIPT_ENABLED"));
 	note("KATA_REF_GUARD", await $.env.get("KATA_REF_GUARD"));
+	note("KATA_CONTRACT_SOURCE", await $.env.get("KATA_CONTRACT_SOURCE"));
 	note("HOME", await $.env.get("HOME"));
 	note("USER", await $.env.get("USER"));
 	note("KATA_CLAUDE_EXECUTABLE", await $.env.get("KATA_CLAUDE_EXECUTABLE"));
@@ -38,6 +39,8 @@ export interface Settings {
 	liveInbox: boolean;
 	// Refuse writes and commits that put a Kata ref into the repository. Off: the option or KATA_REF_GUARD is `off` or `0`.
 	refGuard: boolean;
+	// A file whose text replaces Kata's contract; blank leaves KATA_CONTRACT_SOURCE to the core.
+	contractSource?: string;
 }
 
 export const EXECUTABLE_VARS = ["KATA_CLAUDE_EXECUTABLE"];
@@ -49,6 +52,7 @@ export function resolveSettings(options: Record<string, unknown> | undefined, en
 		debugFile: text(options?.debugFile) ?? env.get("KATA_CLAUDE_DEBUG"),
 		contract: options?.contract === true,
 		liveInbox: options?.liveInbox !== false && env.get("KATA_CLAUDE_LIVE_INBOX") !== "0",
-		refGuard: options?.refGuard !== false && !refGuardOff(env.get("KATA_REF_GUARD"))
+		refGuard: options?.refGuard !== false && !refGuardOff(env.get("KATA_REF_GUARD")),
+		contractSource: text(options?.contractSource)
 	};
 }
