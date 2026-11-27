@@ -1,12 +1,8 @@
-import { afterEach, beforeEach, expect, test } from "bun:test";
+import { expect, test } from "bun:test";
 import { realpathSync } from "node:fs";
 import { eventually } from "./kata-fixture";
 import { piFixture } from "./pi-fixture";
 const pi = piFixture();
-const envKeys = ["KATA_INBOX_POLL_SECONDS", "KATA_INBOX_USER", "KATA_PI_PARENT", "KATA_TEAMMATE"] as const;
-let previous: (string | undefined)[];
-beforeEach(() => { previous = envKeys.map(key => process.env[key]); });
-afterEach(() => { envKeys.forEach((key, i) => previous[i] === undefined ? delete process.env[key] : process.env[key] = previous[i]); });
 
 test("pi child appends the inbox while preserving structured content", async () => {
   process.env.KATA_INBOX_USER = "pi-builder/lead-result";
@@ -32,8 +28,6 @@ test("pi child appends the inbox while preserving structured content", async () 
   expect(delivered.content[1].text).toContain("<kata_inbox>");
   expect(delivered.additionalContext).toBeUndefined();
 });
-
-
 
 test("a pi custom task tool carries a mid-run request", async () => {
   process.env.KATA_INBOX_USER = "pi-builder/review-task";
