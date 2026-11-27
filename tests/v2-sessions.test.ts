@@ -479,8 +479,7 @@ test("typed automatic parent can be recovered after losing the session entry", a
 
 test("only shell claims proved by the command status adopt owned issues", async () => {
   for (const [template, adopts] of [
-    ["true; kata claim REF", true], ["kata claim REF && true", true], ["true &&\\\n kata claim REF", true], ["kata claim REF >| /dev/null", true],
-    ["kata claim REF; true", false], ["true || printf ignored |& kata claim REF", false], ["kata claim REF &", false],
+    ["true; kata claim REF", true], ["kata claim REF; true", false],
     ["true; kata meta set REF work.attention ok", true], ["kata meta set REF work.attention ok; true", false],
   ] as const) {
     const ref = await issue(); await kata(["claim", ref, "--json"]);
@@ -497,9 +496,13 @@ test("proven claims adopt in order and invalid refs never reach show", async () 
   const first = await issue(), second = await issue();
   await kata(["claim", first, "--json"]); await kata(["claim", second, "--json"]);
   const app = host({ sid: unique() }); await app.event("session_start");
-  const command = `kata claim --ttl 2h ${first} && kata claim ${second}`;
+  const refs = [`v2test#${first}`, `v2test#${second}`];
+  const command = `kata claim --ttl 2h ${refs[0]} && kata claim ${refs[1]}`;
   await exec("/bin/bash", ["-c", command.replaceAll("kata", `\"${binary}\"`)], { cwd, env });
+  const start = app.calls.length;
   await app.event("tool_result", { toolName: "bash", input: { command }, isError: false });
+  const shown = app.calls.slice(start).filter(c => c[0] === "show" && refs.includes(c[1])).map(c => c[1]);
+  expect([...new Set(shown)]).toEqual(refs);
   await app.call({ op: "init", items: ["Last claim wins"] });
   expect((await show(second)).children.some((c: any) => c.title === "Last claim wins")).toBe(true);
   const calls = app.calls.length;

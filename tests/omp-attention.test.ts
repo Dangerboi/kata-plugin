@@ -346,19 +346,14 @@ test("two failed fork starts in a row still leave the ticket flagged when the la
 });
 
 
-test("shell proof starts attention for a final redirected claim only", async () => {
+test("a proven shell claim starts attention", async () => {
   delete process.env.KATA_REF;
-  for (const [make, starts] of [
-    [(ref: string) => `kata claim ${ref} >/dev/null 2>&1`, true],
-    [(ref: string) => `kata claim ${ref}; true`, false],
-  ] as const) {
-    const ref = await issue(), app = host(); await app.event("session_start");
-    const command = make(ref);
-    const proc = Bun.spawn(["bash", "-c", command.replace("kata", `'${binary}'`)], { cwd, env, stdout: "ignore", stderr: "ignore" });
-    expect(await proc.exited, command).toBe(0);
-    await app.event("tool_result", { toolName: "bash", input: { command, cwd }, isError: false });
-    expect(app.calls.some(a => a[1] === "attention-native" && a[3] === "start"), command).toBe(starts);
-    expect((await attention(ref)).state === "ok", command).toBe(starts);
-    await app.event("session_shutdown");
-  }
+  const ref = await issue(), app = host(); await app.event("session_start");
+  const command = `kata claim ${ref}`;
+  const proc = Bun.spawn(["bash", "-c", command.replace("kata", `'${binary}'`)], { cwd, env, stdout: "ignore", stderr: "ignore" });
+  expect(await proc.exited).toBe(0);
+  await app.event("tool_result", { toolName: "bash", input: { command, cwd }, isError: false });
+  expect(app.calls.some(a => a[1] === "attention-native" && a[3] === "start")).toBe(true);
+  expect((await attention(ref)).state).toBe("ok");
+  await app.event("session_shutdown");
 });

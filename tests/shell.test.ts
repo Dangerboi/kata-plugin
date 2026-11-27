@@ -12,6 +12,7 @@ assertIsolated();
 test("only command positions are Kata invocations", () => {
   const command = `echo 'kata --as actor-b'; KATA_HOME=/tmp/store kata claim abc && command '/opt/homebrew/bin/kata' list`;
   expect(kataCommands(command).map(c => c.words.map(w => w.value))).toEqual([["claim", "abc"], ["list"]]);
+  expect(shellOptions(coreCommands(nodePlatform.path, "kata claim --ttl 2h abcd")[0].words).args).toEqual(["claim", "abcd"]);
 });
 test("quoted heredoc text is never a Kata command", () => {
   const command = "cat <<'DOC'\nkata --as fake claim xyz\nDOC\nkata list";
@@ -70,7 +71,7 @@ test("claim positions prove success only through a top-level && suffix", () => {
     ["kata claim abcd >| /dev/null", true], ["kata claim abcd 2>| /dev/null", true], ["true &&\\\n kata claim abcd", true], ["true ||\\\n kata claim abcd", false],
     ["kata claim abcd 2>&1", true], ["kata claim abcd >/dev/null 2>&1", true], ["kata claim abcd &>/dev/null", true],
     ["kata claim abcd >&2", true], ["kata claim abcd <&0", true], ["kata claim abcd && echo ok 2>&1", true],
-    ["kata claim abcd && (( $(kata show abcd) + 1 ))", true], ["kata claim abcd && echo $(date)", true], ["kata claim abcd && (true)", true], ["kata claim abcd && echo $(date) && true", true], ["kata claim abcd && echo $(date) || true", false], ["kata claim abcd && (true) &", false], ["kata claim abcd; (true)", false],
+    ["kata claim abcd && echo $(date)", true], ["kata claim abcd && (true)", true], ["kata claim abcd && echo $(date) && true", true], ["kata claim abcd && echo $(date) || true", false], ["kata claim abcd && (true) &", false], ["kata claim abcd; (true)", false],
     ["kata claim abcd && (( 1 || 0 ))", true], ["kata claim abcd && (( 1 & 1 ))", true], ["kata claim abcd; (( 1 ))", false], ["kata claim abcd && (( 1 ))", true], ["kata claim abcd;", true], ["kata claim abcd\n", true], ["kata claim abcd; # done\n", true],
     ["kata claim abcd --comment '!'", true], ["((kata claim abcd) && echo)", false], ["(kata claim abcd)", false], ["{ echo hi; kata claim abcd; }", false],
     ["if true; then kata claim abcd; fi", false], ["while true; do kata claim abcd; done", false],
@@ -82,17 +83,12 @@ test("claim positions prove success only through a top-level && suffix", () => {
   }
 });
 
-test("arithmetic shifts and CRLF leave later Kata commands visible", () => {
+test("arithmetic, substitutions and CRLF keep executable commands visible", () => {
   for (const command of ["(( x << 1 ))\nkata claim abcd", "for (( i = 1; i < 9; i <<= 1 )); do echo x; done\nkata claim abcd", "echo x\r\nkata claim abcd"]) {
     expect(coreCommands(nodePlatform.path, command).map(c => shellOptions(c.words).args)).toEqual([["claim", "abcd"]]);
   }
   expect(coreCommands(nodePlatform.path, "((unterminated\nkata claim abcd").map(c => shellOptions(c.words).args)).toEqual([["claim", "abcd"]]);
-  expect(delegateCommand(nodePlatform.path, "(( x << 1 ))\nkata claim abcd", "kata", [], "worker")).toContain("kata --teammate 'worker' claim abcd");
-  expect(shellOptions(coreCommands(nodePlatform.path, "kata claim --ttl 2h abcd")[0].words).args).toEqual(["claim", "abcd"]);
-});
 
-
-test("arithmetic substitutions retain executable commands and heredoc data", () => {
   const input = "(( $(kata claim abcd >/dev/null; printf 1) ))";
   const invocations = coreCommands(nodePlatform.path, input);
   expect(invocations.map(c => [shellOptions(c.words).args[0], c.proven])).toEqual([["claim", false]]);
@@ -105,10 +101,6 @@ test("arithmetic substitutions retain executable commands and heredoc data", () 
   expect(coreCommands(nodePlatform.path, "(( (x << 2) ))\nkata claim abcd")).toHaveLength(1);
   const nested = coreCommands(nodePlatform.path, "kata claim abcd && (( $(kata show abcd) + 1 ))");
   expect(nested.map(c => c.proven)).toEqual([true, false]);
-});
-
-
-test("nested arithmetic keeps later delegate commands visible", () => {
   const command = "(( $(printf %s $((1 << 1))) ))\nkata claim abcd && kata claim efgh";
   expect(coreCommands(nodePlatform.path, command).map(c => shellOptions(c.words).args)).toEqual([["claim", "abcd"], ["claim", "efgh"]]);
   expect(delegateCommand(nodePlatform.path, command, "kata", [], "worker").match(/--teammate 'worker'/g)).toHaveLength(2);
