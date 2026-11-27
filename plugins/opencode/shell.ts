@@ -18,16 +18,17 @@ type ShellWord = { value: string; start: number; end: number };
 type Invocation = { executable: ShellWord; words: ShellWord[]; assignments: ShellWord[]; proven: boolean };
 export const ASSIGNMENT = /^[A-Za-z_][A-Za-z0-9_]*=/;
 // The words of one simple command, and the bodies of the heredocs fed to it.
-type Segment = { words: ShellWord[]; bodies: string[]; end: string; depth: number; arithmetic: boolean };
+type Segment = { words: ShellWord[]; bodies: string[]; end: string; depth: number };
 // Words that may stand before a command without being it.
 export const PREFIXES = ["if", "then", "elif", "do", "else", "!", "command", "env", "time"];
 // Splits a command at `;`, `&`, `|`, parentheses and newlines. Quoted arguments and heredoc bodies are data (a body belongs to the
 // command whose line holds its `<<`); this lexer never infers whether a test/commit command proves completion.
 export function commandSegments(command: string): Segment[] {
-	const segments: Segment[] = [{ words: [], bodies: [], end: "", depth: 0, arithmetic: false }];
+	const segments: Segment[] = [{ words: [], bodies: [], end: "", depth: 0 }];
 	let depth = 0;
-	const split = (operator: string) => { segments.at(-1)!.end = operator; segments.push({ words: [], bodies: [], end: "", depth, arithmetic: false }); };
-	let i = 0, heredoc: string | undefined, owner: Segment | undefined, wantDelimiter = false, hereString = false;
+	const split = (operator: string) => { segments.at(-1)!.end = operator; segments.push({ words: [], bodies: [], end: "", depth }); };
+	let i = 0, arithEnd = -1, substAt = 0, heredoc: string | undefined, owner: Segment | undefined, wantDelimiter = false, hereString = false;
+	const continued = (at: number) => command.slice(at, at + 2) === "\\\n" ? 2 : 0;
 	while (i < command.length) {
 		if (command[i] === "\n" && heredoc) {
 			const end = command.indexOf(`\n${heredoc}`, i);
@@ -37,12 +38,14 @@ export function commandSegments(command: string): Segment[] {
 			if (i < 0) break;
 			heredoc = undefined;
 		}
+		if (continued(i)) { i += 2; continue; }
 		if (/\s/.test(command[i])) {
-			if (command[i] === "\n" && !(segments.at(-1)!.words.length === 0 && !segments.at(-1)!.arithmetic && ["&&", "||", "|", "|&"].includes(segments.at(-2)?.end ?? ""))) split("\n");
+			if (command[i] === "\n" && segments.at(-1)!.words.length) split("\n");
 			i++; continue;
 		}
 		if (command[i] === "#") { const end = command.indexOf("\n", i); if (end < 0) break; i = end; continue; }
-		if (command.slice(i, i + 2) === "((") {
+		if (i === arithEnd) { i += 2; arithEnd = -1; substAt = 0; continue; }
+		if (arithEnd < 0 && command.slice(i, i + 2) === "((") {
 			// A double opening parenthesis can also start nested subshells. Skip only a complete arithmetic command.
 			let at = i + 2, nested = 0;
 			while (at < command.length) {
@@ -53,38 +56,29 @@ export function commandSegments(command: string): Segment[] {
 				}
 				at++;
 			}
-			if (command.slice(at, at + 2) === "))") { segments.at(-1)!.arithmetic = true; i = at + 2; continue; }
+			if (command.slice(at, at + 2) === "))") { arithEnd = at; i += 2; continue; }
 		}
-		// Ampersands in descriptor duplication and combined output redirection are not shell control operators.
-		if (command[i] === "&") {
-			const previous = segments.at(-1)!.words.at(-1);
-			let redirection = false, quoted = "";
-			if (previous?.end === i) for (let at = previous.start; at < i; at++) {
-				const char = command[at];
-				if (char === "\\" && quoted !== "'") { at++; redirection = false; continue; }
-				if (char === quoted) { quoted = ""; redirection = false; continue; }
-				if (!quoted && (char === "'" || char === '"')) { quoted = char; redirection = false; continue; }
-				redirection = !quoted && "<>".includes(char);
-			}
-			if (command[i + 1] === ">" || redirection) { i++; continue; }
-		}
+		if (command[i] === "&" && command[i + 1] === ">") { i++; continue; }
 
 		if (";&|()".includes(command[i])) {
 			const char = command[i], operator = (char === "&" && command[i + 1] === "&") || (char === "|" && "|&".includes(command[i + 1] || "\0")) ? char + command[i + 1] : char;
-			if (char === "(") depth++;
-			if (char === ")") depth = Math.max(0, depth - 1);
+			if (char === "(") { depth++; if (arithEnd >= 0 && !substAt && command[i - 1] === "$") substAt = depth; }
+			if (char === ")") { depth = Math.max(0, depth - 1); if (substAt && depth < substAt) substAt = 0; }
 			split(operator); i += operator.length; continue;
 		}
-		if (command.slice(i, i + 3) === "<<<") { i += 3; hereString = true; continue; }
-		if (command.slice(i, i + 2) === "<<") { i += command[i + 2] === "-" ? 3 : 2; wantDelimiter = true; continue; }
+		if ((arithEnd < 0 || substAt) && command.slice(i, i + 3) === "<<<") { i += 3; hereString = true; continue; }
+		if ((arithEnd < 0 || substAt) && command.slice(i, i + 2) === "<<") { i += command[i + 2] === "-" ? 3 : 2; wantDelimiter = true; continue; }
 		const start = i;
-		let value = "", open = "";
+		let value = "", open = "", redirectAt = -1;
 		while (i < command.length) {
 			const char = command[i];
+			if (open !== "'" && continued(i)) { i += 2; continue; }
+			if (!open && (char === "&" || char === "|") && redirectAt === i - 1) { value += char; i++; continue; }
 			if (!open && /[\s;&|()]/.test(char)) break;
 			if (char === "\\" && open !== "'") { value += command[i + 1] || ""; i += 2; continue; }
 			if (char === open) { open = ""; i++; continue; }
 			if (!open && (char === "'" || char === '"')) { open = char; i++; continue; }
+			if (!open && (char === "<" || char === ">")) redirectAt = i;
 			value += char; i++;
 		}
 		// A here-string is the next word, fed to the command as its input.
@@ -99,12 +93,14 @@ export function commandSegments(command: string): Segment[] {
 export function kataCommands(path: Pick<PathOps, "basename">, command: string, configuredExecutable = "kata", executableVars: readonly string[] = []): Invocation[] {
 	const commands: Invocation[] = [];
 	const segments = commandSegments(command);
-	let last = segments.length - 1;
-	while (last >= 0 && !segments[last].words.length && !segments[last].arithmetic) last--;
 	const suffix: boolean[] = [];
-	for (let index = last; index >= 0; index--) {
-		const end = segments[index].end;
-		suffix[index] = index === last ? ["", ";", "\n"].includes(end) : end === "&&" && suffix[index + 1];
+	let next: boolean | undefined;
+	for (let index = segments.length - 1; index >= 0; index--) {
+		const part = segments[index];
+		if (part.depth > 0) continue;
+		if (next === undefined && !part.words.length && ["", ";", "\n"].includes(part.end)) continue;
+		next = part.end === "(" ? next ?? true : next === undefined ? ["", ";", "\n"].includes(part.end) : part.end === "&&" && next;
+		suffix[index] = next;
 	}
 	let blockDepth = 0;
 	for (let index = 0; index < segments.length; index++) {
