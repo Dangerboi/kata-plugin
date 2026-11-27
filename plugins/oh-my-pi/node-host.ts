@@ -1,5 +1,5 @@
 // Generated from core/node-host.ts; edit there.
-import { execFile } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { appendFileSync, realpathSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
@@ -47,4 +47,13 @@ export function execKata(file: string, args: string[], options: { cwd: string; t
 				resolve({ code: typeof failure.code === "number" ? failure.code : 1, stdout, stderr, killed: failure.name === "AbortError" || !!failure.killed });
 			});
 	});
+}
+
+// A shutdown hook must survive the host exiting and must never keep it alive.
+export function spawnDetached(file: string, args: string[], options: { cwd: string; env?: Record<string, string> }): void {
+	try {
+		const child = spawn(file, args, { cwd: options.cwd, env: { ...process.env, ...options.env }, detached: true, stdio: "ignore" });
+		child.on("error", () => {});
+		child.unref();
+	} catch { /* The host is shutting down; an unavailable executable cannot block it. */ }
 }
