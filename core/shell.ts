@@ -17,15 +17,15 @@ type ShellWord = { value: string; start: number; end: number };
 type Invocation = { executable: ShellWord; words: ShellWord[]; assignments: ShellWord[]; proven: boolean };
 export const ASSIGNMENT = /^[A-Za-z_][A-Za-z0-9_]*=/;
 // The words of one simple command, and the bodies of the heredocs fed to it.
-type Segment = { words: ShellWord[]; bodies: string[]; end: string; depth: number };
+type Segment = { words: ShellWord[]; bodies: string[]; end: string; depth: number; arithmetic: boolean };
 // Words that may stand before a command without being it.
 export const PREFIXES = ["if", "then", "elif", "do", "else", "!", "command", "env", "time"];
 // Splits a command at `;`, `&`, `|`, parentheses and newlines. Quoted arguments and heredoc bodies are data (a body belongs to the
 // command whose line holds its `<<`); this lexer never infers whether a test/commit command proves completion.
 export function commandSegments(command: string): Segment[] {
-	const segments: Segment[] = [{ words: [], bodies: [], end: "", depth: 0 }];
+	const segments: Segment[] = [{ words: [], bodies: [], end: "", depth: 0, arithmetic: false }];
 	let depth = 0;
-	const split = (operator: string) => { segments.at(-1)!.end = operator; segments.push({ words: [], bodies: [], end: "", depth }); };
+	const split = (operator: string) => { segments.at(-1)!.end = operator; segments.push({ words: [], bodies: [], end: "", depth, arithmetic: false }); };
 	let i = 0, heredoc: string | undefined, owner: Segment | undefined, wantDelimiter = false, hereString = false;
 	while (i < command.length) {
 		if (command[i] === "\n" && heredoc) {
@@ -37,21 +37,39 @@ export function commandSegments(command: string): Segment[] {
 			heredoc = undefined;
 		}
 		if (/\s/.test(command[i])) {
-			if (command[i] === "\n" && !(segments.at(-1)!.words.length === 0 && ["&&", "||", "|"].includes(segments.at(-2)?.end ?? ""))) split("\n");
+			if (command[i] === "\n" && !(segments.at(-1)!.words.length === 0 && !segments.at(-1)!.arithmetic && ["&&", "||", "|", "|&"].includes(segments.at(-2)?.end ?? ""))) split("\n");
 			i++; continue;
 		}
 		if (command[i] === "#") { const end = command.indexOf("\n", i); if (end < 0) break; i = end; continue; }
 		if (command.slice(i, i + 2) === "((") {
-			let nesting = 1; i += 2;
-			while (i < command.length && nesting) {
-				if (command.slice(i, i + 2) === "((") { nesting++; i += 2; }
-				else if (command.slice(i, i + 2) === "))") { nesting--; i += 2; }
-				else i++;
+			// A double opening parenthesis can also start nested subshells. Skip only a complete arithmetic command.
+			let at = i + 2, nested = 0;
+			while (at < command.length) {
+				if (command[at] === "(") nested++;
+				else if (command[at] === ")") {
+					if (nested) nested--;
+					else break;
+				}
+				at++;
 			}
-			continue;
+			if (command.slice(at, at + 2) === "))") { segments.at(-1)!.arithmetic = true; i = at + 2; continue; }
 		}
+		// Ampersands in descriptor duplication and combined output redirection are not shell control operators.
+		if (command[i] === "&") {
+			const previous = segments.at(-1)!.words.at(-1);
+			let redirection = false, quoted = "";
+			if (previous?.end === i) for (let at = previous.start; at < i; at++) {
+				const char = command[at];
+				if (char === "\\" && quoted !== "'") { at++; redirection = false; continue; }
+				if (char === quoted) { quoted = ""; redirection = false; continue; }
+				if (!quoted && (char === "'" || char === '"')) { quoted = char; redirection = false; continue; }
+				redirection = !quoted && "<>".includes(char);
+			}
+			if (command[i + 1] === ">" || redirection) { i++; continue; }
+		}
+
 		if (";&|()".includes(command[i])) {
-			const char = command[i], operator = (char === "&" || char === "|") && command[i + 1] === char ? char + char : char;
+			const char = command[i], operator = (char === "&" && command[i + 1] === "&") || (char === "|" && "|&".includes(command[i + 1] || "\0")) ? char + command[i + 1] : char;
 			if (char === "(") depth++;
 			if (char === ")") depth = Math.max(0, depth - 1);
 			split(operator); i += operator.length; continue;
@@ -80,6 +98,13 @@ export function commandSegments(command: string): Segment[] {
 export function kataCommands(path: Pick<PathOps, "basename">, command: string, configuredExecutable = "kata", executableVars: readonly string[] = []): Invocation[] {
 	const commands: Invocation[] = [];
 	const segments = commandSegments(command);
+	let last = segments.length - 1;
+	while (last >= 0 && !segments[last].words.length && !segments[last].arithmetic) last--;
+	const suffix: boolean[] = [];
+	for (let index = last; index >= 0; index--) {
+		const end = segments[index].end;
+		suffix[index] = index === last ? ["", ";", "\n"].includes(end) : end === "&&" && suffix[index + 1];
+	}
 	let blockDepth = 0;
 	for (let index = 0; index < segments.length; index++) {
 		const { words: segment, depth } = segments[index];
@@ -89,11 +114,11 @@ export function kataCommands(path: Pick<PathOps, "basename">, command: string, c
 			else if (!["then", "do", "else", "elif"].includes(word.value)) break;
 		}
 		const before = index ? segments[index - 1].end : "";
-		const proven = !depth && !blockDepth && before !== "||" && before !== "|" && !segment.some(word => word.value === "!")
-			&& segments.slice(index).every((part, offset) => part.end === "&&" || (offset === segments.length - index - 1 && part.end === ""));
 		let j = 0;
 		while (j < segment.length && (ASSIGNMENT.test(segment[j].value) || PREFIXES.includes(segment[j].value))) j++;
 		const executable = segment[j];
+		const proven = !depth && !blockDepth && !["||", "|", "|&"].includes(before)
+			&& !segment.slice(0, j).some(word => word.value === "!") && suffix[index];
 		if (executable && (path.basename(executable.value) === "kata" || executable.value === configuredExecutable || executableVars.some(name => executable.value === `$${name}` || executable.value === `\${${name}}`))) commands.push({ executable, words: segment.slice(j + 1), assignments: segment.slice(0, j).filter(word => ASSIGNMENT.test(word.value)), proven });
 	}
 	return commands;

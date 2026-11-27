@@ -66,7 +66,11 @@ test("claim positions prove success only through a top-level && suffix", () => {
     ["kata claim abcd && kata show abcd", true], ["kata claim abcd && kata claim efgh", true],
     ["kata claim abcd; kata show abcd", false], ["kata claim abcd || true", false],
     ["true || kata claim abcd", false], ["true ||\n kata claim abcd", false], ["true |\n kata claim abcd", false], ["true &&\n kata claim abcd", true], ["kata claim abcd | tee log", false],
-    ["kata claim abcd &", false], ["(kata claim abcd)", false], ["{ echo hi; kata claim abcd; }", false],
+    ["kata claim abcd &", false], ["kata claim abcd \\>& true", false], ["kata claim abcd |& tee log", false], ["true || printf ignored |& kata claim abcd", false],
+    ["kata claim abcd 2>&1", true], ["kata claim abcd >/dev/null 2>&1", true], ["kata claim abcd &>/dev/null", true],
+    ["kata claim abcd >&2", true], ["kata claim abcd <&0", true], ["kata claim abcd && echo ok 2>&1", true],
+    ["kata claim abcd; (( 1 ))", false], ["kata claim abcd && (( 1 ))", true], ["kata claim abcd;", true], ["kata claim abcd\n", true], ["kata claim abcd; # done\n", true],
+    ["kata claim abcd --comment '!'", true], ["((kata claim abcd) && echo)", false], ["(kata claim abcd)", false], ["{ echo hi; kata claim abcd; }", false],
     ["if true; then kata claim abcd; fi", false], ["while true; do kata claim abcd; done", false],
     ["for x in a; do kata claim abcd; done", false], ["if true; then if true; then echo x; fi; kata claim abcd; fi", false], ["! kata claim abcd", false],
   ] as const) {
@@ -80,6 +84,7 @@ test("arithmetic shifts and CRLF leave later Kata commands visible", () => {
   for (const command of ["(( x << 1 ))\nkata claim abcd", "for (( i = 1; i < 9; i <<= 1 )); do echo x; done\nkata claim abcd", "echo x\r\nkata claim abcd"]) {
     expect(coreCommands(nodePlatform.path, command).map(c => shellOptions(c.words).args)).toEqual([["claim", "abcd"]]);
   }
+  expect(coreCommands(nodePlatform.path, "((unterminated\nkata claim abcd").map(c => shellOptions(c.words).args)).toEqual([["claim", "abcd"]]);
   expect(delegateCommand(nodePlatform.path, "(( x << 1 ))\nkata claim abcd", "kata", [], "worker")).toContain("kata --teammate 'worker' claim abcd");
   expect(shellOptions(coreCommands(nodePlatform.path, "kata claim --ttl 2h abcd")[0].words).args).toEqual(["claim", "abcd"]);
 });
