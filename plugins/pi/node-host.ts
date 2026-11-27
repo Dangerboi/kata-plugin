@@ -9,6 +9,11 @@ import { transcriptEnv, type ExecResult, type Platform } from "./kata-cli";
 // The Node implementations of what the core takes from its host. Only adapters that run on Node import this module:
 // the core itself never does.
 
+// An omp shell's session id belongs to its process, not a host launched from it.
+export function clearInheritedOmpSession(): void {
+	if (process.env.KATA_OMP_SHIM_DIR && process.env.KATA_OMP_SHIM_PID !== String(process.pid)) delete process.env.PI_SESSION_ID;
+}
+
 export const nodePlatform: Platform = {
 	env: { get: name => process.env[name], set(name, value) { if (value === undefined) delete process.env[name]; else process.env[name] = value; } },
 	cwd: () => process.cwd(),
