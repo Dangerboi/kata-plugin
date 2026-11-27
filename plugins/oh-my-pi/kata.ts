@@ -20,7 +20,7 @@ import { closeSync, openSync, readSync } from "node:fs";
 import { createInterface } from "node:readline";
 import { createKataCore, NATIVE_TODO_COMMANDS, PROMPT_TAGS, snapshotEntry, tagged } from "./kata-core";
 import { execKata, exportTranscriptSession, nodePlatform, sessionKey } from "./node-host";
-import { closeEnv, debugTo, NO_JOB, transcriptEnv } from "./kata-cli";
+import { closeEnv, debugTo, NO_JOB, transcriptEnv, waitAtMost } from "./kata-cli";
 import { delegateCommand, kataCommands as parseKataCommands } from "./shell";
 import { FINAL, isUntracked, Refusal, teammateFor } from "./delegates";
 import { textOf } from "./model";
@@ -445,8 +445,7 @@ export default function ompKata(pi: any) {
 		const record = ctx.agent?.kind === "sub" ? await recordOf(ctx) : undefined;
 		if (record) ranTool(record);
 		if (event.toolName === "bash") {
-			if (main(ctx)) { await leadPublish; await publish(ctx); }
-			else await publish(ctx, record);
+			await waitAtMost((async () => { if (main(ctx)) await leadPublish; await publish(ctx, record); })(), 1500, debug, nodePlatform);
 		}
 		const key = !isMainThread && ctx.agent?.kind === "sub" ? sessionKeyOf(ctx) : undefined;
 		const refused = await core.tools.guard(ctx, { tool: event.toolName, input: event.input }, () => key ? askRefs(key) : []);

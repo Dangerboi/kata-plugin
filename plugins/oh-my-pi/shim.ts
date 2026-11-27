@@ -1,4 +1,4 @@
-import { chmodSync, copyFileSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, readlinkSync, renameSync, rmdirSync, statSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, copyFileSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readlinkSync, renameSync, rmdirSync, statSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
@@ -97,6 +97,5 @@ export function writeIdentity(shim: Shim, id: string | undefined, vars: Record<s
 	if (!id || id.includes("/") || id === "." || id === "..") return;
 	const target = join(shim.dir, `${id}.env`);
 	const text = Object.entries(vars).map(([key, value]) => value === undefined ? `unset ${key}` : `export ${key}=${quote(value)}`).join("\n") + "\n";
-	try { if (readFileSync(target, "utf8") === text) return; } catch {}
 	const temp = `${target}.${process.pid}.tmp`; writeFileSync(temp, text, { mode: 0o600 }); renameSync(temp, target);
 }

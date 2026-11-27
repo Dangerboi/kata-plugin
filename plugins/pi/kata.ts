@@ -52,6 +52,8 @@ export default async function piKata(pi: ExtensionAPI) {
 	// OMP also discovers legacy pi manifests. Do not register a second todo
 	// tool there, or even ask its loader to resolve pi's TypeBox dependency.
 	if ((pi as any).zod) return;
+	// An omp shell's session id belongs to its process, not to the native Pi process it launched.
+	if (process.env.KATA_OMP_SHIM_DIR && process.env.KATA_OMP_SHIM_PID !== String(process.pid)) delete process.env.PI_SESSION_ID;
 	let inherited: PiParent | undefined;
 	try {
 		const marker = JSON.parse(process.env.KATA_PI_PARENT || "null");
