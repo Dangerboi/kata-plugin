@@ -140,7 +140,7 @@ export const NO_JOB: Job = {};
 export interface Kata {
 	// `workspace: false` leaves out `--workspace <cwd>`.
 	run(job: Job, args: string[], cwd: string, options?: { timeout?: number; workspace?: boolean }): Promise<string>;
-	show(job: Job, ref: string, cwd: string): Promise<KataShow>;
+	show(job: Job, ref: string, cwd: string, timeout?: number): Promise<KataShow>;
 	// The registered projects, read once per session and again with `fresh` (a project registered later).
 	projects(job: Job, cwd: string, fresh?: boolean): Promise<Project[]>;
 	// An unreadable list is empty, so no ref in prose is taken for a ticket.
@@ -244,7 +244,7 @@ export function createKata(env: {
 		return invoke(job, args, cwd, options);
 	}
 
-	const show = async (job: Job, ref: string, cwd: string): Promise<KataShow> => JSON.parse(await run(job, ["show", ref], cwd));
+	const show = async (job: Job, ref: string, cwd: string, timeout?: number): Promise<KataShow> => JSON.parse(await run(job, ["show", ref], cwd, { timeout }));
 
 	function projects(job: Job, cwd: string, fresh = false): Promise<Project[]> {
 		if (fresh || registered?.id !== env.session()) registered = undefined;
