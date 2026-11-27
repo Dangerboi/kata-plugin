@@ -6,7 +6,7 @@ import { createSettlement, MAX_FAILURES, openChildren, type PendingClose, type S
 import { createKata, debugTo, type CORE_ENV, isKataCode, refGuardOff, isUnusable, KataError, NO_JOB, waitAtMost, type Batch, type Exec, type Job, type PathOps, type Platform, type Timers } from "./kata-cli";
 import { createTicketCompletion } from "./autocomplete";
 import { offendingRefs } from "./ref-guard";
-import { kataCommands, quote, shellOptions } from "./shell";
+import { kataCommands, quote, quoteIfNeeded, shellOptions } from "./shell";
 import { closedTaskStatus, digest, FULL_ID_REF, hasLabel, heldBySession, heldMessage, itemTicket, NATIVE_WORDING, OPEN, PROOF_MIN, projectOf, proofProblem, QUALIFIED_REF_ONLY, qualifiedRef, SESSION_KEY, SHORT_ID_ONLY, sessionParentKeys, slug, tasksOf, textOf, TITLE_MAX, TODO_WORDING, WONTFIX_MIN, WORKING, type Binding, type Change, type KataIssue, type KataShow, type Plan, type Status, type Task, type ToolWording } from "./model";
 import { diffNativeList, nativeOpen, nativeTargets, type NativeItem, type NativePhase, type NativeStatus } from "./todo-list";
 
@@ -2230,7 +2230,7 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 			].join("\n");
 	}
 
-	const contractReason = (error: unknown) => escapeMarkup(((error as Error)?.message ?? String(error)).replace(/\s+/g, " ").trim().slice(0, 80) || "unknown error");
+	const contractReason = (error: unknown) => Array.from(((error as Error)?.message ?? String(error)).replace(/\s+/g, " ").trim()).slice(0, 80).join("") || "unknown error";
 
 	// The contract is fetched until one arrives non-empty: Kata 0.23.0 sends an empty one outside a `.kata.toml`
 	// folder, so a mid-session `kata init` takes effect on the next turn. The inbox is read on every call, and a call
@@ -2267,7 +2267,7 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 				debug(error);
 				if (isKataCode(error, "unsupported_version")) { entry.contractError = undefined; return; }
 				entry.contractError = contractReason(error);
-				if (!entry.contractWarned) { entry.contractWarned = true; entry.contractNotice = entry.contractError; }
+				if (!record && !entry.contractWarned) { entry.contractWarned = true; entry.contractNotice = entry.contractError; }
 			}).finally(() => { entry.pending = undefined; });
 		}
 		const user = setting("KATA_INBOX_USER");
@@ -2576,10 +2576,11 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 					const { entry } = turnReads;
 					if (entry.contract) sections.contract = entry.contract;
 					else if (entry.contractError) {
-						sections.contract = `Kata contract is unavailable (${entry.contractError}). Run \`kata quickstart --format contract\` before using kata.`;
+						const command = `${quoteIfNeeded(options.executable, /^[\w./-]+$/)} quickstart --format contract`;
+						sections.contract = `Kata contract is unavailable (${escapeMarkup(entry.contractError)}). Run \`${escapeMarkup(command)}\` before using kata.`;
 					}
 					const ui = uiOf(ctx);
-					if (main(ctx) && entry.contractNotice && ui?.notify) {
+					if (sid(currentCtx) === sid(ctx) && leadReads.get(leadKey(sid(ctx))) === entry && entry.contractNotice && ui?.notify) {
 						ui.notify(`Kata contract was unavailable (${entry.contractNotice}). Each prompt retries until it loads.`, "warning");
 						entry.contractNotice = undefined;
 					}
