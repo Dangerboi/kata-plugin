@@ -31,8 +31,10 @@ test("shutdown stops the follower", async () => {
   expect(await until(() => children().length === 0)).toBe(true);
 });
 
-for (const mode of ["print", "json", "rpc"]) test(`${mode} mode ${mode === "rpc" ? "starts a follower" : "keeps per-prompt reads"}`, async () => {
-  const app = await open(`pi-builder/live-${mode}`, { mode });
+for (const mode of ["print", "json", "rpc", "opt-out"]) test(`${mode} ${mode === "rpc" ? "starts a follower" : "keeps per-prompt reads"}`, async () => {
+  if (mode === "opt-out") process.env.KATA_PI_LIVE_INBOX = "0";
+  const options = mode === "opt-out" ? {} : { mode, ...(mode === "rpc" ? {} : { hasUI: false }) };
+  const app = await open(`pi-builder/live-${mode}`, options);
   if (mode === "rpc") expect(await until(() => children().length === 1)).toBe(true);
   else {
     await app.event("before_agent_start", { systemPromptOptions: { sections: {} } });
@@ -40,15 +42,6 @@ for (const mode of ["print", "json", "rpc"]) test(`${mode} mode ${mode === "rpc"
     await settle();
     expect(children()).toHaveLength(0);
   }
-});
-
-test("opt out leaves the per-prompt inbox in use", async () => {
-  process.env.KATA_PI_LIVE_INBOX = "0";
-  const app = await open("pi-builder/live-off");
-  await app.event("before_agent_start", { systemPromptOptions: { sections: {} } });
-  expect(await until(() => app.calls.some((a: string[]) => a[0] === "inbox"))).toBe(true);
-  await settle();
-  expect(children()).toHaveLength(0);
 });
 
 test("a native contract active at startup prevents a follower", async () => {
@@ -68,7 +61,7 @@ test("a child that cannot reach its parent workspace falls back to a live main s
   expect(await until(() => children().length === 1)).toBe(true);
 });
 
-test("a late native adapter suppresses delivery before the next prompt", async () => {
+test("a late native adapter suppresses delivery and stops the follower at the next prompt", async () => {
   const address = "pi-builder/live-native-delivery", app = await open(address);
   expect(await until(() => children().length === 1)).toBe(true);
   const ref = await issue("Native delivery suppression");
