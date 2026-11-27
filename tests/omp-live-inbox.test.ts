@@ -1,6 +1,6 @@
 import { afterEach, expect, test } from "bun:test";
 import { eventually, realKata, settle, unique, until } from "./kata-fixture";
-import { ompHost } from "./omp-host";
+import { ompHost, setPluginSettings } from "./omp-host";
 import { TRANSCRIPT_ENV } from "../core/kata-cli";
 
 // What the omp adapter wires around the session inbox module: when it follows live, the aside it delivers
@@ -26,7 +26,7 @@ const open = async (address: string, options: Parameters<typeof host>[0] = {}) =
 	await app.event("session_start");
 	return app;
 };
-afterEach(async () => { for (const app of apps.splice(0)) await app.event("session_shutdown"); });
+afterEach(async () => { for (const app of apps.splice(0)) await app.event("session_shutdown"); setPluginSettings(() => ({})); });
 
 test("a notify reaches the main session as an aside, the section is current without an inbox read, and a clear delivers nothing", async () => {
 	const address = "v2-builder/live-main";
@@ -96,7 +96,8 @@ test("a delegate starts no follower and keeps the per-turn section of its own ad
 	await kata(["notify", ref, "--to", address!, "--clear", "--json"]);
 });
 
-test("KATA_OMP_LIVE_INBOX=0 delivers nothing live and keeps the per-turn section", async () => {
+test("KATA_OMP_LIVE_INBOX=0 overrides stored true and keeps the per-turn section", async () => {
+	setPluginSettings(() => ({ liveInbox: true }));
 	process.env.KATA_OMP_LIVE_INBOX = "0";
 	const address = "v2-builder/live-off";
 	const app = await open(address);
