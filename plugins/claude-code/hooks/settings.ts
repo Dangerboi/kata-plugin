@@ -36,20 +36,19 @@ export interface Settings {
 	contract: boolean;
 	// Follow the session inbox live. Off: the inbox is read once per prompt, as for a subagent.
 	liveInbox: boolean;
-	// The option can turn the guard off; the environment also selects warnings.
-	refGuard: "block" | "warn" | "off";
+	// Refuse writes and commits that put a Kata ref into the repository. Off: the option or KATA_REF_GUARD is `off` or `0`.
+	refGuard: boolean;
 }
 
 export const EXECUTABLE_VARS = ["KATA_CLAUDE_EXECUTABLE"];
 
 export function resolveSettings(options: Record<string, unknown> | undefined, env: Map<string, string>): Settings {
 	const text = (value: unknown) => (typeof value === "string" && value.trim() ? value.trim() : undefined);
-	const refGuard = options?.refGuard === false ? "off" : refGuardMode(env.get("KATA_REF_GUARD"));
 	return {
 		executable: text(options?.kataExecutable) ?? env.get("KATA_CLAUDE_EXECUTABLE") ?? "kata",
 		debugFile: text(options?.debugFile) ?? env.get("KATA_CLAUDE_DEBUG"),
 		contract: options?.contract === true,
 		liveInbox: options?.liveInbox !== false && env.get("KATA_CLAUDE_LIVE_INBOX") !== "0",
-		refGuard
+		refGuard: options?.refGuard !== false && refGuardMode(env.get("KATA_REF_GUARD")) !== "off"
 	};
 }

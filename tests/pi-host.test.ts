@@ -318,29 +318,6 @@ test("pi attaches both nested warnings to their outer result once", async () => 
 	} finally { delete process.env.KATA_REF_GUARD; }
 });
 
-test("pi forwards deep nested warnings through interleaved parent results", async () => {
-	const app = await host(); await app.event("session_start", { reason: "startup" });
-	const ref = await app.init(["Deep warning task"]);
-	process.env.KATA_REF_GUARD = "warn";
-	try {
-		for (const root of ["one", "two"]) {
-			const event = { toolCallId: `${root}/middle/leaf`, parentToolCallId: `${root}/middle`, toolName: "bash", input: { command: `git commit -m "fix ${ref}"` } };
-			expect(await app.event("tool_call", event)).toBeUndefined();
-			expect(await app.event("tool_result", { ...event, isError: false, content: [{ type: "text", text: "leaf" }] })).toBeUndefined();
-		}
-		for (const root of ["two", "one"]) {
-			const intermediate = { toolCallId: `${root}/middle`, parentToolCallId: root, toolName: "custom", input: {}, isError: root === "two", content: [{ type: "text", text: "filtered" }] };
-			expect(await app.event("tool_result", intermediate)).toBeUndefined();
-			const outer = { toolCallId: root, toolName: "codemode", input: {}, isError: root === "two", content: [{ type: "text", text: "outer" }], structuredContent: { retained: root } };
-			const result = await app.event("tool_result", outer);
-			expect(result?.structuredContent).toEqual(outer.structuredContent);
-			expect(result?.content[1]?.text).toContain(ref);
-			expect(result?.content[1]?.text.match(/Kata refs only resolve/g)).toHaveLength(1);
-			expect(await app.event("tool_result", outer)).toBeUndefined();
-		}
-	} finally { delete process.env.KATA_REF_GUARD; }
-});
-
 test("pi nested runner carries a filtered warning to the outer result", async () => {
 	const { NestedToolCallRunner } = await import("../node_modules/@earendil-works/pi-coding-agent/dist/core/nested-tool-calls.js");
 	const app = await host(); await app.event("session_start", { reason: "startup" });

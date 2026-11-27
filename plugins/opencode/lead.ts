@@ -55,7 +55,7 @@ export interface Lead extends Planner {
 	checkSpawn(call: string, text: string): Promise<void>;
 	// The reason a tool call of the session (the lead's or a delegate's) is refused for putting a Kata ref into the repository, or undefined. Never rejects.
 	guard(sessionID: string, call: { tool: string; input: unknown; id?: string }): Promise<string | undefined>;
-	warning(sessionID: string, id: string | undefined): string | undefined;
+	warning(sessionID: string, id: string): string | undefined;
 	// The call is over: what it reserved and no child took is free again.
 	releaseSpawn(call: string): void;
 	// A run of a child session began: its first, for the call `call` of the lead, makes its record and takes what the call

@@ -458,7 +458,7 @@ test("Write, Edit and a git commit that name a ref of the plan are denied until 
 		];
 		for (const attempt of attempts) {
 			const result = await fire(attempt);
-			if (off === true) { expect(result.deny).toBeUndefined(); continue; }
+			if (off) { expect(result.deny).toBeUndefined(); continue; }
 			expect(result.deny).toContain(ref);
 			expect(result.deny).toContain("KATA_REF_GUARD=off");
 		}

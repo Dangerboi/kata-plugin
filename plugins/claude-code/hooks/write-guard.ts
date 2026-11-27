@@ -14,11 +14,7 @@ export const onWriteGuard: Hook<"tool.call"> = async ($, e, next) => {
 	} catch (error) {
 		rt.debug(error);
 	}
-	try {
-		const done = await next(e);
-		const warning = rt.core.tools.warning(ctx, e.tool_use_id);
-		return warning && done.deny === undefined ? { ...done, context: [...done.context ?? [], warning] } : done;
-	} finally {
-		rt.core.tools.warning(ctx, e.tool_use_id);
-	}
+	const done = await next(e);
+	const warning = rt.core.tools.warning(ctx, e.tool_use_id);
+	return warning ? { ...done, context: [...done.context ?? [], warning] } : done;
 };
