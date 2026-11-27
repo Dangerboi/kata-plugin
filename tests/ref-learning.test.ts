@@ -65,7 +65,7 @@ test('lone output learns', async () => {
  expect(await h.commit('z7x2')).toContain('z7x2'); expect(await h.commit('y7x2')).toBeUndefined();
  }
  {
- const h = setup(); await h.result('kata list --all', '○ other#data test (-)'); expect(await h.commit('other#data')).toContain('other#data'); expect(await h.commit('data')).toBeUndefined();
+ const h = setup(); await h.result('kata list --all --agent', '- issue=other#data status=open title=test'); expect(await h.commit('other#data')).toContain('other#data'); expect(await h.commit('data')).toBeUndefined();
  }
  {
  const h = setup();
@@ -100,6 +100,16 @@ test('lone output learns', async () => {
 });
 
 test('workspace file uses v1 and stops at a nested git root', async () => {
+ {
+ const h = setup();
+ writeFileSync(path.join(h.cwd, '.kata.toml'), '  version = 1\n  [project] # workspace\n  name = "indented"\n');
+ expect(await h.commit('indented#z7x2')).toContain('indented#z7x2');
+ }
+ {
+ const h = setup();
+ writeFileSync(path.join(h.cwd, '.kata.toml'), 'version = 1\n[project]\n  [other]\n  name = "other"\n');
+ expect(await h.commit('other#z7x2')).toBeUndefined();
+ }
  {
  const h = setup();
  const nested = path.join(h.cwd, 'nested'); mkdirSync(nested); mkdirSync(path.join(nested, '.git'));
