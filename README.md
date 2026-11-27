@@ -24,7 +24,7 @@ Then pick Kata under `/settings` → Tools → Todos → Todo Backend (`todo.bac
 
 Kata inbox requests reach a session when `KATA_INBOX_USER` names a session address, `<actor>/<name>`. A bare `<actor>` is that person's own inbox, so sessions don't read it. On OMP the main session gets each new request from that actor live, even while idle or mid-run (`KATA_OMP_LIVE_INBOX=0` turns it off); Pi reads per turn. On OMP each delegate reads its own inbox, `<actor>/<teammate>`, when `KATA_INBOX_USER` is a session address.
 
-On every host a `write`, `edit`, patch or `git commit` that would add a Kata ref the session works is refused, so the model describes the behaviour instead; `KATA_REF_GUARD=off` turns the ref guard off. On OMP, without `KATA_REF`, a ticket the lead claims or names with `/todo ref` gets session attention.
+On every host a `write`, `edit`, patch, or `git commit`, `merge`, `tag` or `notes` message that would add a Kata ref the session works is refused, so the model describes the behaviour instead; `KATA_REF_GUARD=off` turns the ref guard off. On OMP, without `KATA_REF`, a ticket the lead claims or names with `/todo ref` gets session attention.
 
 Pi:
 

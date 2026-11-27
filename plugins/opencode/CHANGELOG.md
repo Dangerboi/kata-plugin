@@ -4,6 +4,12 @@ All notable changes to `@dangerboi/kata-opencode` are listed here. The format fo
 
 ## [Unreleased]
 
+### Fixed
+
+#### Repository content
+
+- The ref guard also reads `git commit --trailer` values, the messages of `git merge`, `git tag` and `git notes add` or `append`, and a message fed through `-F /dev/stdin` or `--file=/dev/stdin`, so a Kata ref the session works is refused there too.
+
 ## [1.3.0] - 2026-11-26
 
 ### Added

@@ -4,6 +4,12 @@ All notable changes to the `kata-cc` Claude Code plugin are listed here. The for
 
 ## [Unreleased]
 
+### Fixed
+
+#### Repository content
+
+- The ref guard also reads `git commit --trailer` values, the messages of `git merge`, `git tag` and `git notes add` or `append`, and a message fed through `-F /dev/stdin` or `--file=/dev/stdin`, so a Kata ref the session works is denied there too.
+
 ## [1.2.0] - 2026-11-26
 
 ### Added

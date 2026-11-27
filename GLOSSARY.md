@@ -93,7 +93,7 @@ _Avoid_: pending end, ended mark
 ## Repository content
 
 **Ref guard**:
-The check that refuses a write or `git commit` message adding a Kata ref the session works, so the model describes the behaviour instead; refs already in the file never count.
+The check that refuses a write, or a `git commit`, `merge`, `tag` or `notes` message, adding a Kata ref the session works, so the model describes the behaviour instead; refs already in the file never count.
 _Avoid_: ref filter, ref blocker, ticket-id check
 
 ## Inbox
