@@ -65,12 +65,15 @@ const addedRows = (diff: string, file: string | undefined): Added => ({ files: f
 
 // Git global options that take a value, which `git -C dir commit` puts before the subcommand.
 const GIT_VALUE_OPTIONS = new Set(["-C", "-c", "--git-dir", "--work-tree", "--namespace", "--exec-path"]);
-// Short flags of `git commit` that take a value; a cluster such as `-am"msg"` is `-a` and `-m` with its text attached.
-const SHORT_WITH_VALUE = /[FCctSu]/;
+// Value-taking short flags before `m` consume the rest of a cluster, rather than introducing a message.
+const GIT_MESSAGE_OPTIONS = new Map<string, { values: RegExp; trailer?: boolean }>([
+  ["commit", { values: /[CctSu]/, trailer: true }], ["merge", { values: /[sXS]/ }],
+  ["tag", { values: /[u]/, trailer: true }], ["notes", { values: /[Cc]/ }],
+]);
 
-// The message of every `git commit` in a shell command: `-m`, `--message`, `-am` (the text may be attached) and, for `-F -`, the heredoc or
-// here-string fed to it. Its other words (--author, --trailer, pathspecs) are not the message. `cwd`: where the bash call runs.
-function commitMessages(command: string, cwd: string | undefined): Added[] {
+// Messages and trailers supplied to Git, including heredocs and here-strings read from stdin. Other words
+// such as --author and pathspecs are not messages. `cwd`: where the bash call runs.
+function gitMessages(command: string, cwd: string | undefined): Added[] {
 	const added: Added[] = [];
 	// Where each command runs: the call's folder, moved by a `cd` before it, then by `git -C` values in order (absolute replaces, relative appends).
 	const fold = (base: string | undefined, dir: string) => dir.startsWith("/") || dir.startsWith("~") || !base ? dir : `${base.replace(/\/+$/, "")}/${dir}`;
@@ -85,14 +88,26 @@ function commitMessages(command: string, cwd: string | undefined): Added[] {
 		if (!/(^|\/)git$/.test(words[at]?.value ?? "")) continue;
 		let place = base;
 		for (at++; at < words.length && words[at].value.startsWith("-"); at += GIT_VALUE_OPTIONS.has(words[at].value) ? 2 : 1) if (words[at].value === "-C" && words[at + 1]) place = fold(place, words[at + 1].value);
-		if (words[at]?.value !== "commit") continue;
+		const subcommand = words[at]?.value, options = GIT_MESSAGE_OPTIONS.get(subcommand);
+		if (!options) continue;
+		if (subcommand === "notes") {
+			for (at++; words[at]?.value.startsWith("-"); at += words[at].value === "--ref" ? 2 : 1) { /* notes options precede its action */ }
+			if (!["add", "append"].includes(words[at]?.value)) continue;
+		}
 		const rest = words.slice(at + 1).map(word => word.value), parts: string[] = [];
 		for (let n = 0; n < rest.length; n++) {
-			const word = rest[n], short = !word.startsWith("--") && /^-([a-zA-Z]*?)m([\s\S]*)$/.exec(word);
-			if (word === "--message") { if (rest[n + 1] !== undefined) parts.push(rest[++n]); }
-			else if (word.startsWith("--message=")) parts.push(word.slice(10));
-			else if (short && !SHORT_WITH_VALUE.test(short[1])) { if (short[2]) parts.push(short[2]); else if (rest[n + 1] !== undefined) parts.push(rest[++n]); }
-			else if (word === "-F-" || word === "--file=-" || ((word === "-F" || word === "--file") && rest[n + 1] === "-")) parts.push(...bodies);
+			const word = rest[n];
+			if (word === "--") break;
+			if (subcommand === "commit" && word === "--author") { n++; continue; }
+			const cluster = /^-([a-zA-Z]*?)([mF])([\s\S]*)$/.exec(word);
+			const long = /^(--[a-z-]+)(?:=([\s\S]*))?$/.exec(word);
+			const flag = cluster && !options.values.test(cluster[1]) ? cluster[2] : long?.[1];
+			if (flag !== "m" && flag !== "F" && flag !== "--message" && flag !== "--file" && !(flag === "--trailer" && options.trailer)) continue;
+			const attached = cluster ? cluster[3] || undefined : long?.[2];
+			const value = attached ?? rest[++n];
+			if (value === undefined) continue;
+			if (flag === "F" || flag === "--file") { if (value === "-" || value === "/dev/stdin") parts.push(...bodies); }
+			else parts.push(value);
 		}
 		added.push({ files: place === undefined ? undefined : [place], text: parts.join("\n") });
 	}
@@ -127,7 +142,7 @@ function addedBy(tool: string, input: unknown): Added[] {
 			const paths = (Array.isArray(call.paths) ? call.paths : [call.paths ?? call.path]).filter((p): p is string => typeof p === "string");
 			return records(call.ops).flatMap(op => typeof op.out === "string" ? [{ files: paths.length ? paths : ["."], text: op.out }] : []);
 		}
-		case "bash": case "shell": return typeof call.command === "string" ? commitMessages(call.command, asString(call.cwd) ?? asString(call.workdir)) : [];
+		case "bash": case "shell": return typeof call.command === "string" ? gitMessages(call.command, asString(call.cwd) ?? asString(call.workdir)) : [];
 		default: return [];
 	}
 }
@@ -156,7 +171,7 @@ function refsIn(body: string, projects: ReadonlySet<string>, shortIds: readonly 
 // The refs a call would add to repository content, in order of appearance; empty when it adds none. Files outside the workspace and
 // internal URLs are not repository content.
 export async function offendingRefs(call: RefGuardCall): Promise<string[]> {
-	const adds = addedBy(call.tool, call.input);
+	const adds = addedBy(call.tool, call.input).filter(added => added.text);
 	if (!adds.length) return [];
 	const known = [...await call.known()];
 	const shortIds = [...new Set(known.map(ref => ref.slice(ref.lastIndexOf("#") + 1)))];

@@ -4,6 +4,12 @@ All notable changes to `@dangerboi/kata-omp` are listed here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+
+#### Repository content
+
+- The ref guard also reads `git commit` and `git tag` `--trailer` values, the messages of `git merge`, `git tag` and `git notes add` or `append`, and a heredoc or here-string message read with `-F -`, `-F /dev/stdin` or `--file=/dev/stdin`, so a Kata ref the session works is refused there too.
+
 ## [3.1.0] - 2026-11-26
 
 ### Added

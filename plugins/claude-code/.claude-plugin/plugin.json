@@ -15,7 +15,7 @@
     "refGuard": {
       "type": "boolean",
       "title": "Refuse Kata refs in repository content",
-      "description": "Refuse a write, an edit or a git commit that puts a Kata ref the session knows into the repository: refs resolve only in the local tracker. On unless this is off or KATA_REF_GUARD=off (or 0); either one turns it off.",
+      "description": "Refuse a write, an edit or a Git commit, merge, tag or notes message that puts a Kata ref the session knows into the repository: refs resolve only in the local tracker. On unless this is off or KATA_REF_GUARD=off (or 0); either one turns it off.",
       "default": true
     },
     "contract": {
