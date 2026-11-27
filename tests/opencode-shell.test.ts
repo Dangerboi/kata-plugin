@@ -108,6 +108,20 @@ test("a lead close runs when its cleared PATH contains only Kata", async () => {
 	} finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
+test.skipIf(!Bun.which("cc"))("a lead close behind exec -a keeps the target argv0 and transcript", async () => {
+	const dir = mkdtempSync(join(tmpdir(), "opencode-kata-argv0-"));
+	try {
+		const source = join(dir, "stub.c"), stub = join(dir, "kata");
+		writeFileSync(source, '#include <stdio.h>\n#include <stdlib.h>\nint main(int argc, char **argv) { printf("%s/%s/%s\\n", argv[0], getenv("KATA_TRANSCRIPT_AGENT"), getenv("KATA_TRANSCRIPT_SESSION_ID")); return 0; }\n');
+		expect(Bun.spawnSync([Bun.which("cc")!, source, "-o", stub]).exitCode).toBe(0);
+		const { host, id } = await startLead({ executable: binary });
+		const result = await shell(host, id, `exec -a named '${stub}' close x#1`);
+		const out = await sh(result.input.command);
+		expect(out.code, out.stderr).toBe(0);
+		expect(out.stdout.trim()).toBe(`named/opencode/${id}`);
+	} finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
 test("commands that are not Kata are untouched", async () => {
 	const { host, id } = await startLead({ executable: binary });
 	await host.callTool(id, "todowrite", todos(["Another item", "in_progress"]));

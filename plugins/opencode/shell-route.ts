@@ -1,4 +1,4 @@
-import { delegateCommand, envPrefix, kataCommands, shellOptions } from "./shell";
+import { delegateCommand, inject, kataCommands, shellOptions } from "./shell";
 import { closeEnv } from "./kata-cli";
 import { nodePlatform } from "./node-host";
 import { EXECUTABLE_VARS, NAMESPACE } from "./settings";
@@ -16,8 +16,8 @@ export function install(seam: Seam): void {
 	// A lead's Kata commands: edits go from the end of the command so earlier offsets stay valid.
 	function route(command: string, leadID: string): string {
 		for (const invocation of kataCommands(nodePlatform.path, command, executable, EXECUTABLE_VARS).reverse()) {
-			const prefix = envPrefix({ ...closeEnv(nodePlatform.env, shellOptions(invocation.words).args, NAMESPACE, leadID), ...seam.settings.kataEnv });
-			if (prefix) command = command.slice(0, invocation.executable.start) + prefix + command.slice(invocation.executable.start);
+			const prefix = inject(invocation, { ...closeEnv(nodePlatform.env, shellOptions(invocation.words).args, NAMESPACE, leadID), ...seam.settings.kataEnv });
+			if (prefix.text) command = command.slice(0, prefix.at) + prefix.text + command.slice(prefix.at);
 		}
 		return command;
 	}

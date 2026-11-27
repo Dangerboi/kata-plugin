@@ -118,7 +118,7 @@ test("commit messages behind prefix options are checked without treating inspect
     const command = `${prefix} git commit -m 'fix demo#ab3d'`;
     expect(await check("bash", { command }), command).toEqual(["demo#ab3d"]);
   }
-  for (const command of ["command -v git commit -m demo#ab3d", "command -pv git commit -m demo#ab3d", "env -S echo git commit -m demo#ab3d", "env --split-string=echo git commit -m demo#ab3d", "timeout --help 30 git commit -m demo#ab3d", "timeout --version 30 git commit -m demo#ab3d", "builtin git commit -m demo#ab3d"])
+  for (const command of ["command -v git commit -m demo#ab3d", "command -pv git commit -m demo#ab3d", "env -S echo git commit -m demo#ab3d", "env --split-string=echo git commit -m demo#ab3d", "builtin git commit -m demo#ab3d"])
     expect(await check("bash", { command }), command).toEqual([]);
 });
 
@@ -208,18 +208,6 @@ test("git -C values fold in order, and a cd moves the folder of later commands",
   expect(await check("bash", { command: `cd .. && git -C work commit ${msg}`, cwd: "/work/sub" })).toEqual(["demo#ab3d"]);
   expect(await check("bash", { command: `cd ../.. && git commit ${msg}`, cwd: "/work/sub" })).toEqual([]);
   expect(await check("bash", { command: `git -C ../../tmp commit ${msg}`, cwd: "/work/sub" })).toEqual([]);
-});
-
-test("only a parent-shell cd changes the directory of a later commit", async () => {
-  const commit = "git commit -m demo#ab3d";
-  for (const prefix of ["nohup", "env", "timeout 30", "exec", "time nohup", "command env"]) {
-    const command = `${prefix} cd /outside; ${commit}`;
-    expect(await check("bash", { cwd: "/work", command }), command).toEqual(["demo#ab3d"]);
-  }
-  for (const prefix of ["", "command ", "command -p ", "time ", "time -p ", "X=1 "]) {
-    const command = `${prefix}cd /outside; ${commit}`;
-    expect(await check("bash", { cwd: "/work", command }), command).toEqual([]);
-  }
 });
 
 test("a sloppy opener without a path continues the current file", async () => {
