@@ -86,7 +86,7 @@ export function installShim(executable: string, warn: (message: string) => void,
 			const name = basename(executable);
 			if (!name || name === "." || name === "..") throw new Error("invalid executable basename");
 			if (name !== "kata") symlinkSync("kata", join(bin, name));
-			const probe = spawnSync(target, [], { env: { PATH: "/usr/bin:/bin", KATA_SHIM_PROBE: "1" }, stdio: "ignore", timeout: 5000 });
+			const probe = spawnSync(target, ["-c", "exit 0"], { env: { PATH: "/usr/bin:/bin", KATA_OMP_SHIM_REAL: "/bin/sh" }, stdio: "ignore", timeout: 5000 });
 			if (!(options.probe ? options.probe(target) : !probe.error && probe.status === 0)) throw probe.error ?? new Error(`probe exited ${probe.status}`);
 			sweep(root); owned = { dir, real }; adoptShim(owned); process.once("exit", () => { if (owned) clearLayout(owned.dir); }); return owned;
 		} catch (error) { if (dir) clearLayout(dir); errors.push(`${root}: ${String(error)}`); }

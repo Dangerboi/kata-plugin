@@ -52,7 +52,7 @@ const recordsBySession = new Map<string, DelegateRecord>();
 const leads = new Map<string, DelegateEvents>();
 // The refs each lead session works, read by the ref guard of a delegate on a worker thread (see askRefs).
 const leadRefs = new Map<string, () => string[]>();
-const leadActors = new Map<string, (record?: DelegateRecord) => Promise<string>>();
+const leadActors = new Map<string, (record?: DelegateRecord) => Promise<string | undefined>>();
 const leadAgentSessions = new Map<string, string>();
 const workerIdentity = new Map<string, { shim?: Shim; actor?: string }>();
 
@@ -92,6 +92,7 @@ delegateChannel.unref();
 // How long the main thread waits for a lead's started event that has not arrived yet, and a worker for an answer.
 const RECORD_WAIT_MS = 3000;
 const ANSWER_WAIT_MS = 30_000;
+const PUBLISH_WAIT_MS = 1500;
 // A worker's ref guard gives up on the lead's refs after this; the core asks inside its own 2 s bound, and only for a call that adds text.
 const REFS_WAIT_MS = 1000;
 const arrivals = new Map<string, (() => void)[]>();
@@ -121,14 +122,14 @@ async function answerWorker(message: DelegateWire) {
 	if (record?.id !== message.id) {
 		if (message.kind !== "nextUse") return;
 		let actor: string | undefined;
-		try { const lead = message.parentId && leadAgentSessions.get(message.parentId); if (lead) actor = await leadActors.get(lead)?.(); } catch {}
+		const lead = message.parentId && leadAgentSessions.get(message.parentId); if (lead) actor = await leadActors.get(lead)?.();
 		return delegateChannel.postMessage({ kind: "record", req: message.req, shim: currentShim(), actor } satisfies DelegateWire);
 	}
 	await leads.get(record.leadSessionId)?.apply({ type: message.kind, id: message.id }, NO_JOB);
 	if (message.kind === "nextUse") {
 		const updated = recordsBySession.get(message.key);
 		let actor: string | undefined;
-		try { actor = await leadActors.get(record.leadSessionId)?.(updated); } catch {}
+		actor = await leadActors.get(record.leadSessionId)?.(updated);
 		delegateChannel.postMessage({ kind: "record", req: message.req, record: updated, shim: currentShim(), actor } satisfies DelegateWire);
 	}
 }
@@ -365,10 +366,14 @@ export default function ompKata(pi: any) {
 
 	// The lead Delegates that the delegates started from `ctx` report to: this session's own (registered here for its
 	// delegates' later events, and for worker threads), or a nested delegate's lead.
+	let publishFailed = false;
+	function reportPublishFailure(ctx: any) {
+		if (!publishFailed) { publishFailed = true; (ctx.ui ?? seen?.ui)?.notify?.("Kata identity could not be published; kata commands in scripts, functions or bash -c may run under the lead's identity until the next successful publication. If the shim directory was removed, restart omp.", "warning"); }
+	}
 	const leadOf = (ctx: any): { id: string; delegates?: DelegateEvents } | undefined => {
 		if (main(ctx)) {
 			const id = sessionId(ctx);
-			if (id) { leads.set(id, core.delegates); if (typeof ctx.agent?.id === "string") leadAgentSessions.set(ctx.agent.id, id); leadActors.set(id, record => core.session.actor(ctx, record?.binding && { cwd: record.binding.workspace, ref: record.binding.parent })); leadRefs.set(id, () => { try { return core.tools.refs(seen); } catch (error) { debug(error); return []; } }); return { id, delegates: core.delegates }; }
+			if (id) { leads.set(id, core.delegates); if (typeof ctx.agent?.id === "string") leadAgentSessions.set(ctx.agent.id, id); leadActors.set(id, async record => { const actor = await waitAtMost(core.session.actor(ctx, record?.binding && { cwd: record.binding.workspace, ref: record.binding.parent }), PUBLISH_WAIT_MS, debug, nodePlatform); if (!actor) reportPublishFailure(ctx); return actor; }); leadRefs.set(id, () => { try { return core.tools.refs(seen); } catch (error) { debug(error); return []; } }); return { id, delegates: core.delegates }; }
 			return undefined;
 		}
 		const owner = store.of(ctx);
@@ -413,7 +418,6 @@ export default function ompKata(pi: any) {
 		void leadOf(seen)?.delegates?.apply({ type: "reported", id: payload.id, text }, NO_JOB);
 	});
 
-	let publishFailed = false;
 	async function publish(ctx: any, record?: DelegateRecord) {
 		const id = sessionId(ctx);
 		if (!id || (!main(ctx) && id === leadSession())) return;
@@ -431,7 +435,7 @@ export default function ompKata(pi: any) {
 			publishFailed = false;
 		} catch (error) {
 			debug(error);
-			if (!publishFailed) { publishFailed = true; (ctx.ui ?? seen?.ui)?.notify?.("Kata identity could not be published; kata commands in scripts, functions or bash -c may run under the lead's identity until the next successful publication. If the shim directory was removed, restart omp.", "warning"); }
+			reportPublishFailure(ctx);
 		}
 	}
 	function startShim(ctx: any) {
@@ -445,7 +449,7 @@ export default function ompKata(pi: any) {
 		const record = ctx.agent?.kind === "sub" ? await recordOf(ctx) : undefined;
 		if (record) ranTool(record);
 		if (event.toolName === "bash") {
-			await waitAtMost((async () => { if (main(ctx)) await leadPublish; await publish(ctx, record); })(), 1500, debug, nodePlatform);
+			await waitAtMost((async () => { if (main(ctx)) await leadPublish; await publish(ctx, record); })(), PUBLISH_WAIT_MS, debug, nodePlatform);
 		}
 		const key = !isMainThread && ctx.agent?.kind === "sub" ? sessionKeyOf(ctx) : undefined;
 		const refused = await core.tools.guard(ctx, { tool: event.toolName, input: event.input }, () => key ? askRefs(key) : []);
@@ -563,13 +567,13 @@ export default function ompKata(pi: any) {
 		core.offerTickets(ctx.ui);
 		const backend = await kataBackend();
 		await core.session.start(ctx);
-		leadPublish = publish(ctx);
+		leadPublish = waitAtMost(publish(ctx), PUBLISH_WAIT_MS, debug, nodePlatform);
 		offNotice(ctx, backend);
 	}
 
 	pi.on("session_start", (_event: any, ctx: any) => begin(ctx));
 	pi.on("session_switch", (_event: any, ctx: any) => begin(ctx));
-	pi.on("session_branch", async (_event: any, ctx: any) => { startShim(ctx); if (main(ctx)) exportTranscriptSession(NAMESPACE, sessionId(ctx)); await enter(ctx); await core.session.branch(ctx); if (main(ctx)) leadPublish = publish(ctx); });
+	pi.on("session_branch", async (_event: any, ctx: any) => { startShim(ctx); if (main(ctx)) exportTranscriptSession(NAMESPACE, sessionId(ctx)); await enter(ctx); await core.session.branch(ctx); if (main(ctx)) leadPublish = waitAtMost(publish(ctx), PUBLISH_WAIT_MS, debug, nodePlatform); });
 	pi.on("session_tree", async (_event: any, ctx: any) => { await enter(ctx); await core.session.tree(ctx); });
 	// The transcript pair is left for the next session_start to overwrite: clearing after a slow cleanup could delete the pair of an instance omp already started in this process.
 	pi.on("session_shutdown", async (_event: any, ctx: any) => {

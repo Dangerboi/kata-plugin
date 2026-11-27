@@ -1,6 +1,5 @@
 #!/bin/sh
 # Session identity is applied immediately before starting the real Kata binary.
-[ "${KATA_SHIM_PROBE:-}" = 1 ] && exit 0
 self=$(CDPATH= cd -- "$(dirname -- "$0")" 2>/dev/null && pwd -P)
 name=${0##*/}
 case ${PI_SESSION_ID:-} in

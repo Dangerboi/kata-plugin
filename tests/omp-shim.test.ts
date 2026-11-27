@@ -12,7 +12,7 @@ test("nested shells and scripts use the selected identity despite an export", ()
     const real = join(dir, "real"); writeFileSync(real, '#!/bin/sh\nprintf "%s|%s|%s" "$KATA_AUTHOR" "${KATA_TEAMMATE-unset}" "$KATA_INBOX_USER"\n', { mode: 0o700 });
     const shim = { dir, real }; writeIdentity(shim, "child", { KATA_AUTHOR: "O'Reilly", KATA_TEAMMATE: "scout", KATA_INBOX_USER: "actor/scout" });
     const script = join(dir, "script"); writeFileSync(script, '#!/bin/sh\nkata\n', { mode: 0o700 });
-    const env = { PATH: `${bin}:/usr/bin:/bin`, KATA_OMP_SHIM_DIR: dir, KATA_OMP_SHIM_REAL: real, PI_SESSION_ID: "child" };
+    const env = { PATH: `${bin}:/usr/bin:/bin`, KATA_OMP_SHIM_DIR: dir, KATA_OMP_SHIM_REAL: real, PI_SESSION_ID: "child", KATA_SHIM_PROBE: "1" };
     for (const command of [`export KATA_AUTHOR=evil; bash -c kata`, `export KATA_AUTHOR=evil; ${script}`]) {
       const result = Bun.spawnSync(["/bin/sh", "-c", command], { env });
       expect(result.exitCode).toBe(0); expect(result.stdout.toString()).toBe("O'Reilly|scout|actor/scout");

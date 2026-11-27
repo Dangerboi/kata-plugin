@@ -27,3 +27,21 @@ for (const kind of ["lead", "delegate"] as const) test(`${kind} bash waits at mo
     expect(result?.block).toBeUndefined(); expect(elapsed).toBeLessThan(2000);
   } finally { clearTimeout(release); gate.resolve(); }
 }, 15000);
+
+test("first prompt waits at most the publication budget for a stalled actor", async () => {
+  const gate = Promise.withResolvers<void>(), started = Promise.withResolvers<void>();
+  let slow = false;
+  const app = ompHost({ cwd, sid: "latency-prompt", run: async args => {
+    if (slow && args[0] === "status") { started.resolve(); await gate.promise; }
+    return run(args);
+  } });
+  await app.event("session_start"); await app.init(["Prompt latency fixture"]);
+  const other = join(cwd, "slow-prompt"); mkdirSync(other); app.ctx.cwd = other; slow = true;
+  const release = setTimeout(() => gate.resolve(), 4000);
+  try {
+    await app.event("session_branch");
+    await Promise.race([started.promise, Bun.sleep(2500).then(() => { throw new Error("actor lookup did not start"); })]);
+    const begin = Date.now(); await app.event("before_agent_start", { reason: "prompt", systemPrompt: [] });
+    expect(Date.now() - begin).toBeLessThan(2000);
+  } finally { clearTimeout(release); gate.resolve(); }
+}, 20000);
