@@ -287,8 +287,8 @@ test("pi warn attaches each guard reason once to its own result", async () => {
   try {
     for (const toolCallId of ["a", "b"]) expect(await app.event("tool_call", { toolCallId, toolName: "bash", input: { ...input } })).toBeUndefined();
     for (const toolCallId of ["b", "a"]) {
-      const event = { toolCallId, toolName: "bash", input, isError: false, content: [{ type: "text", text: "ok" }] };
-      expect(await app.event("tool_result", event)).toEqual({ content: [...event.content, { type: "text", text: refused.reason }] });
+      const event = { toolCallId, toolName: "bash", input, isError: false, content: [{ type: "text", text: "ok" }], structuredContent: { output: "ok", count: 2 } };
+      expect(await app.event("tool_result", event)).toEqual({ content: [...event.content, { type: "text", text: refused.reason }], structuredContent: event.structuredContent });
       expect(await app.event("tool_result", event)).toBeUndefined();
     }
   } finally { delete process.env.KATA_REF_GUARD; }

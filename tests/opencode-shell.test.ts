@@ -175,4 +175,6 @@ test("refGuard warn runs interleaved calls and appends each reason once", async 
     expect(result.status).toBe("completed"); expect(result.text).toContain(ref); expect(result.text).toContain("KATA_REF_GUARD=off");
   }
   expect((await shell(host, id, "echo clean")).text).toBe("ok");
+  const failed = await host.callTool(id, "shell", { command: `git commit -m "fix ${ref}"` }, { execute: () => { throw new Error("tool failed"); } });
+  expect(failed.status).toBe("error"); expect(failed.text).toContain("tool failed"); expect(failed.text).toContain(ref);
 });
