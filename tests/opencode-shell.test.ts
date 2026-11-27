@@ -69,7 +69,7 @@ test("a child session the lead does not track runs Kata under a teammate derived
 	for (const session of [child, grandchild]) {
 		const teammate = teammateFor(session.id, id);
 		const listed = await shell(host, session.id, "kata list --agent");
-		expect(listed.input.command).toBe(`env KATA_AUTHOR='opencode-builder' kata --teammate '${teammate}' list --agent`);
+		expect(listed.input.command).toBe(`/usr/bin/env KATA_AUTHOR='opencode-builder' kata --teammate '${teammate}' list --agent`);
 		const closed = await shell(host, session.id, "kata close x#1 --done");
 		expect(closed.input.command).toContain(`KATA_TRANSCRIPT_SESSION_ID='${session.id}'`);
 		expect(closed.input.command).toContain(`kata --teammate '${teammate}' close x#1 --done`);
@@ -84,13 +84,15 @@ test("a lead's command is unchanged apart from the author and the close transcri
 	const { host, id } = await startLead({ executable: binary });
 	await host.callTool(id, "todowrite", todos(["Lead item", "pending"]));
 	const author = "KATA_AUTHOR='opencode-builder'";
-	const pair = `env KATA_TRANSCRIPT_AGENT='opencode' KATA_TRANSCRIPT_SESSION_ID='${id}' KATA_CLOSE_TRANSCRIPT_ENABLED='true' ${author} `;
+	const pair = `/usr/bin/env KATA_TRANSCRIPT_AGENT='opencode' KATA_TRANSCRIPT_SESSION_ID='${id}' KATA_CLOSE_TRANSCRIPT_ENABLED='true' ${author} `;
 	let result = await shell(host, id, "kata close x#1 --done --as someone");
 	expect(result.input.command).toBe(`${pair}kata close x#1 --done --as someone`);
 	result = await shell(host, id, "kata list --agent && kata show x#1");
-	expect(result.input.command).toBe(`env ${author} kata list --agent && env ${author} kata show x#1`);
+	expect(result.input.command).toBe(`/usr/bin/env ${author} kata list --agent && /usr/bin/env ${author} kata show x#1`);
 	result = await shell(host, id, `'${binary}' close x#1`);
 	expect(result.input.command).toBe(`${pair}'${binary}' close x#1`);
+	result = await shell(host, id, `exec -a named '${binary}' close x#1`);
+	expect(result.input.command).toBe(`${pair.replace("/usr/bin/env ", "")}exec -a named '${binary}' close x#1`);
 });
 
 test("commands that are not Kata are untouched", async () => {

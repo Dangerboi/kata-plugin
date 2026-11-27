@@ -111,6 +111,7 @@ test("a created file's patch body is checked whole, an updated file's only by it
 test("a commit behind env, command, time, if or ! is checked", async () => {
   for (const command of [`env GIT_X=1 git commit -m "demo#ab3d"`, `command git commit -m "demo#ab3d"`, `time git commit -m "demo#ab3d"`, `if git commit -m "demo#ab3d"; then echo ok; fi`, `! git commit -m "demo#ab3d"`])
     expect(await check("bash", { command }), command).toEqual(["demo#ab3d"]);
+  expect(await check("bash", { command: "command -v git commit -m demo#ab3d" })).toEqual([]);
 });
 
 test("a heredoc body belongs to the command whose line holds its <<", async () => {
@@ -188,6 +189,11 @@ test("git -C values fold in order, and a cd moves the folder of later commands",
   expect(await check("bash", { command: `cd .. && git -C work commit ${msg}`, cwd: "/work/sub" })).toEqual(["demo#ab3d"]);
   expect(await check("bash", { command: `cd ../.. && git commit ${msg}`, cwd: "/work/sub" })).toEqual([]);
   expect(await check("bash", { command: `git -C ../../tmp commit ${msg}`, cwd: "/work/sub" })).toEqual([]);
+  for (const [cwd, command, expected] of [
+    ["/outside", "env -C /work git commit -m demo#ab3d", ["demo#ab3d"]],
+    ["/work", "env -C /outside git commit -m demo#ab3d", []],
+    ["/outside", "env --chdir=/work env -C src git -C .. commit -m demo#ab3d", ["demo#ab3d"]],
+  ] as const) expect(await check("bash", { cwd, command }), command).toEqual([...expected]);
 });
 
 test("a sloppy opener without a path continues the current file", async () => {

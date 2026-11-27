@@ -4,6 +4,16 @@ All notable changes to the `kata-cc` Claude Code plugin are listed here. The for
 
 ## [Unreleased]
 
+### Fixed
+
+#### Delegates
+
+- A `kata` command behind `nohup`, `exec`, `timeout`, `env`, `command` or `time` (with their common options) is handled like a bare one: an `Agent` delegate's command gets its `--teammate`, `--workspace`, `--project` and close transcript and refuses `--as`, and the lead's close gets its transcript.
+
+#### Repository content
+
+- The ref guard also checks a `Bash` `git commit` behind these prefixes.
+
 ## [1.2.0] - 2026-11-26
 
 ### Added

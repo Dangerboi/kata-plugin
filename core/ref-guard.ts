@@ -1,4 +1,4 @@
-import { ASSIGNMENT, commandSegments, PREFIXES } from "./shell";
+import { commandContext, commandSegments } from "./shell";
 import { projectOf, qualifiedRefs } from "./model";
 
 // Kata refs resolve only in the local tracker, so a write or commit that puts one into the repository is refused. This module is the
@@ -78,11 +78,12 @@ function commitMessages(command: string, cwd: string | undefined): Added[] {
 	for (const [index, { words, bodies: own }] of segments.entries()) {
 		// Stdin is the heredoc of this command, or of the one before it (`cat <<EOF | git commit -F -`).
 		const bodies = own.length ? own : segments[index - 1]?.bodies ?? [];
-		let at = 0;
-		while (at < words.length && (ASSIGNMENT.test(words[at].value) || PREFIXES.includes(words[at].value))) at++;
+		const context = commandContext(words);
+		if (!context) continue;
+		let at = context.index;
 		if (words[at]?.value === "cd" && words[at + 1] && !words[at + 1].value.startsWith("-")) base = fold(base, words[at + 1].value);
 		if (!/(^|\/)git$/.test(words[at]?.value ?? "")) continue;
-		let place = base;
+		let place = context.directories.reduce(fold, base);
 		for (at++; at < words.length && words[at].value.startsWith("-"); at += GIT_VALUE_OPTIONS.has(words[at].value) ? 2 : 1) if (words[at].value === "-C" && words[at + 1]) place = fold(place, words[at + 1].value);
 		if (words[at]?.value !== "commit") continue;
 		const rest = words.slice(at + 1).map(word => word.value), parts: string[] = [];

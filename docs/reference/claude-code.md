@@ -28,7 +28,7 @@ The mod removes `TaskCreate`, `TaskGet`, `TaskList`, `TaskUpdate` and `TodoWrite
 
 Each prompt carries the plan as hidden context after the user's text. A section the model already holds is not sent again until it changes or the conversation is compacted.
 
-Every close records the lead's session ([Record agent sessions on closes](../how-to/record-session-transcripts.md)): `KATA_TRANSCRIPT_AGENT=claude` and the lead's session id, plus `KATA_CLOSE_TRANSCRIPT_ENABLED=true` unless Claude Code's environment sets it. A close the plugin makes, a delegate's `todo` close included, carries them in that call's environment; a `kata close` the lead or a delegate runs in `Bash` carries them in an `env` prefix ([Shell](#shell)). A delegate has no session of its own: its transcript is part of the lead's, so its closes record the lead's session. `KATA_CLOSE_TRANSCRIPT_ENABLED=false` in Claude Code's environment stops it.
+Every close records the lead's session ([Record agent sessions on closes](../how-to/record-session-transcripts.md)): `KATA_TRANSCRIPT_AGENT=claude` and the lead's session id, plus `KATA_CLOSE_TRANSCRIPT_ENABLED=true` unless Claude Code's environment sets it. A close the plugin makes, a delegate's `todo` close included, carries them in that call's environment; a `kata close` the lead or a delegate runs in `Bash` carries them as variables the rewrite sets for that command ([Shell](#shell)). A delegate has no session of its own: its transcript is part of the lead's, so its closes record the lead's session. `KATA_CLOSE_TRANSCRIPT_ENABLED=false` in Claude Code's environment stops it.
 
 ## Delegates
 
@@ -46,11 +46,11 @@ A fork no tool call starts (`/btw`, `/fork`) is no delegation and runs as it is.
 
 ## Shell
 
-A `kata close` in a `Bash` call, the lead's or a delegate's, is rewritten to start with `env KATA_TRANSCRIPT_AGENT='claude' KATA_TRANSCRIPT_SESSION_ID='<lead session id>' KATA_CLOSE_TRANSCRIPT_ENABLED='true'` (the switch as Claude Code's environment sets it), unless the command already sets that pair.
+A `kata close` in a `Bash` call, the lead's or a delegate's, is rewritten to set `KATA_TRANSCRIPT_AGENT='claude'`, `KATA_TRANSCRIPT_SESSION_ID='<lead session id>'` and `KATA_CLOSE_TRANSCRIPT_ENABLED` (as Claude Code's environment sets it, else `'true'`) for that command, unless the command already sets those values.
 
 A delegate assigned an issue, and any delegate the mod can name, also runs `kata` commands in `Bash` under its own teammate: the command is rewritten to add `--teammate <teammate>` (an earlier one is replaced), and `--workspace` and `--project` of the assignment unless the command sets them. A delegate's `--as` is refused. Only commands in command position are touched, and rewriting is lexical, not a sandbox.
 
-Claude Code matches no allow rule past the `env` prefix (deny and ask rules see past it), so a rule such as `Bash(kata *)` would no longer cover a rewritten close. At the permission check (`tool.check`) a rewritten call that Claude Code's own rules would ask about is allowed when the command the model wrote is allowed outright. An ask from a hook (a `PreToolUse` guard, another plugin) stands, as does every other verdict.
+At the permission check (`tool.check`) a rewritten call that Claude Code's own rules would ask about is allowed when the command the model wrote is allowed outright. An ask from a hook (a `PreToolUse` guard, another plugin) stands, as does every other verdict.
 
 Under auto permission mode Claude Code refuses a tool call a hook changed after the classifier read it. Then the mod denies the call instead, with the exact command to run (`… Run it again exactly like this: …`), and the model's next call already carries the change. A delegate spawned under auto mode is refused before the rewrite is tried; the lead's call is refused once Claude Code refuses the rewrite.
 

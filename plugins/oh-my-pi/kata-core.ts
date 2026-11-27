@@ -378,6 +378,7 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 	const wording = options.wording ?? (options.native ? NATIVE_WORDING : TODO_WORDING);
 	const listName = wording.list ?? "the todo list";
 	const platform = host.platform, path = platform.path;
+	const home = (dir: string) => platform.home && (dir === "~" || dir.startsWith("~/")) ? path.join(platform.home, dir.slice(1)) : dir;
 	const debug = debugTo(options.debugFile, platform.appendFile);
 	const bounded = <T>(promise: Promise<T>, ms = 250) => waitAtMost(promise, ms, debug, platform);
 	const heldByDelegate = (metadata: Record<string, unknown> | undefined) => heldBy(namespace, metadata);
@@ -2082,7 +2083,8 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 				},
 				async locate(file) {
 					// `~` is the home folder, as the host's own tools read it; a host that knows none cannot place the file.
-					if (file === "~" || file.startsWith("~/")) { if (!platform.home) return undefined; file = path.join(platform.home, file.slice(1)); }
+					if (!platform.home && (file === "~" || file.startsWith("~/"))) return undefined;
+					file = home(file);
 					const canonical = await canonicalNew(platform, file, cwd);
 					return workspaces.some(root => canonical === root || canonical.startsWith(prefix(root))) ? canonical : undefined;
 				},
@@ -2160,7 +2162,7 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 			let ref = args[0] === "claim" ? args[1] : args[0] === "meta" && args[1] === "set" && args[3] === "work.attention" && args[4] === "ok" ? args[2] : undefined;
 			if (!ref || parsed.options.has("--as")) continue;
 			if (!ref.includes("#") && parsed.value("--project")) ref = `${parsed.value("--project")}#${ref}`;
-			const workspace = path.resolve(event.input.cwd || ctx.cwd, parsed.value("--workspace") || ".");
+			const workspace = path.resolve(event.input.cwd || ctx.cwd, ...invocation.directories.map(home), home(parsed.value("--workspace") || "."));
 			// A word the shell expands (`$ref`, a glob) names nothing yet; only the shape of a ref counts. A bare id is recorded at once (with the
 			// plan's project when the workspace is its own) and replaced by the ref Kata resolves it to, in the background: the hook never waits.
 			if (args[0] === "claim" && QUALIFIED_REF_ONLY.test(ref)) claimed.add(ref);

@@ -218,13 +218,13 @@ test("a subagent's Bash kata close records the lead's session, also through the 
 });
 
 test("a rewritten Bash call is allowed where the model's own command is; a hook's ask and the rules' other verdicts stand", async () => {
-	// Allow rule `Bash(kata *)`, which matches nothing past an `env NAME=…` prefix, and a PreToolUse guard that asks about any
+	// Allow rule `Bash(kata *)`, which matches nothing past a `/usr/bin/env NAME=…` prefix, and a PreToolUse guard that asks about any
 	// call naming zz99 (a `$.tool.check` query runs no PreToolUse hook and carries no call id).
 	const rules = (e: any) =>
 		e.tool_use_id && /zz99/.test(e.input.command) ? { decision: "ask" as const, hook: "PreToolUse" } : { decision: /^kata /.test(e.input.command) ? ("allow" as const) : ("ask" as const) };
 	const h = await started({ rules });
 	const lead = await h.fire("tool.call", { tool: "Bash", tool_use_id: "b-lead", command: "kata close ab12 --done" });
-	expect(lead.command).toStartWith("env KATA_TRANSCRIPT_AGENT=");
+	expect(lead.command).toStartWith("/usr/bin/env KATA_TRANSCRIPT_AGENT=");
 	expect((await h.check(lead.command)).decision).toBe("allow");
 	const { ref } = assignmentOf(tagged((await h.spawn({ prompt: "Implement parser module", description: "Parser" }, "agent-rules")).prompt));
 	const sub = await h.agentCall("agent-rules", "Bash", { command: `kata close ${ref} --done` });

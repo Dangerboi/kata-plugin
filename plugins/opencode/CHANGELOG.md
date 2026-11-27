@@ -4,6 +4,16 @@ All notable changes to `@dangerboi/kata-opencode` are listed here. The format fo
 
 ## [Unreleased]
 
+### Fixed
+
+#### Delegates
+
+- A `kata` command behind `nohup`, `exec`, `timeout`, `env`, `command` or `time` (with their common options) is handled like a bare one: a `subagent`'s command gets its `--teammate`, `--workspace`, `--project` and close transcript and refuses `--as`, the lead's close gets its transcript, and a claim is recorded.
+
+#### Repository content
+
+- The ref guard also checks a `shell` `git commit` behind these prefixes.
+
 ## [1.3.0] - 2026-11-26
 
 ### Added
