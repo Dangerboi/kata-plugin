@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { spawnSync } from "bun";
 import { assertIsolated } from "./isolation";
 import { kataCommands } from "../plugins/oh-my-pi/kata";
-import { delegateCommand, kataCommands as coreCommands } from "../core/shell";
+import { delegateCommand, kataCommands as coreCommands, shellOptions } from "../core/shell";
 import { nodePlatform } from "../core/node-host";
 assertIsolated();
 
@@ -57,4 +57,29 @@ test("a delegate's close still runs after a skipped prefix word, or through an e
     expect(execute(delegateCommand(nodePlatform.path, input, "kata", [], "tm-1", undefined, own))).toEqual(["omp/child-uuid/true --teammate tm-1 close ab12"]);
   }
   expect(execute(delegateCommand(nodePlatform.path, '"$KATA_BIN" close ab12', "kata", ["KATA_BIN"], "tm-1", undefined, own))).toEqual(["omp/child-uuid/true --teammate tm-1 close ab12"]);
+});
+
+
+test("claim positions prove success only through a top-level && suffix", () => {
+  for (const [command, proven] of [
+    ["cd x && kata claim abcd", true], ["make; kata claim abcd", true],
+    ["kata claim abcd && kata show abcd", true], ["kata claim abcd && kata claim efgh", true],
+    ["kata claim abcd; kata show abcd", false], ["kata claim abcd || true", false],
+    ["true || kata claim abcd", false], ["true ||\n kata claim abcd", false], ["true |\n kata claim abcd", false], ["true &&\n kata claim abcd", true], ["kata claim abcd | tee log", false],
+    ["kata claim abcd &", false], ["(kata claim abcd)", false], ["{ echo hi; kata claim abcd; }", false],
+    ["if true; then kata claim abcd; fi", false], ["while true; do kata claim abcd; done", false],
+    ["for x in a; do kata claim abcd; done", false], ["if true; then if true; then echo x; fi; kata claim abcd; fi", false], ["! kata claim abcd", false],
+  ] as const) {
+    const claims = coreCommands(nodePlatform.path, command).filter(c => shellOptions(c.words).args[0] === "claim");
+    expect(claims.length, command).toBeGreaterThan(0);
+    expect(claims.every(c => c.proven), command).toBe(proven);
+  }
+});
+
+test("arithmetic shifts and CRLF leave later Kata commands visible", () => {
+  for (const command of ["(( x << 1 ))\nkata claim abcd", "for (( i = 1; i < 9; i <<= 1 )); do echo x; done\nkata claim abcd", "echo x\r\nkata claim abcd"]) {
+    expect(coreCommands(nodePlatform.path, command).map(c => shellOptions(c.words).args)).toEqual([["claim", "abcd"]]);
+  }
+  expect(delegateCommand(nodePlatform.path, "(( x << 1 ))\nkata claim abcd", "kata", [], "worker")).toContain("kata --teammate 'worker' claim abcd");
+  expect(shellOptions(coreCommands(nodePlatform.path, "kata claim --ttl 2h abcd")[0].words).args).toEqual(["claim", "abcd"]);
 });

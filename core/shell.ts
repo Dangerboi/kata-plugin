@@ -14,16 +14,18 @@ export function envPrefix(vars: Record<string, string>): string {
 
 type ShellWord = { value: string; start: number; end: number };
 // One Kata invocation: its executable, the words after it, and the `NAME=value` assignments before it.
-type Invocation = { executable: ShellWord; words: ShellWord[]; assignments: ShellWord[] };
+type Invocation = { executable: ShellWord; words: ShellWord[]; assignments: ShellWord[]; proven: boolean };
 export const ASSIGNMENT = /^[A-Za-z_][A-Za-z0-9_]*=/;
 // The words of one simple command, and the bodies of the heredocs fed to it.
-type Segment = { words: ShellWord[]; bodies: string[] };
+type Segment = { words: ShellWord[]; bodies: string[]; end: string; depth: number };
 // Words that may stand before a command without being it.
 export const PREFIXES = ["if", "then", "elif", "do", "else", "!", "command", "env", "time"];
 // Splits a command at `;`, `&`, `|`, parentheses and newlines. Quoted arguments and heredoc bodies are data (a body belongs to the
 // command whose line holds its `<<`); this lexer never infers whether a test/commit command proves completion.
 export function commandSegments(command: string): Segment[] {
-	const segments: Segment[] = [{ words: [], bodies: [] }];
+	const segments: Segment[] = [{ words: [], bodies: [], end: "", depth: 0 }];
+	let depth = 0;
+	const split = (operator: string) => { segments.at(-1)!.end = operator; segments.push({ words: [], bodies: [], end: "", depth }); };
 	let i = 0, heredoc: string | undefined, owner: Segment | undefined, wantDelimiter = false, hereString = false;
 	while (i < command.length) {
 		if (command[i] === "\n" && heredoc) {
@@ -34,9 +36,26 @@ export function commandSegments(command: string): Segment[] {
 			if (i < 0) break;
 			heredoc = undefined;
 		}
-		if (/\s/.test(command[i])) { if (command[i] === "\n") segments.push({ words: [], bodies: [] }); i++; continue; }
+		if (/\s/.test(command[i])) {
+			if (command[i] === "\n" && !(segments.at(-1)!.words.length === 0 && ["&&", "||", "|"].includes(segments.at(-2)?.end ?? ""))) split("\n");
+			i++; continue;
+		}
 		if (command[i] === "#") { const end = command.indexOf("\n", i); if (end < 0) break; i = end; continue; }
-		if (";&|()".includes(command[i])) { segments.push({ words: [], bodies: [] }); i++; continue; }
+		if (command.slice(i, i + 2) === "((") {
+			let nesting = 1; i += 2;
+			while (i < command.length && nesting) {
+				if (command.slice(i, i + 2) === "((") { nesting++; i += 2; }
+				else if (command.slice(i, i + 2) === "))") { nesting--; i += 2; }
+				else i++;
+			}
+			continue;
+		}
+		if (";&|()".includes(command[i])) {
+			const char = command[i], operator = (char === "&" || char === "|") && command[i + 1] === char ? char + char : char;
+			if (char === "(") depth++;
+			if (char === ")") depth = Math.max(0, depth - 1);
+			split(operator); i += operator.length; continue;
+		}
 		if (command.slice(i, i + 3) === "<<<") { i += 3; hereString = true; continue; }
 		if (command.slice(i, i + 2) === "<<") { i += command[i + 2] === "-" ? 3 : 2; wantDelimiter = true; continue; }
 		const start = i;
@@ -60,16 +79,27 @@ export function commandSegments(command: string): Segment[] {
 // Inspect command positions only.
 export function kataCommands(path: Pick<PathOps, "basename">, command: string, configuredExecutable = "kata", executableVars: readonly string[] = []): Invocation[] {
 	const commands: Invocation[] = [];
-	for (const { words: segment } of commandSegments(command)) {
+	const segments = commandSegments(command);
+	let blockDepth = 0;
+	for (let index = 0; index < segments.length; index++) {
+		const { words: segment, depth } = segments[index];
+		for (const word of segment) {
+			if (["fi", "done", "esac", "}"].includes(word.value)) blockDepth = Math.max(0, blockDepth - 1);
+			else if (["if", "while", "until", "for", "select", "case", "{"].includes(word.value)) blockDepth++;
+			else if (!["then", "do", "else", "elif"].includes(word.value)) break;
+		}
+		const before = index ? segments[index - 1].end : "";
+		const proven = !depth && !blockDepth && before !== "||" && before !== "|" && !segment.some(word => word.value === "!")
+			&& segments.slice(index).every((part, offset) => part.end === "&&" || (offset === segments.length - index - 1 && part.end === ""));
 		let j = 0;
 		while (j < segment.length && (ASSIGNMENT.test(segment[j].value) || PREFIXES.includes(segment[j].value))) j++;
 		const executable = segment[j];
-		if (executable && (path.basename(executable.value) === "kata" || executable.value === configuredExecutable || executableVars.some(name => executable.value === `$${name}` || executable.value === `\${${name}}`))) commands.push({ executable, words: segment.slice(j + 1), assignments: segment.slice(0, j).filter(word => ASSIGNMENT.test(word.value)) });
+		if (executable && (path.basename(executable.value) === "kata" || executable.value === configuredExecutable || executableVars.some(name => executable.value === `$${name}` || executable.value === `\${${name}}`))) commands.push({ executable, words: segment.slice(j + 1), assignments: segment.slice(0, j).filter(word => ASSIGNMENT.test(word.value)), proven });
 	}
 	return commands;
 }
 
-const VALUE_OPTIONS = new Set(["--body", "--body-file", "--message", "-m", "--comment", "--evidence", "--test", "--commit", "--pr", "--reviewed", "--reason", "--idempotency-key", "--parent", "--related", "--blocked-by", "--blocks", "--meta", "--owner", "--label", "--priority", "--if-match", "--if-value", "--workspace", "--project", "--teammate", "--as", "--for", "--format", "--daemon"]);
+const VALUE_OPTIONS = new Set(["--ttl", "--body", "--body-file", "--message", "-m", "--comment", "--evidence", "--test", "--commit", "--pr", "--reviewed", "--reason", "--idempotency-key", "--parent", "--related", "--blocked-by", "--blocks", "--meta", "--owner", "--label", "--priority", "--if-match", "--if-value", "--workspace", "--project", "--teammate", "--as", "--for", "--format", "--daemon"]);
 export function shellOptions(words: ShellWord[]) {
 	const options = new Map<string, ShellWord[]>(), occurrences = new Map<string, ShellWord[][]>(), args: string[] = [];
 	for (let i = 0; i < words.length; i++) {
