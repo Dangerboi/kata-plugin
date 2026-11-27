@@ -177,6 +177,8 @@ const SHUTDOWN_BOUND_MS = 10_000;
 // has no plan to close, so both are short (docs/explanation/limits.md).
 const DELEGATE_SHUTDOWN_MS = 3000;
 const DELEGATE_PROMPT_MS = 3000;
+// The hook used to stop at one second; retain that prompt wait while the fetch continues for up to ten seconds.
+const CONTRACT_READ_MS = 1000;
 // How long a delegate's first prompt waits for its assignment, which it cannot learn later. The lead assigns delegates
 // one at a time, about fifteen Kata calls each, so with many at once the last one waits for all the others.
 const DELEGATE_BIND_MS = 15_000;
@@ -2230,7 +2232,7 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 			].join("\n");
 	}
 
-	const contractReason = (error: unknown) => Array.from(((error as Error)?.message ?? String(error)).replace(/\s+/g, " ").trim()).slice(0, 80).join("") || "unknown error";
+	const contractReason = (error: unknown) => Array.from(messageOf(error).replace(/\s+/g, " ").trim()).slice(0, 80).join("") || "unknown error";
 
 	// The contract is fetched until one arrives non-empty: Kata 0.23.0 sends an empty one outside a `.kata.toml`
 	// folder, so a mid-session `kata init` takes effect on the next turn. The inbox is read on every call, and a call
@@ -2289,7 +2291,7 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 		} else if (inbox && user) {
 			inboxRead = readInbox(entry, job, cwd, undefined, () => user);
 		}
-		const done = Promise.all([entry.pending, inboxRead]).then(() => undefined);
+		const done = Promise.all([entry.pending && bounded(entry.pending, CONTRACT_READ_MS), inboxRead]).then(() => undefined);
 		return { entry, record, showsInbox: main(ctx) || !!record, done };
 	}
 
@@ -2577,11 +2579,11 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 					if (entry.contract) sections.contract = entry.contract;
 					else if (entry.contractError) {
 						const command = `${quoteIfNeeded(options.executable, /^[\w./-]+$/)} quickstart --format contract`;
-						sections.contract = `Kata contract is unavailable (${escapeMarkup(entry.contractError)}). Run \`${escapeMarkup(command)}\` before using kata.`;
+						sections.contract = `Kata contract is unavailable (${escapeMarkup(entry.contractError)}). Before using kata, run: ${command}`;
 					}
 					const ui = uiOf(ctx);
 					if (sid(currentCtx) === sid(ctx) && leadReads.get(leadKey(sid(ctx))) === entry && entry.contractNotice && ui?.notify) {
-						ui.notify(`Kata contract was unavailable (${entry.contractNotice}). Each prompt retries until it loads.`, "warning");
+						ui.notify(`Kata contract was unavailable (${entry.contractNotice}).`, "warning");
 						entry.contractNotice = undefined;
 					}
 					const inbox = main(ctx) && liveInbox !== undefined ? liveInbox : entry.inbox;
