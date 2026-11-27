@@ -94,7 +94,10 @@ test("an assigned delegate's note names its inbox and it reads that address", as
   expect(first).toContain(`Your Kata inbox is v2-builder/${teammate};`);
   const ref = await issue();
   await notify(ref, `v2-builder/${teammate}`, "assigned-ping-9051");
-  expect(await turn(worker)).toContain("assigned-ping-9051");
+  await prompt(worker);
+  const delivered = await worker.event("before_agent_start", { systemPrompt: ["base"] });
+  expect(delivered.message?.content).toContain("assigned-ping-9051");
+  expect(delivered.systemPrompt.join("\n")).not.toContain("assigned-ping-9051");
   await kata(["notify", ref, "--to", `v2-builder/${teammate}`, "--clear", "--json"]);
 });
 

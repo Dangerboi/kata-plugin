@@ -501,10 +501,8 @@ export default function ompKata(pi: any) {
 		if (sections.assignment) out.push(tagged("assignment", sections.assignment));
 		const backend = await kataBackend();
 		offNotice(ctx, backend);
-		const todo = main(ctx) && backend === BACKEND_ID ? sections.todo : undefined;
-		const marker = "\nCurrent plan (refs in parentheses):\n";
-		const split = todo?.indexOf(marker) ?? -1;
-		if (todo) out.push(tagged("todo", split < 0 ? todo : todo.slice(0, split)));
+		const useTodo = main(ctx) && backend === BACKEND_ID;
+		if (useTodo && sections.todoRules) out.push(tagged("todo", sections.todoRules));
 
 		// Only committed messages count: omp can retry or discard a hook result. Compaction
 		// and /tree change what the model has seen, so inspect the current branch each time.
@@ -517,10 +515,10 @@ export default function ompKata(pi: any) {
 				previous = entry.details; break;
 			}
 		}
-		const inbox = sections.inbox ?? "";
-		const plan = split < 0 ? "" : todo!.slice(split + 1);
+		const inbox = sections.inbox ?? previous.inbox;
+		const plan = useTodo ? sections.plan ?? "" : "";
 		const updates: string[] = [];
-		if (inbox !== previous.inbox) updates.push(inbox ? tagged("inbox", `Current Kata inbox (replaces earlier inbox messages):\n${inbox}`) : "The Kata inbox is now empty; earlier requests were cleared or handled.");
+		if (inbox !== previous.inbox) updates.push(inbox ? tagged("inbox", `Current Kata inbox (replaces earlier inbox messages):\n${inbox}`) : "The Kata inbox is now empty or disabled; earlier inbox messages no longer apply.");
 		if (plan !== previous.plan) updates.push(plan ? tagged("todo", `This is the current plan and replaces earlier plan messages.\n${plan}`) : "The current Kata plan has been cleared; earlier plan messages no longer apply.");
 		const message = updates.length ? { customType: "kata-prompt", content: updates.join("\n\n"), display: false, details: { inbox, plan } } : undefined;
 		if (!out.length && !message) return;

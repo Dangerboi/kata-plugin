@@ -22,7 +22,7 @@ export type TurnContext = SmokeContext & {
 export type Turn = SmokeTurn<TurnContext>;
 
 /** One model request as the scripted provider saw it. */
-export type Request = { agent: string; system: string; /** Text of every user-role message in the request. */ users: string[]; /** Role of every message in the request, in order. */ roles: string[]; /** Text of every tool-result message in the request: what the agent was told about its tool calls, refusals included. */ results: string[] };
+export type Request = { agent: string; system: string; /** Text of every user-role message in the request. */ users: string[]; /** Role of every message in the request, in order. */ roles: string[]; /** Model-visible messages in their original order. */ messages: { role: string; text: string }[]; /** Text of every tool-result message in the request: what the agent was told about its tool calls, refusals included. */ results: string[] };
 /** One agent prompt: the system prompt the plugin left, and whether the agent ran on omp's main thread. */
 export type Prompt = { agent: string; system: string; mainThread: boolean };
 /** One finished tool call of an agent; `op` is a todo call's operation. */
@@ -103,6 +103,8 @@ const vars = (): Record<string, string> => JSON.parse(process.env.KATA_SMOKE_VAR
 const lastRef = (ctx: TurnContext, pattern: RegExp) => ctx.texts.join("\n").match(pattern)?.[0];
 // kata notify stores a request as notify.<recipient> metadata.
 const notified = (i?: Issue) => Object.keys(i?.metadata ?? {}).some(key => key.startsWith("notify."));
+// Old inbox copies remain in the transcript; only the newest inbox update is current.
+const latestInbox = (request?: Request) => (request?.messages ?? []).filter(m => m.role === "developer" && (m.text.includes("<kata_inbox>") || m.text.includes("Kata inbox is now empty"))).at(-1)?.text ?? "";
 // A delegate that closed its issue and exited: bound by the lead's session, outcome completed, no subagent key.
 const returnedToLead = (i?: Issue) => !!i?.metadata["omp.session_id"] && i.metadata["omp.status"] === "completed" && !i.metadata["omp.subagent_id"];
 
@@ -216,7 +218,7 @@ export const SCENARIOS: Scenario[] = [{
 		const target = JSON.parse(session.kata(["create", "Inbox target", "--json"])).issue.short_id;
 		const main = () => session.requests().filter(r => r.agent === MAIN);
 		const carrying = (mark: string) => main().filter(r => r.users.some(u => u.includes(mark)));
-		const shows = (mark: string) => (main().at(-1)?.system ?? "").includes(`<kata_inbox>`) && (main().at(-1)?.system ?? "").includes(mark);
+		const shows = (mark: string) => latestInbox(main().at(-1)).includes("<kata_inbox>") && latestInbox(main().at(-1)).includes(mark);
 		const until = async (condition: () => boolean, ms = 20_000) => { for (const end = Date.now() + ms; !condition() && Date.now() < end;) await sleep(100); return condition(); };
 		const notify = (message: string) => session.kata(["notify", target, "--to", "smoke-user/lead", "--message", message]);
 		const clear = () => session.kata(["notify", target, "--to", "smoke-user/lead", "--clear"]);
@@ -232,7 +234,7 @@ export const SCENARIOS: Scenario[] = [{
 		// Let the turn the request started finish before the next prompt.
 		await sleep(1500);
 		await session.prompt("after the idle delivery");
-		checks.push({ name: "the inbox section shows the request on the next prompt", ok: shows("smoke-idle-marker") });
+		checks.push({ name: "the inbox section shows the request on the next prompt", ok: shows("smoke-idle-marker"), detail: JSON.stringify(main().at(-1)?.messages) });
 		// Later requests keep the delivered message in their history, so a second delivery shows as a second copy there.
 		const copies = (mark: string) => main().at(-1)?.users.filter(u => u.includes(mark)).length ?? 0;
 		checks.push({ name: "the idle request was delivered once", ok: copies("smoke-idle-marker") === 1, detail: `${copies("smoke-idle-marker")} copies` });
@@ -250,8 +252,8 @@ export const SCENARIOS: Scenario[] = [{
 		await sleep(2500);
 		checks.push({ name: "a request from another actor starts no turn", ok: main().length === before, detail: `${main().length - before} new requests` });
 		await session.prompt("after the forged request");
-		const everywhere = session.requests().filter(r => r.system.includes("smoke-forged-marker") || r.users.some(u => u.includes("smoke-forged-marker")));
-		checks.push({ name: "its marker is in no system prompt or user message", ok: everywhere.length === 0, detail: `${everywhere.length} requests` });
+		const everywhere = session.requests().filter(r => r.system.includes("smoke-forged-marker") || r.messages.some(m => m.text.includes("smoke-forged-marker")));
+		checks.push({ name: "its marker is absent from model context", ok: everywhere.length === 0, detail: `${everywhere.length} requests` });
 		session.kata(["notify", target, "--to", "smoke-user/lead", "--clear"], { KATA_AUTHOR: "mallory" });
 
 		// A working agent: the request waits for the step boundary, behind the tool result.
@@ -274,7 +276,7 @@ export const SCENARIOS: Scenario[] = [{
 	async drive(session) {
 		const MARK = "smoke-inbox-marker";
 		const target = JSON.parse(session.kata(["create", "Inbox target", "--json"])).issue.short_id;
-		const latest = () => session.requests().filter(r => r.agent === MAIN).at(-1)?.system ?? "";
+		const latest = () => latestInbox(session.requests().filter(r => r.agent === MAIN).at(-1));
 		const seen = () => latest().includes("<kata_inbox>") && latest().includes(MARK);
 		// A read slower than the hook's budget lands on the following turn, so allow two.
 		const within = async (limit: number, want: boolean) => {
@@ -288,7 +290,7 @@ export const SCENARIOS: Scenario[] = [{
 		await sleep(2000);
 		checks.push({ name: "with live delivery off, a notify starts no turn", ok: !session.requests().some(r => r.users.some(u => u.includes(MARK))) && session.requests().length === 1, detail: `${session.requests().length} requests` });
 		const shown = await within(2, true);
-		checks.push({ name: "notify sent mid-session reaches the system prompt within two turns", ok: shown > 0, detail: "never appeared" });
+		checks.push({ name: "notify sent mid-session reaches the model within two turns", ok: shown > 0, detail: "never appeared" });
 		session.kata(["notify", target, "--to", "smoke-user/lead", "--clear"]);
 		const cleared = await within(2, false);
 		checks.push({ name: "clearing the request removes the section within two turns", ok: cleared > 0, detail: "still present" });

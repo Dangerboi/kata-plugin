@@ -91,10 +91,10 @@ export type PlanView = {
 	phases: { name: string; tasks: { content: string; status: Status; ref: string; blocker?: string }[] }[];
 };
 // What a prompt gets from the core, as text: the host formats each section for its prompt.
-export type PromptSections = { contract?: string; inbox?: string; todo?: string; assignment?: string };
+export type PromptSections = { contract?: string; inbox?: string; todo?: string; assignment?: string; todoRules?: string; plan?: string };
 // The tag each section is wrapped in where a host's prompt has no structure of its own.
-export const PROMPT_TAGS = { contract: "kata_contract", inbox: "kata_inbox", assignment: "kata_binding", todo: "kata_todo" } as const satisfies Record<keyof PromptSections, string>;
-export const tagged = (name: keyof PromptSections, text: string) => `<${PROMPT_TAGS[name]}>\n${text}\n</${PROMPT_TAGS[name]}>`;
+export const PROMPT_TAGS = { contract: "kata_contract", inbox: "kata_inbox", assignment: "kata_binding", todo: "kata_todo" } as const satisfies Record<"contract" | "inbox" | "assignment" | "todo", string>;
+export const tagged = (name: keyof typeof PROMPT_TAGS, text: string) => `<${PROMPT_TAGS[name]}>\n${text}\n</${PROMPT_TAGS[name]}>`;
 // The session entry the core saves its state in: appended after each change, and the session's latest is read at the next bind.
 export const snapshotEntry = (namespace: string) => `io.kata.${namespace}.state`;
 export type Snapshot = SettlementSnapshot & { version: number; sessionId: string; ownSessions?: string[]; plan: Plan; delegates?: SavedDelegate[]; named?: Task[]; deletedParent?: string; native?: { prev: Record<string, NativeStatus>; phase: Record<string, string>; listed?: true; leaf?: string } };
@@ -2277,7 +2277,7 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 			inboxRead = readInbox(entry, job, cwd, undefined, () => user);
 		}
 		const done = Promise.all([entry.pending, inboxRead]).then(() => undefined);
-		return { entry, record, showsInbox: main(ctx) || !!record, done };
+		return { entry, record, showsInbox: main(ctx) || !!record, inboxEligible: !!user && isSessionAddress(user) && (main(ctx) || !!record), done };
 	}
 
 	// Only requests from the session's own actor reach the prompt. A failed read (or actor lookup) keeps the last inbox;
@@ -2396,7 +2396,7 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 		if (main(ctx)) await bounded(serial(job => enter(job, ctx)));
 		return lead();
 	};
-	const warmFor = (ctx: HostContext, inbox = true) => warm(ctx, delegates.assignment(ctx)?.workspace || ctx.cwd, inbox && !(main(ctx) && liveInbox !== undefined));
+	const warmFor = (ctx: HostContext, inbox = true) => warm(ctx, delegates.assignment(ctx)?.workspace || ctx.cwd, inbox && !(main(ctx) && !!follower));
 	const prefetch = (ctx: HostContext) => { if (options.prefetch) void warmFor(ctx); };
 
 	// A pi child that starts before its lead planned (a session-start extension can spawn it) finds the lead's automatic parent, or
@@ -2515,7 +2515,6 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 				for (const other of [...leadReads.keys()]) if (other !== leadKey(id)) leadReads.delete(other);
 				const user = setting("KATA_INBOX_USER");
 				const live = !!host.liveInbox && !!user && isSessionAddress(user);
-				if (live) liveInbox = "";
 				prefetch(ctx);
 				if (live) startFollower(ctx, user!);
 				const switching = serial(job => enterSession(job, ctx, begin));
@@ -2563,7 +2562,7 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 					const { entry } = turnReads;
 					if (entry.contract) sections.contract = entry.contract;
 					const inbox = main(ctx) && liveInbox !== undefined ? liveInbox : entry.inbox;
-					if (inbox && turnReads.showsInbox) sections.inbox = inbox;
+					if (turnReads.showsInbox && prompt.inbox !== false) sections.inbox = turnReads.inboxEligible ? inbox : "";
 				}
 				const record = turnReads?.record ?? (!main(ctx) && !context ? host.delegateStore.of(ctx) : undefined);
 				const assigned = record ? delegates.assignment(ctx) : undefined;
@@ -2571,7 +2570,11 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 				const inboxAddress = record ? turnReads?.entry.address : undefined;
 				if (record && assigned) sections.assignment = delegateContext(options.executable, nameOf(record), assigned.ref, assigned.teammate, assigned.binding, inboxAddress);
 				else if (isUntracked(record)) sections.assignment = untrackedDelegateContext(nameOf(record), inboxAddress);
-				if (options.native) sections.todo = plan.parent || plan.local || plan.tasks.some(t => t.ticket) ? `${NATIVE_TODO_RULES}\nCurrent plan (refs in parentheses):\n${render(plan, wording)}` : NATIVE_TODO_RULES;
+				if (options.native) {
+					sections.todoRules = NATIVE_TODO_RULES;
+					if (plan.parent || plan.local || plan.tasks.some(t => t.ticket)) sections.plan = `Current plan (refs in parentheses):\n${render(plan, wording)}`;
+					sections.todo = sections.plan ? `${sections.todoRules}\n${sections.plan}` : sections.todoRules;
+				}
 				else if (plan.parent || plan.tasks.some(t => t.ticket)) sections.todo = `The ${wording.tool} tool is backed by Kata. Current plan:\n${render(plan, wording)}`;
 				return { sections, lead: lead() };
 			},

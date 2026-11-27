@@ -69,3 +69,65 @@ test("inbox updates and clearing are sent once, and branch changes replay them",
   delete process.env.KATA_OMP_LIVE_INBOX;
   delete process.env.KATA_INBOX_USER;
 });
+
+test("resuming while the inbox read is slow does not clear outstanding requests", async () => {
+  process.env.KATA_INBOX_USER = "v2-builder/review95";
+  process.env.KATA_OMP_LIVE_INBOX = "0";
+  const a = host(); await a.event("session_start"); await a.contractReady;
+  const one = await issue("first request"), two = await issue("second request");
+  await kata(["notify", one, "--to", "v2-builder/review95", "--message", "first request remains", "--json"]);
+  await kata(["notify", two, "--to", "v2-builder/review95", "--message", "second request remains", "--json"]);
+  await prompt(a); const prior = await prompt(a);
+  expect(prior.message.content).toContain("first request remains");
+  commit(a, prior);
+  const entries = structuredClone(a.ctx.sessionManager.getBranch());
+  await a.event("session_shutdown");
+  const b = host({ sid: a.sid, entries, before: async (args: string[]) => {
+    if (args[0] === "inbox") await Bun.sleep(1200);
+    return undefined;
+  } });
+  await b.event("session_start");
+  try {
+    expect((await prompt(b))?.message?.content ?? "").not.toContain("inbox is now empty");
+    await Bun.sleep(1300);
+    expect((await prompt(b))?.message?.content ?? "").not.toContain("inbox is now empty");
+    await kata(["notify", one, "--to", "v2-builder/review95", "--clear", "--json"]);
+    await kata(["notify", two, "--to", "v2-builder/review95", "--clear", "--json"]);
+    await Bun.sleep(1300);
+    await prompt(b);
+    await Bun.sleep(1300);
+    expect((await prompt(b))?.message?.content).toContain("inbox is now empty");
+  }
+  finally { await b.event("session_shutdown"); delete process.env.KATA_INBOX_USER; delete process.env.KATA_OMP_LIVE_INBOX; }
+});
+
+
+test("a failed inbox read preserves the prior snapshot until an authoritative empty read", async () => {
+  process.env.KATA_INBOX_USER = "v2-builder/failure95";
+  process.env.KATA_OMP_LIVE_INBOX = "0";
+  const ref = await issue("failed read");
+  await kata(["notify", ref, "--to", "v2-builder/failure95", "--message", "still pending", "--json"]);
+  const a = host(); await a.event("session_start"); await a.contractReady;
+  await prompt(a); const prior = await prompt(a); commit(a, prior);
+  const entries = structuredClone(a.ctx.sessionManager.getBranch());
+  await a.event("session_shutdown");
+  let failing = true;
+  const b = host({ sid: a.sid, entries: structuredClone(entries), before: (args: string[]) => args[0] === "inbox" && failing ? { code: 1, stdout: "", stderr: "offline" } : undefined });
+  await b.event("session_start");
+  try {
+    expect((await prompt(b))?.message?.content ?? "").not.toContain("inbox is now empty");
+    await kata(["notify", ref, "--to", "v2-builder/failure95", "--clear", "--json"]);
+    failing = false;
+    await prompt(b);
+    const clear = await prompt(b);
+    expect(clear?.message?.content).toContain("inbox is now empty");
+    commit(b, clear);
+    expect((await prompt(b))?.message).toBeUndefined();
+  } finally { await b.event("session_shutdown"); }
+  // Removing the session inbox address is authoritative, unlike a failed read.
+  delete process.env.KATA_INBOX_USER;
+  const c = host({ sid: a.sid, entries: structuredClone(entries) });
+  await c.event("session_start");
+  try { expect((await prompt(c))?.message?.content).toContain("inbox is now empty"); }
+  finally { await c.event("session_shutdown"); delete process.env.KATA_OMP_LIVE_INBOX; }
+});

@@ -426,3 +426,16 @@ test("the project head found after a purge is the newest event, so the stream do
 	const newest = (await kata(["comment", `omp-v2-live#${kept}`, "-m", "newest", "--json"])).event.id;
 	expect(await projectHead(text)).toBe(newest);
 });
+
+test("a live follower publishes no partial snapshot before its seed read completes", async () => {
+  const seed = Promise.withResolvers<unknown>();
+  const t = follower({ read: () => seed.promise });
+  t.follow.start(); await tick();
+  t.streams[0].push(slotLine(2, "cleared", null));
+  await tick();
+  expect(t.published).toEqual([]);
+  seed.resolve({ requests: [{ ref: "proj#pending", ...slot("waiting") }] });
+  await tick();
+  expect(t.published.at(-1)).toBe("proj#pending:waiting");
+  t.follow.stop();
+});
