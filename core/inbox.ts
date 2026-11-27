@@ -340,10 +340,10 @@ export function createInboxFollower(deps: InboxFollowerDeps): InboxFollower {
 				const found = await deps.actor();
 				if (gen !== generation) return;
 				mine = found;
+				if (reseeding) publish();
 			}
 			if (!headed) { const head = await deps.head(); if (gen !== generation) return; cursor = Math.max(cursor, head); headed = true; }
 		} catch (error) { deps.debug(error); if (gen === generation) scheduleRestart(gen, false); return; }
-		if (gen !== generation) return;
 		launch(gen);
 		void readInbox();
 	}

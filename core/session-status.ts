@@ -76,7 +76,7 @@ export function inboxText(result: InboxView): string {
 export type KataStatusSource = {
 	view(ctx: any, opts?: { reconcile?: boolean; context?: boolean; nativeInbox?: boolean }): Promise<SessionView | undefined>;
 	inbox(ctx: any, opts?: { nativeInbox?: boolean }): Promise<InboxView>;
-	refresh(): void;
+	refresh(ctx?: any): void;
 };
 
 /**
@@ -86,7 +86,7 @@ export type KataStatusSource = {
 export async function kataCommand(session: KataStatusSource, ctx: any, args: string, opts: { context?: boolean; nativeInbox?: boolean } = {}): Promise<string> {
 	const sub = parseKataCommand(args);
 	if (!sub) return USAGE;
-	if (sub === "refresh") { session.refresh(); return REFRESHED; }
+	if (sub === "refresh") { session.refresh(ctx); return REFRESHED; }
 	if (sub === "inbox") return inboxText(await session.inbox(ctx, { nativeInbox: opts.nativeInbox }));
 	// Hosts pass only the main session here, so no view means a refresh, switch or shutdown overtook the read: read once more.
 	const read = () => session.view(ctx, { reconcile: true, context: opts.context, nativeInbox: opts.nativeInbox });
