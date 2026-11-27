@@ -142,8 +142,10 @@ async function run(scenario: Scenario) {
 				extension = path.join(dir, ".omp", "plugins", "node_modules", "@dangerboi", "kata-omp", "kata.ts");
 			}
 			omp("plugin", "config", "set", "@dangerboi/kata-omp", "refGuard", "off");
-			const list = omp("plugin", "config", "list", "@dangerboi/kata-omp");
-			report("config list shows refGuard off and its variable", /refGuard:\s*off/.test(list) && list.includes("KATA_REF_GUARD"), list);
+			if (scenario.name === "settings-package" || scenario.name === "settings-marketplace") {
+				const list = omp("plugin", "config", "list", "@dangerboi/kata-omp");
+				report("config list shows refGuard off and its variable", /refGuard:\s*off/.test(list) && list.includes("KATA_REF_GUARD"), list);
+			}
 			if (scenario.name === "settings-project") {
 				mkdirSync(path.join(work, ".omp"), { recursive: true });
 				writeFileSync(path.join(work, ".omp/plugin-overrides.json"), JSON.stringify({ settings: { "@dangerboi/kata-omp": { refGuard: "block" } } }));

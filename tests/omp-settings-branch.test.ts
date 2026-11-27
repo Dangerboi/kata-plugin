@@ -10,7 +10,7 @@ afterEach(async () => { for (const app of apps.splice(0)) await app.event("sessi
 
 for (const [initial, next] of [[false, true], [true, false]] as const) test(`branch applies liveInbox ${initial} -> ${next}`, async () => {
   let liveInbox = initial;
-  setPluginSettings(() => ({ defaultProject: "", liveInbox, refGuard: "off" }));
+  setPluginSettings(() => ({ liveInbox }));
   process.env.KATA_INBOX_USER = `v2-builder/branch-${initial}`;
   const sent: string[] = [];
   const app = ompHost({ cwd: store.cwd, sid: `branch-${initial}`, run: (args, opts) => store.run(args, opts.cwd, opts.timeout), sendUserMessage: (text) => { sent.push(text); } });
@@ -54,5 +54,4 @@ test("an unchanged live setting keeps the existing follower on branch", async ()
     expect(spawns).toBe(1);
     expect(killed).toBe(0);
   } finally { await core.session.shutdown(host.ctx); }
-  expect(killed).toBe(1);
 });

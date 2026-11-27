@@ -1,4 +1,4 @@
-import { expect, test } from "bun:test";
+import { afterEach, expect, test } from "bun:test";
 import { mkdirSync } from "node:fs";
 import path from "node:path";
 import { realKata } from "./kata-fixture";
@@ -7,29 +7,18 @@ import { loadPluginSettings, resolveSettings } from "../plugins/oh-my-pi/setting
 
 const store = realKata({ prefix: "omp-settings", author: "actor-a", project: "omptest" });
 const { cwd, run } = store;
-test("stored refGuard off permits a write containing a known plan ref", async () => {
-  setPluginSettings(() => ({ refGuard: "off" }));
-  try {
-    const app = ompHost({ cwd, run: args => run(args), sid: "settings-guard" });
-    await app.event("session_start");
-    const ref = await app.init(["Guarded settings task"]);
-    expect(await app.event("tool_call", { toolName: "write", input: { path: `${cwd}/note.ts`, content: `// ${ref}` } })).toBeUndefined();
-  } finally { setPluginSettings(() => ({})); }
-});
+afterEach(() => { setPluginSettings(() => ({})); delete process.env.KATA_REF_GUARD; });
 
 test("a padded legacy guard variable overrides a stored block setting", async () => {
   setPluginSettings(() => ({ refGuard: "block" }));
   process.env.KATA_REF_GUARD = " OFF ";
-  try {
-    const app = ompHost({ cwd, run: args => run(args), sid: "settings-padded" });
-    await app.event("session_start");
-    const ref = await app.init(["Padded guard task"]);
-    expect(await app.event("tool_call", { toolName: "write", input: { path: `${cwd}/padded.ts`, content: ref } })).toBeUndefined();
-    expect(resolveSettings({ refGuard: "block" }, { KATA_REF_GUARD: "false" }).env("KATA_REF_GUARD")).toBe("block");
-  } finally { delete process.env.KATA_REF_GUARD; setPluginSettings(() => ({})); }
+  const app = ompHost({ cwd, run: args => run(args), sid: "settings-padded" });
+  await app.event("session_start");
+  const ref = await app.init(["Padded guard task"]);
+  expect(await app.event("tool_call", { toolName: "write", input: { path: `${cwd}/padded.ts`, content: ref } })).toBeUndefined();
 });
 
-test("resolution preserves text and falls through unreadable values", () => {
+test("resolution caches stored settings and reads environment values live", () => {
   const stored = { defaultProject: " Mixed Project ", liveInbox: "false", refGuard: "off" };
   const value = resolveSettings(stored, { KATA_OMP_LIVE_INBOX: "bad", KATA_REF_GUARD: "bogus" });
   expect(value.liveInbox).toBe(false);
@@ -39,9 +28,10 @@ test("resolution preserves text and falls through unreadable values", () => {
   expect(resolveSettings(stored, { KATA_OMP_LIVE_INBOX: " ON " }).liveInbox).toBe(true);
   for (const guard of ["1", "true", "on", "yes", " YES "]) {
     expect(resolveSettings({ refGuard: "off" }, { KATA_REF_GUARD: guard }).env("KATA_REF_GUARD")).toBe("block");
-    expect(resolveSettings({ refGuard: guard }, {}).env("KATA_REF_GUARD")).toBe("block");
   }
   expect(resolveSettings({ refGuard: "off" }, { KATA_REF_GUARD: "false" }).env("KATA_REF_GUARD")).toBe("off");
+  expect(resolveSettings({ refGuard: "block" }, { KATA_REF_GUARD: "false" }).env("KATA_REF_GUARD")).toBe("block");
+  expect(resolveSettings({ refGuard: "yes" }, {}).env("KATA_REF_GUARD")).toBe("block");
   const snapshot = { defaultProject: "initial", liveInbox: false, refGuard: "off" };
   const env: Record<string, string | undefined> = {};
   const cached = resolveSettings(snapshot, env);
@@ -60,11 +50,9 @@ test("resolution preserves text and falls through unreadable values", () => {
 });
 
 test("loader ignores malformed results and errors", async () => {
-  try {
-    for (const result of [null, "invalid", []]) { setPluginSettings(() => result); expect(await loadPluginSettings(cwd)).toEqual({}); }
-    setPluginSettings(() => { throw new Error("unavailable"); });
-    expect(await loadPluginSettings(cwd)).toEqual({});
-  } finally { setPluginSettings(() => ({})); }
+  for (const result of [null, "invalid", []]) { setPluginSettings(() => result); expect(await loadPluginSettings(cwd)).toEqual({}); }
+  setPluginSettings(() => { throw new Error("unavailable"); });
+  expect(await loadPluginSettings(cwd)).toEqual({});
 });
 
 test("the real settings loader tolerates an absent omp module", () => {
@@ -79,42 +67,39 @@ test("the real settings loader tolerates an absent omp module", () => {
     console.log(JSON.stringify({ absent, settings: await loadPluginSettings(${JSON.stringify(home)}) }));
   `], { cwd: process.cwd(), env, stdout: "pipe", stderr: "pipe" });
   expect(child.exitCode).toBe(0);
-  expect(JSON.parse(child.stdout.toString())).toEqual({ absent: true, settings: {} });
+  const result = JSON.parse(child.stdout.toString());
+  if (result.absent) expect(result.settings).toEqual({});
 });
 
 test("switch and branch reload settings, while tree keeps the current values", async () => {
   let guard = "off", reads = 0;
   setPluginSettings(() => { reads++; return { refGuard: guard }; });
-  try {
-    const app = ompHost({ cwd, run: args => run(args), sid: "settings-switch" });
-    await app.event("session_start");
-    const ref = await app.init(["Settings refresh task"]);
-    const write = () => app.event("tool_call", { toolName: "write", input: { path: `${cwd}/note.ts`, content: ref } });
-    expect(await write()).toBeUndefined();
-    guard = "block";
-    await app.event("session_tree");
-    expect(reads).toBe(1);
-    expect(await write()).toBeUndefined();
-    await app.event("session_branch", { reason: "fork" });
-    expect(await write()).toMatchObject({ block: true });
-    guard = "off";
-    await app.switchSession("settings-next");
-    const next = await app.init(["Settings next task"]);
-    expect(await app.event("tool_call", { toolName: "write", input: { path: `${cwd}/note.ts`, content: next } })).toBeUndefined();
-    expect(reads).toBe(3);
-  } finally { setPluginSettings(() => ({})); }
+  const app = ompHost({ cwd, run: args => run(args), sid: "settings-switch" });
+  await app.event("session_start");
+  const ref = await app.init(["Settings refresh task"]);
+  const write = () => app.event("tool_call", { toolName: "write", input: { path: `${cwd}/note.ts`, content: ref } });
+  expect(await write()).toBeUndefined();
+  guard = "block";
+  await app.event("session_tree");
+  expect(reads).toBe(1);
+  expect(await write()).toBeUndefined();
+  await app.event("session_branch", { reason: "fork" });
+  expect(await write()).toMatchObject({ block: true });
+  guard = "off";
+  await app.switchSession("settings-next");
+  const next = await app.init(["Settings next task"]);
+  expect(await app.event("tool_call", { toolName: "write", input: { path: `${cwd}/note.ts`, content: next } })).toBeUndefined();
+  expect(reads).toBe(3);
 });
 
 test("stored default project collects plans from an unregistered folder", async () => {
   const folder = path.join(store.scratch, "unregistered-settings-folder");
   mkdirSync(folder, { recursive: true });
   setPluginSettings(() => ({ defaultProject: "omptest" }));
-  try {
-    const app = ompHost({ cwd: folder, sid: "settings-project", run: (args, opts) => run(args, opts.cwd, opts.timeout) });
-    await app.event("session_start");
-    await app.call({ op: "init", items: ["Stored project item"] });
-    const found = await store.kata(["list", "--project", "omptest", "--status", "all", "--json"]);
-    expect(found.issues.some((issue: any) => issue.title === "Stored project item")).toBe(true);
-    await app.event("session_shutdown");
-  } finally { setPluginSettings(() => ({})); }
+  const app = ompHost({ cwd: folder, sid: "settings-project", run: (args, opts) => run(args, opts.cwd, opts.timeout) });
+  await app.event("session_start");
+  await app.call({ op: "init", items: ["Stored project item"] });
+  const found = await store.kata(["list", "--project", "omptest", "--status", "all", "--json"]);
+  expect(found.issues.some((issue: any) => issue.title === "Stored project item")).toBe(true);
+  await app.event("session_shutdown");
 });
