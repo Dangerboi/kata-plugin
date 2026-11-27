@@ -120,11 +120,38 @@ test("a heredoc body belongs to the command whose line holds its <<", async () =
 });
 
 test("only the commit message is checked, in a workspace repo", async () => {
-  expect(await check("bash", { command: `git commit --author "ab3d <a@b.c>" --trailer "Ref: demo#k9m2" -m "fix" ab3d.ts` })).toEqual([]);
+  expect(await check("bash", { command: `git commit --author "ab3d <a@b.c>" --trailer "Ref: demo#k9m2" -m "fix" ab3d.ts` })).toEqual(["demo#k9m2"]);
   expect(await check("bash", { command: `git commit -m "fix" -- ab3d.ts` })).toEqual([]);
   expect(await check("bash", { command: `git commit --message=demo#ab3d` })).toEqual(["demo#ab3d"]);
   expect(await check("bash", { command: `git -C /tmp/elsewhere commit -m "demo#ab3d"` })).toEqual([]);
   expect(await check("bash", { command: `git -C /work commit -m "demo#ab3d"` })).toEqual(["demo#ab3d"]);
+});
+
+test("git message options and stdin are checked for commits, merges, tags and notes", async () => {
+  const commands = [
+    `git commit --trailer=Ref:demo#ab3d -m fix`,
+    `git merge -m "merge demo#ab3d"`,
+    `git merge --message=demo#ab3d`,
+    `git tag -am "demo#ab3d" v1`,
+    `git tag -m "demo#ab3d" v1`,
+    `git notes add -m "demo#ab3d"`,
+    `git notes append --message=demo#ab3d`,
+    `git commit --file=/dev/stdin <<< "demo#ab3d"`,
+    `git commit -F /dev/stdin <<< "demo#ab3d"`,
+    `git merge -F - <<EOF\ndemo#ab3d\nEOF`,
+    `git tag -F - v1 <<EOF\ndemo#ab3d\nEOF`,
+    `git notes add --file=/dev/stdin <<< "demo#ab3d"`,
+  ];
+  for (const command of commands) expect(await check("bash", { command }), command).toEqual(["demo#ab3d"]);
+});
+
+test("git non-message arguments and messages outside the workspace pass", async () => {
+  for (const command of [
+    `git commit --author "ab3d <a@b.c>" -m fix ab3d.ts`,
+    `git tag v1`, `git merge feature`, `git notes show`, `git constructor -m demo#ab3d`,
+    `git merge -smy-strategy demo#ab3d`, `git tag -uuser-m demo#ab3d`,
+    `git -C /tmp/x merge -m "demo#ab3d"`,
+  ]) expect(await check("bash", { command }), command).toEqual([]);
 });
 
 test("held refs are the replaced text's and the file's, for every kind of edit", async () => {

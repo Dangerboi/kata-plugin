@@ -64,12 +64,15 @@ const addedRows = (diff: string, file: string | undefined): Added => ({ files: f
 
 // Git global options that take a value, which `git -C dir commit` puts before the subcommand.
 const GIT_VALUE_OPTIONS = new Set(["-C", "-c", "--git-dir", "--work-tree", "--namespace", "--exec-path"]);
-// Short flags of `git commit` that take a value; a cluster such as `-am"msg"` is `-a` and `-m` with its text attached.
-const SHORT_WITH_VALUE = /[FCctSu]/;
+// Value-taking short flags before `m` consume the rest of a cluster, rather than introducing a message.
+const GIT_MESSAGE_OPTIONS: Record<string, { values: RegExp; trailer?: boolean }> = {
+  commit: { values: /[FCctSu]/, trailer: true }, merge: { values: /[FsX]/ },
+  tag: { values: /[Fu]/ }, notes: { values: /[FCc]/ },
+};
 
-// The message of every `git commit` in a shell command: `-m`, `--message`, `-am` (the text may be attached) and, for `-F -`, the heredoc or
-// here-string fed to it. Its other words (--author, --trailer, pathspecs) are not the message. `cwd`: where the bash call runs.
-function commitMessages(command: string, cwd: string | undefined): Added[] {
+// Messages and trailers supplied to Git, including heredocs and here-strings read from stdin. Other words
+// such as --author and pathspecs are not messages. `cwd`: where the bash call runs.
+function gitMessages(command: string, cwd: string | undefined): Added[] {
 	const added: Added[] = [];
 	// Where each command runs: the call's folder, moved by a `cd` before it, then by `git -C` values in order (absolute replaces, relative appends).
 	const fold = (base: string | undefined, dir: string) => dir.startsWith("/") || dir.startsWith("~") || !base ? dir : `${base.replace(/\/+$/, "")}/${dir}`;
@@ -84,14 +87,23 @@ function commitMessages(command: string, cwd: string | undefined): Added[] {
 		if (!/(^|\/)git$/.test(words[at]?.value ?? "")) continue;
 		let place = base;
 		for (at++; at < words.length && words[at].value.startsWith("-"); at += GIT_VALUE_OPTIONS.has(words[at].value) ? 2 : 1) if (words[at].value === "-C" && words[at + 1]) place = fold(place, words[at + 1].value);
-		if (words[at]?.value !== "commit") continue;
+		const subcommand = words[at]?.value, options = GIT_MESSAGE_OPTIONS[subcommand];
+		if (!Object.hasOwn(GIT_MESSAGE_OPTIONS, subcommand)) continue;
+		if (subcommand === "notes" && !["add", "append"].includes(words[++at]?.value)) continue;
 		const rest = words.slice(at + 1).map(word => word.value), parts: string[] = [];
 		for (let n = 0; n < rest.length; n++) {
-			const word = rest[n], short = !word.startsWith("--") && /^-([a-zA-Z]*?)m([\s\S]*)$/.exec(word);
-			if (word === "--message") { if (rest[n + 1] !== undefined) parts.push(rest[++n]); }
+			const word = rest[n];
+			if (word === "--") break;
+			const short = !word.startsWith("--") && /^-([a-zA-Z]*?)m([\s\S]*)$/.exec(word);
+			const file = !word.startsWith("--") && /^-([a-zA-Z]*?)F([\s\S]*)$/.exec(word);
+			if (word === "--message" || (options.trailer && word === "--trailer")) { if (rest[n + 1] !== undefined) parts.push(rest[++n]); }
 			else if (word.startsWith("--message=")) parts.push(word.slice(10));
-			else if (short && !SHORT_WITH_VALUE.test(short[1])) { if (short[2]) parts.push(short[2]); else if (rest[n + 1] !== undefined) parts.push(rest[++n]); }
-			else if (word === "-F-" || word === "--file=-" || ((word === "-F" || word === "--file") && rest[n + 1] === "-")) parts.push(...bodies);
+			else if (options.trailer && word.startsWith("--trailer=")) parts.push(word.slice(10));
+			else if (short && !options.values.test(short[1])) { if (short[2]) parts.push(short[2]); else if (rest[n + 1] !== undefined) parts.push(rest[++n]); }
+			else if (word === "--file" || word.startsWith("--file=") || (file && !options.values.test(file[1]))) {
+				const value = word === "--file" ? rest[++n] : word.startsWith("--file=") ? word.slice(7) : (file && file[2]) || rest[++n];
+				if (value === "-" || value === "/dev/stdin") parts.push(...bodies);
+			}
 		}
 		added.push({ files: place === undefined ? undefined : [place], text: parts.join("\n") });
 	}
@@ -126,7 +138,7 @@ function addedBy(tool: string, input: unknown): Added[] {
 			const paths = (Array.isArray(call.paths) ? call.paths : [call.paths ?? call.path]).filter((p): p is string => typeof p === "string");
 			return records(call.ops).flatMap(op => typeof op.out === "string" ? [{ files: paths.length ? paths : ["."], text: op.out }] : []);
 		}
-		case "bash": case "shell": return typeof call.command === "string" ? commitMessages(call.command, asString(call.cwd) ?? asString(call.workdir)) : [];
+		case "bash": case "shell": return typeof call.command === "string" ? gitMessages(call.command, asString(call.cwd) ?? asString(call.workdir)) : [];
 		default: return [];
 	}
 }
