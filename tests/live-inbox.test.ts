@@ -515,3 +515,32 @@ test("a failed refresh reseed retries while the stream stays open", async () => 
 		expect(t.delivered).toHaveLength(0);
 	} finally { t.follow.stop(); }
 });
+
+for (const refreshedActor of ["lead", "other"]) test(`verified ${refreshedActor} filters retained slots while reseed is pending`, async () => {
+	const actorGate = Promise.withResolvers<string>(), readGate = Promise.withResolvers<void>(), readStarted = Promise.withResolvers<void>();
+	let actors = 0, reads = 0;
+	const requests = [{ ref: "old", ...slot("first") }, { ref: "new", from: "other", message: "second" }];
+	const t = follower({
+		actor: () => ++actors === 1 ? Promise.resolve("lead") : actorGate.promise,
+		read: async () => { if (++reads === 2) { readStarted.resolve(); await readGate.promise; } return { requests: reads === 1 ? [] : requests }; },
+	});
+	try {
+		t.follow.start(); await tick();
+		t.streams[0]!.push(slotLine(1, "old", slot("first")));
+		t.streams[0]!.push(slotLine(2, "new", { from: "other", message: "second" }));
+		t.streams[0]!.push(slotLine(3, "gone", slot("cleared")));
+		t.streams[0]!.push(slotLine(4, "gone", null));
+		await tick();
+		expect(t.delivered).toHaveLength(2);
+		const before = t.published.length;
+		t.follow.refreshActor(); await tick();
+		expect(t.published).toHaveLength(before);
+		actorGate.resolve(refreshedActor);
+		expect(await Promise.race([readStarted.promise.then(() => true), Bun.sleep(2000).then(() => false)])).toBe(true);
+		expect(t.published).toHaveLength(before + 1);
+		expect(t.published.at(-1)).toBe(refreshedActor === "lead" ? "old:first" : "new:second");
+		expect(t.delivered).toHaveLength(2);
+		readGate.resolve(); await tick();
+		expect(t.delivered).toHaveLength(2);
+	} finally { actorGate.resolve(refreshedActor); readGate.resolve(); t.follow.stop(); }
+});
