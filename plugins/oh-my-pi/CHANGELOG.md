@@ -4,6 +4,14 @@ All notable changes to `@dangerboi/kata-omp` are listed here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+#### Inbox and attention
+
+- `KATA_CONTRACT_SOURCE` names a file whose text replaces the Kata contract.
+  - A relative path is read from the session folder; a file that does not exist gets one warning and the built-in contract.
+  - The session keeps the contract it first gets: start a new session after editing the file or correcting its path.
+
 ## [3.1.0] - 2026-11-26
 
 ### Added

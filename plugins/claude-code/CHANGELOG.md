@@ -4,6 +4,14 @@ All notable changes to the `kata-cc` Claude Code plugin are listed here. The for
 
 ## [Unreleased]
 
+### Added
+
+#### Inbox and attention
+
+- `KATA_CONTRACT_SOURCE` (or the `contractSource` option) names a file whose text replaces the Kata contract the mod adds with `contract` on.
+  - A relative path is read from the session folder; a file that does not exist gets one warning and the built-in contract.
+  - The session keeps the contract it first gets: start a new session after editing the file or correcting its path.
+
 ## [1.2.0] - 2026-11-26
 
 ### Added
