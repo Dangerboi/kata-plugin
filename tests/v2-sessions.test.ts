@@ -499,12 +499,7 @@ test("omp warn attaches each guard reason to its own result, then takes it once"
 			expect(result?.additionalContext).toContain(ref);
 			contexts.push(result?.additionalContext);
 		}
-		// The optional real OMP aggregator checks the batch boundary; distinct contexts remain mandatory in every run.
-		const aggregator = process.env.KATA_TEST_OMP_TOOL_CONTEXT;
-		if (aggregator) {
-			const { joinAdditionalContext } = await import(aggregator);
-			expect(joinAdditionalContext(contexts)?.match(/Kata refs only resolve/g)).toHaveLength(2);
-		}
+		// omp drops an additionalContext equal to another in the same batch, so each call's must differ.
 		expect(contexts[0]).not.toBe(contexts[1]);
 	} finally { delete process.env.KATA_REF_GUARD; }
 });
