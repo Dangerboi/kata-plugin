@@ -2,7 +2,7 @@
 
 This page covers only what the plugin adds when a lead works through `kata ready`.
 
-Every host's plan text says it too: delegate by putting the work in the plan, not by creating child issues yourself (`kata create`) for subagents to claim. How the plugin binds and settles delegates is in the [oh-my-pi](../reference/oh-my-pi.md#delegates), [pi](../reference/pi.md), [OpenCode](../reference/opencode.md#delegates) and [Claude Code](../reference/claude-code.md#delegates) references.
+How the plugin binds and settles delegates is in the [oh-my-pi](../reference/oh-my-pi.md#delegates), [pi](../reference/pi.md), [OpenCode](../reference/opencode.md#delegates) and [Claude Code](../reference/claude-code.md#delegates) references.
 
 - **Do not work session parents as tasks.** The labels `omp-session`, `pi-session`, `opencode-session` and `claude-session` show that a session made the issue as its plan parent ([metadata](../reference/metadata.md)), not who closes it now: a lead that bound it explicitly closes it itself, and an automatic close can fail ([closing rules](../reference/closing-rules.md)). Review and report a session parent still open after its children closed.
 - **Skip plan tasks another session still holds.** Ops on a task another lead session holds now are refused. Leave it unless the user says that session crashed or was killed; how a task is held, released and taken over is in the [closing rules](../reference/closing-rules.md).
