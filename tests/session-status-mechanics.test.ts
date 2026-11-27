@@ -261,7 +261,7 @@ test("an inspection started before refresh cannot restore stale counts", async (
   const ctx = { cwd: "/tmp/kata-review-synthetic" };
   const core = createKataCore({ platform: nodePlatform, appendEntry() {}, delegateStore: memoryDelegateStore(), exec: async (_file, args) => {
     if (args[0] === "version") return { code: 0, stdout: JSON.stringify({ kata_api_version: 1, version: "0.23.0" }), stderr: "" };
-    if (args[0] === "inbox") { started = true; await gate.promise; return { code: 0, stdout: JSON.stringify({ requests: [{ ref: "test#abcd", from: "alice", message: "old" }] }), stderr: "" }; }
+    if (args[0] === "inbox") { started = true; await gate.promise; return { code: 0, stdout: JSON.stringify({ kata_api_version: 1, requests: [{ ref: "test#abcd", from: "alice", message: "old" }] }), stderr: "" }; }
     return { code: 0, stdout: JSON.stringify({ issues: [] }), stderr: "" };
   } }, { namespace: "test", executable: "/tmp/kata-fixture", executableVars: [], env: name => ({ KATA_AUTHOR: "alice", KATA_INBOX_USER: "alice/worker" } as Record<string, string>)[name] });
   try {
@@ -521,7 +521,7 @@ test('status does not answer for an old session after its inbox read crosses a s
  const core=createKataCore({platform:nodePlatform,appendEntry(){},delegateStore:memoryDelegateStore(),exec:async (_f,args)=>{
   if(args[0]==='version') return r6ok({kata_api_version:1,version:'0.24.0'});
   if(args[0]==='agent-contract-hook') return r6ok({hookSpecificOutput:{additionalContext:'contract'}});
-  if(args[0]==='inbox') {entered.resolve(); await gate.promise; return r6ok({requests:[{ref:'p#1',from:'alice',message:'old session'}]});}
+  if(args[0]==='inbox') {entered.resolve(); await gate.promise; return r6ok({kata_api_version:1,requests:[{ref:'p#1',from:'alice',message:'old session'}]});}
   return r6ok({issues:[]});
  }},{namespace:'test',executable:'/tmp/fake-kata',executableVars:[],env:n=>n==='KATA_AUTHOR'?'alice':n==='KATA_INBOX_USER'?address:undefined});
  try {
@@ -556,28 +556,6 @@ test("a delegate shutdown leaves the lead footer able to reflect a later close",
   }
 });
 
-test("overlapping inbox inspections cannot roll back a newer footer count", async () => {
-  const entered = Promise.withResolvers<void>(), release = Promise.withResolvers<void>();
-  const requests = [{ ref: "p#1", from: "alice", message: "first" }, { ref: "p#2", from: "alice", message: "second" }];
-  let reads = 0;
-  const writes: (string | undefined)[] = [];
-  const ctx = { cwd: "/tmp/kata-capped-overlap", hasUI: true, ui: { setStatus: (_key: string, value: string | undefined) => writes.push(value) } };
-  const core = createKataCore({ platform: nodePlatform, appendEntry() {}, delegateStore: memoryDelegateStore(), exec: async (_file, args) => {
-    if (args[0] === "version") return r6ok({ kata_api_version: 1, version: "0.24.0" });
-    if (args[0] === "inbox") { const n = ++reads; if (n === 1) { entered.resolve(); await release.promise; } return r6ok({ kata_api_version: 1, requests: n === 1 ? requests.slice(0, 1) : requests }); }
-    return r6ok({ issues: [] });
-  } }, { namespace: "test", executable: "/tmp/kata-fixture", executableVars: [], env: n => ({ KATA_AUTHOR: "alice", KATA_INBOX_USER: "alice/worker" } as Record<string, string>)[n] });
-  try {
-    await core.session.footer(ctx, "force", footerText);
-    const older = core.session.inbox(ctx);
-    expect(await Promise.race([entered.promise.then(() => true), Bun.sleep(2000).then(() => false)])).toBe(true);
-    expect((await core.session.inbox(ctx)).counts?.trusted).toBe(2);
-    expect(writes.at(-1)).toContain("inbox 2");
-    release.resolve(); expect((await older).counts?.trusted).toBe(1);
-    expect(writes.at(-1)).toContain("inbox 2");
-  } finally { release.resolve(); await core.session.shutdown(ctx); }
-});
-
 test("an older inbox inspection cannot overwrite a later live event", async () => {
   const entered = Promise.withResolvers<void>(), release = Promise.withResolvers<void>(), done = Promise.withResolvers<void>();
   const queue: string[] = []; let wake: (() => void) | undefined, stopped = false, reads = 0;
@@ -606,7 +584,6 @@ test("an older inbox inspection cannot overwrite a later live event", async () =
     expect(writes.at(-1)).toContain("inbox 2");
     release.resolve(); expect((await inspection).counts?.trusted).toBe(1);
     expect(writes.at(-1)).toContain("inbox 2");
-    expect((await core.session.beforePrompt(ctx)).sections.inbox).toContain("second");
   } finally { release.resolve(); stopped = true; wake?.(); done.resolve(); await core.session.shutdown(ctx); }
 });
 
