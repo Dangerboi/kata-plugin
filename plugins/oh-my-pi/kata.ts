@@ -24,7 +24,7 @@ import { closeEnv, debugTo, NO_JOB } from "./kata-cli";
 import { delegateCommand, kataCommands as parseKataCommands } from "./shell";
 import { FINAL, isUntracked, Refusal, teammateFor } from "./delegates";
 import { textOf } from "./model";
-import { footerText, KATA_DESCRIPTION, kataCommand, MAIN_ONLY } from "./session-status";
+import { footerText, KATA_DESCRIPTION, kataCommand, MAIN_ONLY, parseKataCommand } from "./session-status";
 import type { DelegateOutcome, DelegateRecord, Delegates, DelegateStore } from "./delegates";
 import type { Setting } from "@oh-my-pi/pi-coding-agent/config/registry";
 import type { InboxStream } from "./inbox";
@@ -331,12 +331,16 @@ export default function ompKata(pi: any) {
 		description: KATA_DESCRIPTION,
 		async handler(args: string, ctx: any) {
 			const at = main(ctx) ? ctx : !ctx?.agent && seen && main(seen) ? seen : undefined;
-			try { ctx?.ui?.notify?.(at ? await kataCommand(core.session, at, args) : MAIN_ONLY, "info"); if (at) drawFooter(at, "force"); }
+			try {
+				ctx?.ui?.notify?.(at ? await kataCommand(core.session, at, args) : MAIN_ONLY, "info");
+				// The usage reply reads nothing, so it redraws nothing either.
+				if (at && parseKataCommand(args)) await drawFooter(at, "force");
+			}
 			catch (error) { debug(error); ctx?.ui?.notify?.(`Kata could not answer /kata: ${error instanceof Error ? error.message : String(error)}`, "warning"); }
 		},
 	});
 	// The footer: redrawn at once at session start, before each prompt, after /kata and after a task call; other tool results are throttled.
-	const drawFooter = (ctx: any, mode: "force" | "throttle") => { if (main(ctx)) void core.session.footer(ctx, mode, footerText).catch(debug); };
+	const drawFooter = (ctx: any, mode: "force" | "throttle"): Promise<void> => main(ctx) ? core.session.footer(ctx, mode, footerText).catch(debug) : Promise.resolve();
 
 	// The Delegates that owns a delegate's record is the lead's, on the main thread; a worker's copy reaches it over the channel.
 	const nextUseOf = (ctx: any): Promise<void> | undefined => {
@@ -487,7 +491,7 @@ export default function ompKata(pi: any) {
 			await syncJobs(ctx);
 		} else if (call) over(event.toolCallId);
 		await core.tools.result(ctx, event);
-		drawFooter(ctx, event.toolName === "task" ? "force" : "throttle");
+		void drawFooter(ctx, event.toolName === "task" ? "force" : "throttle");
 		// A delegate's todo list is not mirrored by omp (backends are main-session only), so its result carries the list here.
 		if (event.toolName === "todo" && !event.isError && ctx.agent?.kind === "sub" && event.details?.op !== "view" && Array.isArray(event.details?.phases) && await kataBackend() === BACKEND_ID) {
 			const record = await recordOf(ctx);
@@ -508,7 +512,7 @@ export default function ompKata(pi: any) {
 		if (event.reason === "revive") return;
 		await enter(ctx);
 		const { sections } = await core.session.beforePrompt(ctx, { after: !main(ctx) ? nextUseOf(ctx) : undefined });
-		drawFooter(ctx, "force");
+		void drawFooter(ctx, "force");
 		const ours = new RegExp(`^<(${Object.values(PROMPT_TAGS).join("|")})>`);
 		const base = (Array.isArray(event.systemPrompt) ? event.systemPrompt : [event.systemPrompt || ""]).filter((s: string) => !ours.test(s));
 		const out: string[] = [];
@@ -531,7 +535,7 @@ export default function ompKata(pi: any) {
 		const backend = await kataBackend();
 		await core.session.start(ctx);
 		offNotice(ctx, backend);
-		drawFooter(ctx, "force");
+		void drawFooter(ctx, "force");
 	}
 
 	pi.on("session_start", (_event: any, ctx: any) => begin(ctx));

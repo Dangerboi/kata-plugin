@@ -6,7 +6,7 @@ import { exportTranscriptSession, nodePlatform } from "./node-host";
 import { delegateCommand, kataCommands, quote } from "./shell";
 import type { DelegateRecord, DelegateStore } from "./delegates";
 import { lastText } from "./model";
-import { footerText, KATA_DESCRIPTION, kataCommand, MAIN_ONLY } from "./session-status";
+import { footerText, KATA_DESCRIPTION, kataCommand, MAIN_ONLY, parseKataCommand } from "./session-status";
 
 const NAMESPACE = "pi";
 
@@ -153,12 +153,16 @@ export default async function piKata(pi: ExtensionAPI) {
 	pi.registerCommand("kata", {
 		description: KATA_DESCRIPTION,
 		async handler(args, ctx) {
-			try { ctx.ui.notify(inherited ? MAIN_ONLY : await kataCommand(core.session, ctx, args, { context: !nativeContractActive(ctx.cwd) }), "info"); drawFooter(ctx, "force"); }
+			try {
+				ctx.ui.notify(inherited ? MAIN_ONLY : await kataCommand(core.session, ctx, args, { context: !nativeContractActive(ctx.cwd) }), "info");
+				// The usage reply reads nothing, so it redraws nothing either.
+				if (parseKataCommand(args)) await drawFooter(ctx, "force");
+			}
 			catch (error) { ctx.ui.notify(`Kata could not answer /kata: ${error instanceof Error ? error.message : String(error)}`, "warning"); }
 		},
 	});
 	// The footer: redrawn at once at session start, before each prompt, after /kata and after a bash command that may start a pi child; other tool results are throttled.
-	const drawFooter = (ctx: ExtensionContext, mode: "force" | "throttle") => { if (!inherited) void core.session.footer(ctx, mode, footerText).catch(() => {}); };
+	const drawFooter = (ctx: ExtensionContext, mode: "force" | "throttle"): Promise<void> => inherited ? Promise.resolve() : core.session.footer(ctx, mode, footerText).catch(() => {});
 	pi.on("input", async (event) => {
 		if (event.source === "interactive" && !event.text.trim().startsWith("/")) core.session.input();
 	});
@@ -188,7 +192,7 @@ export default async function piKata(pi: ExtensionAPI) {
 		const next = await core.tools.result(ctx, { ...event, details: undefined });
 		if (!inherited) lead = next;
 		const command = event.toolName === "bash" ? (event.input as { command?: unknown })?.command : undefined;
-		drawFooter(ctx, typeof command === "string" && launchesPi(command) ? "force" : "throttle");
+		void drawFooter(ctx, typeof command === "string" && launchesPi(command) ? "force" : "throttle");
 	});
 
 	pi.on("before_agent_start", async (event, ctx) => {
@@ -198,7 +202,7 @@ export default async function piKata(pi: ExtensionAPI) {
 		const native = !inherited && nativeContractActive(ctx.cwd);
 		const { sections: text, lead: next } = await core.session.beforePrompt(ctx, { context: !native });
 		if (!inherited) lead = next;
-		drawFooter(ctx, "force");
+		void drawFooter(ctx, "force");
 		const sections = event.systemPromptOptions.sections;
 		if (text.contract) sections[PROMPT_TAGS.contract] = text.contract;
 		if (text.inbox) sections[PROMPT_TAGS.inbox] = text.inbox;
@@ -242,7 +246,7 @@ export default async function piKata(pi: ExtensionAPI) {
 		// Only the interactive main session has an editor; session_start fires again per session.
 		if (!inherited && ctx.hasUI) core.offerTickets(ctx.ui);
 		follow(next, ctx);
-		drawFooter(ctx, "force");
+		void drawFooter(ctx, "force");
 	});
 	pi.on("session_tree", async (_event, ctx) => {
 		follow(await core.session.tree(ctx), ctx);
