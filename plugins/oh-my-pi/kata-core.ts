@@ -2601,9 +2601,11 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 			},
 			// A tool is about to run: the text that refuses it for putting a Kata ref into the repository, or undefined (see `refGuard`).
 			guard: refGuard,
-			warning: (_ctx: HostContext, id: string | undefined): string | undefined => {
+			warning: (_ctx: HostContext, id: string | undefined, parentId?: string): string | undefined => {
 				if (!id) return undefined;
-				const reasons = warnings.get(id); warnings.delete(id); return reasons?.join("\n");
+				const reasons = warnings.get(id); warnings.delete(id);
+				if (reasons && parentId) { warnings.set(parentId, [...warnings.get(parentId) ?? [], ...reasons]); return undefined; }
+				return reasons?.join("\n");
 			},
 			// The refs this session works, for a delegate's host that checks calls against its lead's.
 			refs: (ctx: HostContext): string[] => [...knownRefs(ctx)],
