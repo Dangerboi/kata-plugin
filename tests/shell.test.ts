@@ -7,6 +7,7 @@ import { assertIsolated } from "./isolation";
 import { kataCommands } from "../plugins/oh-my-pi/kata";
 import { delegateCommand, delegateRouted, kataCommands as coreCommands, transcriptCommand } from "../core/shell";
 import { nodePlatform } from "../core/node-host";
+import { argvProbe } from "./argv-probe";
 assertIsolated();
 
 test("only command positions are Kata invocations", () => {
@@ -85,9 +86,7 @@ test("command -p keeps its default executable search through lead and delegate r
 test.skipIf(!Bun.which("cc"))("exec -a keeps the target argv0 through lead and delegate rewrites", () => {
   const dir = mkdtempSync(join(tmpdir(), "kata-argv0-"));
   try {
-    const source = join(dir, "stub.c"), binary = join(dir, "kata");
-    writeFileSync(source, '#include <stdio.h>\n#include <stdlib.h>\nint main(int argc, char **argv) { const char *agent = getenv("KATA_TRANSCRIPT_AGENT"); printf("%s/%s\\n", argv[0], agent ? agent : ""); return 0; }\n');
-    expect(spawnSync([Bun.which("cc")!, source, "-o", binary]).exitCode).toBe(0);
+    const binary = argvProbe(dir, ["KATA_TRANSCRIPT_AGENT"]);
     for (const shell of [...new Set(["/bin/bash", Bun.which("bash")].filter((s): s is string => !!s))]) {
       const run = (command: string) => spawnSync([shell, "-c", command], { env: { HOME: dir, PATH: dir }, stderr: "ignore" });
       for (const input of [`exec -a named '${binary}' close ab12`, `command exec -a named '${binary}' close ab12`, `exec -l '${binary}' close ab12`]) {
@@ -112,9 +111,7 @@ test.skipIf(!Bun.which("cc"))("exec -a keeps the target argv0 through lead and d
 test.skipIf(!Bun.which("cc") || !Bun.which("genv"))("env -a keeps argv0 on Kata when the transcript is added", () => {
   const dir = mkdtempSync(join(tmpdir(), "kata-env-argv0-"));
   try {
-    const source = join(dir, "stub.c"), binary = join(dir, "kata");
-    writeFileSync(source, '#include <stdio.h>\nint main(int argc, char **argv) { puts(argv[0]); return 0; }\n');
-    expect(spawnSync([Bun.which("cc")!, source, "-o", binary]).exitCode).toBe(0);
+    const binary = argvProbe(dir);
     symlinkSync(Bun.which("genv")!, join(dir, "env"));
     const input = `env -a named '${binary}' close ab12`;
     for (const command of [transcriptCommand(nodePlatform.path, input, "kata", [], own), delegateCommand(nodePlatform.path, input, "kata", [], "tm-1", undefined, own)]) {

@@ -39,10 +39,10 @@ export const onLeadShell: Hook<"tool.call"> = async ($, e, next) => {
 };
 
 // What a rewrite adds (`/usr/bin/env KATA_TRANSCRIPT_...=…`, `--teammate`) keeps a settings allow rule such as `Bash(kata *)` from
-// matching: Claude Code matches no allow rule past an unknown variable's assignment (deny and ask rules see past it). When
-// the engine's own rules would put a rewritten call to its decider, the call is allowed if the model's own command is allowed
-// outright. An ask from a hook (a PreToolUse guard, another plugin) stands, as does every other verdict: the query runs no
-// PreToolUse hook and carries no call id.
+// matching: Claude Code matches no allow rule past an unknown variable's assignment. When the engine's own rules would put a
+// rewritten call to its decider, the call is allowed if the model's own command is allowed outright. An ask from a hook
+// (a PreToolUse guard, another plugin) stands, as does every other verdict: the query runs no PreToolUse hook and carries
+// no call id.
 export const onShellCheck: Hook<"tool.check"> = async ($, e, next) => {
 	const decided = await next(e);
 	const input = e.input as Record<string, unknown>;

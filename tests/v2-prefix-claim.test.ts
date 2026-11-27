@@ -2,12 +2,14 @@ import { expect, test } from "bun:test";
 import { mkdirSync, rmSync } from "node:fs";
 import path from "node:path";
 import { v2Fixture } from "./v2-fixture";
+import { nodePlatform } from "../plugins/oh-my-pi/node-host";
 
 const { scratch, cwd, kata, show, issue, unique, host } = v2Fixture();
 
 test.each(["env -C", "kata --workspace"])("a claim using %s with a home folder is adopted", async prefix => {
-  const name = `kata-claim-${unique()}`, other = path.join(process.env.HOME!, name);
+  const name = `kata-claim-${unique()}`, other = path.join(scratch, name), oldHome = nodePlatform.home;
   mkdirSync(other, { recursive: true });
+  nodePlatform.home = scratch;
   try {
     await kata(["init", "--project", "v2other", "--json"], other);
     const target = await issue("Claimed issue", { workspace: other });
@@ -20,7 +22,7 @@ test.each(["env -C", "kata --workspace"])("a claim using %s with a home folder i
     const view = await kata(["show", target, "--json"], other);
     expect((view.children ?? []).map((child: any) => child.title)).toContain("Target-project task");
     await app.event("session_shutdown");
-  } finally { rmSync(other, { recursive: true, force: true }); }
+  } finally { nodePlatform.home = oldHome; rmSync(other, { recursive: true, force: true }); }
 });
 
 test("a claim resolves its workspace after ordered env directory changes", async () => {
