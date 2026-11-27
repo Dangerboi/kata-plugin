@@ -5,7 +5,7 @@ name=${0##*/}
 case ${PI_SESSION_ID:-} in
   ''|*/*) ;;
   *) file=${KATA_OMP_SHIM_DIR:-}/${PI_SESSION_ID}.env
-     [ -n "${KATA_OMP_SHIM_DIR:-}" ] && [ -f "$file" ] && . "$file" ;;
+     [ "${KATA_TRANSCRIPT_AGENT:-omp}" = omp ] && [ -n "${KATA_OMP_SHIM_DIR:-}" ] && [ -f "$file" ] && . "$file" ;;
 esac
 case ${KATA_OMP_SHIM_REAL:-} in
   /*) exec "$KATA_OMP_SHIM_REAL" "$@" ;;

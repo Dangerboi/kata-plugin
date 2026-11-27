@@ -23,6 +23,43 @@ test("nested shells and scripts use the selected identity despite an export", ()
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
+test("a call declaring a foreign transcript agent keeps its own identity", () => {
+  const dir = mkdtempSync(join(tmpdir(), "kata-shim-foreign-"));
+  try {
+    const bin = join(dir, "bin"), real = join(dir, "real"); mkdirSync(bin);
+    copyFileSync(new URL("../plugins/oh-my-pi/bin/kata", import.meta.url), join(bin, "kata")); chmodSync(join(bin, "kata"), 0o700);
+    writeFileSync(real, '#!/bin/sh\nprintf "%s|%s|%s|%s|%s" "$KATA_AUTHOR" "$KATA_TEAMMATE" "$KATA_INBOX_USER" "$KATA_TRANSCRIPT_AGENT" "$KATA_TRANSCRIPT_SESSION_ID"\n', { mode: 0o700 });
+    writeIdentity({ dir, real }, "omp-child", { KATA_AUTHOR: "omp-actor", KATA_TEAMMATE: "omp-mate", KATA_INBOX_USER: "omp/inbox", KATA_TRANSCRIPT_AGENT: "omp", KATA_TRANSCRIPT_SESSION_ID: "omp-session" });
+    const env = { PATH: `${bin}:/usr/bin:/bin`, KATA_OMP_SHIM_DIR: dir, KATA_OMP_SHIM_REAL: real, PI_SESSION_ID: "omp-child", KATA_AUTHOR: "foreign-actor", KATA_TEAMMATE: "foreign-mate", KATA_INBOX_USER: "foreign/inbox" };
+    const outputs = ["claude", "other-host"].map(agent => {
+      const out = Bun.spawnSync(["/bin/sh", "-c", `${composePrefix({ dir, real })} env KATA_TRANSCRIPT_AGENT=${agent} KATA_TRANSCRIPT_SESSION_ID=foreign-session kata close`], { env });
+      expect(out.exitCode).toBe(0); return out.stdout.toString();
+    });
+    expect(outputs).toEqual(["foreign-actor|foreign-mate|foreign/inbox|claude|foreign-session", "foreign-actor|foreign-mate|foreign/inbox|other-host|foreign-session"]);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("omp and unset transcript agents still apply identity, including after an inherited foreign prefix", () => {
+  const dir = mkdtempSync(join(tmpdir(), "kata-shim-prefix-"));
+  try {
+    const bin = join(dir, "bin"), real = join(dir, "real"); mkdirSync(bin);
+    copyFileSync(new URL("../plugins/oh-my-pi/bin/kata", import.meta.url), join(bin, "kata")); chmodSync(join(bin, "kata"), 0o700);
+    writeFileSync(real, '#!/bin/sh\nprintf "%s|%s|%s" "$KATA_AUTHOR" "$KATA_TRANSCRIPT_AGENT" "$KATA_TRANSCRIPT_SESSION_ID"\n', { mode: 0o700 });
+    const shim = { dir, real };
+    writeIdentity(shim, "omp-child", { KATA_AUTHOR: "omp-actor", KATA_TRANSCRIPT_AGENT: "omp", KATA_TRANSCRIPT_SESSION_ID: "omp-session" });
+    const base = { PATH: `${bin}:/usr/bin:/bin`, KATA_OMP_SHIM_DIR: dir, KATA_OMP_SHIM_REAL: real, PI_SESSION_ID: "omp-child", KATA_AUTHOR: "evil" };
+    for (const agent of [undefined, "omp"]) {
+      const env = { ...base, ...(agent ? { KATA_TRANSCRIPT_AGENT: agent } : {}) };
+      const out = Bun.spawnSync(["/bin/sh", "-c", "export KATA_AUTHOR=evil; bash -c kata"], { env });
+      expect(out.exitCode).toBe(0); expect(out.stdout.toString()).toBe("omp-actor|omp|omp-session");
+    }
+    const env = { ...base, KATA_TRANSCRIPT_AGENT: "pi", KATA_TRANSCRIPT_SESSION_ID: "pi-session" };
+    const prefix = composePrefix(shim);
+    const out = Bun.spawnSync(["/bin/sh", "-c", `${prefix} export KATA_AUTHOR=evil; kata`], { env });
+    expect(out.exitCode).toBe(0); expect(out.stdout.toString()).toBe("omp-actor|omp|omp-session");
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
 test("unknown or invalid sessions do not load identity and PATH fallback skips the shim", () => {
   const dir = mkdtempSync(join(tmpdir(), "kata-shim-fallback-"));
   try {

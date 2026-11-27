@@ -19,9 +19,7 @@ function userPrefix(value = ""): string {
 	return end < 0 ? value : value.slice(end + marker.length).trimStart();
 }
 export function composePrefix(shim: Shim, existing?: string): string {
-	const bin = join(shim.dir, "bin");
-	const user = userPrefix(existing);
-	return `__kata_omp_prefix=${quote(bin)}; export PATH="$__kata_omp_prefix:\${PATH#"$__kata_omp_prefix":}" KATA_OMP_SHIM_DIR=${quote(shim.dir)} KATA_OMP_SHIM_REAL=${quote(shim.real)}; unset __kata_omp_prefix; : ${marker}${user ? ` ${user}` : ""}`;
+	return `__kata_omp_prefix=${quote(join(shim.dir, "bin"))}; export PATH="$__kata_omp_prefix:\${PATH#"$__kata_omp_prefix":}" KATA_OMP_SHIM_DIR=${quote(shim.dir)} KATA_OMP_SHIM_REAL=${quote(shim.real)}; KATA_TRANSCRIPT_AGENT=\${KATA_TRANSCRIPT_AGENT:+omp}; unset __kata_omp_prefix; : ${marker} ${userPrefix(existing)}`;
 }
 function privateDir(dir: string): boolean {
 	if (!isAbsolute(dir)) return false;
