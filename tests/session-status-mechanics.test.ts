@@ -82,12 +82,17 @@ test("footer does no work without a UI and shutdown suppresses a pending redraw"
   await drawing;
   expect(writes).not.toContain("footer");
 });
-test("configured refs survive other ownership and reappear after a slow close and reopen", async () => {
-  let status = "open", slow = false;
+test("configured refs survive other ownership, reappear after a slow close and reopen, and a close during the check is not shown", async () => {
+  let status = "open", slow = false, hold: { entered: PromiseWithResolvers<void>; gate: PromiseWithResolvers<void> } | undefined;
   const ctx = { cwd: "/tmp/kata-review-synthetic", hasUI: true };
   const core = createKataCore({ platform: nodePlatform, appendEntry() {}, delegateStore: memoryDelegateStore(), exec: async (_file, args) => {
     if (args[0] === "version") return { code: 0, stdout: JSON.stringify({ kata_api_version: 1, version: "0.23.0" }), stderr: "" };
-    if (args[0] === "show") { if (slow) await Bun.sleep(350); return { code: 0, stdout: JSON.stringify({ issue: { status, owner: "other" } }), stderr: "" }; }
+    if (args[0] === "show") {
+      const seen = status, held = hold;
+      if (held) { held.entered.resolve(); await held.gate.promise; }
+      if (slow) await Bun.sleep(350);
+      return { code: 0, stdout: JSON.stringify({ issue: { status: seen, owner: "other" } }), stderr: "" };
+    }
     return { code: 0, stdout: JSON.stringify({ issues: [] }), stderr: "" };
   } }, { namespace: "test", executable: "/tmp/kata-fixture", executableVars: [], explicitRef: () => "test#one", env: name => name === "KATA_AUTHOR" ? "alice" : undefined });
   expect((await core.session.view(ctx, { reconcile: true }))?.refs).toEqual(["test#one"]);
@@ -95,6 +100,14 @@ test("configured refs survive other ownership and reappear after a slow close an
   expect((await core.session.view(ctx, { reconcile: true }))?.refs).toEqual([]);
   status = "open"; slow = false;
   expect((await core.session.view(ctx, { reconcile: true }))?.refs).toEqual(["test#one"]);
+  // Closed while status's own check is in flight: that check read "open" and is voided, so status checks again.
+  hold = { entered: Promise.withResolvers<void>(), gate: Promise.withResolvers<void>() };
+  const checking = core.session.view(ctx, { reconcile: true }), held = hold;
+  await held.entered.promise;
+  status = "closed"; hold = undefined;
+  await core.tools.result(ctx, { toolName: "bash", input: { command: "kata close test#one" } });
+  held.gate.resolve();
+  expect((await checking)?.refs).toEqual([]);
 });
 
 test("unrelated claim while checking several refs does not hide a closure", async () => {
