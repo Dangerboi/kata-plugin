@@ -241,6 +241,8 @@ async function poll<T>(read: () => T | Promise<T>, done: (value: T) => boolean, 
 }
 /** Polls `condition` until it holds or `ms` pass; returns its final value. */
 export const until = (condition: () => boolean, ms = 8000): Promise<boolean> => poll(condition, Boolean, ms);
+/** Stream followers for this fixture workspace. */
+export const inboxChildren = (cwd: string): string[] => Bun.spawnSync(["pgrep", "-f", `events --tail --json --workspace ${cwd}`]).stdout.toString().split("\n").filter(Boolean);
 /**
  * Reads `read()` until it equals `expected` or `ms` pass, then asserts on the last value, so a wrong
  * value still fails and shows what was seen. For state a plugin settles in the background after the

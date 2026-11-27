@@ -388,6 +388,8 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 	const MAX_REMINDERS = 3;
 	const main = (ctx: HostContext | undefined) => host.isMain?.(ctx) ?? true;
 	const setting = (name: (typeof CORE_ENV)[number]) => options.env?.(name) ?? platform.env.get(name);
+	// Kata trims inbox addresses before reading and writing notification keys.
+	const inboxUser = () => setting("KATA_INBOX_USER")?.trim();
 	const sid = (ctx: HostContext | undefined): string | undefined => ctx?.sessionManager?.getSessionId?.();
 	const uiOf = (ctx: HostContext | undefined) => main(ctx) && host.allowUI?.(ctx) !== false ? ctx?.ui : undefined;
 	let plan: Plan = { tasks: [], workspace: path.resolve(platform.cwd()) };
@@ -2258,7 +2260,7 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 				if (typeof out === "string") entry.contract = out;
 			})().catch(debug).finally(() => { entry.pending = undefined; });
 		}
-		const user = setting("KATA_INBOX_USER");
+		const user = inboxUser();
 		let inboxRead: Promise<void> | undefined;
 		if (!main(ctx)) {
 			// A delegate reads its own session inbox, <actor>/<teammate>, and only when the lead opted in with one; with no record
@@ -2308,7 +2310,7 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 		liveInbox = undefined;
 	}
 
-	// Requests are delivered as an aside: an idle session starts a turn on them, a working one takes them at its
+	// Requests are delivered by the host: an idle session starts a turn on them, a working one takes them at its
 	// next step boundary without losing its tool batch. The sender is a relayed agent request, not the person.
 	function startFollower(ctx: HostContext, address: string) {
 		const job = NO_JOB, cwd = path.resolve(ctx.cwd), live = host.liveInbox!;
@@ -2514,7 +2516,7 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 				stopFollower();
 				// The reads of the session this one replaces go.
 				for (const other of [...leadReads.keys()]) if (other !== leadKey(id)) leadReads.delete(other);
-				const user = setting("KATA_INBOX_USER");
+				const user = inboxUser();
 				const live = !!host.liveInbox && !!user && isSessionAddress(user);
 				if (live) liveInbox = "";
 				prefetch(ctx);
@@ -2524,6 +2526,7 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 				await bounded(switching, explicit && options.attentionHarness && id ? ATTENTION_START_MS : begin.wait);
 				return lead();
 			},
+			stopInbox: stopFollower,
 			branch: rebind,
 			tree: rebind,
 			input() { reminders = 0; },

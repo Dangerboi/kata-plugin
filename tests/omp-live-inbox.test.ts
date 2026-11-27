@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import { eventually, realKata, settle, unique, until } from "./kata-fixture";
+import { eventually, inboxChildren, realKata, settle, unique, until } from "./kata-fixture";
 import { ompHost } from "./omp-host";
 import { TRANSCRIPT_ENV } from "../core/kata-cli";
 
@@ -8,7 +8,7 @@ import { TRANSCRIPT_ENV } from "../core/kata-cli";
 const store = realKata({ prefix: "live", author: "v2-builder", project: "omp-v2-live", adopt: true });
 const { scratch, cwd, run, kata } = store;
 const issue = () => store.issue(`Live inbox ${unique()}`);
-const children = () => Bun.spawnSync(["pgrep", "-f", `events --tail --json --workspace ${cwd}`]).stdout.toString().split("\n").filter(Boolean);
+const children = () => inboxChildren(cwd);
 
 function host(options: { agent?: object; sessionFile?: string } = {}) {
 	const sid = `live-${unique()}`, sent: any[][] = [];
@@ -116,4 +116,20 @@ test("a bare actor address starts no follower", async () => {
 	expect(app.calls.some(a => a[0] === "events")).toBe(false);
 	expect(app.sent).toEqual([]);
 	await kata(["notify", ref, "--to", "v2-builder", "--clear", "--json"]);
+});
+
+test("padded session addresses work in live and per-prompt inboxes", async () => {
+	const address = "v2-builder/live-padded", padded = `  ${address}  `;
+	const app = await open(padded), ref = await issue();
+	expect(await until(() => children().length === 1)).toBe(true);
+	await kata(["notify", ref, "--to", padded, "--message", "padded-live", "--json"]);
+	expect(await until(() => app.sent.length === 1)).toBe(true);
+	expect(app.sent[0][0]).toContain(`--to ${address} --clear`);
+	expect(await app.section()).toContain("padded-live");
+	await app.event("session_shutdown");
+	process.env.KATA_OMP_LIVE_INBOX = "0";
+	const perTurn = await open(padded);
+	const section = await perTurn.section();
+	expect(section).toContain("padded-live");
+	expect(section).toContain(`Kata inbox for "${address}"`);
 });

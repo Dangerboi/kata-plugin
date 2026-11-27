@@ -1,5 +1,7 @@
 // Generated from core/node-host.ts; edit there.
-import { execFile } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
+import { createInterface } from "node:readline";
+import type { InboxStream } from "./inbox";
 import { appendFileSync, realpathSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
@@ -47,4 +49,13 @@ export function execKata(file: string, args: string[], options: { cwd: string; t
 				resolve({ code: typeof failure.code === "number" ? failure.code : 1, stdout, stderr, killed: failure.name === "AbortError" || !!failure.killed });
 			});
 	});
+}
+
+// The follower never holds the host process open; its owner stops it on shutdown.
+export function spawnEvents([file, ...args]: string[], cwd: string): InboxStream {
+	const proc = spawn(file, args, { cwd, stdio: ["ignore", "pipe", "ignore"] });
+	const exited = new Promise<void>(resolve => { proc.on("error", () => resolve()); proc.on("close", () => resolve()); });
+	proc.unref();
+	if ("unref" in proc.stdout! && typeof proc.stdout.unref === "function") proc.stdout.unref();
+	return { lines: createInterface({ input: proc.stdout! }), exited, kill: () => { proc.kill("SIGKILL"); } };
 }

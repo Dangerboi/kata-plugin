@@ -4,6 +4,20 @@ All notable changes to `@dangerboi/kata-pi` are listed here. The format follows 
 
 ## [Unreleased]
 
+### Added
+
+#### Inbox and attention
+
+- An interactive or RPC main session gets each new inbox request from its own actor as it arrives, even while idle or mid-run, as on omp. It is on by default: a request that reaches an idle session starts a turn that can run tools with nobody watching.
+  - Set `KATA_PI_LIVE_INBOX=0` to turn it off and read the inbox before each prompt instead.
+  - Print and JSON runs (`pi -p`), child pi processes and sessions under Kata's native pi adapter still read the inbox before each prompt or leave it to Kata.
+
+### Changed
+
+#### Requirements
+
+- The package's peer dependency on `@earendil-works/pi-coding-agent` is now `>=1.2.0` instead of any version, so a package manager warns on an older pi.
+
 ## [1.13.0] - 2026-11-26
 
 ### Added
