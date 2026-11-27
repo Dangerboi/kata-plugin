@@ -161,6 +161,17 @@ test("git message options and stdin are checked for commits, merges, tags and no
   for (const command of commands) expect(await check("bash", { command }), command).toEqual(["demo#ab3d"]);
 });
 
+test("message-free git commands do not ask for known refs", async () => {
+  let calls = 0;
+  const inspect = (command: string) => offendingRefs({ tool: "bash", input: { command }, locate, read, known: async () => { calls++; return refs; } });
+  for (const command of [`git tag -l`, `git merge feature`, `git notes add -C HEAD`, `git commit`]) {
+    expect(await inspect(command), command).toEqual([]);
+  }
+  expect(calls).toBe(0);
+  expect(await inspect(`git merge -m demo#ab3d`)).toEqual(["demo#ab3d"]);
+  expect(calls).toBe(1);
+});
+
 test("git non-message arguments and messages outside the workspace pass", async () => {
   for (const command of [
     `git commit --author '--trailer=Ref:demo#ab3d <a@b>' -m fix`,
