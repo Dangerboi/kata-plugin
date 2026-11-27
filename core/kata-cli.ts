@@ -137,6 +137,8 @@ export interface Job {
 export const NO_JOB: Job = {};
 
 export interface Kata {
+	// Build the same CLI flags for a detached call as for an awaited one.
+	argv(args: string[], cwd: string, workspace?: boolean): string[];
 	// `workspace: false` leaves out `--workspace <cwd>`.
 	run(job: Job, args: string[], cwd: string, options?: { timeout?: number; workspace?: boolean; env?: Record<string, string> }): Promise<string>;
 	show(job: Job, ref: string, cwd: string): Promise<KataShow>;
@@ -175,14 +177,18 @@ export function createKata(env: {
 		try { return await fn({ ...from, reads: store }); } finally { store.open = false; store.seen.clear(); }
 	}
 
-	async function invoke(job: Job, args: string[], cwd: string, { timeout = 120_000, workspace = true, env: childEnv } : { timeout?: number; workspace?: boolean; env?: Record<string, string> } = {}): Promise<string> {
+	function argv(args: string[], cwd: string, workspace = true): string[] {
 		// --json makes every failure carry Kata's error code; the contract hook prints its own format.
 		const plain = args[0] === "agent-contract-hook" || args[0] === "version";
 		const teammate = env.teammate();
 		// Options end at `--`: what follows (a title, an item) is data, even when it reads `--json`.
 		const at = args.indexOf("--"), end = at < 0 ? args.length : at;
 		const flags = [...(plain || args.slice(0, end).includes("--json") ? [] : ["--json"]), ...(teammate !== undefined && !plain ? ["--teammate", teammate] : []), ...(workspace ? ["--workspace", env.path.resolve(cwd)] : [])];
-		args = [...args.slice(0, end), ...flags, ...args.slice(end)];
+		return [...args.slice(0, end), ...flags, ...args.slice(end)];
+	}
+
+	async function invoke(job: Job, input: string[], cwd: string, { timeout = 120_000, workspace = true, env: childEnv }: { timeout?: number; workspace?: boolean; env?: Record<string, string> } = {}): Promise<string> {
+		const args = argv(input, cwd, workspace);
 		if (!isRead(args)) {
 			// Counted when it starts and when it ends, so a read that overlapped it is not reused either.
 			writes.count++;
@@ -266,7 +272,7 @@ export function createKata(env: {
 	}
 
 	return {
-		run, show, projects, qualify,
+		argv, run, show, projects, qualify,
 		operation,
 		fresh: job => ({ ...job, reads: undefined }),
 		projectNames: (job, cwd) => projects(job, cwd).then(list => new Set(list.map(p => p.name)), error => { env.debug(error); return new Set<string>(); }),

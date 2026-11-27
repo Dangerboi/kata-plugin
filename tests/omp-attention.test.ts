@@ -1,9 +1,10 @@
 import { afterEach, beforeAll, expect, jest, test } from "bun:test";
 import { mkdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
-import { eventually, finishes, holdKata, realKata, unique } from "./kata-fixture";
+import { eventually, finishes, holdKata, memoryDelegateStore, realKata, unique } from "./kata-fixture";
 import { ompHost } from "./omp-host";
-import { spawnDetached } from "../core/node-host";
+import { nodePlatform, spawnDetached } from "../core/node-host";
+import { createKataCore } from "../core/kata-core";
 const store = realKata({ prefix: "omp-attention", author: "v2-builder", project: "omptest", adopt: true });
 const { binary, scratch, cwd, env, run, text, kata } = store;
 mkdirSync(path.join(cwd, "sub"));
@@ -208,6 +209,8 @@ test("a fork whose start fails leaves the ticket ok, and the next claim takes it
   const app = host(args => failing && args[1] === "attention-native" && args[3] === "start" ? { code: 1, stdout: "", stderr: "fixture failure" } : undefined);
   await app.event("session_start");
   await claimed(app, ref);
+  // The tool-result handler is bounded; its queued adoption can finish after it returns.
+  await eventually(async () => (await attention(ref)).state, "ok");
   const first = (await attention(ref)).session;
   failing = true;
   await app.event("session_switch", { reason: "fork" }, switched(app, "attention-fail-fork", app.sid));
@@ -363,17 +366,24 @@ test("shutdown ends attention before blocked work exceeds the OMP deadline", asy
 }, 15000);
 
 
-test("a detached end works after the host process has died", async () => {
-  const ref = await issue();
+test("core shutdown uses the detached production spawn after its host dies", async () => {
+  const ref = await issue(); process.env.KATA_REF = ref;
   const processHost = Bun.spawn(["/bin/sleep", "30"], { stdout: "ignore", stderr: "ignore" });
-  const session = `dead-host-${unique()}`, launcher = `omp-${processHost.pid}-${session}`;
-  const args = ["agent-hook", "attention-native", "pi", "start", "--session", session, "--host-pid", String(processHost.pid), "--ref", ref];
+  const session = `dead-host-${unique()}`, entries: any[] = [];
+  const ctx = { cwd, sessionManager: { getSessionId: () => session, getBranch: () => entries } };
+  const core = createKataCore({
+    platform: { ...nodePlatform, pid: processHost.pid },
+    exec: (_file, args, opts) => run(args, opts.cwd, opts.timeout, opts.env),
+    detached: spawnDetached,
+    appendEntry: (customType, data) => entries.push({ type: "custom", customType, data }),
+    delegateStore: memoryDelegateStore(),
+  }, { namespace: "omp", executable: binary, executableVars: [], attentionHarness: "pi" });
   try {
-    await text(args, cwd, { KATA_SESSION_ID: launcher });
+    await core.session.start(ctx);
     const before = await attention(ref);
     expect(before.state).toBe("ok");
     processHost.kill(); await processHost.exited;
-    spawnDetached(binary, ["agent-hook", "attention-native", "pi", "end", "--session", session, "--host-pid", String(processHost.pid), "--ref", ref, "--workspace", cwd], { cwd, env: { ...env as Record<string, string>, KATA_SESSION_ID: launcher } });
+    await core.session.shutdown(ctx);
     await eventually(async () => (await attention(ref)).state, "needs-human");
     expect((await attention(ref)).session).toBe(`ended:${before.session}`);
   } finally { processHost.kill(); await processHost.exited; }
@@ -391,7 +401,7 @@ test("attention uses one launcher across session switches", async () => {
   expect(launches.map(x => x.mode)).toEqual(["start", "end", "start", "end"]);
   expect(new Set(launches.map(x => x.launcher)).size).toBe(1);
   expect(launches[0].launcher).toBe(`omp-${process.pid}-${app.sid}`);
-  expect(launches.map(x => x.session)).toEqual([app.sid, app.sid, "other-session", "other-session"]);
+  expect(launches.map(x => x.session)).toEqual([app.sid!, app.sid!, "other-session", "other-session"]);
 });
 
 test("shutdown spawns attention end before a slow parent-close sweep", async () => {
@@ -411,3 +421,19 @@ test("shutdown spawns attention end before a slow parent-close sweep", async () 
     expect((await attention(ref)).state).toBe("needs-human");
   } finally { held.release(); await stop; }
 }, 15000);
+
+test("shutdown waits for an in-flight attention start before ending it", async () => {
+  process.env.KATA_REF = await issue();
+  const ref = process.env.KATA_REF;
+  const held = holdKata(args => args[1] === "attention-native" && args[3] === "start");
+  const app = host(held.before);
+  const start = app.event("session_start");
+  await held.entered;
+  const stop = app.event("session_shutdown");
+  try {
+    await new Promise(r => setTimeout(r, 200));
+    held.release();
+    await Promise.all([start, stop]);
+    await eventually(async () => (await attention(ref)).state, "needs-human");
+  } finally { held.release(); await Promise.all([start, stop]); }
+});

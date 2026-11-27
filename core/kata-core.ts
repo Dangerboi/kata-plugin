@@ -2340,15 +2340,17 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 	const logSkip = (error: unknown) => debug(`Kata attention skipped: ${(error as Error).message}`);
 	let attentionLauncher: string | undefined;
 	const attentionEnv = (id: string) => ({ KATA_SESSION_ID: attentionLauncher ??= `omp-${platform.pid}-${id}` });
+	const attentionArgs = (mode: "start" | "end", id: string, ref: string) =>
+		["agent-hook", "attention-native", options.attentionHarness!, mode, "--session", id, "--host-pid", String(platform.pid), "--ref", ref];
 	const attentionHook = (job: Job, mode: "start" | "end", sessionId: string, ref: string, cwd: string) =>
-		kata.run(job, ["agent-hook", "attention-native", options.attentionHarness!, mode, "--session", sessionId, "--host-pid", String(platform.pid), "--ref", ref], cwd, { timeout: mode === "start" ? 3000 : 1500, env: attentionEnv(sessionId) });
+		kata.run(job, attentionArgs(mode, sessionId, ref), cwd, { timeout: mode === "start" ? 3000 : 1500, env: attentionEnv(sessionId) });
 	// Kata ends only what the given attention session holds, so no ownership check is needed here. Together, not one by one: omp gives a shutdown handler 2 s.
 	async function endAttended(job: Job, session: NonNullable<typeof attentionSession>) {
 		await Promise.all([...session.attended].flatMap(([ref, { cwd, sessions }]) => [...sessions].map(id => attentionHook(job, "end", id, ref, cwd).catch(logSkip))));
 		session.attended.clear();
 	}
 	function detachAttention(session: NonNullable<typeof attentionSession>) {
-		const end = (id: string, ref: string, cwd: string) => host.detached?.(options.executable, ["agent-hook", "attention-native", options.attentionHarness!, "end", "--session", id, "--host-pid", String(platform.pid), "--ref", ref, ...(sessionTeammate !== undefined ? ["--teammate", sessionTeammate] : []), "--workspace", path.resolve(cwd)], { cwd, env: attentionEnv(id) });
+		const end = (id: string, ref: string, cwd: string) => host.detached?.(options.executable, kata.argv(attentionArgs("end", id, ref), cwd), { cwd, env: attentionEnv(id) });
 		if (session.ref) end(session.id, session.ref, session.cwd);
 		for (const [ref, held] of session.attended) for (const id of held.sessions) end(id, ref, held.cwd);
 		session.attended.clear();
@@ -2477,9 +2479,6 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 		if (!main(ctx)) { const own = host.delegateStore.of(ctx); if (own) delegateReads.delete(own.id); }
 		if (!main(ctx) && !closing.delegate) return;
 		stopFollower();
-		if (main(ctx) && options.attentionHarness && host.detached && attentionSession) {
-			const session = attentionSession; attentionSession = undefined; detachAttention(session);
-		}
 		// Left for the fork before the bounded work: pi starts the fork's instance once this shutdown returns or times out.
 		const forking = main(ctx) && closing.forking ? leaving() : undefined;
 		if (forking) forkSources.set(forking.session, forking);
