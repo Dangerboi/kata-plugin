@@ -46,6 +46,7 @@ test("the footer shows the address or actor, at most three refs and a nonzero in
 	expect(footerText(view({ inbox: { none: "unset" }, refs: [], counts: { trusted: 0, foreign: 3 } }))).toBe("kata alice");
 	expect(footerText(view({ refs: ["kp#1", "kp#2", "kp#3", "kp#4", "kp#5"], counts: undefined }))).toBe("kata alice/lead · kp#1, kp#2, kp#3 +2");
 	expect(footerText(view({ scope: "down" }))).toBeUndefined();
+	expect(footerText(view({ scope: "unbound" }))).toBeUndefined();
 	expect(footerText(view({ inbox: { address: "alice/lead", delivery: "kata" }, counts: undefined }))).toBe("kata alice/lead · kp#12, kp#14");
 });
 

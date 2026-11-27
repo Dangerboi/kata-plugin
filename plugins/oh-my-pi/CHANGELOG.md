@@ -7,7 +7,7 @@ All notable changes to `@dangerboi/kata-omp` are listed here. The format follows
 ### Added
 
 - `/kata` (or `/kata status`) shows the person this session's workspace, actor, teammate, inbox address, refs, contract and trusted request count, and the settings that change behaviour; `/kata inbox` shows the trusted inbox without changing the next prompt; `/kata refresh` clears the cached contract and actor.
-- The main session's footer shows `kata <address or actor> · <refs> · inbox N`, redrawn before each prompt and after a `task` call, and cleared while Kata is unavailable and at shutdown.
+- The main session's footer shows `kata <address or actor> · <refs> · inbox N`, redrawn before each prompt and after a `task` call, and cleared while Kata is unavailable or the folder is not a Kata workspace, and at shutdown.
 
 ## [3.1.0] - 2026-11-26
 

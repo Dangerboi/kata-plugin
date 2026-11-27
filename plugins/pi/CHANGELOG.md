@@ -7,7 +7,7 @@ All notable changes to `@dangerboi/kata-pi` are listed here. The format follows 
 ### Added
 
 - `/kata` (or `/kata status`) shows the person this session's workspace, actor, teammate, inbox address, refs, contract and trusted request count, and the settings that change behaviour; `/kata inbox` shows the trusted inbox without changing the next prompt; `/kata refresh` clears the cached contract and actor. Replies are notifications, never messages the model reads. While Kata's native pi adapter supplies the inbox, `/kata` says so instead of showing this plugin's counts.
-- The main session's footer shows `kata <address or actor> · <refs> · inbox N`, redrawn before each prompt and after a Bash command that launches `pi`, and cleared while Kata is unavailable and at shutdown.
+- The main session's footer shows `kata <address or actor> · <refs> · inbox N`, redrawn before each prompt and after a Bash command that launches `pi`, and cleared while Kata is unavailable or the folder is not a Kata workspace, and at shutdown.
 
 ## [1.13.0] - 2026-11-26
 
