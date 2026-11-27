@@ -84,6 +84,8 @@ interface CoreOptions {
 }
 
 // Where the session's plan lives: the host hands it to child processes it starts.
+// What a session works, as another thread's ref guard needs it: its refs, and the projects it learned without any ref of them.
+export type Known = { refs: string[]; projects: string[] };
 export type Lead = { parent?: string; workspace: string; label?: string };
 // The plan as todo results (`details.kata`) and the widget hand it to the host. `ref` is the task's issue or named ticket.
 export type PlanView = {
@@ -2048,7 +2050,7 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 		return bounded((async () => { await after?.catch(debug); if (!main(ctx) && !delegates.assignment(ctx)) return undefined; return serial(job => guardText(job, ctx, call), { ctx }); })(), GUARD_MS);
 	}
 
-	type MoreRefs = () => Promise<Iterable<string>> | Iterable<string>;
+	type MoreRefs = () => Promise<Known | undefined> | Known | undefined;
 	// How long `tools.guard` waits for its checks (the canonical path of each file the call writes): past it the call goes through unchecked.
 	const REF_GUARD_MS = 2_000;
 
@@ -2114,21 +2116,18 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 	// Called before a tool runs: the text that refuses a call that would put a Kata ref into the repository, or undefined to let it run. It
 	// never rejects: an error, a slow check or an off switch (KATA_REF_GUARD=off or 0) lets the call through. `also`: refs a host knows that
 	// this core does not (a delegate on another thread asks its lead); called once, inside the bound, and only for a call that adds text.
-	function refGuard(ctx: HostContext, call: { tool: string; input: unknown }, also: MoreRefs = () => []): Promise<string | undefined> {
+	function refGuard(ctx: HostContext, call: { tool: string; input: unknown }, also: MoreRefs = () => undefined): Promise<string | undefined> {
 		if (refGuardOff(setting("KATA_REF_GUARD"))) return Promise.resolve(undefined);
 		return bounded((async () => {
 			const cwd = ctx.cwd ?? platform.cwd();
 			await learnCall(ctx, call);
 			const workspaces = await Promise.all([...new Set([cwd, plan.workspace])].map(root => canonicalPath(platform, ".", root)));
 			const prefix = (root: string) => path.join(root, "x").slice(0, -1);
+			let asked: Promise<Known | undefined> | undefined; const more = () => asked ??= Promise.resolve(also());
 			const found = await offendingRefs({
 				...call,
-				async projects() { return [...learnedProjects, ...(await Promise.all(workspaces.map(workspaceProject))).filter((name): name is string => !!name)]; },
-				async known() {
-					const refs = knownRefs(ctx);
-					for (const ref of await also()) refs.add(ref);
-					return refs;
-				},
+				async projects() { return [...learnedProjects, ...(await more())?.projects ?? [], ...(await Promise.all(workspaces.map(workspaceProject))).filter((name): name is string => !!name)]; },
+				async known() { return new Set([...knownRefs(ctx), ...(await more())?.refs ?? []]); },
 				async locate(file) {
 					// `~` is the home folder, as the host's own tools read it; a host that knows none cannot place the file.
 					if (file === "~" || file.startsWith("~/")) { if (!platform.home) return undefined; file = path.join(platform.home, file.slice(1)); }
@@ -2644,7 +2643,7 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 			// A tool is about to run: the text that refuses it for putting a Kata ref into the repository, or undefined (see `refGuard`).
 			guard: refGuard,
 			// The refs this session works, for a delegate's host that checks calls against its lead's.
-			refs: (ctx: HostContext): string[] => [...knownRefs(ctx)],
+			refs: (ctx: HostContext): Known => ({ refs: [...knownRefs(ctx)], projects: [...learnedProjects] }),
 		},
 		todo: {
 			apply: (ctx: HostContext, op: string, params: any, within: Job) => execute({ ...params, op }, ctx, within),

@@ -484,3 +484,18 @@ test("omp learns call arguments and lone issue output", async () => {
   await app.event("tool_result", { toolName: "bash", input: { command: "kata next --agent" }, content: [{ type: "text", text: "OK next issue=z7x2" }] });
   expect(await call('git commit -m "fix z7x2"')).toMatchObject({ block: true });
 });
+
+
+test("R6 worker guard receives projects learned by its lead from list output", async () => {
+  const app = host(); await app.event("session_start"); await app.init(["Worker project propagation", "Lead work"]);
+  await app.event("tool_result", { toolName: "bash", input: { command: "kata list --all" }, content: [{ type: "text", text: "otherproject#d7x2" }] });
+  const leadResult = await app.event("tool_call", { toolName: "bash", input: { command: 'git commit -m "otherproject#z7x2"' } });
+  expect(leadResult).toMatchObject({ block: true });
+  const sessionFile = `${scratch}/r6-worker-${crypto.randomUUID()}.jsonl`, id = `r6-worker-${crypto.randomUUID()}`;
+  app.emit("task:subagent:lifecycle", { id, agent: "task", status: "started", sessionFile, description: "Worker project propagation" });
+  const worker = new Worker(new URL("./omp-worker-delegate.ts", import.meta.url), { workerData: { binary, env, cwd, sessionFile, id, parentId: app.ctx.agent.id, guardCommand: 'git commit -m "otherproject#z7x2"' } } as any);
+  try {
+    const answer = await new Promise<any>((resolve, reject) => { worker.addEventListener("message", event => resolve(event.data), { once: true }); worker.addEventListener("error", reject, { once: true }); });
+    expect(answer.result).toMatchObject({ block: true });
+  } finally { await worker.terminate(); }
+}, 20_000);
