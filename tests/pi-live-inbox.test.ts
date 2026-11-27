@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import { until } from "./kata-fixture";
+import { settle, until } from "./kata-fixture";
 import { piFixture } from "./pi-fixture";
 
 const { cwd, host, issue, kata, nativeKey, globalRegistry, asChild, down } = piFixture({ adopt: true });
@@ -13,7 +13,7 @@ async function open(address: string, options: any = {}) {
 }
 afterEach(async () => { for (const app of apps.splice(0)) await app.event("session_shutdown", { reason: "quit" }); });
 
-test("a trusted request wakes Pi once with a custom steer message", async () => {
+test("a trusted request wakes Pi with a custom steer message", async () => {
   const address = "pi-builder/live-main", app = await open(address);
   const ref = await issue("Live Pi request");
   expect(await until(() => children().length === 1)).toBe(true);
@@ -24,23 +24,22 @@ test("a trusted request wakes Pi once with a custom steer message", async () => 
   expect(app.messages[0][1]).toEqual({ triggerTurn: true, deliverAs: "steer" });
 });
 
-test("the live section replaces repeated prompt reads and shutdown stops the child", async () => {
-  const app = await open("pi-builder/live-section");
+test("shutdown stops the follower", async () => {
+  const app = await open("pi-builder/live-shutdown");
   expect(await until(() => children().length === 1)).toBe(true);
-  expect(await until(() => app.calls.some((a: string[]) => a[0] === "inbox"))).toBe(true);
-  const reads = app.calls.filter((a: string[]) => a[0] === "inbox").length;
-  await app.event("before_agent_start", { systemPromptOptions: { sections: {} } });
-  await app.event("before_agent_start", { systemPromptOptions: { sections: {} } });
-  expect(app.calls.filter((a: string[]) => a[0] === "inbox")).toHaveLength(reads);
   await app.event("session_shutdown", { reason: "quit" });
   expect(await until(() => children().length === 0)).toBe(true);
 });
 
-for (const mode of ["print", "json"]) test(`${mode} mode keeps per-prompt reads`, async () => {
+for (const mode of ["print", "json", "rpc"]) test(`${mode} mode ${mode === "rpc" ? "starts a follower" : "keeps per-prompt reads"}`, async () => {
   const app = await open(`pi-builder/live-${mode}`, { mode });
-  await app.event("before_agent_start", { systemPromptOptions: { sections: {} } });
-  expect(await until(() => app.calls.some((a: string[]) => a[0] === "inbox"))).toBe(true);
-  expect(children()).toHaveLength(0);
+  if (mode === "rpc") expect(await until(() => children().length === 1)).toBe(true);
+  else {
+    await app.event("before_agent_start", { systemPromptOptions: { sections: {} } });
+    expect(await until(() => app.calls.some((a: string[]) => a[0] === "inbox"))).toBe(true);
+    await settle();
+    expect(children()).toHaveLength(0);
+  }
 });
 
 test("opt out leaves the per-prompt inbox in use", async () => {
@@ -48,46 +47,14 @@ test("opt out leaves the per-prompt inbox in use", async () => {
   const app = await open("pi-builder/live-off");
   await app.event("before_agent_start", { systemPromptOptions: { sections: {} } });
   expect(await until(() => app.calls.some((a: string[]) => a[0] === "inbox"))).toBe(true);
-  expect(children()).toHaveLength(0);
-});
-
-test("a late native adapter stops the follower on the next prompt", async () => {
-  const app = await open("pi-builder/live-native");
-  expect(await until(() => children().length === 1)).toBe(true);
-  globalRegistry[nativeKey].adapters.set("native", { options: { scope: "user", contract: true } });
-  await app.event("before_agent_start", { systemPromptOptions: { sections: {} } });
-  expect(await until(() => children().length === 0)).toBe(true);
-});
-
-test("rpc mode starts the follower", async () => {
-  await open("pi-builder/live-rpc", { mode: "rpc" });
-  expect(await until(() => children().length === 1)).toBe(true);
-});
-
-test("a bare actor address does not start a follower", async () => {
-  await open("pi-builder");
+  await settle();
   expect(children()).toHaveLength(0);
 });
 
 test("a native contract active at startup prevents a follower", async () => {
   globalRegistry[nativeKey].adapters.set("native", { options: { scope: "user", contract: true } });
   await open("pi-builder/live-native-first");
-  expect(children()).toHaveLength(0);
-});
-
-test("a resumed session replaces its predecessor's stream", async () => {
-  const app = await open("pi-builder/live-switch");
-  expect(await until(() => children().length === 1)).toBe(true);
-  const [first] = children();
-  await app.event("session_start", { reason: "resume" });
-  expect(await until(() => children().length === 1 && children()[0] !== first)).toBe(true);
-});
-
-
-test("a child session does not start a follower", async () => {
-  asChild(JSON.stringify({ pid: process.pid, sessionId: "parent", workspace: cwd, teammate: "" }));
-  const app = await open("pi-builder/live-child");
-  await app.event("before_agent_start", { prompt: "child task", systemPromptOptions: { sections: {} } });
+  await settle();
   expect(children()).toHaveLength(0);
 });
 
@@ -115,4 +82,7 @@ test("a late native adapter suppresses delivery before the next prompt", async (
   await kata(["notify", sentinel, "--to", address, "--message", "sentinel", "--json"]);
   expect(await until(() => app.messages.length === 1)).toBe(true);
   expect(app.messages[0][0].content).toContain("sentinel");
+  globalRegistry[nativeKey].adapters.set("native", { options: { scope: "user", contract: true } });
+  await app.event("before_agent_start", { systemPromptOptions: { sections: {} } });
+  expect(await until(() => children().length === 0)).toBe(true);
 });

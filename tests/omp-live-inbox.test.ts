@@ -117,3 +117,25 @@ test("a bare actor address starts no follower", async () => {
 	expect(app.sent).toEqual([]);
 	await kata(["notify", ref, "--to", "v2-builder", "--clear", "--json"]);
 });
+
+
+test("padded session addresses work in live and per-prompt inboxes", async () => {
+	const address = "v2-builder/live-padded", padded = `  ${address}  `;
+	const app = await open(padded), ref = await issue();
+	expect(await until(() => children().length === 1)).toBe(true);
+	await kata(["notify", ref, "--to", padded, "--message", "padded-live", "--json"]);
+	expect(await until(() => app.sent.length === 1)).toBe(true);
+	expect(app.sent[0][0]).toContain(`--to ${address} --clear`);
+	expect(await app.section()).toContain("padded-live");
+	await kata(["notify", ref, "--to", padded, "--clear", "--json"]);
+	const sentinel = await issue();
+	await kata(["notify", sentinel, "--to", padded, "--message", "after-clear", "--json"]);
+	expect(await until(() => app.sent.length === 2)).toBe(true);
+	const section = await app.section();
+	expect(section).not.toContain("padded-live");
+	expect(section).toContain("after-clear");
+	await app.event("session_shutdown");
+	process.env.KATA_OMP_LIVE_INBOX = "0";
+	const perTurn = await open(padded);
+	expect(await perTurn.section()).toContain("after-clear");
+});
