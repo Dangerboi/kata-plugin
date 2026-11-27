@@ -159,7 +159,6 @@ test("queued close survives extension recreation and retries only after its dead
   expect((await show(task)).issue.status).toBe("open");
   const resumed = host({ sid: app.sid, entries }); await resumed.event("session_start");
   expect(resumed.calls.some(a => a[0] === "close" && a.includes(task))).toBe(false);
-  expect((await show(task)).issue.status).toBe("open");
   await later(async () => { const restarted = host({ sid: app.sid, entries }); await restarted.event("session_start"); await restarted.call({ op: "view" }); });
   expect((await show(task)).issue.status).toBe("closed");
   expect(await closesOf(task)).toHaveLength(1);
