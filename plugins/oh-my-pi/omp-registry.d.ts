@@ -6,3 +6,7 @@ declare module "@oh-my-pi/pi-coding-agent/config/registry" {
 	}
 	export function lookup(id: string): Setting | undefined;
 }
+
+declare module "@oh-my-pi/pi-coding-agent/extensibility/plugins" {
+	export function getPluginSettings(name: string, cwd: string): Promise<unknown>;
+}

@@ -4,17 +4,36 @@ Plugin ID: `kata@kata-plugin`; package: `@dangerboi/kata-omp` (marketplace and n
 
 Session start exports `KATA_CLOSE_TRANSCRIPT_ENABLED=true` (unless already set), `KATA_TRANSCRIPT_AGENT=omp` and `KATA_TRANSCRIPT_SESSION_ID`; shutdown leaves them for the next session start to overwrite, as in pi. omp's `exec` does not see later environment changes, so the plugin spawns its own `kata close` calls directly, with no shell and no `env` program, and the pair in the child's environment. The adapter uses a todo backend, session start/shutdown, tree navigation, input, prompt hooks, tool calls/results, the stop hook (`session_stop`: it settles the turn, retrying due closes and handing back exited delegates, and adds no reminder, because omp's own todo tracker reminds), `task:subagent:lifecycle`, and `task:subagent:event` (each subagent's session events, worker threads included, for its report: its last assistant text or its `yield` data). A shared coordinator joins final subagent IDs to child sessions. Only `ctx.agent.kind === "main"` can bind the main plan or change main session attention. omp strips its `todo` tool from `task` subagents except under prewalk; a prewalk worker with an assignment has its `todo` calls checked against its own assigned issue and teammate, and cannot reuse the coordinator’s adapter context or inherited parent reference. Other subagents work their assigned issue through `kata` commands.
 
-| Variable | Meaning |
-| --- | --- |
-| `KATA_OMP_EXECUTABLE` | Kata executable; defaults to `kata`. |
-| `KATA_REF` | Explicit main parent and main session-attention target. Without `KATA_REF`, a ticket the lead claims, or an issue it names with `/todo ref`, gets session attention too (below). |
-| `KATA_DEFAULT_PROJECT` | Existing Kata project that collects the plans of folders without a project. Issues carry a label naming the repo. omp gives extensions no per-plugin settings, so this variable is the only switch. |
-| `KATA_AUTHOR`, `KATA_TEAMMATE` | Existing actor and optional main teammate. |
-| `KATA_INBOX_USER` | The session's inbox address, `<actor>/<name>`. A bare `<actor>` is a personal inbox: the session reads none and says so once. Only requests from the session's own actor are shown. When this is a session address, each delegate reads `<actor>/<teammate>`, built from the lead's actor. |
-| `KATA_OMP_LIVE_INBOX` | `0` turns off live delivery of inbox requests to the main session and keeps the per-turn read. tern-kata sets it for the agents it starts, because it delivers there itself. |
-| `KATA_CLOSE_TRANSCRIPT_ENABLED` | `false` in the environment that launches omp stops closes recording the session; unset, session start sets `true`. |
-| `KATA_REF_GUARD` | `off` or `0` stops the refusal of writes and commits that name a Kata ref ([below](#kata-refs-in-repository-content)). On by default. |
-| `KATA_OMP_DEBUG` | Optional append-only diagnostic log. |
+| Variable | Setting | Default | Meaning |
+| --- | --- | --- | --- |
+| `KATA_OMP_EXECUTABLE` | | | Kata executable; defaults to `kata`. |
+| `KATA_REF` | | | Explicit main parent and main session-attention target. Without `KATA_REF`, a ticket the lead claims, or an issue it names with `/todo ref`, gets session attention too (below). |
+| `KATA_DEFAULT_PROJECT` | `defaultProject` | `""` | Existing Kata project that collects the plans of folders without a project. Issues carry a label naming the repo. |
+| `KATA_AUTHOR`, `KATA_TEAMMATE` | | | Existing actor and optional main teammate. |
+| `KATA_INBOX_USER` | | | The session's inbox address, `<actor>/<name>`. A bare `<actor>` is a personal inbox: the session reads none and says so once. Only requests from the session's own actor are shown. When this is a session address, each delegate reads `<actor>/<teammate>`, built from the lead's actor. |
+| `KATA_OMP_LIVE_INBOX` | `liveInbox` | `true` | Off turns off live delivery of inbox requests to the main session and keeps the per-turn read. tern-kata sets `0` for the agents it starts, because it delivers there itself; the variable beats a stored `true`. |
+| `KATA_CLOSE_TRANSCRIPT_ENABLED` | | | `false` in the environment that launches omp stops closes recording the session; unset, session start sets `true`. |
+| `KATA_REF_GUARD` | `refGuard` | `"block"` | `off` (or `0`) stops the refusal of writes and commits that name a Kata ref ([below](#kata-refs-in-repository-content)); `block` keeps it. |
+| `KATA_OMP_DEBUG` | | | Optional append-only diagnostic log. |
+
+## Settings
+
+`defaultProject`, `liveInbox` and `refGuard` are also omp plugin settings of the package `@dangerboi/kata-omp`, the key for an npm install and a marketplace install alike (`omp plugin config set kata …` finds no plugin). `omp plugin config list @dangerboi/kata-omp` shows them with their defaults and variables, and omp's plugins panel edits them.
+
+```sh
+omp plugin config set @dangerboi/kata-omp defaultProject inbox
+omp plugin config set @dangerboi/kata-omp refGuard off
+```
+
+`omp plugin config set` writes the user-wide value. A project's own value goes in `.omp/plugin-overrides.json` in the project folder, under `settings`, and beats the user-wide one:
+
+```json
+{ "settings": { "@dangerboi/kata-omp": { "liveInbox": false } } }
+```
+
+Each key resolves as variable, then setting, then default; a value the plugin cannot read, in the variable or in the setting, is skipped for the next source. In a variable or a hand-written `.omp/plugin-overrides.json`, `refGuard` reads `block` (also `1`, `true`, `on` or `yes`) or `off` (also `0`), and `liveInbox` reads `1`/`true`/`on` or `0`/`false`/`off`; both ignore case and surrounding spaces, and any other value (`KATA_REF_GUARD=false`, `KATA_OMP_LIVE_INBOX=bogus`) is skipped. `omp plugin config set` takes only `block` or `off` for `refGuard`, and lowercase `true` or `false` for `liveInbox`: omp 19.2.1 stores any text other than lowercase `true`, `yes` or `1`, `on` and `TRUE` included, as `false`. Any string is a `defaultProject` value: an empty `KATA_DEFAULT_PROJECT` beats a stored project and turns the default project off. OpenCode reads the other way round, its plugin option before the variable.
+
+The settings are read for the session's folder when a session starts, switches (`/new`, `/resume`, `/fork`) or branches (a rewind, a fork from an earlier message, `/btw`), so the new session uses the changed values; a branch that turns `liveInbox` on or off starts or stops live delivery. A `/tree` move keeps what the session read. On an omp without plugin settings, or when they cannot be read, the variables and defaults apply as before. `KATA_OMP_EXECUTABLE` and `KATA_OMP_DEBUG` stay variables only.
 
 ## omp's todo and the Kata backend
 
@@ -47,7 +66,7 @@ When a person deletes the automatic parent (`kata delete`, or `X` in Kata 0.22's
 
 ## Kata refs in repository content
 
-Kata refs resolve only in the local tracker, so the plugin refuses a `write`, `edit` (hashline, replace, patch, `apply_patch` and sloppy modes; the guard reads the hashline, `apply_patch` and sloppy patch formats, and a patch syntax it cannot parse is let through), `ast_edit` replacement or `bash` call that puts a ref the session works (the plan parent and items, the assigned or claimed issue, a delegate's issue) into a file under the session's folder or into a `git commit` message, and the model rewrites it to describe the behaviour. A commit counts where the `bash` call runs (its `cwd`, a `cd` before it, or `git -C`), so one in a folder outside the session's is not refused. A qualified ref counts only when its project is one the session knows, so `README.md#tasks` passes. A bare short id counts only when the session knows it. Only added text is checked: refs the replaced text or the file already holds, removed and context lines, hashline headers, files outside the folder, internal URLs and the bodies of `kata comment`, `kata close` and `kata create` are not. The check waits at most 2 seconds and lets the call through on an error. `KATA_REF_GUARD=off` (or `0`) turns it off. The lead's and every delegate's `tool_call` is checked against the lead's refs, so a delegate cannot write the ref of its own issue either; a delegate in a worker thread asks the main thread for the lead's refs, only for a call that adds text and waits up to a second, and checks only its own assignment when none arrives. The refusal is the tool's error.
+Kata refs resolve only in the local tracker, so the plugin refuses a `write`, `edit` (hashline, replace, patch, `apply_patch` and sloppy modes; the guard reads the hashline, `apply_patch` and sloppy patch formats, and a patch syntax it cannot parse is let through), `ast_edit` replacement or `bash` call that puts a ref the session works (the plan parent and items, the assigned or claimed issue, a delegate's issue) into a file under the session's folder or into a `git commit` message, and the model rewrites it to describe the behaviour. A commit counts where the `bash` call runs (its `cwd`, a `cd` before it, or `git -C`), so one in a folder outside the session's is not refused. A qualified ref counts only when its project is one the session knows, so `README.md#tasks` passes. A bare short id counts only when the session knows it. Only added text is checked: refs the replaced text or the file already holds, removed and context lines, hashline headers, files outside the folder, internal URLs and the bodies of `kata comment`, `kata close` and `kata create` are not. The check waits at most 2 seconds and lets the call through on an error. `KATA_REF_GUARD=off` (or `0`), or the setting `refGuard: off`, turns it off. The lead's and every delegate's `tool_call` is checked against the lead's refs, so a delegate cannot write the ref of its own issue either; a delegate in a worker thread asks the main thread for the lead's refs, only for a call that adds text and waits up to a second, and checks only its own assignment when none arrives. The refusal is the tool's error.
 
 ## Delegates
 

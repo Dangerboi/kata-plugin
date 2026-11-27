@@ -2328,6 +2328,17 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 		follower.start();
 	}
 
+	function liveAddress(): string | undefined {
+		const user = setting("KATA_INBOX_USER");
+		return host.liveInbox && user && isSessionAddress(user) ? user : undefined;
+	}
+	function reconcileFollower(ctx: HostContext) {
+		const address = liveAddress();
+		if (!!address === !!follower) return;
+		stopFollower();
+		if (address) { liveInbox = ""; startFollower(ctx, address); }
+	}
+
 	// --------------------------------------------------------------- attention
 
 	// Kata owns session attention semantics; the harness name only selects payload parsing and the session token.
@@ -2514,17 +2525,16 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 				stopFollower();
 				// The reads of the session this one replaces go.
 				for (const other of [...leadReads.keys()]) if (other !== leadKey(id)) leadReads.delete(other);
-				const user = setting("KATA_INBOX_USER");
-				const live = !!host.liveInbox && !!user && isSessionAddress(user);
-				if (live) liveInbox = "";
+				const address = liveAddress();
+				if (address) liveInbox = "";
 				prefetch(ctx);
-				if (live) startFollower(ctx, user!);
+				if (address) startFollower(ctx, address);
 				const switching = serial(job => enterSession(job, ctx, begin));
 				// OMP snapshots the bash environment after this handler returns.
 				await bounded(switching, explicit && options.attentionHarness && id ? ATTENTION_START_MS : begin.wait);
 				return lead();
 			},
-			branch: rebind,
+			async branch(ctx: HostContext) { const lead = await rebind(ctx); if (main(ctx)) reconcileFollower(ctx); return lead; },
 			tree: rebind,
 			input() { reminders = 0; },
 			// Whether the session still owes Kata closes: a pending close, a delegate still to settle, or an automatic parent's close the

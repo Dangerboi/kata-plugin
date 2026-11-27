@@ -4,6 +4,18 @@ All notable changes to `@dangerboi/kata-omp` are listed here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+#### Settings
+
+- `defaultProject`, `liveInbox` and `refGuard` (`block` or `off`) are omp plugin settings of `@dangerboi/kata-omp`. Set them with `omp plugin config set @dangerboi/kata-omp <key> <value>` or omp's plugins panel, or per project in `.omp/plugin-overrides.json`; `omp plugin config list` shows them. They are read when a session starts, switches, forks or branches. `KATA_OMP_EXECUTABLE` and `KATA_OMP_DEBUG` stay variables only.
+  - `KATA_DEFAULT_PROJECT`, `KATA_OMP_LIVE_INBOX` and `KATA_REF_GUARD` still win when set to a value the plugin can read; one it cannot read is skipped for the setting, then the default.
+
+### Changed
+
+- `KATA_OMP_LIVE_INBOX` also reads `false`/`off` as off and `1`/`true`/`on` as on; before, only `0` turned live delivery off.
+- `KATA_REF_GUARD` reads `block`, `1`, `true`, `on` or `yes` as on and `off` or `0` as off. Any other value, `false` included, used to mean on; it is now skipped for the stored `refGuard`, then `block`.
+
 ## [3.1.0] - 2026-11-26
 
 ### Added

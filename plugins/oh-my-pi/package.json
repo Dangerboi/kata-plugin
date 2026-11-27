@@ -23,7 +23,31 @@
   "omp": {
     "extensions": [
       "./kata.ts"
-    ]
+    ],
+    "settings": {
+      "defaultProject": {
+        "type": "string",
+        "default": "",
+        "description": "Existing Kata project that collects the plans of folders without a project, labeled with the repo. Empty: the folder's inferred project.",
+        "env": "KATA_DEFAULT_PROJECT"
+      },
+      "liveInbox": {
+        "type": "boolean",
+        "default": true,
+        "description": "Deliver inbox requests to the main session as they arrive. Off: read the inbox once per turn.",
+        "env": "KATA_OMP_LIVE_INBOX"
+      },
+      "refGuard": {
+        "type": "enum",
+        "default": "block",
+        "description": "block refuses a write, edit or git commit that puts a Kata ref the session works into the repository; off lets it through.",
+        "env": "KATA_REF_GUARD",
+        "values": [
+          "block",
+          "off"
+        ]
+      }
+    }
   },
   "publishConfig": {
     "access": "public"

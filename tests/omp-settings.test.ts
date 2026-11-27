@@ -1,0 +1,105 @@
+import { afterEach, expect, test } from "bun:test";
+import { mkdirSync } from "node:fs";
+import path from "node:path";
+import { realKata } from "./kata-fixture";
+import { ompHost, setPluginSettings } from "./omp-host";
+import { loadPluginSettings, resolveSettings } from "../plugins/oh-my-pi/settings";
+
+const store = realKata({ prefix: "omp-settings", author: "actor-a", project: "omptest" });
+const { cwd, run } = store;
+afterEach(() => { setPluginSettings(() => ({})); delete process.env.KATA_REF_GUARD; });
+
+test("a padded legacy guard variable overrides a stored block setting", async () => {
+  setPluginSettings(() => ({ refGuard: "block" }));
+  process.env.KATA_REF_GUARD = " OFF ";
+  const app = ompHost({ cwd, run: args => run(args), sid: "settings-padded" });
+  await app.event("session_start");
+  const ref = await app.init(["Padded guard task"]);
+  expect(await app.event("tool_call", { toolName: "write", input: { path: `${cwd}/padded.ts`, content: ref } })).toBeUndefined();
+});
+
+test("resolution caches stored settings and reads environment values live", () => {
+  const stored = { defaultProject: " Mixed Project ", liveInbox: "false", refGuard: "off" };
+  const value = resolveSettings(stored, { KATA_OMP_LIVE_INBOX: "bad", KATA_REF_GUARD: "bogus" });
+  expect(value.liveInbox).toBe(false);
+  expect(value.env("KATA_DEFAULT_PROJECT")).toBe(" Mixed Project ");
+  expect(value.env("KATA_REF_GUARD")).toBe("off");
+  expect(resolveSettings(stored, { KATA_DEFAULT_PROJECT: "" }).env("KATA_DEFAULT_PROJECT")).toBe("");
+  expect(resolveSettings(stored, { KATA_OMP_LIVE_INBOX: " ON " }).liveInbox).toBe(true);
+  for (const guard of ["1", "true", "on", "yes", " YES "]) {
+    expect(resolveSettings({ refGuard: "off" }, { KATA_REF_GUARD: guard }).env("KATA_REF_GUARD")).toBe("block");
+  }
+  expect(resolveSettings({ refGuard: "off" }, { KATA_REF_GUARD: "false" }).env("KATA_REF_GUARD")).toBe("off");
+  expect(resolveSettings({ refGuard: "block" }, { KATA_REF_GUARD: "false" }).env("KATA_REF_GUARD")).toBe("block");
+  expect(resolveSettings({ refGuard: "yes" }, {}).env("KATA_REF_GUARD")).toBe("block");
+  const snapshot = { defaultProject: "initial", liveInbox: false, refGuard: "off" };
+  const env: Record<string, string | undefined> = {};
+  const cached = resolveSettings(snapshot, env);
+  snapshot.defaultProject = "changed"; snapshot.liveInbox = true; snapshot.refGuard = "block";
+  expect(cached.env("KATA_DEFAULT_PROJECT")).toBe("initial");
+  expect(cached.liveInbox).toBe(false);
+  expect(cached.env("KATA_REF_GUARD")).toBe("off");
+  env.KATA_DEFAULT_PROJECT = "environment"; env.KATA_OMP_LIVE_INBOX = "on"; env.KATA_REF_GUARD = "yes";
+  expect(cached.env("KATA_DEFAULT_PROJECT")).toBe("environment");
+  expect(cached.liveInbox).toBe(true);
+  expect(cached.env("KATA_REF_GUARD")).toBe("block");
+  env.KATA_OMP_LIVE_INBOX = "bogus"; env.KATA_REF_GUARD = "bogus";
+  expect(cached.liveInbox).toBe(false);
+  expect(cached.env("KATA_REF_GUARD")).toBe("off");
+  for (const [input, expected] of [["0",false],["false",false],["off",false],["1",true],["true",true],["on",true]] as const) expect(resolveSettings({ liveInbox: input }, {}).liveInbox).toBe(expected);
+});
+
+test("loader ignores malformed results and errors", async () => {
+  for (const result of [null, "invalid", []]) { setPluginSettings(() => result); expect(await loadPluginSettings(cwd)).toEqual({}); }
+  setPluginSettings(() => { throw new Error("unavailable"); });
+  expect(await loadPluginSettings(cwd)).toEqual({});
+});
+
+test("the real settings loader tolerates an absent omp module", () => {
+  const home = path.join(store.scratch, "loader-home");
+  mkdirSync(home, { recursive: true });
+  const env: NodeJS.ProcessEnv = { ...process.env, HOME: home, XDG_CONFIG_HOME: path.join(home, "config"), XDG_DATA_HOME: path.join(home, "data"), XDG_CACHE_HOME: path.join(home, "cache") };
+  delete env.CODEX_HOME; delete env.CLAUDE_CONFIG_DIR; delete env.PI_CODING_AGENT_DIR;
+  const child = Bun.spawnSync([process.execPath, "-e", `
+    let absent = false;
+    try { await import("@oh-my-pi/pi-coding-agent/extensibility/plugins"); } catch { absent = true; }
+    const { loadPluginSettings } = await import("./plugins/oh-my-pi/settings.ts");
+    console.log(JSON.stringify({ absent, settings: await loadPluginSettings(${JSON.stringify(home)}) }));
+  `], { cwd: process.cwd(), env, stdout: "pipe", stderr: "pipe" });
+  expect(child.exitCode).toBe(0);
+  const result = JSON.parse(child.stdout.toString());
+  if (result.absent) expect(result.settings).toEqual({});
+});
+
+test("switch and branch reload settings, while tree keeps the current values", async () => {
+  let guard = "off", reads = 0;
+  setPluginSettings(() => { reads++; return { refGuard: guard }; });
+  const app = ompHost({ cwd, run: args => run(args), sid: "settings-switch" });
+  await app.event("session_start");
+  const ref = await app.init(["Settings refresh task"]);
+  const write = () => app.event("tool_call", { toolName: "write", input: { path: `${cwd}/note.ts`, content: ref } });
+  expect(await write()).toBeUndefined();
+  guard = "block";
+  await app.event("session_tree");
+  expect(reads).toBe(1);
+  expect(await write()).toBeUndefined();
+  await app.event("session_branch", { reason: "fork" });
+  expect(await write()).toMatchObject({ block: true });
+  guard = "off";
+  await app.switchSession("settings-next");
+  const next = await app.init(["Settings next task"]);
+  expect(await app.event("tool_call", { toolName: "write", input: { path: `${cwd}/note.ts`, content: next } })).toBeUndefined();
+  expect(reads).toBe(3);
+});
+
+test("stored default project collects plans from an unregistered folder", async () => {
+  const folder = path.join(store.scratch, "unregistered-settings-folder");
+  mkdirSync(folder, { recursive: true });
+  setPluginSettings(() => ({ defaultProject: "omptest" }));
+  const app = ompHost({ cwd: folder, sid: "settings-project", run: (args, opts) => run(args, opts.cwd, opts.timeout) });
+  await app.event("session_start");
+  await app.call({ op: "init", items: ["Stored project item"] });
+  const found = await store.kata(["list", "--project", "omptest", "--status", "all", "--json"]);
+  expect(found.issues.some((issue: any) => issue.title === "Stored project item")).toBe(true);
+  await app.event("session_shutdown");
+});
