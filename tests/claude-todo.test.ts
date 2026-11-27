@@ -1,5 +1,4 @@
 import { expect, test } from "bun:test";
-import { guardWarning } from "./ref-guard-warning";
 import { savedSnapshot } from "../core/kata-core";
 import { claudeKata, entering, PROJECT, type ClaudeHost } from "./claude-fixture";
 import { EVIDENCE, eventually, holdKata, holdNext, MESSAGE, quote } from "./kata-fixture";
@@ -489,7 +488,8 @@ test("Claude warn preserves the tool result and previous context once", async ()
 	expect(result.isError).toBe(true);
 	expect(result.context[0]).toBe("earlier context");
 	expect(result.context).toHaveLength(2);
-	expect(result.context[1]).toBe(guardWarning("Bash", ref));
+	expect(result.context[1]).toContain(ref);
+	expect(result.context[1]).toContain("Bash");
 	const clean = await h.fire("tool.call", { tool: "Bash", tool_use_id: crypto.randomUUID(), command: "echo clean" }, () => ({ result: "ok" }));
 	expect(clean.context).toBeUndefined();
 });

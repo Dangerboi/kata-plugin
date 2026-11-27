@@ -5,7 +5,6 @@ import { openCodeKata, qref, todos } from "./opencode-fixture";
 import { SUBAGENT_PREFIX } from "../plugins/opencode/subagents";
 import { teammateFor } from "../core/delegates";
 import opencode from "../plugins/opencode/kata";
-import { guardWarning } from "./ref-guard-warning";
 
 const { binary, cwd, kata, sh, closeEvents, startHost, startLead, parentOf } = openCodeKata("opencode-shell");
 
@@ -173,7 +172,8 @@ test("refGuard warn runs interleaved calls and appends each reason once", async 
 	const ref = qref(await parentOf(id));
 	const call = () => host.callTool(id, "shell", { command: `git commit -m "fix ${ref}"` }, { execute: () => "ok" });
 	for (const result of await Promise.all([call(), call()])) {
-		expect(result.status).toBe("completed"); expect(result.text).toBe(`ok\n${guardWarning("shell", ref)}`);
+		expect(result.status).toBe("completed"); expect(result.text).toStartWith("ok\n");
+		expect(result.text).toContain(ref); expect(result.text).toContain("shell");
 	}
 	expect((await shell(host, id, "echo clean")).text).toBe("ok");
 	const failed = await host.callTool(id, "shell", { command: `git commit -m "fix ${ref}"` }, { execute: () => { throw new Error("tool failed"); } });
@@ -198,7 +198,8 @@ test("refGuard warn keeps earlier hook content and metadata in every result shap
 		const result = await host.callTool(id, "shell", { command: `git commit -m "fix ${ref}"` }, { execute: () => ({ output: "original output", content: "original content", metadata: { kept: true } }) });
 		expect(result.status).toBe("completed");
 		expect(result.text).toContain(shape === "string" ? "earlier hook" : shape === "array" ? "earlier part" : "original output");
-		expect(result.text).toContain(guardWarning("shell", ref));
+		expect(result.text).toContain(ref);
+		expect(result.text).toContain("shell");
 		expect(result.metadata).toEqual({ kept: true });
 	}
 });

@@ -1,5 +1,4 @@
 import { expect, test } from "bun:test";
-import { guardWarning } from "./ref-guard-warning";
 import fc from "fast-check";
 import { execFileSync } from "node:child_process";
 import { mkdirSync, realpathSync } from "node:fs";
@@ -289,12 +288,15 @@ test("pi warn attaches each guard reason once to its own result", async () => {
 		for (const toolCallId of ["a", "b"]) expect(await app.event("tool_call", { toolCallId, toolName: "bash", input: { ...input } })).toBeUndefined();
 		for (const toolCallId of ["b", "a"]) {
 			const event = { toolCallId, toolName: "bash", input, isError: false, content: [{ type: "text", text: "ok" }], structuredContent: { output: "ok", count: 2 } };
-			expect(await app.event("tool_result", event)).toEqual({ content: [...event.content, { type: "text", text: guardWarning("bash", ref) }], structuredContent: event.structuredContent });
+			const result = await app.event("tool_result", event);
+			expect(result?.content[0]).toEqual(event.content[0]);
+			expect(result?.content[1]?.text).toContain(ref);
+			expect(result?.content[1]?.text).toContain("bash");
+			expect(result?.structuredContent).toEqual(event.structuredContent);
 			expect(await app.event("tool_result", event)).toBeUndefined();
 		}
 	} finally { delete process.env.KATA_REF_GUARD; }
 });
-
 
 test("pi attaches both nested warnings to their outer result once", async () => {
 	const app = await host(); await app.event("session_start", { reason: "startup" });
@@ -308,7 +310,61 @@ test("pi attaches both nested warnings to their outer result once", async () => 
 			expect(await app.event("tool_result", { ...event, isError: false, content: [{ type: "text", text: "inner" }], structuredContent: { output: "inner" } })).toBeUndefined();
 		}
 		const outer = { toolCallId: "outer", toolName: "codemode", input: {}, isError: false, content: [{ type: "text", text: "filtered" }], structuredContent: { kept: true } };
-		expect(await app.event("tool_result", outer)).toEqual({ content: [...outer.content, { type: "text", text: `${guardWarning("bash", ref)}\n${guardWarning("bash", ref)}` }], structuredContent: outer.structuredContent });
+		const result = await app.event("tool_result", outer);
+		expect(result?.content[0]).toEqual(outer.content[0]);
+		expect(result?.content[1]?.text.split(ref)).toHaveLength(3);
+		expect(result?.structuredContent).toEqual(outer.structuredContent);
+		expect(await app.event("tool_result", outer)).toBeUndefined();
+	} finally { delete process.env.KATA_REF_GUARD; }
+});
+
+test("pi forwards deep nested warnings through interleaved parent results", async () => {
+	const app = await host(); await app.event("session_start", { reason: "startup" });
+	const ref = await app.init(["Deep warning task"]);
+	process.env.KATA_REF_GUARD = "warn";
+	try {
+		for (const root of ["one", "two"]) {
+			const event = { toolCallId: `${root}/middle/leaf`, parentToolCallId: `${root}/middle`, toolName: "bash", input: { command: `git commit -m "fix ${ref}"` } };
+			expect(await app.event("tool_call", event)).toBeUndefined();
+			expect(await app.event("tool_result", { ...event, isError: false, content: [{ type: "text", text: "leaf" }] })).toBeUndefined();
+		}
+		for (const root of ["two", "one"]) {
+			const intermediate = { toolCallId: `${root}/middle`, parentToolCallId: root, toolName: "custom", input: {}, isError: root === "two", content: [{ type: "text", text: "filtered" }] };
+			expect(await app.event("tool_result", intermediate)).toBeUndefined();
+			const outer = { toolCallId: root, toolName: "codemode", input: {}, isError: root === "two", content: [{ type: "text", text: "outer" }], structuredContent: { retained: root } };
+			const result = await app.event("tool_result", outer);
+			expect(result?.structuredContent).toEqual(outer.structuredContent);
+			expect(result?.content[1]?.text).toContain(ref);
+			expect(result?.content[1]?.text.match(/Kata refs only resolve/g)).toHaveLength(1);
+			expect(await app.event("tool_result", outer)).toBeUndefined();
+		}
+	} finally { delete process.env.KATA_REF_GUARD; }
+});
+
+test("pi nested runner carries a filtered warning to the outer result", async () => {
+	const { NestedToolCallRunner } = await import("../node_modules/@earendil-works/pi-coding-agent/dist/core/nested-tool-calls.js");
+	const app = await host(); await app.event("session_start", { reason: "startup" });
+	const ref = await app.init(["Nested runner task"]);
+	process.env.KATA_REF_GUARD = "warn";
+	try {
+		const runner = new NestedToolCallRunner({
+			emit: async () => {}, isSequential: () => false, getTools: () => [],
+			runToolCall: async (call: any, parentToolCallId: string) => {
+				const event = { toolName: call.name, toolCallId: call.id, parentToolCallId, input: call.arguments };
+				expect(await app.event("tool_call", event)).toBeUndefined();
+				if (call.name === "custom") {
+					await runner.execute(call.id, "bash", { command: `git commit -m "fix ${ref}"` });
+				}
+				const result = { content: [{ type: "text", text: "filtered" }], structuredContent: { value: "kept" } };
+				const change = await app.event("tool_result", { ...event, ...result, isError: false });
+				expect(change).toBeUndefined();
+				return { toolCall: call, result, isError: false };
+			},
+		});
+		await runner.execute("outer", "custom", {});
+		const outer = { toolName: "codemode", toolCallId: "outer", input: {}, isError: false, content: [{ type: "text", text: "filtered" }] };
+		const result = await app.event("tool_result", outer);
+		expect(result?.content[1]?.text).toContain(ref);
 		expect(await app.event("tool_result", outer)).toBeUndefined();
 	} finally { delete process.env.KATA_REF_GUARD; }
 });

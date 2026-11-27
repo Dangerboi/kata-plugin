@@ -1,5 +1,4 @@
 import { expect, setSystemTime, test } from "bun:test";
-import { guardWarning } from "./ref-guard-warning";
 import { execFile } from "node:child_process";
 import { mkdirSync, mkdtempSync, symlinkSync, writeFileSync } from "node:fs";
 import path from "node:path";
@@ -487,7 +486,9 @@ test("omp warn attaches each guard reason once to its own result", async () => {
 	try {
 		for (const toolCallId of ["a", "b"]) expect(await app.event("tool_call", { toolCallId, toolName: "bash", input })).toBeUndefined();
 		for (const toolCallId of ["b", "a"]) {
-			expect(await app.event("tool_result", { toolCallId, toolName: "bash", input, isError: false })).toEqual({ additionalContext: guardWarning("bash", ref) });
+			const result = await app.event("tool_result", { toolCallId, toolName: "bash", input, isError: false });
+			expect(result?.additionalContext).toContain(ref);
+			expect(result?.additionalContext).toContain("bash");
 			expect(await app.event("tool_result", { toolCallId, toolName: "bash", input, isError: false })).toBeUndefined();
 		}
 	} finally { delete process.env.KATA_REF_GUARD; }

@@ -30,5 +30,10 @@ test("warnings sharing a call id are returned together once", async () => {
 	expect(await core.tools.guard(ctx, call)).toBeUndefined();
 	const reason = core.tools.warning(ctx, "outer");
 	expect(reason?.match(/Kata refs only resolve/g)).toHaveLength(2);
+	expect(reason).toContain("bash");
+	expect(reason).toContain("demo#ab3d");
+	expect(reason).toContain("asked to put");
+	expect(reason).not.toContain("Refused:");
+	expect(reason).not.toContain("retry");
 	expect(core.tools.warning(ctx, "outer")).toBeUndefined();
 });
