@@ -49,6 +49,11 @@ function capField(value: unknown, limit: number): Capped {
 const isTrusted = (request: { from?: unknown }, mine: string | undefined) => typeof request.from === "string" && request.from === mine;
 
 const requestsOf = (requests: unknown): any[] => (Array.isArray(requests) ? requests : []).filter(r => r && typeof r.ref === "string" && typeof r.message === "string");
+/** The requests of a `kata inbox` reply this plugin can read: Kata's schema 1 with a request list. */
+export function inboxRequests(out: any): unknown[] {
+	if (out?.kata_api_version !== 1 || !Array.isArray(out.requests)) throw new Error("kata inbox answered with a schema this plugin cannot read");
+	return out.requests;
+}
 export type InboxCounts = { trusted: number; foreign: number };
 export function countInbox(requests: unknown, mine: string): InboxCounts {
 	const valid = requestsOf(requests).filter(r => typeof r.from === "string"), trusted = valid.filter(r => isTrusted(r, mine)).length;
