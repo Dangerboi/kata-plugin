@@ -10,6 +10,14 @@ All notable changes to `@dangerboi/kata-opencode` are listed here. The format fo
 
 - The `refGuard` option `warn` (or `KATA_REF_GUARD=warn`) lets a call the ref guard would refuse run, and adds the reason to that call's result, once (to the error message of a call that fails). A call a Code Mode script makes is refused instead, since the script would not pass the reason on. On OpenCode 2.2.7, whose tool event does not mark direct calls, `warn` refuses every guarded call.
 
+### Changed
+
+#### Repository content
+
+- The ref guard knows more refs. A `<project>#<id>` of the workspace project (from a version 1 `.kata.toml` as `kata init` writes it, else the plan parent's) counts before any of its issues is known.
+  - Each `kata` command in a `shell` call teaches, before it runs, every argument that is a whole qualified ref, the bare id it takes as an issue and the project it runs under, so `kata comment q7x2 -m done && git commit -am "fix q7x2"` is refused.
+  - A `kata show`, `create`, `next` or `claim` the lead runs alone teaches the issue it prints; `kata list` or `kata search` alone teaches only the projects it prints, so a listed bare id stays an ordinary word. Output of a chained command teaches nothing. The plugin now reads `shell` output for this.
+
 ### Fixed
 
 #### Repository content
