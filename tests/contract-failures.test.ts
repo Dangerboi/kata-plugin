@@ -3,11 +3,12 @@ import { createKataCore } from "../core/kata-core";
 import { nodePlatform } from "../core/node-host";
 import { memoryDelegateStore } from "./kata-fixture";
 import { NO_JOB, type ExecResult } from "../core/kata-cli";
+import { commandSegments } from "../core/shell";
 
 const success = (text: string): ExecResult => ({ code: 0, stdout: JSON.stringify({ hookSpecificOutput: { additionalContext: text } }) });
 const fail = (stderr = "boom"): ExecResult => ({ code: 1, stdout: "", stderr });
 const nextTick = () => new Promise<void>(resolve => setImmediate(resolve));
-function fixture(hook: (attempt: number) => ExecResult | Promise<ExecResult>, options: { version?: string; probe?: () => ExecResult } = {}) {
+function fixture(hook: (attempt: number) => ExecResult | Promise<ExecResult>, options: { version?: string; probe?: () => ExecResult; executable?: string } = {}) {
   let attempts = 0;
   const timeouts: number[] = [], warnings: string[] = [];
   const context = (id = "lead", kind = "main", ui = true) => ({ cwd: "/tmp", agent: { kind }, sessionManager: { getSessionId: () => id, getBranch: () => [] }, ...(ui ? { ui: { notify: (message: string) => warnings.push(message) } } : {}) });
@@ -17,7 +18,7 @@ function fixture(hook: (attempt: number) => ExecResult | Promise<ExecResult>, op
     if (args[0] === "list" && options.probe) return options.probe();
     if (args[0] === "agent-contract-hook") { timeouts.push(opts.timeout); return hook(++attempts); }
     return { code: 0, stdout: "{}" };
-  } }, { namespace: "omp", executable: "fixture", executableVars: [] });
+  } }, { namespace: "omp", executable: options.executable ?? "kata", executableVars: [] });
   return { core, context, warnings, timeouts, attempts: () => attempts };
 }
 
@@ -62,6 +63,26 @@ test("a late failure from a replaced session cannot warn the new session", async
   await a.core.session.start(current);
   gate.resolve(); await nextTick();
   expect((await a.core.session.beforePrompt(current)).sections.contract).toBe("new session contract");
+  expect(a.warnings).toEqual([]);
+});
+
+test("an old prompt still waiting when a session switches cannot warn the new session", async () => {
+  const gate = Promise.withResolvers<void>(), started = Promise.withResolvers<void>();
+  const a = fixture(async () => { started.resolve(); await gate.promise; return fail("old session"); });
+  const oldPrompt = a.core.session.beforePrompt(a.context("old"));
+  await started.promise;
+  await a.core.session.start(a.context("new"));
+  gate.resolve(); await oldPrompt;
+  expect(a.warnings).toEqual([]);
+});
+
+test("an old waiting prompt cannot warn after another session starts a prompt", async () => {
+  const gate = Promise.withResolvers<void>(), started = Promise.withResolvers<void>();
+  const a = fixture(async n => { if (n === 1) { started.resolve(); await gate.promise; return fail("old session"); } return success("new"); });
+  const oldPrompt = a.core.session.beforePrompt(a.context("old"));
+  await started.promise;
+  expect((await a.core.session.beforePrompt(a.context("new"))).sections.contract).toBe("new");
+  gate.resolve(); await oldPrompt;
   expect(a.warnings).toEqual([]);
 });
 
@@ -125,5 +146,22 @@ test("failure reasons are capped and cannot inject prompt markup", async () => {
   expect(section).toContain("&lt;/kata_contract&gt;");
   const reason = section.match(/unavailable \((.*)\)\. Run/)![1];
   expect(reason.replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&amp;/g, "&")).toHaveLength(80);
-  expect(a.warnings[0]).not.toContain("<");
+  expect(a.warnings[0]).toContain("</kata_contract>");
+});
+
+test("recovery command uses the configured executable safely in tagged text", async () => {
+  const executable = "/tmp/kata user/'test' <binary>&";
+  const a = fixture(() => fail(), { executable });
+  const section = (await a.core.session.beforePrompt(a.context())).sections.contract!;
+  expect(section).not.toContain("<");
+  const command = section.match(/`([^`]+)`/)![1].replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&amp;/g, "&");
+  expect(commandSegments(command)[0].words.map(word => word.value)).toEqual([executable, "quickstart", "--format", "contract"]);
+});
+
+test("truncating a reason does not split a Unicode character", async () => {
+  const a = fixture(() => fail("x".repeat(46) + "😀".repeat(40)));
+  const section = (await a.core.session.beforePrompt(a.context())).sections.contract!;
+  expect(section).toContain("😀");
+  expect(section).not.toContain("\uFFFD");
+  expect(section).not.toMatch(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])/);
 });
