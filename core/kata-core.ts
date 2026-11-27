@@ -2234,7 +2234,7 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 	// A contract failure reaches the user once, through the current main session's UI: when it settles, else at that session's next prompt.
 	function warnContract(ctx: HostContext | undefined, entry: PromptReads) {
 		const ui = uiOf(ctx);
-		if (!ctx || sid(currentCtx) !== sid(ctx) || leadReads.get(leadKey(sid(ctx))) !== entry || !entry.contractNotice || !ui?.notify) return;
+		if (sid(currentCtx) !== sid(ctx) || leadReads.get(leadKey(sid(ctx))) !== entry || !entry.contractNotice || !ui?.notify) return;
 		ui.notify(`Kata contract was unavailable (${entry.contractNotice}).`, "warning");
 		entry.contractNotice = undefined;
 	}
