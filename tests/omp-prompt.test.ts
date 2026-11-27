@@ -1,7 +1,8 @@
 import { expect, test } from "bun:test";
 import { v2Fixture } from "./v2-fixture";
+import { eventually, holdKata } from "./kata-fixture";
 
-const { host, issue, kata } = v2Fixture();
+const { host, issue, kata, run } = v2Fixture();
 const prompt = (app: ReturnType<typeof host>) => app.event("before_agent_start", { systemPrompt: ["base"] });
 const commit = (app: ReturnType<typeof host>, result: any) => {
   if (result?.message) app.ctx.sessionManager.getBranch().push({ type: "custom_message", ...result.message });
@@ -82,23 +83,25 @@ test("resuming while the inbox read is slow does not clear outstanding requests"
   commit(a, prior);
   const entries = structuredClone(a.ctx.sessionManager.getBranch());
   await a.event("session_shutdown");
-  const b = host({ sid: a.sid, entries, before: async (args: string[]) => {
-    if (args[0] === "inbox") await Bun.sleep(1200);
-    return undefined;
-  } });
+  const readFinished = Promise.withResolvers<void>();
+  const held = holdKata(args => args[0] === "inbox", async (args, opts) => {
+    const result = await run(args, opts.cwd, opts.timeout);
+    readFinished.resolve();
+    return result;
+  });
+  const b = host({ sid: a.sid, entries, before: held.before });
   await b.event("session_start");
   try {
+    await held.entered;
     expect((await prompt(b))?.message?.content ?? "").not.toContain("inbox is now empty");
-    await Bun.sleep(1300);
+    held.release();
+    await readFinished.promise;
     expect((await prompt(b))?.message?.content ?? "").not.toContain("inbox is now empty");
     await kata(["notify", one, "--to", "v2-builder/review95", "--clear", "--json"]);
     await kata(["notify", two, "--to", "v2-builder/review95", "--clear", "--json"]);
-    await Bun.sleep(1300);
-    await prompt(b);
-    await Bun.sleep(1300);
-    expect((await prompt(b))?.message?.content).toContain("inbox is now empty");
+    await eventually(async () => (await prompt(b))?.message?.content?.includes("inbox is now empty") ?? false, true);
   }
-  finally { await b.event("session_shutdown"); delete process.env.KATA_INBOX_USER; delete process.env.KATA_OMP_LIVE_INBOX; }
+  finally { held.release(); await b.event("session_shutdown"); }
 });
 
 
@@ -130,4 +133,60 @@ test("a failed inbox read preserves the prior snapshot until an authoritative em
   await c.event("session_start");
   try { expect((await prompt(c))?.message?.content).toContain("inbox is now empty"); }
   finally { await c.event("session_shutdown"); delete process.env.KATA_OMP_LIVE_INBOX; }
+});
+
+test("compaction retaining a prior message still clears the inbox and plan", async () => {
+  process.env.KATA_INBOX_USER = "v2-builder/retained95";
+  process.env.KATA_OMP_LIVE_INBOX = "0";
+  const app = host(); await app.event("session_start"); await app.contractReady;
+  try {
+    await app.init(["Retained plan item", "Verify retained item"]);
+    const a = await issue("request A"), b = await issue("request B");
+    await kata(["notify", a, "--to", "v2-builder/retained95", "--message", "request-a", "--json"]);
+    await kata(["notify", b, "--to", "v2-builder/retained95", "--message", "request-b", "--json"]);
+    await prompt(app); const first = await prompt(app);
+    expect(first.message.content).toContain("request-a"); expect(first.message.content).toContain("request-b"); commit(app, first);
+    await kata(["notify", a, "--to", "v2-builder/retained95", "--clear", "--json"]);
+    await prompt(app); const second = await prompt(app);
+    expect(second.message.content).not.toContain("request-a"); expect(second.message.content).toContain("request-b"); commit(app, second);
+    app.ctx.sessionManager.getBranch().at(-1).id = "retained";
+    await kata(["notify", b, "--to", "v2-builder/retained95", "--clear", "--json"]);
+    await app.backend("native");
+    await prompt(app); await prompt(app);
+    // omp can retain this message in model context across compaction.
+    app.ctx.sessionManager.getBranch().push({ type: "compaction", firstKeptEntryId: "retained" });
+    const after = await prompt(app);
+    expect(after?.message?.content).toContain("inbox is now empty");
+    expect(after?.message?.content).toContain("plan has been cleared");
+  } finally { await app.event("session_shutdown"); }
+});
+
+test("a plan update after compaction preserves an inbox whose read is pending", async () => {
+  process.env.KATA_INBOX_USER = "v2-builder/compact-pending";
+  process.env.KATA_OMP_LIVE_INBOX = "0";
+  const a = host(); await a.event("session_start"); await a.contractReady;
+  await a.init(["Pending inbox plan", "Verify pending inbox"]);
+  const ref = await issue("pending inbox");
+  await kata(["notify", ref, "--to", "v2-builder/compact-pending", "--message", "pending request", "--json"]);
+  await prompt(a); const prior = await prompt(a); commit(a, prior);
+  const branch = a.ctx.sessionManager.getBranch();
+  branch.at(-1).id = "retained-pending";
+  branch.push({ type: "compaction", firstKeptEntryId: "retained-pending" });
+  const entries = structuredClone(branch);
+  await a.event("session_shutdown");
+  const held = holdKata(args => args[0] === "inbox");
+  const b = host({ sid: a.sid, entries, before: held.before });
+  await b.event("session_start");
+  try {
+    await held.entered;
+    await b.backend("native");
+    const update = await prompt(b);
+    expect(update.message.content).toContain("pending request");
+    expect(update.message.content).toContain("plan has been cleared");
+    expect(update.message.content).not.toContain("inbox is now empty");
+    commit(b, update);
+    await kata(["notify", ref, "--to", "v2-builder/compact-pending", "--clear", "--json"]);
+    held.release();
+    await eventually(async () => (await prompt(b))?.message?.content?.includes("inbox is now empty") ?? false, true);
+  } finally { held.release(); await b.event("session_shutdown"); }
 });
