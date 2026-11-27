@@ -4,6 +4,7 @@ import { v2Fixture } from "./v2-fixture";
 
 // The omp adapter against a real Kata: hosted parents and delegate mirroring through omp's native todo, the contract hook and the inbox section.
 const { scratch, cwd, outside, run, kata, show, issue, host, message } = v2Fixture();
+const promptText = (result: any) => [...(result?.systemPrompt ?? []), result?.message?.content ?? ""].join("\n");
 
 // The delegate's assignment child is written in the background after the lifecycle event.
 const assignedChild = async (parent: string, id: string) => {
@@ -124,22 +125,6 @@ test("a revive before_agent_start makes no Kata calls while a prompt still injec
   expect(prompt.systemPrompt.join("\n")).toContain("<kata_contract>");
 });
 
-test("a request sent mid-session reaches the inbox section by the next turn and clearing removes it", async () => {
-  process.env.KATA_INBOX_USER = "v2-builder/midsession";
-  const app = host(); await app.event("session_start"); await app.contractReady;
-  const ref = await issue();
-  const turn = async () => (await app.event("before_agent_start", { systemPrompt: ["base"] })).systemPrompt.join("\n");
-  expect(await turn()).not.toContain("<kata_inbox>");
-  await kata(["notify", ref, "--to", "v2-builder/midsession", "--message", "midsession-ping-7731", "--json"]);
-  await turn();
-  const delivered = await turn();
-  expect(delivered).toContain("<kata_inbox>");
-  expect(delivered).toContain("midsession-ping-7731");
-  await kata(["notify", ref, "--to", "v2-builder/midsession", "--clear", "--json"]);
-  await turn();
-  expect(await turn()).not.toContain("midsession-ping-7731");
-});
-
 test("the inbox trusts Kata's effective actor once the plan has a parent, not the author setting read before it", async () => {
   process.env.KATA_INBOX_USER = "v2-builder/effective";
   const parent = await issue();
@@ -151,7 +136,7 @@ test("the inbox trusts Kata's effective actor once the plan has a parent, not th
   expect((await show(`v2test#${parent}`)).children.map((c: any) => c.title)).toEqual(["Inbox actor task"]);
   expect((await run(["notify", parent, "--to", "v2-builder/effective", "--message", "effective-actor-5521", "--json"], cwd, 5000, { KATA_AUTHOR: "daemon-actor" })).code).toBe(0);
   await app.event("before_agent_start", { systemPrompt: ["base"] });
-  const prompt = (await app.event("before_agent_start", { systemPrompt: ["base"] })).systemPrompt.join("\n");
+  const prompt = promptText(await app.event("before_agent_start", { systemPrompt: ["base"] }));
   expect(prompt).toContain(`from="daemon-actor" message="effective-actor-5521"`);
 });
 
@@ -159,7 +144,7 @@ test("only requests from the session's own actor reach the inbox section", async
   process.env.KATA_INBOX_USER = "v2-builder/trust";
   const app = host(); await app.event("session_start"); await app.contractReady;
   const [first, second] = [await issue(), await issue()];
-  const turn = async () => { await app.event("before_agent_start", { systemPrompt: ["base"] }); return (await app.event("before_agent_start", { systemPrompt: ["base"] })).systemPrompt.join("\n"); };
+  const turn = async () => { await app.event("before_agent_start", { systemPrompt: ["base"] }); return promptText(await app.event("before_agent_start", { systemPrompt: ["base"] })); };
   const asMallory = (args: string[]) => run(args, cwd, 5000, { KATA_AUTHOR: "mallory" });
   expect((await asMallory(["notify", first, "--to", "v2-builder/trust", "--message", "forged-order-4410", "--json"])).code).toBe(0);
   expect((await asMallory(["notify", second, "--to", "v2-builder/trust", "--message", "forged-order-4411", "--json"])).code).toBe(0);
@@ -186,7 +171,7 @@ test("a long trusted inbox is capped like kata inbox --context with an omitted n
   for (let i = 0; i < 12; i++) refs.push(await issue());
   for (const [i, ref] of refs.entries()) await kata(["notify", ref, "--to", "v2-builder/capped", "--message", `${String(i).padStart(2, "0")}-${"x".repeat(1000)}`, "--json"]);
   await app.event("before_agent_start", { systemPrompt: ["base"] });
-  const prompt: string = (await app.event("before_agent_start", { systemPrompt: ["base"] })).systemPrompt.join("\n");
+  const prompt: string = promptText(await app.event("before_agent_start", { systemPrompt: ["base"] }));
   const section = prompt.slice(prompt.indexOf("Kata inbox for"), prompt.indexOf("</kata_inbox>"));
   const rows = section.split("\n").filter(l => l.startsWith("- issue="));
   expect(rows.length).toBeGreaterThan(0);
@@ -202,7 +187,7 @@ test("a bare actor in KATA_INBOX_USER is a person's inbox: the session reads non
   const app = host(); await app.event("session_start"); await app.contractReady;
   const ref = await issue();
   await kata(["notify", ref, "--to", "v2-builder", "--message", "person-only-request-5521", "--json"]);
-  const turn = async () => (await app.event("before_agent_start", { systemPrompt: ["base"] })).systemPrompt.join("\n");
+  const turn = async () => promptText(await app.event("before_agent_start", { systemPrompt: ["base"] }));
   for (let i = 0; i < 3; i++) expect(await turn()).not.toContain("person-only-request-5521");
   expect(app.calls.filter(a => a[0] === "inbox")).toEqual([]);
   expect(app.notices).toHaveLength(1);

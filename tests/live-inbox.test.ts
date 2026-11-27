@@ -296,17 +296,21 @@ test("a failing spawn or actor lookup backs off quietly and recovers", async () 
 	t.follow.stop();
 });
 
-test("a failed first inbox read is retried while the stream stays open, and the waiting request is published", async () => {
+for (const failure of ["error", "malformed"]) test(`a ${failure} first inbox read is retried and the waiting requests are published`, async () => {
 	let reads = 0;
-	const t = follower({ read: async () => { if (++reads === 1) throw new Error("kata slow"); return { requests: [{ ref: "abcd", title: "T", ...slot("waiting") }] }; } });
+	const t = follower({ read: async () => {
+		if (++reads === 1) { if (failure === "error") throw new Error("kata slow"); return {}; }
+		return { requests: [{ ref: "abcd", title: "T", ...slot("waiting") }, { ref: "efgh", title: "U", ...slot("also waiting") }] };
+	} });
 	t.follow.start(); await tick();
-	expect(t.published).toEqual([]);
-	expect(t.timers).toHaveLength(1);
-	t.timers.shift()!(); await tick();
-	expect(t.published.at(-1)).toBe("abcd:waiting");
-	expect(t.delivered).toEqual([]);
-	expect(t.streams).toHaveLength(1);
-	t.follow.stop();
+	try {
+		expect(t.published).toEqual([]);
+		expect(t.timers).toHaveLength(1);
+		t.timers.shift()!(); await tick();
+		expect(t.published.at(-1)).toBe("abcd:waiting|efgh:also waiting");
+		expect(t.delivered).toEqual([]);
+		expect(t.streams).toHaveLength(1);
+	} finally { t.follow.stop(); }
 });
 
 test("a pending seed retry does nothing once the first read landed another way", async () => {
@@ -425,4 +429,24 @@ test("the project head found after a purge is the newest event, so the stream do
 	const kept = await issue();
 	const newest = (await kata(["comment", `omp-v2-live#${kept}`, "-m", "newest", "--json"])).event.id;
 	expect(await projectHead(text)).toBe(newest);
+});
+
+test("a live follower publishes no partial snapshot before its seed read completes", async () => {
+	const seed = Promise.withResolvers<unknown>();
+	const t = follower({ read: () => seed.promise });
+	t.follow.start(); await tick();
+	t.streams[0].push(slotLine(2, "cleared", null));
+	await tick();
+	expect(t.published).toEqual([]);
+	seed.resolve({ requests: [{ ref: "proj#pending", ...slot("waiting") }] });
+	await tick();
+	expect(t.published.at(-1)).toBe("proj#pending:waiting");
+	t.follow.stop();
+});
+
+test("an empty first seed publishes the known empty inbox once", async () => {
+	const t = follower();
+	t.follow.start(); await tick();
+	expect(t.published).toEqual([""]);
+	t.follow.stop();
 });

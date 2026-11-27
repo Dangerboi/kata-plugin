@@ -233,7 +233,7 @@ export function createInboxFollower(deps: InboxFollowerDeps): InboxFollower {
 	let streamed = 0;
 
 	function publish() {
-		if (mine === undefined) return;
+		if (mine === undefined || !seededOnce) return;
 		const requests = [...states].filter(([, s]) => s.slot).map(([issue, s]) => ({ ref: issue, title: s.title, ...s.slot }));
 		deps.publish(trustedInbox(requests, mine, deps.address));
 	}
@@ -260,7 +260,7 @@ export function createInboxFollower(deps: InboxFollowerDeps): InboxFollower {
 		const since = streamed, quiet = forceQuiet || !seededOnce;
 		let requests: unknown;
 		try { requests = asRecord(await deps.read())?.requests; } catch (error) { deps.debug(error); return scheduleSeedRetry(gen); }
-		if (gen !== generation || !Array.isArray(requests)) return;
+		if (gen !== generation || !Array.isArray(requests)) return scheduleSeedRetry(gen);
 		seededOnce = true;
 		const newer = (issue: string) => (states.get(issue)?.streamed ?? 0) > since;
 		const listed = new Set<string>();
@@ -271,6 +271,7 @@ export function createInboxFollower(deps: InboxFollowerDeps): InboxFollower {
 			if (!newer(r.ref)) apply(r.ref, slot, { quiet, read: true, title: typeof r.title === "string" ? r.title : undefined });
 		}
 		for (const [issue, state] of states) if (state.identity !== null && !listed.has(issue) && !newer(issue)) apply(issue, null, { quiet: true, read: true });
+		publish();
 	}
 
 	// The first read is the only source of requests that existed at start, and a session with a live inbox has no per-turn read: retry it with its own backoff until it lands.

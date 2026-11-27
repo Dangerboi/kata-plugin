@@ -14,7 +14,7 @@ async function team(ids: string[]) {
   await lead.call({ op: "view" });
   return { lead, workers: workers.map(w => host({ sessionFile: w.sessionFile, agent: { kind: "sub", id: w.id, parentId: lead.ctx.agent.id } })) };
 }
-const prompt = async (app: ReturnType<typeof host>) => ((await app.event("before_agent_start", { systemPrompt: ["base"] }))?.systemPrompt ?? []).join("\n");
+const prompt = async (app: ReturnType<typeof host>) => await app.event("before_agent_start", { systemPrompt: ["base"] }).then((result: any) => [...(result?.systemPrompt ?? []), result?.message?.content ?? ""].join("\n"));
 const turn = async (app: ReturnType<typeof host>) => { await prompt(app); return prompt(app); };
 const addressOf = (text: string) => /Your Kata inbox is (\S+?);/.exec(text)?.[1];
 const notify = async (ref: string, to: string, text: string) => { await kata(["notify", ref, "--to", to, "--message", text, "--json"]); };
@@ -94,7 +94,10 @@ test("an assigned delegate's note names its inbox and it reads that address", as
   expect(first).toContain(`Your Kata inbox is v2-builder/${teammate};`);
   const ref = await issue();
   await notify(ref, `v2-builder/${teammate}`, "assigned-ping-9051");
-  expect(await turn(worker)).toContain("assigned-ping-9051");
+  await prompt(worker);
+  const delivered = await worker.event("before_agent_start", { systemPrompt: ["base"] });
+  expect(delivered.message?.content).toContain("assigned-ping-9051");
+  expect(delivered.systemPrompt.join("\n")).not.toContain("assigned-ping-9051");
   await kata(["notify", ref, "--to", `v2-builder/${teammate}`, "--clear", "--json"]);
 });
 
@@ -120,7 +123,8 @@ test("omp's advisor shares the lead's session and shows none of the lead's inbox
   expect(await turn(lead)).toContain("lead-only-advisor-9071");
   // The advisor runs as its own sub identity inside the session it advises, with no delegate record.
   const advisor = { ...lead.ctx, agent: { kind: "sub", id: "Advisor" } };
-  const seen = ((await lead.event("before_agent_start", { systemPrompt: ["base"] }, advisor))?.systemPrompt ?? []).join("\n");
+  const result = await lead.event("before_agent_start", { systemPrompt: ["base"] }, advisor);
+  const seen = [...(result?.systemPrompt ?? []), result?.message?.content ?? ""].join("\n");
   expect(seen).not.toContain("<kata_inbox>");
   expect(seen).not.toContain("lead-only-advisor-9071");
   await kata(["notify", ref, "--to", "v2-builder/lead-advisor", "--clear", "--json"]);

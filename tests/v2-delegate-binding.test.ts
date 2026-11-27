@@ -137,7 +137,10 @@ test("a local plan survives extension recreation through session entries", async
   const app = host({ cwd: outside, before: down }); await app.event("session_start");
   expect((await app.call({ op: "init", items: ["Durable local first", "Durable local second"] })).isError).toBeUndefined();
   const entries = JSON.parse(JSON.stringify(app.entries));
-  const promptOf = async (a: ReturnType<typeof host>) => ((await a.event("before_agent_start", { systemPrompt: ["base"] }))?.systemPrompt ?? []).join("\n");
+  const promptOf = async (a: ReturnType<typeof host>) => {
+    const result = await a.event("before_agent_start", { systemPrompt: ["base"] });
+    return [...(result?.systemPrompt ?? []), result?.message?.content ?? ""].join("\n");
+  };
   const resumed = host({ cwd: outside, before: down, sid: app.sid, entries }); await resumed.event("session_start");
   const prompt = await promptOf(resumed);
   expect(prompt).toContain("Durable local first");

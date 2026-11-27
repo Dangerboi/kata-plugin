@@ -5,7 +5,7 @@ import { delegateTurn } from "./delegates";
 import type { Session } from "./host";
 import { contextOf, enter, runtime } from "./lead";
 
-type Section = readonly [keyof PromptSections, string];
+type Section = readonly ["contract" | "inbox" | "todo", string];
 
 function unsent(session: Session, sections: PromptSections): Section[] {
 	return (["contract", "inbox", "todo"] as const).flatMap(name => {

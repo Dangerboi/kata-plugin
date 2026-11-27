@@ -29,7 +29,7 @@ export default function (pi: any) {
 		const messages: { role: string; text: string }[] = (context.messages ?? []).map((m: { role: string }) => ({ role: m.role, text: textOf(m) }));
 		const system = [context.systemPrompt].flat().filter(Boolean).join("\n");
 		const { agent, blocks } = pickTurn(scenario.scripts, messages);
-		const request: Request = { agent, system, users: messages.filter(m => m.role === "user").map(m => m.text), roles: messages.map(m => m.role), results: messages.filter(m => m.role === "toolResult").map(m => m.text) };
+		const request: Request = { agent, system, users: messages.filter(m => m.role === "user").map(m => m.text), roles: messages.map(m => m.role), messages, results: messages.filter(m => m.role === "toolResult").map(m => m.text) };
 		if (process.env.KATA_SMOKE_RECORD) appendFileSync(process.env.KATA_SMOKE_RECORD, JSON.stringify(request) + "\n");
 		return blocks({ texts: messages.map(m => m.text), system, prompts: () => linesIn<Prompt>(process.env.KATA_SMOKE_PROMPTS) });
 	});

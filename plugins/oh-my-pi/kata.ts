@@ -499,12 +499,32 @@ export default function ompKata(pi: any) {
 		// Something else (an earlier injection, another installer) may already carry the contract.
 		if (sections.contract && !base.some((s: string) => s.includes(sections.contract!.slice(0, 80)))) out.push(tagged("contract", sections.contract));
 		if (sections.assignment) out.push(tagged("assignment", sections.assignment));
-		if (sections.inbox) out.push(tagged("inbox", sections.inbox));
 		const backend = await kataBackend();
 		offNotice(ctx, backend);
-		if (main(ctx) && backend === BACKEND_ID && sections.todo) out.push(tagged("todo", sections.todo));
-		if (!out.length) return;
-		return { systemPrompt: [...base, out.join("\n\n")] };
+		const useTodo = main(ctx) && backend === BACKEND_ID;
+		if (useTodo && sections.todoRules) out.push(tagged("todo", sections.todoRules));
+
+		// Only committed messages count: omp can retry or discard a hook result. Compaction
+		// and /clear can change context, so replay after crossing either boundary and clear
+		// old state when needed. /tree changes the branch inspected here.
+		let previous: { inbox: string; plan: string } = { inbox: "", plan: "" }, crossed = false;
+		const branch = ctx.sessionManager?.getBranch?.() ?? [];
+		for (let i = branch.length - 1; i >= 0; i--) {
+			const entry = branch[i];
+			if (entry.type === "compaction" || entry.type === "reset_boundary") { crossed = true; continue; }
+			if (entry.type === "custom_message" && entry.customType === "kata-prompt" && typeof entry.details?.inbox === "string" && typeof entry.details?.plan === "string") {
+				previous = entry.details; break;
+			}
+		}
+		const inbox = sections.inbox ?? previous.inbox;
+		const plan = useTodo ? sections.plan ?? "" : "";
+		const updates: string[] = [];
+		const send = (current: string, last: string) => current !== last || (crossed && !!current);
+		if (send(inbox, previous.inbox)) updates.push(inbox ? tagged("inbox", `Current Kata inbox (replaces earlier inbox messages):\n${inbox}`) : "The Kata inbox is now empty or disabled; earlier inbox messages no longer apply.");
+		if (send(plan, previous.plan)) updates.push(plan ? tagged("todo", `This is the current plan and replaces earlier plan messages.\n${plan}`) : "The current Kata plan has been cleared; earlier plan messages no longer apply.");
+		const message = updates.length ? { customType: "kata-prompt", content: updates.join("\n\n"), display: false, attribution: "agent", details: { inbox, plan } } : undefined;
+		if (!out.length && !message) return;
+		return { ...(out.length ? { systemPrompt: [...base, out.join("\n\n")] } : {}), ...(message ? { message } : {}) };
 	});
 
 	async function begin(ctx: any) {
