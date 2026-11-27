@@ -93,7 +93,6 @@ function gitMessages(command: string, cwd: string | undefined): Added[] {
 			for (at++; words[at]?.value.startsWith("-"); at += words[at].value === "--ref" ? 2 : 1) { /* notes options precede its action */ }
 			if (!["add", "append"].includes(words[at]?.value)) continue;
 		}
-
 		const rest = words.slice(at + 1).map(word => word.value), parts: string[] = [];
 		for (let n = 0; n < rest.length; n++) {
 			const word = rest[n];
