@@ -2574,7 +2574,6 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 				if (options.native) {
 					sections.todoRules = NATIVE_TODO_RULES;
 					if (plan.parent || plan.local || plan.tasks.some(t => t.ticket)) sections.plan = `Current plan (refs in parentheses):\n${render(plan, wording)}`;
-					sections.todo = sections.plan ? `${sections.todoRules}\n${sections.plan}` : sections.todoRules;
 				}
 				else if (plan.parent || plan.tasks.some(t => t.ticket)) sections.todo = `The ${wording.tool} tool is backed by Kata. Current plan:\n${render(plan, wording)}`;
 				return { sections, lead: lead() };
