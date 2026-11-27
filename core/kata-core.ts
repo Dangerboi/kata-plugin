@@ -2552,7 +2552,7 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 	async function sessionView(ctx: HostContext, opts: { reconcile?: boolean; context?: boolean } = {}): Promise<SessionView | undefined> {
 		if (!main(ctx)) return undefined;
 		await bounded(probe(NO_JOB, ctx.cwd)).catch(debug);
-		if (opts.reconcile) await bounded(reconcile(ctx, false));
+		if (opts.reconcile) await bounded(reconcile(ctx, true));
 		const identity = await bounded(actor(NO_JOB, ctx.cwd).then(who => ({ who, error: undefined as string | undefined }), error => ({ who: undefined, error: (error as Error)?.message ?? String(error) })));
 		const entry = leadReads.get(leadKey(sid(ctx))), inbox = inboxAddress();
 		if (inbox.address && !host.liveInbox && entry?.failed) inbox.delivery = "failed";
@@ -2565,10 +2565,18 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 	async function sessionInbox(ctx: HostContext): Promise<InboxView> {
 		const inbox = inboxAddress();
 		if (!inbox.address) return { none: inbox.none };
+		const id = currentId, generation = footerGeneration;
 		try {
 			const mine = await actor(NO_JOB, ctx.cwd);
 			const out = JSON.parse(await kata.run(NO_JOB, ["inbox", "--for", inbox.address], ctx.cwd));
-			return { address: inbox.address, text: trustedInbox(out?.requests, mine, inbox.address, ""), counts: countInbox(out?.requests, mine) };
+			const counts = countInbox(out?.requests, mine);
+			if (!host.liveInbox && main(ctx) && id === currentId && generation === footerGeneration) {
+				const key = leadKey(sid(ctx));
+				let entry = leadReads.get(key);
+				if (!entry) leadReads.set(key, entry = { cwd: path.resolve(ctx.cwd) });
+				entry.count = counts; entry.failed = undefined;
+			}
+			return { address: inbox.address, text: trustedInbox(out?.requests, mine, inbox.address, ""), counts };
 		} catch (error) { return { address: inbox.address, failed: (error as Error)?.message ?? String(error) }; }
 	}
 	async function footer(ctx: HostContext, mode: "force" | "throttle", format: (view: SessionView) => string | undefined): Promise<void> {
