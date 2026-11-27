@@ -112,7 +112,7 @@ test('R5 symlinked plan workspace supplies project to a canonical invocation', a
  const started = await core.session.start(ctx, { wait: 10000 });
  expect(started?.parent).toBe('demo#q7x2');
  await core.tools.result({ ...ctx, cwd: actual }, { toolName: 'bash', input: { command: 'kata next --agent' }, content: 'OK next z7x2' });
- expect(core.tools.refs(ctx)).toContain('demo#z7x2');
+ expect(core.tools.refs(ctx).refs).toContain('demo#z7x2');
 });
 
 test('R6 project header with a trailing comment seeds its name', async () => {

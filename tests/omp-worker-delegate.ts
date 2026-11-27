@@ -4,12 +4,12 @@ import { BroadcastChannel, parentPort, workerData } from "node:worker_threads";
 import { isolatedKata } from "./kata-fixture";
 import { ompHost } from "./omp-host";
 
-const { binary, env, cwd, sessionFile, id, parentId } = workerData as { binary: string; env: NodeJS.ProcessEnv; cwd: string; sessionFile: string; id: string; parentId: string };
+const { binary, env, cwd, sessionFile, id, parentId, guardCommand } = workerData as { binary: string; env: NodeJS.ProcessEnv; cwd: string; sessionFile: string; id: string; parentId: string; guardCommand?: string };
 const run = isolatedKata(binary, env, cwd);
 const child = ompHost({ cwd, sessionFile, agent: { kind: "sub", id, parentId }, run: (args, opts) => run(args, opts.cwd, opts.timeout) });
 // omp's agent loop keeps a real worker alive; the adapter's own channel is unref'd, so hold one open while the tool call waits.
 const alive = new BroadcastChannel("omp-worker-delegate:alive");
 await child.event("session_start");
-await child.event("tool_call", { toolName: "read", input: { path: "README.md" } });
+const result = guardCommand ? await child.event("tool_call", { toolName: "bash", input: { command: guardCommand } }) : await child.event("tool_call", { toolName: "read", input: { path: "README.md" } });
 alive.close();
-parentPort!.postMessage("ran");
+parentPort!.postMessage(guardCommand ? { result } : "ran");
