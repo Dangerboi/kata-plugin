@@ -133,6 +133,30 @@ test("review: unrelated claim while checking several refs does not hide a closur
   expect(view?.refs).not.toContain("test#abcd");
 });
 
+test("a claim added during reconciliation leaves the footer throttle open", async () => {
+  const gate = Promise.withResolvers<void>();
+  let hold = false;
+  const shows: string[] = [];
+  const ctx = { cwd: "/tmp/kata-review-synthetic", hasUI: true, ui: { setStatus() {} } };
+  const core = createKataCore({ platform: nodePlatform, appendEntry() {}, delegateStore: memoryDelegateStore(), exec: async (_file, args) => {
+    if (args[0] === "version") return { code: 0, stdout: JSON.stringify({ kata_api_version: 1, version: "0.23.0" }), stderr: "" };
+    if (args[0] === "show") { shows.push(args[1]!); if (hold) await gate.promise; return { code: 0, stdout: JSON.stringify({ issue: { status: "open" } }), stderr: "" }; }
+    return { code: 0, stdout: JSON.stringify({ issues: [] }), stderr: "" };
+  } }, { namespace: "test", executable: "/tmp/kata-fixture", executableVars: [], explicitRef: () => "test#one", env: name => name === "KATA_AUTHOR" ? "alice" : undefined });
+  try {
+    hold = true;
+    const checking = core.session.footer(ctx, "force", () => "");
+    const deadline = Date.now() + 2_000;
+    while (!shows.length && Date.now() < deadline) await Bun.sleep(1);
+    expect(shows).toContain("test#one");
+    await core.tools.result(ctx, { toolName: "bash", input: { command: "kata claim test#abcd" } });
+    gate.resolve(); await checking; hold = false;
+    shows.length = 0;
+    await core.session.footer(ctx, "throttle", () => "");
+    expect(shows).toContain("test#abcd");
+  } finally { gate.resolve(); }
+});
+
 test("status exposes an unsupported Kata version even with a configured actor", async () => {
   const core = createKataCore({ platform: nodePlatform, appendEntry() {}, delegateStore: memoryDelegateStore(), exec: async () => ({ code: 0, stdout: JSON.stringify({ kata_api_version: 1, version: "0.22.0" }), stderr: "" }) },
     { namespace: "test", executable: "/tmp/kata-fixture", executableVars: [], env: name => name === "KATA_AUTHOR" ? "alice" : undefined });
@@ -202,4 +226,107 @@ test("status reports a failed live inbox read", async () => {
     expect(view?.inbox.delivery).toBe("failed");
     expect(view?.inboxFailed).toContain("inbox read failed");
   } finally { await core.session.shutdown(ctx); stopped.resolve(); }
+});
+
+test("refresh withholds the old inbox on failure and rejects an older in-flight read", async () => {
+  const held = Promise.withResolvers<void>();
+  let reads = 0;
+  const ctx = { cwd: "/tmp/kata-review-synthetic" };
+  const core = createKataCore({ platform: nodePlatform, appendEntry() {}, delegateStore: memoryDelegateStore(), exec: async (_file, args) => {
+    if (args[0] === "version") return { code: 0, stdout: JSON.stringify({ kata_api_version: 1, version: "0.23.0" }), stderr: "" };
+    if (args[0] === "inbox") {
+      const n = ++reads;
+      if (n === 2) await held.promise;
+      if (n >= 3) return { code: 1, stdout: "", stderr: "unavailable" };
+      return { code: 0, stdout: JSON.stringify({ requests: [{ ref: "test#abcd", from: "alice", message: "old" }] }), stderr: "" };
+    }
+    return { code: 0, stdout: JSON.stringify({ issues: [], hookSpecificOutput: { additionalContext: "contract" } }), stderr: "" };
+  } }, { namespace: "test", executable: "/tmp/kata-fixture", executableVars: [], env: name => ({ KATA_AUTHOR: "alice", KATA_INBOX_USER: "alice/worker" } as Record<string, string>)[name] });
+  try {
+    expect((await core.session.beforePrompt(ctx)).sections.inbox).toContain("old");
+    const previous = core.session.beforePrompt(ctx);
+    const deadline = Date.now() + 2_000;
+    while (reads < 2 && Date.now() < deadline) await Bun.sleep(1);
+    expect(reads).toBe(2);
+    const queued = core.session.beforePrompt(ctx);
+    await Bun.sleep(0);
+    core.session.refresh();
+    expect((await core.session.beforePrompt(ctx)).sections.inbox).toBeUndefined();
+    held.resolve(); await Promise.all([previous, queued]);
+    expect(reads).toBe(3);
+    expect((await core.session.beforePrompt(ctx)).sections.inbox).toBeUndefined();
+  } finally { held.resolve(); }
+});
+
+test("an inspection started before refresh cannot restore stale counts", async () => {
+  const gate = Promise.withResolvers<void>();
+  let started = false;
+  const ctx = { cwd: "/tmp/kata-review-synthetic" };
+  const core = createKataCore({ platform: nodePlatform, appendEntry() {}, delegateStore: memoryDelegateStore(), exec: async (_file, args) => {
+    if (args[0] === "version") return { code: 0, stdout: JSON.stringify({ kata_api_version: 1, version: "0.23.0" }), stderr: "" };
+    if (args[0] === "inbox") { started = true; await gate.promise; return { code: 0, stdout: JSON.stringify({ requests: [{ ref: "test#abcd", from: "alice", message: "old" }] }), stderr: "" }; }
+    return { code: 0, stdout: JSON.stringify({ issues: [] }), stderr: "" };
+  } }, { namespace: "test", executable: "/tmp/kata-fixture", executableVars: [], env: name => ({ KATA_AUTHOR: "alice", KATA_INBOX_USER: "alice/worker" } as Record<string, string>)[name] });
+  try {
+    const inspecting = core.session.inbox(ctx);
+    const deadline = Date.now() + 2_000;
+    while (!started && Date.now() < deadline) await Bun.sleep(1);
+    expect(started).toBe(true);
+    core.session.refresh(); gate.resolve(); await inspecting;
+    expect((await core.session.view(ctx))?.counts).toBeUndefined();
+  } finally { gate.resolve(); }
+});
+
+test("native inbox is explicit and hides plugin counts from the view and footer", async () => {
+  const { core, ctx } = fixture();
+  await core.session.inbox(ctx);
+  expect((await core.session.view(ctx, { context: false }))?.inbox.delivery).toBe("per prompt");
+  const view = await core.session.view(ctx, { nativeInbox: true });
+  expect(view?.inbox.delivery).toBe("kata"); expect(view?.counts).toBeUndefined();
+  expect((await core.session.inbox(ctx, { nativeInbox: true })).native).toBe(true);
+  const writes: string[] = [];
+  const visible = { ...ctx, ui: { setStatus: (_key: string, value: string | undefined) => writes.push(value ?? "") } };
+  await core.session.footer(visible, "throttle", v => String(v.counts?.trusted ?? "none"), { nativeInbox: true });
+  expect(writes.at(-1)).toBe("none");
+});
+
+test("refresh preserves a personal-inbox warning and clears cached delegate contracts", async () => {
+  const warnings: string[] = [];
+  let hooks = 0;
+  const ctx = { cwd: "/tmp/kata-review-synthetic", ui: { notify: (message: string) => warnings.push(message) } };
+  const core = createKataCore({ platform: nodePlatform, appendEntry() {}, delegateStore: memoryDelegateStore(), exec: async (_file, args) => {
+    if (args[0] === "version") return { code: 0, stdout: JSON.stringify({ kata_api_version: 1, version: "0.23.0" }), stderr: "" };
+    if (args[0] === "agent-contract-hook") return { code: 0, stdout: JSON.stringify({ hookSpecificOutput: { additionalContext: `contract ${++hooks}` } }), stderr: "" };
+    return { code: 0, stdout: JSON.stringify({ issues: [] }), stderr: "" };
+  } }, { namespace: "test", executable: "/tmp/kata-fixture", executableVars: [], env: name => ({ KATA_AUTHOR: "alice", KATA_INBOX_USER: "alice" } as Record<string, string>)[name] });
+  const delegate = core.delegate("worker");
+  expect((await core.session.beforePrompt(ctx)).sections.contract).toBe("contract 1");
+  expect((await delegate.session.beforePrompt(ctx)).sections.contract).toBe("contract 2");
+  core.session.refresh();
+  expect((await core.session.beforePrompt(ctx)).sections.contract).toBe("contract 3");
+  expect((await delegate.session.beforePrompt(ctx)).sections.contract).toBe("contract 4");
+  expect(warnings).toHaveLength(1);
+});
+
+for (const outcome of ["success", "failure", "shutdown"] as const) test(`slow per-prompt inbox ${outcome} updates only a running footer`, async () => {
+  const gate = Promise.withResolvers<void>();
+  const writes: string[] = [];
+  const ctx = { cwd: "/tmp/kata-review-synthetic", hasUI: true, ui: { setStatus: (_key: string, value: string | undefined) => writes.push(value ?? "") } };
+  const core = createKataCore({ platform: nodePlatform, appendEntry() {}, delegateStore: memoryDelegateStore(), exec: async (_file, args) => {
+    if (args[0] === "version") return { code: 0, stdout: JSON.stringify({ kata_api_version: 1, version: "0.23.0" }), stderr: "" };
+    if (args[0] === "inbox") { await gate.promise; return outcome === "failure" ? { code: 1, stdout: "", stderr: "read failed" } : { code: 0, stdout: JSON.stringify({ requests: [{ ref: "test#abcd", from: "alice", message: "one" }] }), stderr: "" }; }
+    return { code: 0, stdout: JSON.stringify({ issues: [], hookSpecificOutput: { additionalContext: "contract" } }), stderr: "" };
+  } }, { namespace: "test", executable: "/tmp/kata-fixture", executableVars: [], env: name => ({ KATA_AUTHOR: "alice", KATA_INBOX_USER: "alice/worker" } as Record<string, string>)[name] });
+  try {
+    await core.session.beforePrompt(ctx);
+    await core.session.footer(ctx, "force", v => v.inbox.delivery === "failed" ? "failed" : `inbox ${v.counts?.trusted ?? 0}`);
+    expect(writes.at(-1)).toBe("inbox 0");
+    if (outcome === "shutdown") await core.session.shutdown(ctx);
+    gate.resolve();
+    const expected = outcome === "shutdown" ? "" : outcome === "failure" ? "failed" : "inbox 1";
+    const deadline = Date.now() + 2_000;
+    if (outcome === "shutdown") await Bun.sleep(30);
+    else while (writes.at(-1) !== expected && Date.now() < deadline) await Bun.sleep(1);
+    expect(writes.at(-1)).toBe(expected);
+  } finally { gate.resolve(); if (outcome !== "shutdown") await core.session.shutdown(ctx); }
 });

@@ -63,27 +63,34 @@ function follower(options: { requests?: () => unknown[]; read?: () => Promise<un
 	return { follow: createInboxFollower(deps), streams, cursors, delivered, published, counts, readStates, timers, delays, clock, debugged, reads: () => reads };
 }
 
-test("a pending or failed actor refresh never delivers using the old actor", async () => {
-	const pending = Promise.withResolvers<string>();
-	let actor = 0;
-	const t = follower({ actor: () => ++actor === 1 ? Promise.resolve("lead") : pending.promise });
-	t.follow.start(); await tick();
-	t.streams[0].push(slotLine(1, "old", slot("delivered before refresh"))); await tick();
-	t.follow.refreshActor();
-	t.streams[0].push(slotLine(2, "old", slot("old actor")));
-	t.streams[0].push(slotLine(3, "new", { from: "new", message: "new actor" }));
-	await tick(); expect(t.delivered).toHaveLength(1);
-	pending.resolve("new"); await tick();
-	expect(t.delivered).toHaveLength(2);
-	expect(t.delivered[1]).toContain("new actor");
-	t.follow.stop();
+test("a failed actor refresh reconnects and delivers only new trusted requests once", async () => {
+	let actors = 0, requests: unknown[] = [];
+	const t = follower({ actor: async () => { if (++actors === 2) throw new Error("identity unavailable"); return actors === 1 ? "lead" : "new"; }, requests: () => requests });
+	try {
+		t.follow.start(); await tick();
+		t.streams[0].push(slotLine(1, "old", slot("already delivered"))); await tick();
+		requests = [{ ref: "old", ...slot("already delivered") }, { ref: "new", from: "new", message: "arrived during refresh" }];
+		t.follow.refreshActor(); await tick();
+		expect(t.streams[0].killed).toBe(1);
+		expect((t.readStates.at(-1) as Error).message).toBe("identity unavailable");
+		expect(t.delivered).toHaveLength(1);
+		t.timers[0]!(); await tick();
+		expect(t.cursors.at(-1)).toBe(1);
+		expect(t.delivered).toHaveLength(2);
+		expect(t.delivered[1]).toContain("arrived during refresh");
+		expect(t.readStates.at(-1)).toBeUndefined();
+	} finally { t.follow.stop(); }
+});
 
-	let fail = false;
-	const failed = follower({ actor: async () => { if (fail) throw new Error("identity unavailable"); return "lead"; } });
-	failed.follow.start(); await tick(); fail = true; failed.follow.refreshActor(); await tick();
-	failed.streams[0].push(slotLine(4, "old", slot("must not deliver"))); await tick();
-	expect(failed.delivered).toEqual([]);
-	failed.follow.stop();
+test("refresh twice or stop during lookup ignores older actor results", async () => {
+	const first = Promise.withResolvers<string>(), second = Promise.withResolvers<string>();
+	let actors = 0;
+	const t = follower({ actor: () => ++actors === 1 ? Promise.resolve("lead") : actors === 2 ? first.promise : second.promise });
+	try {
+		t.follow.start(); await tick(); t.follow.refreshActor(); t.follow.refreshActor();
+		first.resolve("old"); await tick(); expect(t.streams).toHaveLength(1);
+		t.follow.stop(); second.resolve("new"); await tick(); expect(t.streams).toHaveLength(1);
+	} finally { first.resolve("old"); second.resolve("new"); t.follow.stop(); }
 });
 
 test("live inbox reports a failed read and clears the failure on recovery", async () => {
@@ -98,17 +105,19 @@ test("live inbox reports a failed read and clears the failure on recovery", asyn
 
 test("refreshing the actor updates counts without replaying delivered slots", async () => {
 	let actor = "lead";
-	const t = follower({ actor: async () => actor });
+	let requests: unknown[] = [];
+	const t = follower({ actor: async () => actor, requests: () => requests });
 	t.follow.start(); await tick();
 	t.streams[0].push(slotLine(1, "old", slot("first")));
 	t.streams[0].push(slotLine(2, "new", { from: "other", message: "second" }));
 	await tick();
 	expect(t.delivered).toHaveLength(1);
 	expect(t.counts.at(-1)).toEqual({ trusted: 1, foreign: 1 });
+	requests = [{ ref: "old", ...slot("first") }, { ref: "new", from: "other", message: "second" }];
 	actor = "other"; t.follow.refreshActor(); await tick();
 	expect(t.counts.at(-1)).toEqual({ trusted: 1, foreign: 1 });
 	expect(t.published.at(-1)).toBe("new:second");
-	t.streams[0].push(slotLine(3, "new", { from: "other", message: "third" }));
+	t.streams.at(-1)!.push(slotLine(3, "new", { from: "other", message: "third" }));
 	await tick();
 	expect(t.delivered).toHaveLength(2);
 	t.follow.stop();

@@ -99,7 +99,7 @@ export type LiveInbox = {
 	/** Hands one request to the session as an aside. */
 	deliver(text: string): void | Promise<unknown>;
 };
-type SlotState = { eventId?: number; identity: string | null; slot?: Slot; title?: string; ref: string; streamed: number; seeded: boolean; awaitingActor?: boolean };
+type SlotState = { eventId?: number; identity: string | null; slot?: Slot; title?: string; ref: string; streamed: number; seeded: boolean };
 type StreamEvent = { type: "reset"; after: number } | { type: "reread" } | { type: "slot"; key: string; ref: string; eventId: number; to: Slot | null };
 export type InboxFollower = { start(): void; stop(): void; refreshActor(): void };
 export type InboxFollowerDeps = {
@@ -233,7 +233,7 @@ export async function knownProjectHead(workspace: string, run: (args: string[]) 
 export function createInboxFollower(deps: InboxFollowerDeps): InboxFollower {
 	const key = slotKey(deps.address);
 	const states = new Map<string, SlotState>();
-	let running = false, generation = 0, actorGeneration = 0, mine: string | undefined, seededOnce = false, headed = false;
+	let running = false, generation = 0, mine: string | undefined, seededOnce = false, headed = false;
 	let child: InboxStream | undefined, timer: unknown, cursor = 0, backoff = MIN_BACKOFF_MS;
 	let reading = false, readAgain = false, readTimer: unknown, readBackoff = MIN_BACKOFF_MS;
 	// Counts slot events from the stream, so a read leaves alone the issues the stream changed while it ran.
@@ -256,7 +256,6 @@ export function createInboxFollower(deps: InboxFollowerDeps): InboxFollower {
 			eventId: o.eventId ?? stored?.eventId, identity, slot: slot ?? undefined, title: o.title ?? stored?.title, ref: o.ref ?? stored?.ref ?? issue,
 			streamed: o.read ? (stored?.streamed ?? 0) : ++streamed,
 			seeded: same && !confirm ? stored?.seeded === true : slot !== null && !!o.read && o.quiet,
-			awaitingActor: same && !confirm ? stored?.awaitingActor : !!slot && !o.quiet && mine === undefined,
 		});
 		if (same && !confirm) return publish();
 		publish();
@@ -341,11 +340,12 @@ export function createInboxFollower(deps: InboxFollowerDeps): InboxFollower {
 	async function boot(gen: number) {
 		try {
 			if (mine === undefined) {
-				const actorGen = actorGeneration, found = await deps.actor();
-				if (actorGen === actorGeneration) mine = found;
+				const found = await deps.actor();
+				if (gen !== generation) return;
+				mine = found;
 			}
 			if (!headed) { const head = await deps.head(); if (gen !== generation) return; cursor = Math.max(cursor, head); headed = true; }
-		} catch (error) { deps.debug(error); if (gen === generation) scheduleRestart(gen, false); return; }
+		} catch (error) { deps.debug(error); if (gen === generation) { deps.readState?.(error); scheduleRestart(gen, false); } return; }
 		if (gen !== generation) return;
 		launch(gen);
 		void readInbox();
@@ -353,18 +353,16 @@ export function createInboxFollower(deps: InboxFollowerDeps): InboxFollower {
 
 	return {
 		refreshActor() {
-			const gen = generation, actorGen = ++actorGeneration;
+			if (!running) return;
+			generation++;
+			if (timer !== undefined) deps.clearTimer(timer);
+			timer = undefined;
+			if (readTimer !== undefined) deps.clearTimer(readTimer);
+			readTimer = undefined;
+			try { child?.kill(); } catch { /* already gone */ }
+			child = undefined;
 			mine = undefined;
-			deps.publish("", { trusted: 0, foreign: 0 });
-			void deps.actor().then(actor => {
-				if (!running || gen !== generation || actorGen !== actorGeneration) return;
-				mine = actor; publish();
-				for (const state of states.values()) {
-					if (!state.awaitingActor) continue;
-					state.awaitingActor = false;
-					if (state.slot && isTrusted(state.slot, mine) && state.slot.message.trim()) deps.deliver(deliveryText(state.ref, deps.address, state.slot));
-				}
-			}).catch(deps.debug);
+			void boot(generation);
 		},
 		start() {
 			if (running) return;
