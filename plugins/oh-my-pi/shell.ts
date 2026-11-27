@@ -10,17 +10,72 @@ export const quoteIfNeeded = (value: string, plain: RegExp) => plain.test(value)
 // `env NAME='value' ... ` in front of a command; empty for no variables.
 export function envPrefix(vars: Record<string, string>): string {
 	const assignments = Object.entries(vars).map(([name, value]) => `${name}=${quote(value)}`);
-	return assignments.length ? `env ${assignments.join(" ")} ` : "";
+	return assignments.length ? `/usr/bin/env ${assignments.join(" ")} ` : "";
 }
 
 type ShellWord = { value: string; start: number; end: number };
 // One Kata invocation: its executable, the words after it, and the `NAME=value` assignments before it.
-type Invocation = { executable: ShellWord; words: ShellWord[]; assignments: ShellWord[] };
+type Invocation = { executable: ShellWord; words: ShellWord[]; assignments: ShellWord[]; directories: string[] };
 export const ASSIGNMENT = /^[A-Za-z_][A-Za-z0-9_]*=/;
 // The words of one simple command, and the bodies of the heredocs fed to it.
 type Segment = { words: ShellWord[]; bodies: string[] };
-// Words that may stand before a command without being it.
-export const PREFIXES = ["if", "then", "elif", "do", "else", "!", "command", "env", "time"];
+const RESERVED = new Set(["if", "then", "elif", "do", "else", "while", "until", "!", "{"]);
+const PREFIXES = new Set(["command", "env", "time", "nohup", "exec", "timeout"]);
+const PREFIX_VALUES: Record<string, Set<string>> = {
+	env: new Set(["-u", "--unset", "-C", "--chdir"]), exec: new Set(["-a"]),
+	timeout: new Set(["-s", "--signal", "-k", "--kill-after"]),
+};
+
+// Find the executable without losing the original words' offsets. Prefix options belong to their own command,
+// and timeout also consumes a duration. Inspection and split-string modes do not execute the following words.
+export function commandContext(words: ShellWord[]): { index: number; assignments: ShellWord[]; directories: string[] } | undefined {
+	let at = 0;
+	const assignments = new Map<string, ShellWord>(), directories: string[] = [];
+	while (at < words.length) {
+		const word = words[at].value;
+		if (ASSIGNMENT.test(word)) { assignments.set(word.slice(0, word.indexOf("=")), words[at++]); continue; }
+		if (RESERVED.has(word)) { at++; continue; }
+		if (!PREFIXES.has(word) && word !== "/usr/bin/env") return { index: at, assignments: [...assignments.values()], directories };
+		const prefix = word === "/usr/bin/env" ? "env" : word;
+		let directory: string | undefined;
+		at++;
+		while (at < words.length && words[at].value.startsWith("-") && words[at].value !== "-") {
+			const option = words[at++].value;
+			if (option === "--") break;
+			if (option === "--help" || option === "--version") return undefined;
+			if (option.startsWith("--")) {
+				const [flag, ...parts] = option.split("="), attached = parts.length ? parts.join("=") : undefined;
+				if (prefix === "env" && flag === "--split-string") return undefined;
+				if (prefix === "env" && flag === "--ignore-environment") assignments.clear();
+				if (PREFIX_VALUES[prefix]?.has(flag)) {
+					const value = attached ?? words[at++]?.value;
+					if (value === undefined) return undefined;
+					if (prefix === "env" && flag === "--unset") assignments.delete(value);
+					if (prefix === "env" && flag === "--chdir") directory = value;
+				}
+				continue;
+			}
+			for (let n = 1; n < option.length; n++) {
+				const flag = `-${option[n]}`;
+				if ((prefix === "command" && (flag === "-v" || flag === "-V")) || (prefix === "env" && (flag === "-S" || flag === "-P"))) return undefined;
+				if ((prefix === "env" && flag === "-i") || (prefix === "exec" && flag === "-c")) assignments.clear();
+				if (PREFIX_VALUES[prefix]?.has(flag)) {
+					const value = option.slice(n + 1) || words[at++]?.value;
+					if (value === undefined) return undefined;
+					if (prefix === "env" && flag === "-u") assignments.delete(value);
+					if (prefix === "env" && flag === "-C") directory = value;
+					break;
+				}
+			}
+		}
+		if (directory !== undefined) directories.push(directory);
+		if (prefix === "timeout") {
+			if (at >= words.length) return undefined;
+			at++;
+		}
+	}
+	return undefined;
+}
 // Splits a command at `;`, `&`, `|`, parentheses and newlines. Quoted arguments and heredoc bodies are data (a body belongs to the
 // command whose line holds its `<<`); this lexer never infers whether a test/commit command proves completion.
 export function commandSegments(command: string): Segment[] {
@@ -62,10 +117,11 @@ export function commandSegments(command: string): Segment[] {
 export function kataCommands(path: Pick<PathOps, "basename">, command: string, configuredExecutable = "kata", executableVars: readonly string[] = []): Invocation[] {
 	const commands: Invocation[] = [];
 	for (const { words: segment } of commandSegments(command)) {
-		let j = 0;
-		while (j < segment.length && (ASSIGNMENT.test(segment[j].value) || PREFIXES.includes(segment[j].value))) j++;
+		const context = commandContext(segment);
+		if (!context) continue;
+		const j = context.index;
 		const executable = segment[j];
-		if (executable && (path.basename(executable.value) === "kata" || executable.value === configuredExecutable || executableVars.some(name => executable.value === `$${name}` || executable.value === `\${${name}}`))) commands.push({ executable, words: segment.slice(j + 1), assignments: segment.slice(0, j).filter(word => ASSIGNMENT.test(word.value)) });
+		if (executable && (path.basename(executable.value) === "kata" || executable.value === configuredExecutable || executableVars.some(name => executable.value === `$${name}` || executable.value === `\${${name}}`))) commands.push({ executable, words: segment.slice(j + 1), assignments: context.assignments, directories: context.directories });
 	}
 	return commands;
 }
@@ -125,8 +181,10 @@ export function delegateCommand(path: Pick<PathOps, "basename">, command: string
 	for (const invocation of kataCommands(path, command, executable, executableVars)) {
 		const parsed = shellOptions(invocation.words);
 		if (parsed.options.has("--as")) throw new Error("Kata subagents keep the current actor. Use your assigned --teammate; --as is not permitted.");
-		for (const previous of parsed.occurrences.get("--teammate") ?? []) edits.push({ start: previous[0].start, end: previous.at(-1)!.end, value: "" });
-		let flags = ` --teammate ${quote(teammate)}`;
+		const previous = parsed.occurrences.get("--teammate") ?? [];
+		const correct = previous.length === 1 && parsed.value("--teammate") === teammate;
+		if (!correct) for (const pair of previous) edits.push({ start: pair[0].start, end: pair.at(-1)!.end, value: "" });
+		let flags = correct ? "" : ` --teammate ${quote(teammate)}`;
 		if (binding) {
 			if (!parsed.options.has("--workspace")) flags += ` --workspace ${quote(binding.workspace)}`;
 			if (!parsed.options.has("--project")) flags += ` --project ${quote(projectOf(binding.parent))}`;

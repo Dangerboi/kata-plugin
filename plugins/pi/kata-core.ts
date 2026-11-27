@@ -2160,7 +2160,7 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 			let ref = args[0] === "claim" ? args[1] : args[0] === "meta" && args[1] === "set" && args[3] === "work.attention" && args[4] === "ok" ? args[2] : undefined;
 			if (!ref || parsed.options.has("--as")) continue;
 			if (!ref.includes("#") && parsed.value("--project")) ref = `${parsed.value("--project")}#${ref}`;
-			const workspace = path.resolve(event.input.cwd || ctx.cwd, parsed.value("--workspace") || ".");
+			const workspace = path.resolve(event.input.cwd || ctx.cwd, ...invocation.directories, parsed.value("--workspace") || ".");
 			// A word the shell expands (`$ref`, a glob) names nothing yet; only the shape of a ref counts. A bare id is recorded at once (with the
 			// plan's project when the workspace is its own) and replaced by the ref Kata resolves it to, in the background: the hook never waits.
 			if (args[0] === "claim" && QUALIFIED_REF_ONLY.test(ref)) claimed.add(ref);
