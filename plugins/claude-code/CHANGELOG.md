@@ -8,7 +8,7 @@ All notable changes to the `kata-cc` Claude Code plugin are listed here. The for
 
 #### Delegates
 
-- The `todo` tool's description tells the lead to delegate by putting the work in the plan, not by creating child issues for `Agent` subagents, Workflow agents or teammates to claim.
+- The `todo` tool's description tells the lead to delegate by putting the work in the plan, not by creating child issues itself (`kata create`) for subagents to claim.
 
 ## [1.2.0] - 2026-11-26
 
