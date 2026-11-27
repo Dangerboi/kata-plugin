@@ -123,7 +123,8 @@ test("omp's advisor shares the lead's session and shows none of the lead's inbox
   expect(await turn(lead)).toContain("lead-only-advisor-9071");
   // The advisor runs as its own sub identity inside the session it advises, with no delegate record.
   const advisor = { ...lead.ctx, agent: { kind: "sub", id: "Advisor" } };
-  const seen = ((await lead.event("before_agent_start", { systemPrompt: ["base"] }, advisor))?.systemPrompt ?? []).join("\n");
+  const result = await lead.event("before_agent_start", { systemPrompt: ["base"] }, advisor);
+  const seen = [...(result?.systemPrompt ?? []), result?.message?.content ?? ""].join("\n");
   expect(seen).not.toContain("<kata_inbox>");
   expect(seen).not.toContain("lead-only-advisor-9071");
   await kata(["notify", ref, "--to", "v2-builder/lead-advisor", "--clear", "--json"]);
