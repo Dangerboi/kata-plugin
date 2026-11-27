@@ -167,7 +167,6 @@ test("a write, patch or commit that names a ref of the plan is refused until the
 	}
 });
 
-
 test("refGuard warn runs interleaved calls and appends each reason once", async () => {
 	const { host, id } = await startLead({ refGuard: "warn" });
 	await host.callTool(id, "todowrite", todos(["Guarded warning task", "in_progress"]));
@@ -202,4 +201,15 @@ test("refGuard warn keeps earlier hook content and metadata in every result shap
 		expect(result.text).toContain(guardWarning("shell", ref));
 		expect(result.metadata).toEqual({ kept: true });
 	}
+});
+
+test("refGuard warn refuses script-made calls but permits clean ones", async () => {
+	const { host, id } = await startLead({ refGuard: "warn" });
+	await host.callTool(id, "todowrite", todos(["Guarded warning task", "in_progress"]));
+	const ref = qref(await parentOf(id));
+	const result = await host.callTool(id, "shell", { command: `git commit -m "fix ${ref}"` }, { codemode: true, execute: () => "ok" });
+	expect(result.status).toBe("error");
+	expect(result.executed).toBe(false);
+	expect(result.text).toContain("Refused:");
+	expect((await host.callTool(id, "shell", { command: "echo clean" }, { codemode: true, execute: () => "ok" })).status).toBe("completed");
 });

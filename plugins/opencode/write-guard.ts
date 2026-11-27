@@ -6,7 +6,7 @@ export function install(seam: Seam): void {
 	seam.before(async event => {
 		const role = await seam.roleOf(event.sessionID);
 		if (role.kind === "other") return;
-		const reason = await role.lead.guard(event.sessionID, { tool: event.tool, input: event.input, id: event.id });
+		const reason = await role.lead.guard(event.sessionID, { tool: event.tool, input: event.input, id: event.codemode === true ? undefined : event.id });
 		if (reason) throw new CallRefused(reason);
 	});
 	seam.after(async event => {

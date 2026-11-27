@@ -57,7 +57,7 @@ export interface Platform {
 	home?: string;
 }
 
-// Whether a KATA_REF_GUARD value (or a host option's text) switches the ref guard off: `off` or `0`.
+// Parse the ref guard mode: off (or 0), warn, or block by default.
 export const refGuardMode = (value: string | undefined): "off" | "warn" | "block" => {
 	const mode = (value ?? "").trim().toLowerCase();
 	return mode === "off" || mode === "0" ? "off" : mode === "warn" ? "warn" : "block";

@@ -16,3 +16,19 @@ test("Claude guard settings retain booleans and combine options with environment
 		expect(resolveSettings({ refGuard: option }, values).refGuard).toBe(expected);
 	}
 });
+
+test("warnings sharing a call id are returned together once", async () => {
+	const { createKataCore } = await import("../core/kata-core");
+	const { nodePlatform } = await import("../core/node-host");
+	const { memoryDelegateStore } = await import("./kata-fixture");
+	const core = createKataCore({ platform: nodePlatform, appendEntry() {}, exec: async () => ({ code: 1, stdout: "", stderr: "" }), delegateStore: memoryDelegateStore() }, {
+		namespace: "pi", executable: "kata", executableVars: [], explicitRef: () => "demo#ab3d", env: name => name === "KATA_REF_GUARD" ? "warn" : undefined,
+	});
+	const ctx = { cwd: process.cwd() };
+	const call = { tool: "bash", input: { command: 'git commit -m "demo#ab3d"' }, id: "outer" };
+	expect(await core.tools.guard(ctx, call)).toBeUndefined();
+	expect(await core.tools.guard(ctx, call)).toBeUndefined();
+	const reason = core.tools.warning(ctx, "outer");
+	expect(reason?.match(/Kata refs only resolve/g)).toHaveLength(2);
+	expect(core.tools.warning(ctx, "outer")).toBeUndefined();
+});

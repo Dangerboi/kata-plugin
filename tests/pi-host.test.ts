@@ -294,3 +294,21 @@ test("pi warn attaches each guard reason once to its own result", async () => {
 		}
 	} finally { delete process.env.KATA_REF_GUARD; }
 });
+
+
+test("pi attaches both nested warnings to their outer result once", async () => {
+	const app = await host(); await app.event("session_start", { reason: "startup" });
+	const ref = await app.init(["Nested warning task"]);
+	const input = { command: `git commit -m "fix ${ref}"` };
+	process.env.KATA_REF_GUARD = "warn";
+	try {
+		for (const toolCallId of ["outer/1", "outer/2"]) {
+			const event = { toolCallId, parentToolCallId: "outer", toolName: "bash", input };
+			expect(await app.event("tool_call", event)).toBeUndefined();
+			expect(await app.event("tool_result", { ...event, isError: false, content: [{ type: "text", text: "inner" }], structuredContent: { output: "inner" } })).toBeUndefined();
+		}
+		const outer = { toolCallId: "outer", toolName: "codemode", input: {}, isError: false, content: [{ type: "text", text: "filtered" }], structuredContent: { kept: true } };
+		expect(await app.event("tool_result", outer)).toEqual({ content: [...outer.content, { type: "text", text: `${guardWarning("bash", ref)}\n${guardWarning("bash", ref)}` }], structuredContent: outer.structuredContent });
+		expect(await app.event("tool_result", outer)).toBeUndefined();
+	} finally { delete process.env.KATA_REF_GUARD; }
+});
