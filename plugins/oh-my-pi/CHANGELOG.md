@@ -8,7 +8,7 @@ All notable changes to `@dangerboi/kata-omp` are listed here. The format follows
 
 #### Repository content
 
-- `KATA_REF_GUARD=warn` lets a call the ref guard would refuse run, and adds the same reason to that call's result as `additionalContext`, once.
+- `KATA_REF_GUARD=warn` lets a call the ref guard would refuse run, and adds the reason to that call's result as `additionalContext`, once, saying the call ran.
 
 ### Fixed
 
