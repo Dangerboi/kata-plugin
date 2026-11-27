@@ -4,6 +4,14 @@ All notable changes to `@dangerboi/kata-pi` are listed here. The format follows 
 
 ## [Unreleased]
 
+### Fixed
+
+#### Inbox and attention
+
+- A failed Kata contract fetch is no longer silent: until a fetch succeeds, `<kata_contract>` names the reason and tells the model to run `kata quickstart --format contract`, and the main session shows one warning with the reason at its next prompt, once per session. Each prompt retries the fetch.
+  - A folder without a `.kata.toml` (empty contract) and an incompatible Kata stay quiet, as before. Under Kata's native pi adapter, which inserts the contract itself, nothing changes.
+  - The contract fetch now waits up to 10 seconds instead of 1, so a slow Kata still delivers one; the prompt does not wait longer.
+
 ## [1.13.0] - 2026-11-26
 
 ### Added
