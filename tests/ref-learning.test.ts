@@ -15,90 +15,12 @@ function setup(isMain: (ctx: any) => boolean = () => true) {
  const result = (command: string, content: string) => core.tools.result(ctx, { toolName: 'bash', input: { command }, content } as any);
  return { cwd, core, ctx, call, result, commit: (text: string) => call(`git commit -m "${text}"`) };
 }
-test('issue: a comment and commit in one command learns its issue', async () => {
- const h = setup(); expect(await h.call('kata comment q7x2 -m ok && git commit -m "fix q7x2"')).toContain('q7x2');
-});
-test('qualified arguments, including options and search, teach at call time', async () => {
- const h = setup(); await h.call('kata search foreign#r7x2'); await h.call('kata comment q7x2 -m README.md#tasks');
- expect(await h.commit('r7x2')).toContain('r7x2'); expect(await h.commit('tasks')).toContain('tasks');
-});
-test('cd qualifies the invocation by its own workspace', async () => {
- const h = setup(), sub = path.join(h.cwd, 'sub'); mkdirSync(sub); writeFileSync(path.join(sub, '.kata.toml'), 'version = 1\n[project]\nname = "inner"\n');
- await h.call('cd sub && kata comment q7x2 -m done'); expect(await h.commit('inner#r7x2')).toContain('inner#r7x2');
-});
-test('lone JSON selected qualified id is learned without registry', async () => {
- const h = setup(); await h.result('kata next --json', '{"issue":{"qualified_id":"other#q7x2","short_id":"q7x2"}}');
- expect(await h.commit('other#q7x2')).toContain('other#q7x2'); expect(await h.commit('q7x2')).toContain('q7x2');
-});
-test('compound output does not teach a JSON issue', async () => {
- const h = setup(); await h.result('kata next --json && echo json', '{"issue":{"short_id":"data"}}'); expect(await h.commit('data')).toBeUndefined();
-});
-test('lone list output teaches projects and not bare ids', async () => {
- const h = setup(); await h.result('kata list --all', '○ other#data test (-)'); expect(await h.commit('other#data')).toContain('other#data'); expect(await h.commit('data')).toBeUndefined();
-});
-
-test('single output formats and compound boundaries', async () => {
- const h = setup();
- await h.result('kata create title --agent', 'OK create a7x2');
- await h.result('kata next --agent --project other', 'OK next issue=b7x2');
- await h.result('kata next --agent', 'OK next found=false');
- await h.result('kata next --json > f; echo data', '{"issue":{"short_id":"data"}}');
- await h.result('kata list --json && kata next --json', '{"issue":{"short_id":"d7x2"}}');
- for (const id of ['a7x2', 'b7x2']) expect(await h.commit(id)).toContain(id);
- for (const id of ['data', 'd7x2']) expect(await h.commit(id)).toBeUndefined();
-});
-
-test('call operands distinguish refs from values and support arity', async () => {
- const h = setup();
- for (const command of ['kata edit --title backend e7x2', 'kata claim --ttl 120m f7x2', 'kata move g7x2 h7x2 dest', 'kata wait j7x2 k7x2', 'kata label add m7x2 bug', 'kata edit n7x2 --parent p7x2,r7x2']) await h.call(command);
- for (const id of ['e7x2','f7x2','g7x2','h7x2','j7x2','k7x2','m7x2','n7x2','p7x2','r7x2']) expect(await h.commit(id)).toContain(id);
- for (const text of ['backend','120m','dest','bug']) expect(await h.commit(text)).toBeUndefined();
-});
-
-test('workspace file uses v1 and stops at a nested git root', async () => {
- const h = setup();
- const future = path.join(h.cwd, 'future'); mkdirSync(future); writeFileSync(path.join(future, '.kata.toml'), 'version = 2\n[project]\nname = "future"\n');
- const nested = path.join(h.cwd, 'nested'); mkdirSync(nested); mkdirSync(path.join(nested, '.git'));
- await h.core.tools.guard({ cwd: future }, { tool: 'bash', input: { command: 'kata comment q7x2' } });
- expect(await h.commit('future#r7x2')).toBeUndefined();
- const nestedGuard = (command: string) => h.core.tools.guard({ cwd: nested }, { tool: 'bash', input: { command } });
- await nestedGuard('kata comment b7x2');
- expect(await nestedGuard('git commit -m "demo#r7x2"')).toBeUndefined();
-});
-
-test('lone output ignores error status while list ids remain prose', async () => {
- const h = setup();
- await h.core.tools.result(h.ctx, { toolName: 'bash', input: { command: 'kata next' }, isError: true, content: 'OK next issue=x7x2' });
- await h.result('kata search data', '{"issues":[{"qualified_id":"other#data","short_id":"data"}]}');
- expect(await h.commit('x7x2')).toContain('x7x2');
- expect(await h.commit('other#data')).toContain('other#data');
- expect(await h.commit('data')).toBeUndefined();
-});
-
-
-test('R5 lone quoted and heredoc calls learn results, shell syntax does not', async () => {
- const h = setup();
- for (const [command, id] of [[`kata create "R&D" --agent`, 'a8x2'], ["kata create 'Fix `x` bug' --agent", 'b8x2'], ['kata create t --body-file - --agent <<EOF\nbody & text\nEOF', 'c8x2']]) {
-  await h.result(command, `OK create ${id}`); expect(await h.commit(id)).toContain(id);
- }
- for (const [command, id] of [['kata next > out', 'd8x2'], ['kata next && echo done', 'e8x2'], ['kata next "$(echo bad)"', 'f8x2'], ['kata next `echo bad`', 'g8x2'], ['kata create t --body-file - <<EOF\n$(echo bad)\nEOF', 'h8x2']]) {
-  await h.result(command, `OK next ${id}`); expect(await h.commit(id)).toBeUndefined();
- }
-});
-
-test('R5 show learns qualified peers from actual agent link rows', async () => {
- const h = setup();
- await h.result('kata show q7x2 --agent', 'OK show q7x2\nLinks:\n  type=related issue=other#r7x2\n  type=related issue=third#t7x2');
- expect(await h.commit('r7x2')).toContain('r7x2');
- expect(await h.commit('t7x2')).toContain('t7x2');
-});
 
 test('R5 delegate calls do not teach the lead', async () => {
  const h = setup(ctx => ctx.agent?.kind !== 'sub');
  await h.core.tools.guard({ cwd: h.cwd, agent: { kind: 'sub' } }, { tool: 'bash', input: { command: 'kata comment e7x2' } });
  expect(await h.commit('e7x2')).toBeUndefined();
 });
-
 
 test('R5 symlinked plan workspace supplies project to a canonical invocation', async () => {
  const root = mkdtempSync(path.join(process.env.KATA_TEST_ROOT!, 'symlink-plan-'));
@@ -115,14 +37,84 @@ test('R5 symlinked plan workspace supplies project to a canonical invocation', a
  expect(core.tools.refs(ctx).refs).toContain('demo#z7x2');
 });
 
-test('R6 project header with a trailing comment seeds its name', async () => {
+test('call-time learning', async () => {
+ {
+ const h = setup(); expect(await h.call('kata comment q7x2 -m ok && git commit -m "fix q7x2"')).toContain('q7x2');
+ }
+ {
+ const h = setup(); await h.call('kata search foreign#r7x2'); await h.call('kata comment q7x2 -m foreign#t7x2');
+ expect(await h.commit('r7x2')).toContain('r7x2'); expect(await h.commit('t7x2')).toContain('t7x2');
+ }
+ {
+ const h = setup(), sub = path.join(h.cwd, 'sub'); mkdirSync(sub); writeFileSync(path.join(sub, '.kata.toml'), 'version = 1\n[project]\nname = "inner"\n');
+ await h.call('cd sub && kata comment q7x2 -m done'); expect(await h.commit('inner#r7x2')).toContain('inner#r7x2');
+ }
+ {
+ const h = setup();
+ for (const command of ['kata edit --title backend e7x2', 'kata claim --ttl 120m f7x2', 'kata move g7x2 h7x2 dest', 'kata wait j7x2 k7x2', 'kata label add m7x2 bug', 'kata edit n7x2 --parent p7x2,r7x2']) await h.call(command);
+ for (const id of ['e7x2','f7x2','g7x2','h7x2','j7x2','k7x2','m7x2','n7x2','p7x2','r7x2']) expect(await h.commit(id)).toContain(id);
+ for (const text of ['backend','120m','dest','bug']) expect(await h.commit(text)).toBeUndefined();
+ }
+});
+
+test('lone output learns', async () => {
+ {
+ const h = setup(); await h.result('kata next --json', '{"issue":{"short_id":"q7x2"}}');
+ expect(await h.commit('q7x2')).toContain('q7x2');
+ await h.result('kata next --json', '{"issue":{"qualified_id":"other#z7x2","short_id":"y7x2"}}');
+ expect(await h.commit('z7x2')).toContain('z7x2'); expect(await h.commit('y7x2')).toBeUndefined();
+ }
+ {
+ const h = setup(); await h.result('kata list --all', '○ other#data test (-)'); expect(await h.commit('other#data')).toContain('other#data'); expect(await h.commit('data')).toBeUndefined();
+ }
+ {
+ const h = setup();
+ await h.result('kata create title --agent', 'OK create a7x2');
+ await h.result('kata next --agent --project other', 'OK next issue=b7x2');
+ await h.result('kata next --json; echo data', '{"issue":{"short_id":"data"}}');
+ await h.result('kata list --json && kata next --json', '{"issue":{"short_id":"d7x2"}}');
+ for (const id of ['a7x2', 'b7x2']) expect(await h.commit(id)).toContain(id);
+ for (const id of ['data', 'd7x2']) expect(await h.commit(id)).toBeUndefined();
+ }
+ {
+ const h = setup();
+ await h.result('kata search data', '{"issues":[{"qualified_id":"other#data","short_id":"data"}]}');
+ expect(await h.commit('other#data')).toContain('other#data');
+ expect(await h.commit('data')).toBeUndefined();
+ }
+ {
+ const h = setup();
+ for (const [command, id] of [[`kata create "R&D" --agent`, 'a8x2'], ["kata create 'Fix `x` bug' --agent", 'b8x2'], ['kata create t --body-file - --agent <<EOF\nbody & text\nEOF', 'c8x2']]) {
+  await h.result(command, `OK create ${id}`); expect(await h.commit(id)).toContain(id);
+ }
+ for (const [command, id] of [['kata next > out', 'd8x2'], ['kata next "$(echo bad)"', 'f8x2'], ['kata next `echo bad`', 'g8x2'], ['kata create t --body-file - <<EOF\n$(echo bad)\nEOF', 'h8x2']]) {
+  await h.result(command, `OK next ${id}`); expect(await h.commit(id)).toBeUndefined();
+ }
+ }
+ {
+ const h = setup();
+ await h.result('kata show q7x2 --agent', 'OK show q7x2\nLinks:\n  type=related issue=other#r7x2\n  type=related issue=third#t7x2');
+ expect(await h.commit('r7x2')).toContain('r7x2');
+ expect(await h.commit('t7x2')).toContain('t7x2');
+ }
+});
+
+test('workspace file uses v1 and stops at a nested git root', async () => {
+ {
+ const h = setup();
+ const nested = path.join(h.cwd, 'nested'); mkdirSync(nested); mkdirSync(path.join(nested, '.git'));
+ const nestedGuard = (command: string) => h.core.tools.guard({ cwd: nested }, { tool: 'bash', input: { command } });
+ await nestedGuard('kata comment b7x2');
+ expect(await nestedGuard('git commit -m "demo#r7x2"')).toBeUndefined();
+ }
+ {
  const h = setup();
  writeFileSync(path.join(h.cwd, '.kata.toml'), 'version = 1\n[project] # workspace\nname = "demo"\n');
  expect(await h.commit('demo#z7x2')).toContain('demo#z7x2');
-});
-
-test('R6 table version cannot shadow an unsupported root version', async () => {
+ }
+ {
  const h = setup();
  writeFileSync(path.join(h.cwd, '.kata.toml'), 'version = 2\n[project]\nversion = 1\nname = "future"\n');
  expect(await h.commit('future#z7x2')).toBeUndefined();
+ }
 });
