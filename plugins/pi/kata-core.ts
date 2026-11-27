@@ -2557,17 +2557,19 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 		const running = (async () => {
 			for (;;) {
 				const refs = candidateRefs(), stamps = new Map(refs.map(ref => [ref, claimedAt.get(ref) ?? 0]));
-				const results = await Promise.all(refs.map(async ref => {
+				// true: closed, missing or another actor's claim; false: confirmed open; undefined: nothing confirmed (a failed read, or
+				// an answer this plugin cannot read), so the ref keeps its last confirmed state.
+				const results = await Promise.all(refs.map(async (ref): Promise<boolean | undefined> => {
 					try {
 						const result = JSON.parse(await kata.run(NO_JOB, ["status", ref], ctx.cwd, { timeout: 3000 }));
-						if (result?.kata_api_version !== 1 || typeof result.issue_status !== "string") return false;
+						if (result?.kata_api_version !== 1 || typeof result.issue_status !== "string") return undefined;
 						return result.issue_status === "closed" || (claimed.has(ref) && typeof result.owner === "string" && typeof result.actor === "string" && !!result.owner && !!result.actor && result.owner !== result.actor);
-					} catch (error) { return isKataCode(error, "issue_not_found"); }
+					} catch (error) { return isKataCode(error, "issue_not_found") ? true : undefined; }
 				}));
 				if (generation !== footerGeneration || id !== currentId) return;
 				const current = candidateRefs();
 				const changed = current.length !== refs.length || current.some(ref => !stamps.has(ref) || stamps.get(ref) !== (claimedAt.get(ref) ?? 0));
-				closed = new Set(refs.filter((ref, index) => results[index] && stamps.get(ref) === (claimedAt.get(ref) ?? 0)));
+				closed = new Set(refs.filter((ref, index) => stamps.get(ref) === (claimedAt.get(ref) ?? 0) && (results[index] ?? closed.has(ref))));
 				if (!changed) { checkedAt = Date.now(); break; }
 			}
 		})().finally(() => { if (checking === running) checking = undefined; });
@@ -2633,8 +2635,11 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 	async function footer(ctx: HostContext, mode: "force" | "throttle", format: (view: SessionView) => string | undefined): Promise<void> {
 		if (!main(ctx) || ctx.hasUI !== true || !ctx.ui?.setStatus) return;
 		footerFormat = format; footerCtx = ctx;
-		const id = currentId, generation = footerGeneration;
-		const pending = checkRefs(ctx, mode === "force");
+		const id = currentId, generation = footerGeneration, parent = plan.parent;
+		const identity = actor(NO_JOB, ctx.cwd).then(who => {
+			if (generation === footerGeneration && id === currentId && parent === plan.parent) footerActor = who;
+		}).catch(debug);
+		const pending = Promise.all([checkRefs(ctx, mode === "force"), identity]).then(() => undefined);
 		let finished = false;
 		void pending.then(() => { finished = true; }).catch(debug);
 		const draw = () => { if (generation === footerGeneration && id === currentId) paint(footerCtx ?? ctx); };

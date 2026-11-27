@@ -9,6 +9,7 @@ export const USAGE = `Usage: /kata [${KATA_SUBCOMMANDS.join("|")}]`;
 export const KATA_DESCRIPTION = "Show this session's Kata actor, inbox, refs and contract";
 export const REFRESHED = "Kata contract and actor cleared; the next prompt reads both again.";
 export const MAIN_ONLY = "/kata answers in the main session only.";
+export const SUPERSEDED = "The Kata session changed while /kata status ran (a refresh, a session switch or shutdown); run /kata status again.";
 
 /** The subcommand `args` names; empty args are `status`; anything else is undefined (the usage, with no Kata call). */
 export function parseKataCommand(args: string): KataSubcommand | undefined {
@@ -88,6 +89,8 @@ export async function kataCommand(session: KataStatusSource, ctx: any, args: str
 	if (!sub) return USAGE;
 	if (sub === "refresh") { session.refresh(); return REFRESHED; }
 	if (sub === "inbox") return inboxText(await session.inbox(ctx, { nativeInbox: opts.nativeInbox }));
-	const view = await session.view(ctx, { reconcile: true, context: opts.context, nativeInbox: opts.nativeInbox });
-	return view ? statusText(view) : MAIN_ONLY;
+	// Hosts pass only the main session here, so no view means a refresh, switch or shutdown overtook the read: read once more.
+	const read = () => session.view(ctx, { reconcile: true, context: opts.context, nativeInbox: opts.nativeInbox });
+	const view = await read() ?? await read();
+	return view ? statusText(view) : SUPERSEDED;
 }
