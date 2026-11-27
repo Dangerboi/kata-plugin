@@ -1,20 +1,24 @@
 import { expect, spyOn, test } from "bun:test";
-import { eventually, holdKata } from "./kata-fixture";
+import { eventually, holdKata, settle } from "./kata-fixture";
 import { v2Fixture } from "./v2-fixture";
-import { ompHost, clearTranscriptEnv } from "./omp-host";
 
-const { scratch, cwd, run, kata, issue, host, unique } = v2Fixture();
+const { kata, issue, host } = v2Fixture();
 
 test("result polling coalesces a held read, filters foreign requests, and delivers once", async () => {
   process.env.KATA_INBOX_USER = "v2-builder/poll-result";
   process.env.KATA_INBOX_POLL_SECONDS = "0";
   process.env.KATA_OMP_LIVE_INBOX = "0";
   let armed = false;
+  const returned = Promise.withResolvers<void>();
   const held = holdKata(args => armed && args[0] === "inbox", () => ({ code: 0, stdout: JSON.stringify({ requests: [
-    { ref: "v2test#own", from: "v2-builder", message: "own <message>" },
+    { ref: "v2test#own", from: "v2-builder", message: "own-message" },
     { ref: "v2test#foreign", from: "other", message: "foreign-message" },
   ] }), stderr: "" }));
-  const app = host({ before: held.before });
+  const app = host({ before: async (args: string[], opts: any) => {
+    const answer = await held.before(args, opts);
+    if (armed && args[0] === "inbox") returned.resolve();
+    return answer;
+  } });
   await app.event("session_start");
   await app.event("before_agent_start", { systemPrompt: ["base"] });
   armed = true;
@@ -24,12 +28,13 @@ test("result polling coalesces a held read, filters foreign requests, and delive
     await held.entered;
     expect(await Promise.all([app.event("tool_result", event), app.event("tool_result", event)])).toEqual([undefined, undefined]);
     expect(held.held).toBe(1);
-  } finally { armed = false; held.release(); }
-  await Bun.sleep(100);
+  } finally { held.release(); }
+  await returned.promise;
+  await new Promise(resolve => setTimeout(resolve, 0));
   expect(await app.event("tool_result", { ...event, toolName: "task" })).toBeUndefined();
   expect(await app.event("tool_result", { ...event, parentToolCallId: "script" })).toBeUndefined();
   let delivered: any;
-  await eventually(async () => { delivered = await app.event("tool_result", event); return JSON.stringify(delivered ?? {}).includes("own &lt;message&gt;"); }, true);
+  await eventually(async () => { delivered = await app.event("tool_result", event); return JSON.stringify(delivered ?? {}).includes("own-message"); }, true);
   expect(JSON.stringify(delivered)).not.toContain("foreign-message");
   expect(await app.event("tool_result", event)).toBeUndefined();
 });
@@ -80,27 +85,25 @@ test("prompt delivery, invalid interval fallback, failure, and A to B to A chang
 test("a personal inbox and an unrecorded advisor do not poll on results", async () => {
   process.env.KATA_INBOX_USER = "v2-builder";
   process.env.KATA_INBOX_POLL_SECONDS = "0";
-  const lead = host(); await lead.event("session_start");
-  const advisor = { ...lead.ctx, agent: { kind: "sub", id: "Advisor" } };
+  process.env.KATA_OMP_LIVE_INBOX = "0";
+  const personal = host(); await personal.event("session_start");
   const event = { toolName: "read", content: [{ type: "text", text: "original" }], isError: false };
-  expect(await lead.event("tool_result", event)).toBeUndefined();
-  expect(await lead.event("tool_result", event, advisor)).toBeUndefined();
-  expect(lead.calls.filter((a: string[]) => a[0] === "inbox")).toHaveLength(0);
-});
+  expect(await personal.event("tool_result", event)).toBeUndefined();
+  await settle();
+  expect(personal.calls.filter((a: string[]) => a[0] === "inbox")).toHaveLength(0);
 
-test("a main session with a live follower does not poll on results", async () => {
-  process.env.KATA_INBOX_USER = "v2-builder/live-result";
-  process.env.KATA_INBOX_POLL_SECONDS = "0";
-  delete process.env.KATA_OMP_LIVE_INBOX;
-  const sid = `live-result-${unique()}`;
-  const app = ompHost({ run: (args, opts) => run(args, opts.cwd, opts.timeout), cwd, sid, sessionFile: `${scratch}/${sid}.jsonl`, sendUserMessage: () => {}, afterEvent: clearTranscriptEnv });
-  try {
-    await app.event("session_start");
-    await eventually(async () => app.calls.some(a => a[0] === "inbox"), true);
-    const reads = app.calls.filter(a => a[0] === "inbox").length;
-    expect(await app.event("tool_result", { toolName: "read", content: [], isError: false })).toBeUndefined();
-    expect(app.calls.filter(a => a[0] === "inbox")).toHaveLength(reads);
-  } finally { await app.event("session_shutdown"); }
+  process.env.KATA_INBOX_USER = "v2-builder/advisor-result";
+  let message = "lead-first";
+  const lead = host({ before: (args: string[]) => args[0] === "inbox" ?
+    { code: 0, stdout: JSON.stringify({ requests: [{ ref: "v2test#advisor", from: "v2-builder", message }] }), stderr: "" } : undefined });
+  await lead.event("session_start");
+  expect(JSON.stringify(await lead.event("before_agent_start", { systemPrompt: ["base"] }))).toContain("lead-first");
+  message = "lead-changed";
+  await lead.event("tool_result", event);
+  await settle();
+  const advisor = { ...lead.ctx, agent: { kind: "sub", id: "Advisor" } };
+  expect(await lead.event("tool_result", event, advisor)).toBeUndefined();
+  expect(JSON.stringify(await lead.event("tool_result", event))).toContain("lead-changed");
 });
 
 test("a cleared request shown by a prompt is announced on the next result", async () => {

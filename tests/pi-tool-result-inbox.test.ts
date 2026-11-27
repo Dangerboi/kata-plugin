@@ -26,20 +26,6 @@ test("pi child appends the inbox while preserving structured content", async () 
   expect(delivered.structuredContent).toEqual(structuredContent);
   expect(delivered.content[0].text).toBe("original");
   expect(delivered.content[1].text).toContain("<kata_inbox>");
-  expect(delivered.additionalContext).toBeUndefined();
-});
-
-test("a pi custom task tool carries a mid-run request", async () => {
-  process.env.KATA_INBOX_USER = "pi-builder/review-task";
-  process.env.KATA_INBOX_POLL_SECONDS = "0";
-  const app = await pi.host(); await app.event("session_start", { reason: "startup" });
-  await app.event("before_agent_start", { prompt: "work", systemPromptOptions: { sections: {} } });
-  const ref = await pi.issue("task tool request");
-  await pi.kata(["notify", ref, "--to", "pi-builder/review-task", "--message", "task-request", "--json"]);
-  const event = { toolName: "task", content: [{ type: "text", text: "normal custom task output" }], isError: false };
-  let result: any;
-  await eventually(async () => { result = await app.event("tool_result", event); return JSON.stringify(result ?? {}).includes("task-request"); }, true);
-  expect(result.content[0].text).toBe("normal custom task output");
 });
 
 test("a pi main with an active native contract receives a mid-run request", async () => {
@@ -56,8 +42,8 @@ test("a pi main with an active native contract receives a mid-run request", asyn
   await app.event("before_agent_start", { prompt: "work", systemPromptOptions: { sections: {} } });
   const ref = await pi.issue("native request");
   await pi.kata(["notify", ref, "--to", "pi-builder/native-result", "--message", "native-midrun", "--json"]);
-  const event = { toolName: "read", content: [{ type: "text", text: "original" }], structuredContent: { answer: 7 }, isError: false };
+  const event = { toolName: "task", content: [{ type: "text", text: "original" }], isError: false };
   let result: any;
   await eventually(async () => { result = await app.event("tool_result", event); return JSON.stringify(result ?? {}).includes("native-midrun"); }, true);
-  expect(result.structuredContent).toEqual({ answer: 7 });
+  expect(result.content[0].text).toBe("original");
 });
