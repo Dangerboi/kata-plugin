@@ -197,7 +197,7 @@ export const RULES = {
 	ticketItem: "An item that works an existing ticket starts with its qualified ref: `<project>#<short_id>: <action>`",
 	ticketError: "A ref that does not resolve, or a closed ticket, is an error.",
 	search: 'search first: kata search "<terms>" --agent',
-	delegate: "Delegate by putting the work in the plan, not by creating child issues for subagents to claim.",
+	delegate: "Delegate by putting the work in the plan, not by creating child issues yourself (`kata create`) for subagents to claim.",
 	bookkeeping: (item: string) => `Do not run \`kata claim\`, \`kata meta set ... work.attention\` or \`kata close\` for them yourself, and never add such bookkeeping as ${item}.`,
 	named: (text: string, title: string) => `only when its ${text} names that item: its exact ${title} in quotes, its ref, or for a ticket item its ticket's ref. Naming a ticket outside the plan by qualified ref binds it to that ticket.`,
 	untracked: "gets no issue to work, the plugin records its run and report as a closed child issue of the plan parent",
