@@ -4,6 +4,13 @@ All notable changes to `@dangerboi/kata-omp` are listed here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+
+#### Delegates
+
+- A `kata` command run from a script, a function, `bash -c` or a pipeline is attributed to the agent that ran it, lead or delegate, not to the lead, and a `KATA_AUTHOR`, `KATA_TEAMMATE` or `KATA_INBOX_USER` the model sets or exports no longer changes it. The plugin puts a `kata` shim first on `PATH` through `PI_SHELL_PREFIX`, and the shim loads each agent's own identity and close transcript.
+  - POSIX only. On native Windows, or with no temp directory that allows executables, the plugin warns once and only rewrites commands, as before.
+
 ## [3.1.0] - 2026-11-26
 
 ### Added

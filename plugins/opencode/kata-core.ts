@@ -2497,6 +2497,7 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 
 	return {
 		session: {
+			actor: (ctx: HostContext, at?: { cwd?: string; ref?: string }) => actor(NO_JOB, at?.cwd ?? ctx.cwd, at?.ref),
 			// The session began or switched: bind the plan, follow the inbox live when the host can, start attention.
 			// `after` is host work (a delegate's assignment retry) the first context read waits for.
 			// `child`: the workspace of a pi child still to join its parent; when Kata does not answer there, nothing starts and the result is undefined: the host runs the session as a main session and starts it again.

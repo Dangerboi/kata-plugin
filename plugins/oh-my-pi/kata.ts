@@ -20,10 +20,11 @@ import { closeSync, openSync, readSync } from "node:fs";
 import { createInterface } from "node:readline";
 import { createKataCore, NATIVE_TODO_COMMANDS, PROMPT_TAGS, snapshotEntry, tagged } from "./kata-core";
 import { execKata, exportTranscriptSession, nodePlatform, sessionKey } from "./node-host";
-import { closeEnv, debugTo, NO_JOB } from "./kata-cli";
+import { closeEnv, debugTo, NO_JOB, transcriptEnv, waitAtMost } from "./kata-cli";
 import { delegateCommand, kataCommands as parseKataCommands } from "./shell";
 import { FINAL, isUntracked, Refusal, teammateFor } from "./delegates";
 import { textOf } from "./model";
+import { adoptShim, currentShim, installShim, writeIdentity, type Shim } from "./shim";
 import type { DelegateOutcome, DelegateRecord, Delegates, DelegateStore } from "./delegates";
 import type { Setting } from "@oh-my-pi/pi-coding-agent/config/registry";
 import type { InboxStream } from "./inbox";
@@ -51,6 +52,9 @@ const recordsBySession = new Map<string, DelegateRecord>();
 const leads = new Map<string, DelegateEvents>();
 // The refs each lead session works, read by the ref guard of a delegate on a worker thread (see askRefs).
 const leadRefs = new Map<string, () => string[]>();
+const leadActors = new Map<string, (record?: DelegateRecord) => Promise<string | undefined>>();
+const leadAgentSessions = new Map<string, string>();
+const workerIdentity = new Map<string, { shim?: Shim; actor?: string }>();
 
 // The `todo.backend` setting, found once per module copy (per thread), and one settings listener that only feeds the
 // main session's off-notice through `backendWatchers`. Whether the backend is Kata is read through `setting` against the
@@ -77,8 +81,8 @@ function followBackend(settings: unknown, debug: (error: unknown) => void): Prom
 // the records and lead Delegates above stay on the main thread. A worker's copy asks the main thread's copy over this
 // channel (omp's event bus does not cross threads) and keeps the answer in its own map, which its store then reads.
 type DelegateWire =
-	| { kind: "nextUse"; req: string; key: string; id: string }
-	| { kind: "record"; req: string; record?: DelegateRecord }
+	| { kind: "nextUse"; req: string; key: string; id: string; parentId?: string }
+	| { kind: "record"; req: string; record?: DelegateRecord; shim?: Shim; actor?: string }
 	| { kind: "refsAsk"; req: string; key: string }
 	| { kind: "refsAnswer"; req: string; refs: string[] }
 	| { kind: "ranTool"; key: string; id: string };
@@ -88,6 +92,7 @@ delegateChannel.unref();
 // How long the main thread waits for a lead's started event that has not arrived yet, and a worker for an answer.
 const RECORD_WAIT_MS = 3000;
 const ANSWER_WAIT_MS = 30_000;
+const PUBLISH_WAIT_MS = 1500;
 // A worker's ref guard gives up on the lead's refs after this; the core asks inside its own 2 s bound, and only for a call that adds text.
 const REFS_WAIT_MS = 1000;
 const arrivals = new Map<string, (() => void)[]>();
@@ -114,27 +119,39 @@ async function answerWorker(message: DelegateWire) {
 	if (!recordsBySession.has(message.key)) await recordArrival(message.key);
 	const record = recordsBySession.get(message.key);
 	if (message.kind === "refsAsk") return delegateChannel.postMessage({ kind: "refsAnswer", req: message.req, refs: record ? leadRefs.get(record.leadSessionId)?.() ?? [] : [] } satisfies DelegateWire);
-	if (record?.id !== message.id) return message.kind === "nextUse" ? delegateChannel.postMessage({ kind: "record", req: message.req } satisfies DelegateWire) : undefined;
+	if (record?.id !== message.id) {
+		if (message.kind !== "nextUse") return;
+		let actor: string | undefined;
+		const lead = message.parentId && leadAgentSessions.get(message.parentId); if (lead) actor = await leadActors.get(lead)?.();
+		return delegateChannel.postMessage({ kind: "record", req: message.req, shim: currentShim(), actor } satisfies DelegateWire);
+	}
 	await leads.get(record.leadSessionId)?.apply({ type: message.kind, id: message.id }, NO_JOB);
-	if (message.kind === "nextUse") delegateChannel.postMessage({ kind: "record", req: message.req, record: recordsBySession.get(message.key) } satisfies DelegateWire);
+	if (message.kind === "nextUse") {
+		const updated = recordsBySession.get(message.key);
+		let actor: string | undefined;
+		actor = await leadActors.get(record.leadSessionId)?.(updated);
+		delegateChannel.postMessage({ kind: "record", req: message.req, record: updated, shim: currentShim(), actor } satisfies DelegateWire);
+	}
 }
 let requestCount = 0;
 // A worker's questions by request id, until the main thread answers; a wait that gave up keeps its entry, so a late answer still lands.
-const awaitingAnswer = new Map<string, (record: DelegateRecord | undefined) => void>();
+const awaitingAnswer = new Map<string, (message: Extract<DelegateWire, { kind: "record" }>) => void>();
 // The latest question a worker's copy has out per delegate session: a tool call waits for its answer before reading the record.
 const latestQuestion = new Map<string, Promise<void>>();
 // A worker's copy: the lead's queue runs the delegate's next use, and the record it answers with replaces this thread's copy.
-function askMain(key: string, id: string): Promise<void> {
+function askMain(key: string, id: string, parentId?: string): Promise<void> {
 	const req = `${threadId}:${++requestCount}`;
 	const answered = new Promise<void>(resolve => {
 		const timer = setTimeout(resolve, ANSWER_WAIT_MS);
 		timer.unref?.();
-		awaitingAnswer.set(req, record => {
+		awaitingAnswer.set(req, message => {
 			clearTimeout(timer);
+			const { record, shim, actor } = message;
+			workerIdentity.set(key, { shim, actor });
 			if (record) recordsBySession.set(key, record); else recordsBySession.delete(key);
 			resolve();
 		});
-		delegateChannel.postMessage({ kind: "nextUse", req, key, id } satisfies DelegateWire);
+		delegateChannel.postMessage({ kind: "nextUse", req, key, id, parentId } satisfies DelegateWire);
 	});
 	latestQuestion.set(key, answered);
 	void answered.then(() => { if (latestQuestion.get(key) === answered) latestQuestion.delete(key); });
@@ -144,7 +161,7 @@ delegateChannel.onmessage = (event: { data: unknown }) => {
 	// Only this module's copies post on this channel.
 	const message = event.data as DelegateWire;
 	if (isMainThread) void answerWorker(message).catch(() => { /* the worker's wait ends on its own */ });
-	else if (message.kind === "record") { awaitingAnswer.get(message.req)?.(message.record); awaitingAnswer.delete(message.req); }
+	else if (message.kind === "record") { awaitingAnswer.get(message.req)?.(message); awaitingAnswer.delete(message.req); }
 	else if (message.kind === "refsAnswer") { awaitingRefs.get(message.req)?.(message.refs); awaitingRefs.delete(message.req); }
 };
 const awaitingRefs = new Map<string, (refs: string[]) => void>();
@@ -187,6 +204,8 @@ export default function ompKata(pi: any) {
 		if (main(ctx)) backendWatchers.add(offWatcher);
 	};
 	const leadSession = () => seen && main(seen) ? sessionId(seen) : undefined;
+	const launchTeammate = process.env.KATA_TEAMMATE, launchInbox = process.env.KATA_INBOX_USER;
+	let leadPublish: Promise<void> | undefined;
 	const store: DelegateStore = {
 		records: () => [...recordsBySession.values()].filter(record => record.leadSessionId === leadSession()),
 		get: id => store.records().find(record => record.id === id),
@@ -328,7 +347,7 @@ export default function ompKata(pi: any) {
 	const nextUseOf = (ctx: any): Promise<void> | undefined => {
 		if (!isMainThread) {
 			const key = ctx?.agent?.kind === "sub" ? sessionKeyOf(ctx) : undefined;
-			return key ? askMain(key, ctx.agent.id) : undefined;
+			return key ? askMain(key, ctx.agent.id, ctx.agent.parentId) : undefined;
 		}
 		const record = store.of(ctx);
 		return record ? leads.get(record.leadSessionId)?.apply({ type: "nextUse", id: record.id }, NO_JOB) : undefined;
@@ -347,10 +366,14 @@ export default function ompKata(pi: any) {
 
 	// The lead Delegates that the delegates started from `ctx` report to: this session's own (registered here for its
 	// delegates' later events, and for worker threads), or a nested delegate's lead.
+	let publishFailed = false;
+	function reportPublishFailure(ctx: any) {
+		if (!publishFailed) { publishFailed = true; (ctx.ui ?? seen?.ui)?.notify?.("Kata identity could not be published; kata commands in scripts, functions or bash -c may run under the lead's identity until the next successful publication. If the shim directory was removed, restart omp.", "warning"); }
+	}
 	const leadOf = (ctx: any): { id: string; delegates?: DelegateEvents } | undefined => {
 		if (main(ctx)) {
 			const id = sessionId(ctx);
-			if (id) { leads.set(id, core.delegates); leadRefs.set(id, () => { try { return core.tools.refs(seen); } catch (error) { debug(error); return []; } }); return { id, delegates: core.delegates }; }
+			if (id) { leads.set(id, core.delegates); if (typeof ctx.agent?.id === "string") leadAgentSessions.set(ctx.agent.id, id); leadActors.set(id, async record => { const actor = await waitAtMost(core.session.actor(ctx, record?.binding && { cwd: record.binding.workspace, ref: record.binding.parent }), PUBLISH_WAIT_MS, debug, nodePlatform); if (!actor) reportPublishFailure(ctx); return actor; }); leadRefs.set(id, () => { try { return core.tools.refs(seen); } catch (error) { debug(error); return []; } }); return { id, delegates: core.delegates }; }
 			return undefined;
 		}
 		const owner = store.of(ctx);
@@ -395,11 +418,39 @@ export default function ompKata(pi: any) {
 		void leadOf(seen)?.delegates?.apply({ type: "reported", id: payload.id, text }, NO_JOB);
 	});
 
+	async function publish(ctx: any, record?: DelegateRecord) {
+		const id = sessionId(ctx);
+		if (!id || (!main(ctx) && id === leadSession())) return;
+		try {
+			const key = sessionKeyOf(ctx);
+			const remote = !isMainThread && key ? workerIdentity.get(key) : undefined;
+			if (remote?.shim) adoptShim(remote.shim);
+			const shim = currentShim(); if (!shim) return;
+			const actor = remote?.actor ?? (isMainThread ? await core.session.actor(ctx, record?.binding && { cwd: record.binding.workspace, ref: record.binding.parent }) : undefined);
+			if (!actor) return;
+			const teammate = main(ctx) ? launchTeammate : record?.teammate || teammateFor(ctx.agent.id, record?.leadSessionId ?? leadSession());
+			const pair = transcriptPairOf(ctx);
+			const transcript = pair?.id ? transcriptEnv(nodePlatform.env, pair.agent, pair.id) : pair ? { KATA_TRANSCRIPT_AGENT: undefined, KATA_TRANSCRIPT_SESSION_ID: undefined, KATA_CLOSE_TRANSCRIPT_ENABLED: "false" } : {};
+			writeIdentity(shim, id, { KATA_AUTHOR: actor, KATA_TEAMMATE: teammate, KATA_INBOX_USER: main(ctx) ? launchInbox : `${actor}/${teammate}`, ...transcript });
+			publishFailed = false;
+		} catch (error) {
+			debug(error);
+			reportPublishFailure(ctx);
+		}
+	}
+	function startShim(ctx: any) {
+		if (!main(ctx)) return;
+		installShim(EXECUTABLE, message => ctx.ui?.notify?.(message, "warning"));
+	}
+
 	pi.on("tool_call", async (event: any, ctx: any) => {
 		await enter(ctx);
 		await core.tools.call(ctx);
 		const record = ctx.agent?.kind === "sub" ? await recordOf(ctx) : undefined;
 		if (record) ranTool(record);
+		if (event.toolName === "bash") {
+			await waitAtMost((async () => { if (main(ctx)) await leadPublish; await publish(ctx, record); })(), PUBLISH_WAIT_MS, debug, nodePlatform);
+		}
 		const key = !isMainThread && ctx.agent?.kind === "sub" ? sessionKeyOf(ctx) : undefined;
 		const refused = await core.tools.guard(ctx, { tool: event.toolName, input: event.input }, () => key ? askRefs(key) : []);
 		if (refused) return { block: true, reason: refused };
@@ -489,6 +540,7 @@ export default function ompKata(pi: any) {
 	});
 
 	pi.on("before_agent_start", async (event: any, ctx: any) => {
+		if (main(ctx)) await leadPublish;
 		// omp discards the result of a revive and nothing needs the work.
 		if (event.reason === "revive") return;
 		await enter(ctx);
@@ -508,18 +560,20 @@ export default function ompKata(pi: any) {
 	});
 
 	async function begin(ctx: any) {
+		startShim(ctx);
+		if (main(ctx)) exportTranscriptSession(NAMESPACE, sessionId(ctx));
 		await enter(ctx);
 		if (!main(ctx)) { await core.session.start(ctx, { after: nextUseOf(ctx) }); return; }
 		core.offerTickets(ctx.ui);
-		exportTranscriptSession(NAMESPACE, sessionId(ctx));
 		const backend = await kataBackend();
 		await core.session.start(ctx);
+		leadPublish = waitAtMost(publish(ctx), PUBLISH_WAIT_MS, debug, nodePlatform);
 		offNotice(ctx, backend);
 	}
 
 	pi.on("session_start", (_event: any, ctx: any) => begin(ctx));
 	pi.on("session_switch", (_event: any, ctx: any) => begin(ctx));
-	pi.on("session_branch", async (_event: any, ctx: any) => { await enter(ctx); await core.session.branch(ctx); });
+	pi.on("session_branch", async (_event: any, ctx: any) => { startShim(ctx); if (main(ctx)) exportTranscriptSession(NAMESPACE, sessionId(ctx)); await enter(ctx); await core.session.branch(ctx); if (main(ctx)) leadPublish = waitAtMost(publish(ctx), PUBLISH_WAIT_MS, debug, nodePlatform); });
 	pi.on("session_tree", async (_event: any, ctx: any) => { await enter(ctx); await core.session.tree(ctx); });
 	// The transcript pair is left for the next session_start to overwrite: clearing after a slow cleanup could delete the pair of an instance omp already started in this process.
 	pi.on("session_shutdown", async (_event: any, ctx: any) => {

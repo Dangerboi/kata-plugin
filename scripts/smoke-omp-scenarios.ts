@@ -22,7 +22,7 @@ export type TurnContext = SmokeContext & {
 export type Turn = SmokeTurn<TurnContext>;
 
 /** One model request as the scripted provider saw it. */
-export type Request = { agent: string; system: string; /** Text of every user-role message in the request. */ users: string[]; /** Role of every message in the request, in order. */ roles: string[]; /** Text of every tool-result message in the request: what the agent was told about its tool calls, refusals included. */ results: string[] };
+export type Request = { agent: string; system: string; /** Text of every user-role message in the request. */ users: string[]; /** Role of every message in the request, in order. */ roles: string[]; assistants?: string[]; /** Text of every tool-result message in the request: what the agent was told about its tool calls, refusals included. */ results: string[] };
 /** One agent prompt: the system prompt the plugin left, and whether the agent ran on omp's main thread. */
 export type Prompt = { agent: string; system: string; mainThread: boolean };
 /** One finished tool call of an agent; `op` is a todo call's operation. */
@@ -38,6 +38,7 @@ export type Store = {
 	live: boolean;
 	/** Every issue in the project. */
 	issues(): Promise<Issue[]>;
+	observations(): string[];
 };
 
 /** What an interactive scenario can do to a running omp session. */
@@ -616,3 +617,49 @@ export const SCENARIOS: Scenario[] = [{
 const workers = SCENARIOS.find(s => s.name === "workers")!;
 SCENARIOS.push({ ...workers, name: "workers-slow-kata", livePrompt: undefined,
 	env: { KATA_OMP_EXECUTABLE: fileURLToPath(new URL("./smoke-slow-kata.sh", import.meta.url)) } });
+
+// Exercises identity through opaque commands, including omp's worker threads and an rc-reordered PATH.
+SCENARIOS.push({
+ name: "identity-shim",
+ ompConfig: "shellPath: /bin/bash\n",
+ env: { KATA_AUTHOR: "smoke-user", KATA_INBOX_USER: "smoke-user/lead" },
+ setup: create => ({ lead: create("Identity lead") }),
+ prompt: `${MAIN} Delegate the ports and verify identity.`,
+ scripts: {
+  [MAIN]: [
+   () => [{ tool: "bash", args: { command: `export KATA_AUTHOR=evil KATA_TEAMMATE=evil; kata comment ${vars().lead} --message lead-identity` } }],
+   [{ tool: "todo", args: { op: "init", list: [{ phase: "Ports", items: PORTS }] } }],
+   [{ tool: "task", args: { context: "Check shell identity.", tasks: PORTS.map((port, i) => ({ name: `Port${i + 1}`, agent: "task", task: `${WORKER} ${port}`, solutionSpace: "check shell identity" })) } }],
+   ...Array.from({ length: 2 * PORTS.length + 1 }, () => ["Noted."]),
+  ],
+  [WORKER]: [
+   ctx => {
+    const ref = ctx.system.match(/Your Kata issue is ([\w#-]+)/)?.[1];
+    if (!ref) return ["No Kata binding in system prompt."];
+    return [{ tool: "bash", args: { command: `export KATA_AUTHOR=evil KATA_TEAMMATE=evil KATA_INBOX_USER=evil; bash -c 'kata comment ${ref} --message nested-identity'; ./identity.sh ${ref}; bash -c 'kata close ${ref} --done --message "${message}" --test identity-smoke'` } }];
+   },
+   ["Done."],
+  ],
+ },
+ async check(store, ids) {
+  const issues = await store.issues(), lead = issues.find(i => i.ref === ids.lead);
+  const children = issues.filter(i => PORTS.includes(i.title));
+  const parent = issues.find(i => i.metadata["omp.auto_parent"] === true);
+  const comments = children.flatMap(i => eventsOf(i, "issue.commented").filter(e => ["nested-identity", "script-identity"].includes(e.payload?.body)));
+  const failures = children.filter(i => {
+   const events = eventsOf(i, "issue.commented").filter(e => ["nested-identity", "script-identity"].includes(e.payload?.body));
+   return events.length !== 2 || events.some(e => e.actor !== "smoke-user" || !e.payload?.teammate || e.payload.teammate === "evil") || events[0]?.payload?.teammate !== events[1]?.payload?.teammate || !closeTranscript(i)?.session_id || closeTranscript(i)?.session_id === parent?.metadata["omp.session_id"];
+  });
+  const leadEvent = eventsOf(lead, "issue.commented").find(e => e.payload?.body === "lead-identity");
+  const observed = store.observations().map(line => line.split("|"));
+  const history = store.requests().flatMap(request => request.assistants ?? []).filter(text => text.includes("nested-identity"));
+  const workerBash = store.tools().filter(t => /^Port\d+$/.test(t.agent) && t.tool === "bash" && !t.mainThread && !t.isError);
+  return [
+   { name: "lead export is overridden after rc PATH setup", ok: leadEvent?.actor === "smoke-user" && !leadEvent.payload?.teammate, detail: JSON.stringify(leadEvent) },
+   { name: "all delegates use their identity in nested shell and script", ok: children.length === PORTS.length && !failures.length, detail: `${comments.length} comments; failures ${failures.map(i => i.title).join(", ")}` },
+   { name: "opaque commands appear unchanged in the provider history", ok: history.length > 0 && history.every(text => !text.includes("--teammate")), detail: `${history.length} matching history entries` },
+   { name: "delegate inbox matches its actor and teammate at execution", ok: new Set(observed.filter(([sid, actor, teammate, inbox]) => sid && actor === "smoke-user" && teammate && inbox === `smoke-user/${teammate}`).map(row => row[2])).size >= PORTS.length, detail: `${observed.length} observed invocations` },
+   { name: "at least one delegate bash ran on a worker", ok: workerBash.length > 0, detail: `${workerBash.length} worker bash calls` },
+  ];
+ },
+});

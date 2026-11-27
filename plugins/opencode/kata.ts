@@ -5,6 +5,7 @@ import { install as installShellRoute } from "./shell-route";
 import { install as installWriteGuard } from "./write-guard";
 import { install as installSubagents } from "./subagents";
 import { install as installTodowrite } from "./todowrite";
+import { clearInheritedOmpSession } from "./node-host";
 
 // Kata plans for OpenCode: `todowrite` backed by Kata, one core per lead session, state saved in `ctx.storage`.
 // Plugin options (opencode.json) and their environment fallbacks are listed in settings.ts.
@@ -21,6 +22,7 @@ const MODULES: ((seam: Seam) => void | Promise<unknown>)[] = [
 export default {
 	id: "kata",
 	async setup(ctx: any) {
+		clearInheritedOmpSession();
 		const settings = resolveSettings(ctx.options);
 		const registry = createSeam(ctx, settings);
 		const { seam } = registry;

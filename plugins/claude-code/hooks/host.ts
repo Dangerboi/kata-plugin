@@ -88,7 +88,7 @@ export function execOf($: EngineInterface, env: Map<string, string>, latest: () 
 		const begun = await $.clock.now();
 		try {
 			const run = ctx?.run ?? ((argv, init) => $.process.run(argv, init));
-			const out = await run([file, ...args], { cwd: options.cwd, timeoutMs: options.timeout, ...(pair ? { env: pair } : {}) });
+			const out = await run([file, ...args], { cwd: options.cwd, timeoutMs: options.timeout, env: { ...pair, PI_SESSION_ID: "" } });
 			return { code: out.exitCode, stdout: out.stdout, stderr: out.stderr, killed: false };
 		} catch (error) {
 			if ((await $.clock.now()) - begun >= options.timeout * 0.9) return { code: 1, stdout: "", stderr: String(error), killed: true };

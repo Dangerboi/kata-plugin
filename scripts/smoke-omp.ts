@@ -10,7 +10,7 @@
 // --live uses a real model instead, through your own omp agent directory and its
 // logins (prefer a subscription), so omp may update it as in any run. KATA_HOME is
 // a throwaway store either way; your live Kata store is never written.
-import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
+import { spawn, spawnSync, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync, type Dirent } from "node:fs";
 import path from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
@@ -113,9 +113,20 @@ async function run(scenario: Scenario) {
 	const work = path.join(dir, "repo"), agentDir = path.join(dir, "agent"), kataHome = path.join(dir, "kata"), ompConfig = path.join(dir, "omp-config.yml");
 	const records = path.join(dir, "requests.jsonl"), prompts = path.join(dir, "prompts.jsonl"), tools = path.join(dir, "tools.jsonl");
 	mkdirSync(work, { recursive: true }); mkdirSync(agentDir); mkdirSync(kataHome);
-	const env: NodeJS.ProcessEnv = { ...base, ...scenario.env, KATA_HOME: kataHome, PI_NO_TITLE: "1", KATA_SMOKE_SCENARIO: scenario.name, KATA_SMOKE_RECORD: records, KATA_SMOKE_PROMPTS: prompts, KATA_SMOKE_TOOLS: tools };
+	const home = path.join(dir, "home"); mkdirSync(home);
+	const env: NodeJS.ProcessEnv = { ...base, ...scenario.env, ...(!live ? { HOME: home, XDG_CONFIG_HOME: path.join(home, "config"), XDG_DATA_HOME: path.join(home, "data") } : {}), KATA_HOME: kataHome, PI_NO_TITLE: "1", KATA_SMOKE_SCENARIO: scenario.name, KATA_SMOKE_RECORD: records, KATA_SMOKE_PROMPTS: prompts, KATA_SMOKE_TOOLS: tools };
+	if (!live) { delete env.CODEX_HOME; delete env.CLAUDE_CONFIG_DIR; delete env.PI_SHELL_PREFIX; delete env.CLAUDE_CODE_SHELL_PREFIX; delete env.PI_SESSION_ID; delete env.XDG_RUNTIME_DIR; }
+	if (scenario.name === "identity-shim") {
+		const real = spawnSync("which", ["kata"], { env, encoding: "utf8" }).stdout.trim(); if (!real) throw new Error("kata executable not found");
+		const decoy = path.join(dir, "rc-bin"); mkdirSync(decoy);
+		const realQuoted = "'" + real.replaceAll("'", "'\\''") + "'";
+		writeFileSync(path.join(decoy, "kata"), `#!/bin/sh\nprintf '%s|%s|%s|%s\\n' "${"${PI_SESSION_ID:-}"}" "${"${KATA_AUTHOR:-}"}" "${"${KATA_TEAMMATE:-}"}" "${"${KATA_INBOX_USER:-}"}" >> "$KATA_SMOKE_OBSERVE"\nexec ${realQuoted} "$@"\n`, { mode: 0o700 });
+		env.KATA_SMOKE_OBSERVE = path.join(dir, "observed.txt"); env.PATH = `${decoy}:${env.PATH}`;
+		writeFileSync(path.join(home, ".bash_profile"), `export PATH=${JSON.stringify(decoy)}:"$PATH"\n`);
+		writeFileSync(path.join(work, "identity.sh"), "#!/bin/sh\nkata comment \"$1\" --message script-identity\n", { mode: 0o700 });
+	}
 	const project = kataProject(env, work, PROJECT);
-	const store: Store = { requests: () => linesIn<Request>(records), prompts: () => linesIn<Prompt>(prompts), tools: () => linesIn<ToolUse>(tools), live, issues: project.issues };
+	const store: Store = { requests: () => linesIn<Request>(records), prompts: () => linesIn<Prompt>(prompts), tools: () => linesIn<ToolUse>(tools), live, issues: project.issues, observations: () => { try { return readFileSync(env.KATA_SMOKE_OBSERVE!, "utf8").trim().split("\n"); } catch { return []; } } };
 	try {
 		project.init();
 		const vars = scenario.setup?.(project.create) ?? {};
