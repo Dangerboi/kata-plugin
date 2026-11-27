@@ -468,7 +468,7 @@ test("attention uses one launcher across session switches", async () => {
   await app.event("session_shutdown");
   expect(launches.length).toBeGreaterThan(1);
   expect(new Set(launches.map(x => x.session)).size).toBeGreaterThan(1);
-  expect(launches[0].launcher).toBeTruthy();
+  expect(launches[0].launcher).toBe(`omp-${process.pid}-${performance.timeOrigin}`);
   expect(new Set(launches.map(x => x.launcher)).size).toBe(1);
 });
 
