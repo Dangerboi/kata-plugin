@@ -10,7 +10,7 @@ import { footerText, inboxText, kataCommand, REFRESHED, statusText, SUPERSEDED, 
 
 const view = (over: Partial<SessionView> = {}): SessionView => ({
 	workspace: "/home/a/repo", scope: "bound", outage: "", project: "v2test", actor: "alice", teammate: "lead",
-	inbox: { address: "alice/lead", delivery: "per prompt" }, refs: ["v2test#12", "v2test#14"], contract: 1834,
+	inbox: { address: "alice/lead", delivery: "per prompt" }, refs: ["kp#12", "kp#14"], contract: 1834,
 	counts: { trusted: 2, foreign: 1 }, settings: { executable: "kata", refGuard: true, liveInbox: false, debug: false }, ...over,
 });
 
@@ -20,7 +20,7 @@ test("/kata status prints one label-value line each", () => {
 		"actor      alice",
 		"teammate   lead",
 		"inbox      alice/lead · per prompt",
-		"refs       v2test#12, v2test#14",
+		"refs       kp#12, kp#14",
 		"contract   1834 bytes",
 		"requests   2 trusted · 1 request from another actor not shown",
 		"settings   executable=kata · ref guard on · live inbox off · debug off",
@@ -42,20 +42,20 @@ test("/kata status names each missing piece", () => {
 });
 
 test("the footer shows the address or actor, at most three refs and a nonzero inbox", () => {
-	expect(footerText(view())).toBe("kata alice/lead · v2test#12, v2test#14 · inbox 2");
+	expect(footerText(view())).toBe("kata alice/lead · kp#12, kp#14 · inbox 2");
 	expect(footerText(view({ inbox: { none: "unset" }, refs: [], counts: undefined }))).toBe("kata alice");
-	expect(footerText(view({ refs: ["v2test#1", "v2test#2", "v2test#3", "v2test#4", "v2test#5"], counts: undefined }))).toBe("kata alice/lead · v2test#1, v2test#2, v2test#3 +2");
+	expect(footerText(view({ refs: ["kp#1", "kp#2", "kp#3", "kp#4", "kp#5"], counts: undefined }))).toBe("kata alice/lead · kp#1, kp#2, kp#3 +2");
 	expect(footerText(view({ scope: "down" }))).toBeUndefined();
 	expect(footerText(view({ scope: "unbound" }))).toBeUndefined();
-	expect(footerText(view({ inbox: { address: "alice/lead", delivery: "kata" }, counts: undefined }))).toBe("kata alice/lead · v2test#12, v2test#14");
+	expect(footerText(view({ inbox: { address: "alice/lead", delivery: "kata" }, counts: undefined }))).toBe("kata alice/lead · kp#12, kp#14");
 });
 
 test("/kata inbox labels the trusted lines for the person and counts the rest", () => {
-	expect(inboxText({ address: "alice/lead", text: "\n- issue=\"v2test#1\" message=\"hi\"", counts: { trusted: 1, foreign: 2 } }))
-		.toBe('Kata inbox for "alice/lead" (shown here only; the next prompt is unchanged)\n- issue="v2test#1" message="hi"\n2 requests from another actor not shown');
+	expect(inboxText({ address: "alice/lead", text: "\n- issue=\"kp#1\" message=\"hi\"", counts: { trusted: 1, foreign: 2 } }))
+		.toBe('Kata inbox for "alice/lead" (shown here only; the next prompt is unchanged)\n- issue="kp#1" message="hi"\n2 requests from another actor not shown');
 	expect(inboxText({ address: "alice/lead", text: "", counts: { trusted: 0, foreign: 0 } })).toBe('Kata inbox for "alice/lead" is empty');
-	expect(inboxText({ address: "alice/lead", native: true, text: "\n- issue=\"v2test#1\" message=\"hi\"", counts: { trusted: 1, foreign: 2 } }))
-		.toBe('Kata inbox for "alice/lead" (this plugin\'s trusted view; Kata supplies the inbox without that filter)\n- issue="v2test#1" message="hi"');
+	expect(inboxText({ address: "alice/lead", native: true, text: "\n- issue=\"kp#1\" message=\"hi\"", counts: { trusted: 1, foreign: 2 } }))
+		.toBe('Kata inbox for "alice/lead" (this plugin\'s trusted view; Kata supplies the inbox without that filter)\n- issue="kp#1" message="hi"');
 	expect(inboxText({ address: "alice/lead", native: true, text: "", counts: { trusted: 0, foreign: 3 } }))
 		.toBe('Kata inbox for "alice/lead": this plugin\'s trusted view is empty; Kata supplies the inbox without that filter');
 	expect(inboxText({ none: "unset" })).toBe("No session inbox: KATA_INBOX_USER is unset");
