@@ -326,17 +326,12 @@ export type KataCore = ReturnType<typeof buildCore> & {
 
 export function createKataCore(host: CoreHost, options: CoreOptions): KataCore {
 	const delegateCores = new Map<string, KataCore>();
-	const core = buildCore(host, options, () => delegateCores.clear());
+	const core = buildCore(host, options, delegateCores);
 	return {
 		...core,
-		session: { ...core.session, refresh() {
-			core.session.refresh();
-			for (const delegate of delegateCores.values()) delegate.session.refresh();
-		} },
 		delegate(id) {
-			let known = delegateCores.get(id);
-			if (!known) delegateCores.set(id, known = createKataCore(delegateHost(host, id), options));
-			return known;
+			if (!delegateCores.has(id)) delegateCores.set(id, createKataCore(delegateHost(host, id), options));
+			return delegateCores.get(id)!;
 		},
 	};
 }
@@ -388,7 +383,7 @@ const nativeMemory = (saved: Snapshot["native"], leaf?: string): NativeMemory =>
 const tipOf = (branch: readonly any[]): string | undefined => branch[branch.length - 1]?.id;
 
 // `newSession` runs after the host's `switched`, when a bind makes a different session the core's.
-function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void) {
+function buildCore(host: CoreHost, options: CoreOptions, delegateCores: Map<string, { session: { refresh(ctx?: HostContext): void } }>) {
 	const namespace = options.namespace;
 	const wording = options.wording ?? (options.native ? NATIVE_WORDING : TODO_WORDING);
 	const listName = wording.list ?? "the todo list";
@@ -552,7 +547,7 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 	async function actor(job: Job, cwd: string, ref = plan.parent): Promise<string> {
 		const author = setting("KATA_AUTHOR") || setting("USER");
 		if (!ref && author) return author;
-		const key = [currentId, path.resolve(cwd), ref ? projectOf(ref) : "", setting("KATA_AUTHOR")].join("\0");
+		const key = [path.resolve(cwd), currentId, ref ? projectOf(ref) : "", setting("KATA_AUTHOR")].join("\0");
 		let known = actors.get(key);
 		if (!known) {
 			known = ref
@@ -860,7 +855,7 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 		// Only a bind that starts a session this core did not already hold restores delegates: /tree and a branch switch keep the same one.
 		const isNew = currentId !== id, previous = currentId;
 		currentId = id;
-		if (isNew && main(ctx)) { host.switched?.(ctx); newSession(); shown.clear(); closed.clear(); footerGeneration++; footerActor = undefined; footerPainted = false; checkedAt = 0; checking = undefined; checkNext = undefined; }
+		if (isNew && main(ctx)) { host.switched?.(ctx); delegateCores.clear(); shown.clear(); closed.clear(); footerGeneration++; footerActor = undefined; footerPainted = false; checkedAt = 0; checking = undefined; checkNext = undefined; }
 		lastSnapshot = undefined;
 		currentCtx = ctx;
 		plan = { tasks: [], workspace: path.resolve(ctx.cwd) }; named = []; aliases.clear(); deletedParent = undefined;
@@ -2505,8 +2500,7 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 	// `continues`: this shutdown does not end the lead's work (pi's reload: the same session goes on), so it keeps its tasks.
 	// `forking`: a fork replaces this session in a new instance (pi's /fork into a saved session); the tasks are left for it.
 	async function shutdown(ctx: HostContext, closing: { delegate?: { id: string; ended: boolean; report?: string }; continues?: boolean; forking?: boolean } = {}): Promise<void> {
-		footerGeneration++; footerFormat = undefined; footerCtx = undefined; footerPainted = false; checking = undefined; checkNext = undefined; lastFooter = undefined;
-		if (main(ctx) && ctx.hasUI === true) ctx.ui?.setStatus?.("kata", undefined);
+		if (main(ctx)) { footerGeneration++; footerFormat = undefined; footerCtx = undefined; footerPainted = false; checking = undefined; checkNext = undefined; lastFooter = undefined; if (ctx.hasUI === true) ctx.ui?.setStatus?.("kata", undefined); }
 		see(ctx);
 		// A delegate's reads live in its own core (the lead's core never holds them) and go when its own session ends.
 		if (!main(ctx)) { const own = host.delegateStore.of(ctx); if (own) delegateReads.delete(own.id); }
@@ -2608,12 +2602,12 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 		if (generation !== footerGeneration || id !== currentId) return undefined;
 		footerActor = identity?.who;
 		const read = opts.reconcile && !opts.nativeInbox ? await sessionInbox(ctx) : undefined;
-		const view = viewData(ctx, opts);
-		view.actor = identity?.who; view.actorError = identity?.error;
+		if (generation !== footerGeneration || id !== currentId) return undefined;
+		const view = { ...viewData(ctx, opts), actor: identity?.who, actorError: identity?.error };
 		if (isKataCode(probeError, "unsupported_version")) { view.scope = "down"; view.outage = (probeError as Error).message; }
 		if (read?.failed !== undefined) view.inbox.delivery = "failed";
 		else if (read?.counts) view.counts = read.counts;
-		if (generation === footerGeneration && id === currentId) paint(footerCtx ?? ctx, view);
+		paint(footerCtx ?? ctx, view);
 		return view;
 	}
 	async function sessionInbox(ctx: HostContext, opts: { nativeInbox?: boolean } = {}): Promise<InboxView> {
@@ -2625,11 +2619,11 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 			const mine = await actor(NO_JOB, ctx.cwd);
 			const out = JSON.parse(await kata.run(NO_JOB, ["inbox", "--for", inbox.address], ctx.cwd));
 			const counts = countInbox(out?.requests, mine);
-			if (!opts.nativeInbox && !host.liveInbox && main(ctx) && id === currentId && generation === footerGeneration) {
+			if (!opts.nativeInbox && main(ctx) && id === currentId && generation === footerGeneration) {
 				const key = leadKey(sid(ctx));
 				let entry = leadReads.get(key);
 				if (!entry) leadReads.set(key, entry = { cwd: path.resolve(ctx.cwd) });
-				entry.count = counts;
+				if (host.liveInbox) liveCounts = counts; else entry.count = counts;
 				paint(footerCtx ?? ctx);
 			}
 			return { address: inbox.address, text: trustedInbox(out?.requests, mine, inbox.address, ""), counts, ...native };
@@ -2655,12 +2649,13 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 
 	return {
 		session: {
-			refresh(): void {
-				footerGeneration++; checking = undefined; checkNext = undefined; checkedAt = 0; actors.clear();
-				for (const entry of [...leadReads.values(), ...delegateReads.values()]) {
-					entry.contract = undefined; entry.pending = undefined; entry.inbox = undefined; entry.count = undefined; entry.inboxPending = undefined; entry.inboxNext = undefined;
-				}
-				footerActor = undefined;
+			// Drops what was read for one folder, the context's else the current one, in this core and its delegates'; other folders' reads stay.
+			refresh(ctx?: HostContext): void {
+				const folder = path.resolve((ctx ?? currentCtx)?.cwd ?? platform.cwd());
+				footerGeneration++; checking = undefined; checkNext = undefined; checkedAt = 0; footerActor = undefined;
+				for (const key of actors.keys()) if (key.startsWith(`${folder}\0`)) actors.delete(key);
+				for (const entry of [...leadReads.values(), ...delegateReads.values()].filter(read => read.cwd === folder)) Object.assign(entry, { contract: undefined, pending: undefined, inbox: undefined, count: undefined, inboxPending: undefined, inboxNext: undefined });
+				for (const delegate of delegateCores.values()) delegate.session.refresh({ cwd: folder } as HostContext);
 				if (follower) { liveInbox = ""; liveCounts = undefined; follower.refreshActor(); }
 				if (footerCtx) paint(footerCtx);
 			},
