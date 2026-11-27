@@ -113,6 +113,26 @@ test("a commit behind env, command, time, if or ! is checked", async () => {
     expect(await check("bash", { command }), command).toEqual(["demo#ab3d"]);
 });
 
+test("commit messages behind prefix options are checked without treating inspections as calls", async () => {
+  for (const prefix of ["nohup", "exec", "timeout 60", "timeout --signal=TERM --kill-after 1 60", "env -u GIT_DIR", "env -i PATH=/usr/bin", "env --unset=GIT_DIR -C /work --", "time -p", "command -p", "exec -a name", "time nohup", "{", "while", "until"]) {
+    const command = `${prefix} git commit -m 'fix demo#ab3d'`;
+    expect(await check("bash", { command }), command).toEqual(["demo#ab3d"]);
+  }
+  for (const command of ["command -v git commit -m demo#ab3d", "command -pv git commit -m demo#ab3d", "env -S echo git commit -m demo#ab3d", "env --split-string=echo git commit -m demo#ab3d", "timeout --help 30 git commit -m demo#ab3d", "timeout --version 30 git commit -m demo#ab3d", "builtin git commit -m demo#ab3d"])
+    expect(await check("bash", { command }), command).toEqual([]);
+});
+
+test("commit workspace follows ordered env directory changes before git -C", async () => {
+  for (const [cwd, command, expected] of [
+    ["/outside", "env -C /work git commit -m demo#ab3d", ["demo#ab3d"]],
+    ["/work", "env -C /outside git commit -m demo#ab3d", []],
+    ["/outside", "env --chdir=/work env -C src git -C .. commit -m demo#ab3d", ["demo#ab3d"]],
+    ["/outside", "env -C /work -C /outside git commit -m demo#ab3d", []],
+    ["/outside", "env -iC /work git commit -m demo#ab3d", ["demo#ab3d"]],
+    ["/work", "env -C /outside env -C ../work git -C ../outside commit -m demo#ab3d", []],
+  ] as const) expect(await check("bash", { cwd, command }), command).toEqual(expected);
+});
+
 test("a heredoc body belongs to the command whose line holds its <<", async () => {
   expect(await check("bash", { command: "git commit -F - <<'EOF' && git push\nCloses demo#k9m2\nEOF" })).toEqual(["demo#k9m2"]);
   expect(await check("bash", { command: "git push && cat <<'EOF' | git commit -F -\nCloses demo#k9m2\nEOF" })).toEqual(["demo#k9m2"]);

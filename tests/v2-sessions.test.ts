@@ -214,7 +214,7 @@ test("a delegate's close carries the transcript identity from its session file h
   const close = () => child.event("tool_call", { toolName: "bash", input: { command: `kata close v2test#${tracked.short_id} --done --message '${message}' --test 'header fixture'` } });
   expect((await close()).input.command).not.toContain("KATA_TRANSCRIPT");
   writeFileSync(sessionFile, '{"type":"session","version":3,"id":"delegate-header-id"}\n{"type":"message"}\n');
-  expect((await close()).input.command).toStartWith("env KATA_TRANSCRIPT_AGENT='omp' KATA_TRANSCRIPT_SESSION_ID='delegate-header-id' KATA_CLOSE_TRANSCRIPT_ENABLED='true' kata ");
+  expect((await close()).input.command).toStartWith("/usr/bin/env KATA_TRANSCRIPT_AGENT='omp' KATA_TRANSCRIPT_SESSION_ID='delegate-header-id' KATA_CLOSE_TRANSCRIPT_ENABLED='true' kata ");
   await child.event("session_shutdown");
 });
 

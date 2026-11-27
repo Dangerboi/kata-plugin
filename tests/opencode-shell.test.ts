@@ -1,4 +1,7 @@
 import { expect, test } from "bun:test";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { userMessage, type FakeSession, type OpenCodeInstance } from "./opencode-host";
 import { assignmentOf } from "./kata-fixture";
 import { openCodeKata, qref, todos } from "./opencode-fixture";
@@ -69,7 +72,7 @@ test("a child session the lead does not track runs Kata under a teammate derived
 	for (const session of [child, grandchild]) {
 		const teammate = teammateFor(session.id, id);
 		const listed = await shell(host, session.id, "kata list --agent");
-		expect(listed.input.command).toBe(`env KATA_AUTHOR='opencode-builder' kata --teammate '${teammate}' list --agent`);
+		expect(listed.input.command).toBe(`/usr/bin/env KATA_AUTHOR='opencode-builder' kata --teammate '${teammate}' list --agent`);
 		const closed = await shell(host, session.id, "kata close x#1 --done");
 		expect(closed.input.command).toContain(`KATA_TRANSCRIPT_SESSION_ID='${session.id}'`);
 		expect(closed.input.command).toContain(`kata --teammate '${teammate}' close x#1 --done`);
@@ -84,13 +87,25 @@ test("a lead's command is unchanged apart from the author and the close transcri
 	const { host, id } = await startLead({ executable: binary });
 	await host.callTool(id, "todowrite", todos(["Lead item", "pending"]));
 	const author = "KATA_AUTHOR='opencode-builder'";
-	const pair = `env KATA_TRANSCRIPT_AGENT='opencode' KATA_TRANSCRIPT_SESSION_ID='${id}' KATA_CLOSE_TRANSCRIPT_ENABLED='true' ${author} `;
+	const pair = `/usr/bin/env KATA_TRANSCRIPT_AGENT='opencode' KATA_TRANSCRIPT_SESSION_ID='${id}' KATA_CLOSE_TRANSCRIPT_ENABLED='true' ${author} `;
 	let result = await shell(host, id, "kata close x#1 --done --as someone");
 	expect(result.input.command).toBe(`${pair}kata close x#1 --done --as someone`);
 	result = await shell(host, id, "kata list --agent && kata show x#1");
-	expect(result.input.command).toBe(`env ${author} kata list --agent && env ${author} kata show x#1`);
+	expect(result.input.command).toBe(`/usr/bin/env ${author} kata list --agent && /usr/bin/env ${author} kata show x#1`);
 	result = await shell(host, id, `'${binary}' close x#1`);
 	expect(result.input.command).toBe(`${pair}'${binary}' close x#1`);
+});
+
+test("a lead close runs when its cleared PATH contains only Kata", async () => {
+	const dir = mkdtempSync(join(tmpdir(), "opencode-kata-stub-"));
+	try {
+		writeFileSync(join(dir, "kata"), '#!/bin/sh\nprintf "%s/%s/%s\\n" "$KATA_TRANSCRIPT_AGENT" "$KATA_TRANSCRIPT_SESSION_ID" "$KATA_CLOSE_TRANSCRIPT_ENABLED"\n', { mode: 0o755 });
+		const { host, id } = await startLead({ executable: binary });
+		const result = await shell(host, id, `env -i PATH='${dir}' kata close x#1`);
+		const out = await sh(result.input.command);
+		expect(out.code, out.stderr).toBe(0);
+		expect(out.stdout.trim()).toBe(`opencode/${id}/true`);
+	} finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
 test("commands that are not Kata are untouched", async () => {
