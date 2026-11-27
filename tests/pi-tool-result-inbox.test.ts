@@ -1,8 +1,12 @@
-import { afterEach, expect, test } from "bun:test";
+import { afterEach, beforeEach, expect, test } from "bun:test";
+import { realpathSync } from "node:fs";
 import { eventually } from "./kata-fixture";
 import { piFixture } from "./pi-fixture";
 const pi = piFixture();
-afterEach(() => { delete process.env.KATA_INBOX_POLL_SECONDS; });
+const envKeys = ["KATA_INBOX_POLL_SECONDS", "KATA_INBOX_USER", "KATA_PI_PARENT", "KATA_TEAMMATE"] as const;
+let previous: (string | undefined)[];
+beforeEach(() => { previous = envKeys.map(key => process.env[key]); });
+afterEach(() => { envKeys.forEach((key, i) => previous[i] === undefined ? delete process.env[key] : process.env[key] = previous[i]); });
 
 test("pi child appends the inbox while preserving structured content", async () => {
   process.env.KATA_INBOX_USER = "pi-builder/lead-result";
@@ -30,13 +34,36 @@ test("pi child appends the inbox while preserving structured content", async () 
 });
 
 
-test("native pi main leaves result inbox delivery to the native adapter", async () => {
+
+test("a pi custom task tool carries a mid-run request", async () => {
+  process.env.KATA_INBOX_USER = "pi-builder/review-task";
+  process.env.KATA_INBOX_POLL_SECONDS = "0";
+  const app = await pi.host(); await app.event("session_start", { reason: "startup" });
+  await app.event("before_agent_start", { prompt: "work", systemPromptOptions: { sections: {} } });
+  const ref = await pi.issue("task tool request");
+  await pi.kata(["notify", ref, "--to", "pi-builder/review-task", "--message", "task-request", "--json"]);
+  const event = { toolName: "task", content: [{ type: "text", text: "normal custom task output" }], isError: false };
+  let result: any;
+  await eventually(async () => { result = await app.event("tool_result", event); return JSON.stringify(result ?? {}).includes("task-request"); }, true);
+  expect(result.content[0].text).toBe("normal custom task output");
+});
+
+test("a pi main with an active native contract receives a mid-run request", async () => {
   process.env.KATA_INBOX_USER = "pi-builder/native-result";
   process.env.KATA_INBOX_POLL_SECONDS = "0";
-  pi.globalRegistry[pi.nativeKey].adapters.set("native", { options: { scope: "project", workspace: pi.cwd, contract: true } });
-  const app = await pi.host();
+  await pi.text(["agent-hook", "install", "pi", "--scope", "project", "--contract-only", "--executable", pi.binary]);
+  pi.globalRegistry[pi.nativeKey] = { adapters: new Map(), active: new Map() };
+  const cwd = realpathSync(pi.cwd);
+  const app = await pi.host({ nativeOrder: "native-first", cwd });
   await app.event("session_start", { reason: "startup" });
-  const before = app.calls.filter((a: string[]) => a[0] === "inbox").length;
-  expect(await app.event("tool_result", { toolName: "read", content: [{ type: "text", text: "original" }], structuredContent: { x: 1 }, isError: false })).toBeUndefined();
-  expect(app.calls.filter((a: string[]) => a[0] === "inbox")).toHaveLength(before);
+  const adapters = [...pi.globalRegistry[pi.nativeKey].adapters.values()] as any[];
+  expect(adapters.length).toBeGreaterThan(0);
+  expect(adapters.some(adapter => adapter.options.contract && adapter.options.workspace === cwd)).toBe(true);
+  await app.event("before_agent_start", { prompt: "work", systemPromptOptions: { sections: {} } });
+  const ref = await pi.issue("native request");
+  await pi.kata(["notify", ref, "--to", "pi-builder/native-result", "--message", "native-midrun", "--json"]);
+  const event = { toolName: "read", content: [{ type: "text", text: "original" }], structuredContent: { answer: 7 }, isError: false };
+  let result: any;
+  await eventually(async () => { result = await app.event("tool_result", event); return JSON.stringify(result ?? {}).includes("native-midrun"); }, true);
+  expect(result.structuredContent).toEqual({ answer: 7 });
 });

@@ -66,8 +66,6 @@ interface CoreOptions {
 	attentionHarness?: string;
 	// Start the contract and inbox reads at session start, not at the first prompt (a host whose context another extension may supply waits for the prompt).
 	prefetch?: boolean;
-	// Minimum interval between tool-result inbox reads, in milliseconds.
-	inboxPollMs?: number;
 	// The progress widget's content for this host and the event's context. Absent: the summary line alone.
 	widget?: ((line: string, view: PlanView, ctx: any) => unknown);
 	// false: the core never starts a pending task on its own after a change (OpenCode's todowrite list says what is in progress).
@@ -2572,7 +2570,7 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 					if (entry.contract) sections.contract = entry.contract;
 					const inbox = main(ctx) && liveInbox !== undefined ? liveInbox : entry.inbox;
 					if (inbox && turnReads.showsInbox) sections.inbox = inbox;
-					if (turnReads.showsInbox) entry.delivered = sections.inbox ?? "";
+					if (sections.inbox) entry.delivered = sections.inbox;
 				}
 				const record = turnReads?.record ?? (!main(ctx) && !context ? host.delegateStore.of(ctx) : undefined);
 				const assigned = record ? delegates.assignment(ctx) : undefined;
@@ -2600,8 +2598,7 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 				}
 				const raw = setting("KATA_INBOX_POLL_SECONDS");
 				const seconds = raw?.trim() ? Number(raw) : NaN;
-				const configured = Number.isFinite(seconds) && seconds >= 0 ? seconds * 1000 : options.inboxPollMs;
-				const interval = configured !== undefined && Number.isFinite(configured) && configured >= 0 ? configured : 15000;
+				const interval = Number.isFinite(seconds) && seconds >= 0 ? seconds * 1000 : 15000;
 				if (!entry.inboxPending && (entry.polledAt === undefined || performance.now() - entry.polledAt >= interval)) void warm(ctx, cwd, true, false);
 				return notice;
 			},

@@ -1,10 +1,13 @@
-import { afterEach, expect, test } from "bun:test";
+import { afterEach, beforeEach, expect, test } from "bun:test";
 import { eventually } from "./kata-fixture";
 import { v2Fixture } from "./v2-fixture";
 import { ompHost, clearTranscriptEnv } from "./omp-host";
 
 const { scratch, cwd, run, kata, issue, host, unique } = v2Fixture();
-afterEach(() => { delete process.env.KATA_INBOX_POLL_SECONDS; });
+const envKeys = ["KATA_INBOX_POLL_SECONDS", "KATA_INBOX_USER", "KATA_OMP_LIVE_INBOX"] as const;
+let previous: (string | undefined)[];
+beforeEach(() => { previous = envKeys.map(key => process.env[key]); });
+afterEach(() => { envKeys.forEach((key, i) => previous[i] === undefined ? delete process.env[key] : process.env[key] = previous[i]); });
 
 test("a working delegate receives a request sent after its prompt on a tool result", async () => {
   process.env.KATA_INBOX_USER = "v2-builder/lead-result";
@@ -25,12 +28,10 @@ test("a working delegate receives a request sent after its prompt on a tool resu
   expect(delivered.content[0].text).toBe("file contents");
   expect(JSON.stringify(delivered)).toContain("<kata_inbox>");
   expect(JSON.stringify(delivered)).toContain("&lt;unsafe&gt;");
-  console.log("delivered result:", JSON.stringify(delivered.content));
   expect(await result()).toBeUndefined();
   await kata(["notify", ref, "--to", address!, "--clear", "--json"]);
   let cleared: any;
   await eventually(async () => { cleared = await result(); return JSON.stringify(cleared ?? {}).includes("inbox is now empty"); }, true);
-  console.log("cleared result:", JSON.stringify(cleared.content));
   expect(await result()).toBeUndefined();
 });
 
@@ -68,10 +69,10 @@ test("result polling coalesces a held read, filters foreign requests, and delive
   expect(await app.event("tool_result", event)).toBeUndefined();
 });
 
-test("prompt delivery, interval boundary, failure, and A to B to A changes", async () => {
+test("prompt delivery, invalid interval fallback, failure, and A to B to A changes", async () => {
   process.env.KATA_INBOX_USER = "v2-builder/timed-result";
   process.env.KATA_OMP_LIVE_INBOX = "0";
-  delete process.env.KATA_INBOX_POLL_SECONDS;
+  process.env.KATA_INBOX_POLL_SECONDS = "invalid";
   let clock = 1000, text = "A-message", fail = false, reads = 0;
   const { spyOn } = await import("bun:test");
   const clockSpy = spyOn(performance, "now").mockImplementation(() => clock);
@@ -139,35 +140,59 @@ test("a main session with a live follower does not poll on results", async () =>
   } finally { await app.event("session_shutdown"); }
 });
 
-test("poll option, invalid environment, and zero environment precedence", async () => {
-  const { createKataCore } = await import("../core/kata-core");
-  const { nodePlatform } = await import("../core/node-host");
-  const { memoryDelegateStore } = await import("./kata-fixture");
-  const { spyOn } = await import("bun:test");
-  process.env.KATA_INBOX_USER = "v2-builder/option-result";
-  let clock = 1000, reads = 0, completed = 0;
-  const spy = spyOn(performance, "now").mockImplementation(() => clock);
-  const entries: any[] = [];
-  const core = createKataCore({ platform: nodePlatform, delegateStore: memoryDelegateStore(), isMain: () => true,
-    appendEntry: (customType, data) => entries.push({ type: "custom", customType, data }),
-    exec: async (_file, args, opts) => { if (args[0] !== "inbox") return run(args, opts.cwd); reads++; try { return await run(args, opts.cwd); } finally { completed++; } },
-  }, { namespace: "omp", executable: process.env.KATA_TEST_EXECUTABLE!, executableVars: [], inboxPollMs: 5000 });
-  const ctx = { cwd, agent: { kind: "main", id: "option" }, sessionManager: { getSessionId: () => "option", getBranch: () => entries, getHeader: () => ({}) } };
-  const waitRead = async (count: number) => {
-    const end = Date.now() + 5000;
-    while (completed < count && Date.now() < end) await Bun.sleep(10);
-    expect(completed).toBe(count);
-    await Bun.sleep(10);
-  };
-  try {
-    await core.session.beforePrompt(ctx);
-    await waitRead(1);
-    const first = reads;
-    process.env.KATA_INBOX_POLL_SECONDS = "invalid";
-    clock += 4999; core.tools.inbox(ctx); expect(reads).toBe(first);
-    clock++; core.tools.inbox(ctx); await waitRead(first + 1);
-    process.env.KATA_INBOX_POLL_SECONDS = "0";
-    core.tools.inbox(ctx); await waitRead(first + 2);
-    core.tools.inbox(ctx); await waitRead(first + 3);
-  } finally { spy.mockRestore(); }
+
+test("zero interval starts another read after each completed result read", async () => {
+  process.env.KATA_INBOX_USER = "v2-builder/zero-result";
+  process.env.KATA_INBOX_POLL_SECONDS = "0";
+  let completed = 0;
+  const app = host({ before: (args: string[]) => {
+    if (args[0] !== "inbox") return undefined;
+    completed++;
+    return { code: 0, stdout: JSON.stringify({ requests: [] }), stderr: "" };
+  } });
+  await app.event("session_start");
+  await app.event("before_agent_start", { systemPrompt: ["base"] });
+  const initial = completed;
+  const result = () => app.event("tool_result", { toolName: "read", content: [], isError: false });
+  await result();
+  await eventually(async () => completed > initial, true);
+  await Bun.sleep(10);
+  await result();
+  await eventually(async () => completed > initial + 1, true);
+});
+
+test("a cleared request shown by a prompt is announced on the next result", async () => {
+  process.env.KATA_INBOX_USER = "v2-builder/review-withdraw";
+  process.env.KATA_INBOX_POLL_SECONDS = "0";
+  process.env.KATA_OMP_LIVE_INBOX = "0";
+  const app = host(); await app.event("session_start");
+  const ref = await issue("withdraw across prompt");
+  await kata(["notify", ref, "--to", "v2-builder/review-withdraw", "--message", "withdraw-me", "--json"]);
+  expect(JSON.stringify(await app.event("before_agent_start", { systemPrompt: ["base"] }))).toContain("withdraw-me");
+  await kata(["notify", ref, "--to", "v2-builder/review-withdraw", "--clear", "--json"]);
+  expect(JSON.stringify(await app.event("before_agent_start", { systemPrompt: ["base"] }) ?? {})).not.toContain("withdraw-me");
+  const event = { toolName: "read", content: [{ type: "text", text: "original" }], isError: false };
+  expect(JSON.stringify((await app.event("tool_result", event)) ?? {})).toContain("inbox is now empty");
+  expect(await app.event("tool_result", event)).toBeUndefined();
+});
+
+test("a revived delegate polls and receives its own inbox without a prompt hook", async () => {
+  process.env.KATA_INBOX_USER = "v2-builder/lead-revive";
+  process.env.KATA_INBOX_POLL_SECONDS = "0";
+  const lead = host(); await lead.event("session_start"); await lead.init(["Revive work"]);
+  const sessionFile = `${scratch}/revived-result.jsonl`;
+  lead.emit("task:subagent:lifecycle", { id: "revived-result", agent: "scout", status: "started", sessionFile, description: "Survey" });
+  await lead.call({ op: "view" });
+  const worker = host({ sessionFile, agent: { kind: "sub", id: "revived-result", parentId: lead.ctx.agent.id } });
+  expect(await worker.event("before_agent_start", { reason: "revive", systemPrompt: ["base"] })).toBeUndefined();
+  const event = { toolName: "read", content: [{ type: "text", text: "original" }], isError: false };
+  await worker.event("tool_result", event);
+  await eventually(async () => worker.calls.some((args: string[]) => args[0] === "inbox"), true);
+  const address = worker.calls.find((args: string[]) => args[0] === "inbox")![2]!;
+  expect(address).toMatch(/^v2-builder\//);
+  const ref = await issue("revived notification");
+  await kata(["notify", ref, "--to", address, "--message", "revived-ping", "--json"]);
+  let delivered: any;
+  await eventually(async () => { delivered = await worker.event("tool_result", event); return JSON.stringify(delivered ?? {}).includes("revived-ping"); }, true);
+  expect(delivered.content[1].text).toContain("<kata_inbox>");
 });
