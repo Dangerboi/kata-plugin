@@ -4,6 +4,7 @@
 //   packages/core/src/plugin/hooks.ts       hooks run sequentially in registration order, in place on one event object
 //   packages/plugin/src/promise/adapter.ts  Promise ctx, `toolError`, cleanup run when the scope closes
 //   packages/core/src/tool.ts               execute.before -> execute -> execute.after, `Tool.Error` handling
+//   v2.4.2 packages/core/src/tool.ts:161-170 adds `codemode` to execute.before; v2.2.7 omits it.
 //   packages/core/src/tool/runtime.ts       `effectiveName`, `normalizeContent`
 // Deviations are listed next to the code that makes them.
 

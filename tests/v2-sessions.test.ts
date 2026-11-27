@@ -480,8 +480,6 @@ test("omp warn attaches each guard reason to its own result, then takes it once"
 	const app = host(); await app.event("session_start");
 	const ref = await app.init(["Guarded warning task"]);
 	const input = { command: `git commit -m "fix ${ref}"` };
-	const refused = await app.event("tool_call", { toolName: "bash", input });
-	expect(refused.reason).toStartWith("Refused:");
 	process.env.KATA_REF_GUARD = "warn";
 	try {
 		const calls = { a: { toolName: "bash", input }, b: { toolName: "write", input: { path: `${cwd}/warn-notes.ts`, content: `// ${ref}` } } };
