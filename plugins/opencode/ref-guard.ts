@@ -67,8 +67,8 @@ const addedRows = (diff: string, file: string | undefined): Added => ({ files: f
 const GIT_VALUE_OPTIONS = new Set(["-C", "-c", "--git-dir", "--work-tree", "--namespace", "--exec-path"]);
 // Value-taking short flags before `m` consume the rest of a cluster, rather than introducing a message.
 const GIT_MESSAGE_OPTIONS = new Map<string, { values: RegExp; trailer?: boolean }>([
-  ["commit", { values: /[FCctSu]/, trailer: true }], ["merge", { values: /[FsXS]/ }],
-  ["tag", { values: /[Fu]/, trailer: true }], ["notes", { values: /[FCc]/ }],
+  ["commit", { values: /[CctSu]/, trailer: true }], ["merge", { values: /[sXS]/ }],
+  ["tag", { values: /[u]/, trailer: true }], ["notes", { values: /[Cc]/ }],
 ]);
 
 // Messages and trailers supplied to Git, including heredocs and here-strings read from stdin. Other words
@@ -99,16 +99,15 @@ function gitMessages(command: string, cwd: string | undefined): Added[] {
 			const word = rest[n];
 			if (word === "--") break;
 			if (subcommand === "commit" && word === "--author") { n++; continue; }
-			const short = !word.startsWith("--") && /^-([a-zA-Z]*?)m([\s\S]*)$/.exec(word);
-			const file = !word.startsWith("--") && /^-([a-zA-Z]*?)F([\s\S]*)$/.exec(word);
-			if (word === "--message" || (options.trailer && word === "--trailer")) { if (rest[n + 1] !== undefined) parts.push(rest[++n]); }
-			else if (word.startsWith("--message=")) parts.push(word.slice(10));
-			else if (options.trailer && word.startsWith("--trailer=")) parts.push(word.slice(10));
-			else if (short && !options.values.test(short[1])) { if (short[2]) parts.push(short[2]); else if (rest[n + 1] !== undefined) parts.push(rest[++n]); }
-			else if (word === "--file" || word.startsWith("--file=") || (file && !options.values.test(file[1]))) {
-				const value = word === "--file" ? rest[++n] : word.startsWith("--file=") ? word.slice(7) : (file && file[2]) || rest[++n];
-				if (value === "-" || value === "/dev/stdin") parts.push(...bodies);
-			}
+			const cluster = /^-([a-zA-Z]*?)([mF])([\s\S]*)$/.exec(word);
+			const long = /^(--[a-z-]+)(?:=([\s\S]*))?$/.exec(word);
+			const flag = cluster && !options.values.test(cluster[1]) ? cluster[2] : long?.[1];
+			if (flag !== "m" && flag !== "F" && flag !== "--message" && flag !== "--file" && !(flag === "--trailer" && options.trailer)) continue;
+			const attached = cluster ? cluster[3] || undefined : long?.[2];
+			const value = attached ?? rest[++n];
+			if (value === undefined) continue;
+			if (flag === "F" || flag === "--file") { if (value === "-" || value === "/dev/stdin") parts.push(...bodies); }
+			else parts.push(value);
 		}
 		added.push({ files: place === undefined ? undefined : [place], text: parts.join("\n") });
 	}
@@ -172,7 +171,7 @@ function refsIn(body: string, projects: ReadonlySet<string>, shortIds: readonly 
 // The refs a call would add to repository content, in order of appearance; empty when it adds none. Files outside the workspace and
 // internal URLs are not repository content.
 export async function offendingRefs(call: RefGuardCall): Promise<string[]> {
-	const adds = addedBy(call.tool, call.input);
+	const adds = addedBy(call.tool, call.input).filter(added => added.text);
 	if (!adds.length) return [];
 	const known = [...await call.known()];
 	const shortIds = [...new Set(known.map(ref => ref.slice(ref.lastIndexOf("#") + 1)))];
