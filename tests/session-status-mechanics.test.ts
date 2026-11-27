@@ -3,7 +3,7 @@ import { createKataCore } from "../core/kata-core";
 import { nodePlatform } from "../core/node-host";
 import { memoryDelegateStore } from "./kata-fixture";
 import { countInbox, trustedInbox } from "../core/inbox";
-import { statusText } from "../core/session-status";
+import { footerText, statusText } from "../core/session-status";
 
 function fixture(hook: () => Promise<string> = async () => "contract", issue?: () => { status: string; owner?: string }) {
   const calls: string[][] = [];
@@ -464,4 +464,94 @@ test("a delegate exit rechecks the lead footer after the delegate settles", asyn
   const deadline = Date.now() + 2000;
   while (writes.at(-1) !== "" && Date.now() < deadline) await Bun.sleep(1);
   expect(writes.at(-1)).toBe("");
+});
+
+const r6ok = (v: unknown) => ({ code: 0, stdout: JSON.stringify(v), stderr: "" });
+
+test('live inspection updates footer without consuming either of several requests', async () => {
+  let requests = [{ref:'p#1', from:'alice', message:'first'}];
+  const writes: (string | undefined)[] = [];
+  const done = Promise.withResolvers<void>();
+  const ctx = { cwd:'/tmp/kata-r6-synthetic', hasUI:true, sessionManager:{ getSessionId:()=> 'lead', getBranch:()=>[] }, ui:{setStatus: (_:string, s:string|undefined)=>writes.push(s)} };
+  const core = createKataCore({platform:nodePlatform, appendEntry(){}, delegateStore:memoryDelegateStore(), liveInbox: {spawn:()=>({lines:(async function*(){await done.promise})(), exited:done.promise, kill:()=>done.resolve()}), deliver(){}}, exec:async (_f,args)=> {
+    if(args[0]==='version') return r6ok({kata_api_version:1,version:'0.24.0'});
+    if(args[0]==='inbox') return r6ok({requests:[...requests]});
+    if(args[0]==='agent-contract-hook') return r6ok({hookSpecificOutput:{additionalContext:'contract'}});
+    if(args[0]==='events') return r6ok({events:[],next_after_id:0});
+    return r6ok({issues:[]});
+  }}, {namespace:'test',executable:'/tmp/fake-kata',executableVars:[],env:n=>({KATA_AUTHOR:'alice',KATA_INBOX_USER:'alice/lead'} as Record<string,string>)[n]});
+  try {
+    await core.session.start(ctx,{wait:0});
+    await core.session.footer(ctx,'force',footerText);
+    for(let i=0;i<30 && !writes.at(-1)?.includes('inbox 1');i++) await Bun.sleep(10);
+    expect(writes.at(-1)).toContain('inbox 1');
+    requests = [...requests,{ref:'p#2',from:'alice',message:'second'}];
+    const shown = await core.session.inbox(ctx);
+    expect(shown.counts?.trusted).toBe(2);
+    expect(writes.at(-1)).toContain('inbox 2');
+    expect((await core.session.beforePrompt(ctx)).sections.inbox).toContain('first');
+  } finally { done.resolve(); await core.session.shutdown(ctx); }
+});
+
+test('refresh preserves cached contracts in another delegate folder', async () => {
+ let failOther=false, otherReads=0;
+ const core=createKataCore({platform:nodePlatform,appendEntry(){},delegateStore:memoryDelegateStore(),exec:async (_f,args,o)=>{
+  if(args[0]==='version') return r6ok({kata_api_version:1,version:'0.24.0'});
+  if(args[0]==='agent-contract-hook') {
+   if(o.cwd==='/tmp/kata-r6-other') {otherReads++; if(failOther) return {code:1,stdout:'',stderr:'offline'};}
+   return r6ok({hookSpecificOutput:{additionalContext:`contract ${o.cwd}`}});
+  }
+  return r6ok({issues:[]});
+ }},{namespace:'test',executable:'/tmp/fake-kata',executableVars:[],env:n=>n==='KATA_AUTHOR'?'alice':undefined});
+ const lead={cwd:'/tmp/kata-r6-lead'}, other={cwd:'/tmp/kata-r6-other'};
+ const delegate=core.delegate('worker');
+ expect((await core.session.beforePrompt(lead)).sections.contract).toContain('lead');
+ expect((await delegate.session.beforePrompt(other)).sections.contract).toContain('other');
+ failOther=true;
+ core.session.refresh();
+ expect((await delegate.session.beforePrompt(other)).sections.contract).toContain('other');
+ expect(otherReads).toBe(1);
+});
+
+test('status does not answer for an old session after its inbox read crosses a switch', async () => {
+ const entered=Promise.withResolvers<void>(), gate=Promise.withResolvers<void>();
+ let address: string | undefined;
+ const ctx=(id:string)=>({cwd:'/tmp/kata-r6-switch',sessionManager:{getSessionId:()=>id,getBranch:()=>[]}});
+ const a=ctx('session-a'), b=ctx('session-b');
+ const core=createKataCore({platform:nodePlatform,appendEntry(){},delegateStore:memoryDelegateStore(),exec:async (_f,args)=>{
+  if(args[0]==='version') return r6ok({kata_api_version:1,version:'0.24.0'});
+  if(args[0]==='agent-contract-hook') return r6ok({hookSpecificOutput:{additionalContext:'contract'}});
+  if(args[0]==='inbox') {entered.resolve(); await gate.promise; return r6ok({requests:[{ref:'p#1',from:'alice',message:'old session'}]});}
+  return r6ok({issues:[]});
+ }},{namespace:'test',executable:'/tmp/fake-kata',executableVars:[],env:n=>n==='KATA_AUTHOR'?'alice':n==='KATA_INBOX_USER'?address:undefined});
+ try {
+  await core.session.start(a,{wait:1000}); address='alice/a';
+  const pending=core.session.view(a,{reconcile:true}); expect(await Promise.race([entered.promise.then(() => true), Bun.sleep(2000).then(() => false)])).toBe(true);
+  address=undefined; await core.session.start(b,{wait:1000}); gate.resolve();
+  expect(await pending).toBeUndefined();
+ } finally {gate.resolve(); await core.session.shutdown(b);}
+});
+
+test("a delegate shutdown leaves the lead footer able to reflect a later close", async () => {
+  for (const delegateShutdown of [false, true]) {
+    let status = "open";
+    const writes: (string | undefined)[] = [];
+    const ctx = { cwd: "/tmp/kata-r6-delegate", hasUI: true, sessionManager: { getSessionId: () => "lead", getBranch: () => [] }, ui: { setStatus: (_key: string, value: string | undefined) => writes.push(value) } };
+    const core = createKataCore({ platform: nodePlatform, appendEntry() {}, delegateStore: memoryDelegateStore(), isMain: c => !(c as any).agent,
+      exec: async (_file, args) => {
+        if (args[0] === "version") return r6ok({ kata_api_version: 1, version: "0.24.0" });
+        if (args[0] === "status") return r6ok({ kata_api_version: 1, issue_status: status, actor: "alice" });
+        return r6ok({ issues: [] });
+      } }, { namespace: "test", executable: "/tmp/kata-fixture", executableVars: [], explicitRef: () => "test#one", env: n => n === "KATA_AUTHOR" ? "alice" : undefined });
+    try {
+      await core.session.footer(ctx, "force", footerText);
+      expect(writes.at(-1)).toContain("test#one");
+      if (delegateShutdown) await core.session.shutdown({ cwd: ctx.cwd, agent: { kind: "sub", id: "worker" }, hasUI: false } as any);
+      status = "closed";
+      await core.tools.result(ctx, { toolName: "bash", input: { command: "kata close test#one" } });
+      const deadline = Date.now() + 1000;
+      while (writes.at(-1)?.includes("test#one") && Date.now() < deadline) await Bun.sleep(5);
+      expect(writes.at(-1)).not.toContain("test#one");
+    } finally { await core.session.shutdown(ctx); }
+  }
 });
