@@ -6,6 +6,7 @@ import { promisify } from "node:util";
 import { eventually, finishes, holdKata, later } from "./kata-fixture";
 import { missingExecutable, siblingThrottle } from "./kata-errors";
 import { v2Fixture } from "./v2-fixture";
+import { nodePlatform } from "../plugins/oh-my-pi/node-host";
 
 // The omp adapter against a real Kata: session start and end, transcripts, automatic parents and their closes,
 // driven by omp's native todo through the fake host.
@@ -456,16 +457,31 @@ test("membership changes during evidence retrieval prevent auto-parent close", a
 });
 
 test("cross-project adoption pins new children to the claimed project", async () => {
-  const other = path.join(scratch, `other-${unique()}`); mkdirSync(other);
-  await kata(["init", "--project", "v2other", "--json"], other);
-  const foreign = await issue("Cross-project claimed issue", { owner: "v2-builder", workspace: other });
-  const app = host(); await app.event("session_start"); const original = await app.init(["Original task"]);
-  await app.event("tool_result", { toolName: "bash", input: { command: `kata --workspace '${other}' claim ${foreign}` }, isError: false });
-  expect((await app.call({ op: "append", items: ["Claimed-project task"] })).isError).toBeUndefined();
-  const view = await show(`v2other#${foreign}`);
-  const child = view.children.find((c: any) => c.title === "Claimed-project task");
-  expect(child.project_id).toBe(view.issue.project_id);
-  expect((await show(original)).issue.status).toBe("open");
+  const name = `other-${unique()}`, other = path.join(scratch, name), nested = path.join(other, "nested");
+  mkdirSync(nested, { recursive: true });
+  const oldHome = nodePlatform.home;
+  nodePlatform.home = scratch;
+  try {
+    await kata(["init", "--project", "v2other", "--json"], other);
+    const commands = [
+      (ref: string) => `kata --workspace '${other}' claim ${ref}`,
+      (ref: string) => `env -C ~/${name} kata claim ${ref}`,
+      (ref: string) => `kata --workspace ~/${name} claim ${ref}`,
+      (ref: string) => `env -C '${other}' env --chdir=nested kata --workspace .. claim ${ref}`,
+    ];
+    for (const [index, makeCommand] of commands.entries()) {
+      const foreign = await issue("Cross-project claimed issue", { owner: "v2-builder", workspace: other });
+      const app = host(); await app.event("session_start"); const original = await app.init(["Original task"]);
+      if (index) await kata(["claim", foreign, "--json"], other);
+      await app.event("tool_result", { toolName: "bash", input: { command: makeCommand(foreign), cwd }, isError: false, details: { exitCode: 0 } });
+      expect((await app.call({ op: "append", items: ["Claimed-project task"] })).isError).toBeUndefined();
+      const view = await show(`v2other#${foreign}`);
+      const child = view.children.find((c: any) => c.title === "Claimed-project task");
+      expect(child.project_id).toBe(view.issue.project_id);
+      expect((await show(original)).issue.status).toBe("open");
+      await app.event("session_shutdown");
+    }
+  } finally { nodePlatform.home = oldHome; }
 });
 
 test("typed automatic parent can be recovered after losing the session entry", async () => {

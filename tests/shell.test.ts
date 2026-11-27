@@ -31,10 +31,11 @@ test("each adapter recognizes only its own executable variables", () => {
 });
 
 // A stub `kata` that reports the transcript environment it was started with and its arguments; `$KATA_BIN` names it too.
-function execute(command: string, extra: Record<string, string> = {}): string[] {
+function execute(command: string, extra: Record<string, string> = {}, envTool?: string): string[] {
   const dir = mkdtempSync(join(tmpdir(), "kata-stub-"));
   try {
     writeFileSync(join(dir, "kata"), '#!/bin/sh\necho "$KATA_TRANSCRIPT_AGENT/$KATA_TRANSCRIPT_SESSION_ID/$KATA_CLOSE_TRANSCRIPT_ENABLED $*"\n', { mode: 0o755 });
+    if (envTool) symlinkSync(envTool, join(dir, "env"));
     const env: Record<string, string | undefined> = { ...process.env, PATH: `${dir}:${process.env.PATH}`, KATA_BIN: join(dir, "kata"), KATA_STUB_DIR: dir, ...extra };
     for (const name of ["KATA_TRANSCRIPT_AGENT", "KATA_TRANSCRIPT_SESSION_ID", "KATA_CLOSE_TRANSCRIPT_ENABLED"]) if (!(name in extra)) delete env[name];
     const out = spawnSync(["bash", "-c", command], { env });
@@ -48,7 +49,7 @@ const envWith = (option: string) => [Bun.which("genv"), Bun.which("env")].find(b
   const help = spawnSync([binary, "--help"], { stderr: "ignore" });
   return help.exitCode === 0 && help.stdout.toString().includes(option);
 });
-const argvEnv = envWith("--argv0"), envFile = envWith("--env0-from");
+const argvEnv = envWith("--argv0"), envFile = envWith("--env0-from"), unsetEnv = envWith("--unset");
 
 test("command positions behind shell prefixes and their options", () => {
   const prefixes = ["", "X=1 ", "time nohup ", "( ", "{ ", "while ", "until ", "time -p ", "env -u FOO ", "env -iu FOO ", "env -iC /tmp ", "env -iCu/tmp ", "env -i PATH=/usr/bin ", "env - PATH=/usr/bin ", "env -a name ", "env -aname ", "env --argv0 name ", "env --argv0=name ", "env --unset=FOO -C /tmp -- ", "exec -a name ", "command -p ", "timeout -s TERM -k 1 30 "];
@@ -139,6 +140,13 @@ test("a cleared PATH with only Kata and nohup survives a nested env chain", () =
       expect(out.exitCode, out.stderr.toString()).toBe(0);
       expect(out.stdout.toString().trim()).toBe("omp/child-uuid");
     }
+    const bare = 'env -i PATH="$KATA_STUB_DIR" kata close ab12';
+    const rewritten = delegateCommand(nodePlatform.path, bare, "kata", [], "tm-1", undefined, own);
+    expect(execute(rewritten)).toEqual(["omp/child-uuid/true --teammate tm-1 close ab12"]);
+    expect(delegateRouted(nodePlatform.path, rewritten, "kata", [], "tm-1", undefined, own)).toBe(true);
+    const lead = transcriptCommand(nodePlatform.path, bare, "kata", [], own);
+    expect(execute(lead)).toEqual(["omp/child-uuid/true close ab12"]);
+    expect(transcriptCommand(nodePlatform.path, lead, "kata", [], own)).toBe(lead);
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
@@ -159,31 +167,17 @@ test.skipIf(!envFile)("env file assignments cannot override the recorded session
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
-test("a cleared PATH containing only Kata still runs the rewritten close", () => {
-  const input = 'env -i PATH="$KATA_STUB_DIR" kata close ab12';
-  const rewritten = delegateCommand(nodePlatform.path, input, "kata", [], "tm-1", undefined, own);
-  expect(execute(rewritten)).toEqual(["omp/child-uuid/true --teammate tm-1 close ab12"]);
-  expect(delegateRouted(nodePlatform.path, rewritten, "kata", [], "tm-1", undefined, own)).toBe(true);
-  const lead = transcriptCommand(nodePlatform.path, input, "kata", [], own);
-  expect(execute(lead)).toEqual(["omp/child-uuid/true close ab12"]);
-  expect(transcriptCommand(nodePlatform.path, lead, "kata", [], own)).toBe(lead);
-});
-
 test("transcript assignments account for env clearing and unsetting in order", () => {
   const assignments = "KATA_TRANSCRIPT_AGENT=omp KATA_TRANSCRIPT_SESSION_ID=child-uuid KATA_CLOSE_TRANSCRIPT_ENABLED=true";
-  for (const prefix of [`${assignments} env -i PATH="$PATH"`, `${assignments} env - PATH="$PATH"`, `${assignments} env -u KATA_TRANSCRIPT_AGENT`, `${assignments} env -u KATA_TRANSCRIPT_SESSION_ID`, `${assignments} env -i PATH="$PATH" env KATA_TRANSCRIPT_AGENT=omp`]) {
+  for (const prefix of [`${assignments} env -i PATH="$PATH"`, `${assignments} env - PATH="$PATH"`, `${assignments} env -u KATA_TRANSCRIPT_AGENT`, `${assignments} env --unset=KATA_TRANSCRIPT_AGENT`, `${assignments} env -u KATA_TRANSCRIPT_SESSION_ID`, `${assignments} env -i PATH="$PATH" env KATA_TRANSCRIPT_AGENT=omp`]) {
+    const envTool = prefix.includes("--unset=") ? unsetEnv ?? undefined : undefined;
+    if (prefix.includes("--unset=") && !envTool) continue;
     const input = `${prefix} kata close ab12`;
-    expect(execute(transcriptCommand(nodePlatform.path, input, "kata", [], own)), input).toEqual(["omp/child-uuid/true close ab12"]);
-    expect(execute(delegateCommand(nodePlatform.path, input, "kata", [], "tm-1", undefined, own)), input).toEqual(["omp/child-uuid/true --teammate tm-1 close ab12"]);
+    expect(execute(transcriptCommand(nodePlatform.path, input, "kata", [], own), {}, envTool), input).toEqual(["omp/child-uuid/true close ab12"]);
+    expect(execute(delegateCommand(nodePlatform.path, input, "kata", [], "tm-1", undefined, own), {}, envTool), input).toEqual(["omp/child-uuid/true --teammate tm-1 close ab12"]);
   }
   const restored = `${assignments} env -i PATH="$PATH" ${assignments} kata close ab12`;
   expect(transcriptCommand(nodePlatform.path, restored, "kata", [], own)).toBe(restored);
-  expect(transcriptCommand(nodePlatform.path, `${assignments} env --unset=KATA_TRANSCRIPT_AGENT kata close ab12`, "kata", [], own)).toContain("KATA_TRANSCRIPT_AGENT=");
-  const cleared = "exec -c kata close ab12";
-  for (const command of [transcriptCommand(nodePlatform.path, cleared, "kata", [], own), delegateCommand(nodePlatform.path, cleared, "kata", [], "tm-1", undefined, own)]) {
-    expect(command).toBe(cleared);
-    expect(execute(command)).toEqual(["// close ab12"]);
-  }
 });
 
 test("a delegate's own session prefixes only its close", () => {

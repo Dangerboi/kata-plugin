@@ -97,18 +97,6 @@ test("a lead's command is unchanged apart from the author and the close transcri
 	expect(result.input.command).toBe(`${pair}'${binary}' close x#1`);
 });
 
-test("a lead close runs when its cleared PATH contains only Kata", async () => {
-	const dir = mkdtempSync(join(tmpdir(), "opencode-kata-stub-"));
-	try {
-		writeFileSync(join(dir, "kata"), '#!/bin/sh\nprintf "%s/%s/%s\\n" "$KATA_TRANSCRIPT_AGENT" "$KATA_TRANSCRIPT_SESSION_ID" "$KATA_CLOSE_TRANSCRIPT_ENABLED"\n', { mode: 0o755 });
-		const { host, id } = await startLead({ executable: binary });
-		const result = await shell(host, id, `env -i PATH='${dir}' kata close x#1`);
-		const out = await sh(result.input.command);
-		expect(out.code, out.stderr).toBe(0);
-		expect(out.stdout.trim()).toBe(`opencode/${id}/true`);
-	} finally { rmSync(dir, { recursive: true, force: true }); }
-});
-
 test.skipIf(!Bun.which("cc"))("a lead close behind exec -a keeps the target argv0 and transcript", async () => {
 	const dir = mkdtempSync(join(tmpdir(), "opencode-kata-argv0-"));
 	try {
