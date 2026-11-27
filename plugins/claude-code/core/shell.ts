@@ -15,41 +15,42 @@ export function envPrefix(vars: Record<string, string>): string {
 
 type ShellWord = { value: string; start: number; end: number };
 // One Kata invocation: its executable, the words after it, and the `NAME=value` assignments before it.
-type Invocation = { executable: ShellWord; words: ShellWord[]; assignments: ShellWord[]; directories: string[] };
+type Invocation = { executable: ShellWord; words: ShellWord[]; assignments: ShellWord[]; directories: string[]; inject: { at: number; raw: boolean } };
 export const ASSIGNMENT = /^[A-Za-z_][A-Za-z0-9_]*=/;
 // The words of one simple command, and the bodies of the heredocs fed to it.
 type Segment = { words: ShellWord[]; bodies: string[] };
 const RESERVED = new Set(["if", "then", "elif", "do", "else", "while", "until", "!", "{"]);
 const PREFIXES = new Set(["command", "env", "time", "nohup", "exec", "timeout"]);
 const PREFIX_VALUES: Record<string, Set<string>> = {
-	env: new Set(["-u", "--unset", "-C", "--chdir", "-a", "--argv0"]), exec: new Set(["-a"]),
+	env: new Set(["-u", "--unset", "-C", "--chdir", "-a", "--argv0", "--env0-from"]), exec: new Set(["-a"]),
 	timeout: new Set(["-s", "--signal", "-k", "--kill-after"]),
 };
 
 // Find the executable without losing the original words' offsets. Prefix options belong to their own command,
 // and timeout also consumes a duration. Inspection and split-string modes, and lookup-changing forms we cannot rewrite, are left unseen.
-export function commandContext(words: ShellWord[]): { index: number; assignments: ShellWord[]; directories: string[]; parentShell: boolean } | undefined {
+export function commandContext(words: ShellWord[]): { index: number; assignments: ShellWord[]; directories: string[]; inject: { at: number; raw: boolean } } | undefined {
 	let at = 0;
 	const assignments = new Map<string, ShellWord>(), directories: string[] = [];
-	let parentShell = true;
+	let external = false, slot: number | undefined, last = "";
 	while (at < words.length) {
 		const word = words[at].value;
 		if (ASSIGNMENT.test(word)) { assignments.set(word.slice(0, word.indexOf("=")), words[at++]); continue; }
 		if (RESERVED.has(word)) { at++; continue; }
-		if (!PREFIXES.has(word) && word !== "/usr/bin/env") return { index: at, assignments: [...assignments.values()], directories, parentShell };
+		if (!PREFIXES.has(word) && word !== "/usr/bin/env") return { index: at, assignments: [...assignments.values()], directories, inject: last === "env" ? { at: words[at].start, raw: true } : (last === "command" || last === "exec") && !external ? { at: slot!, raw: true } : { at: words[at].start, raw: false } };
 		const prefix = word === "/usr/bin/env" ? "env" : word;
-		if (prefix !== "time" && prefix !== "command") parentShell = false;
+		if ((prefix === "command" || prefix === "exec") && slot === undefined) slot = words[at].start;
+		if (prefix !== "time" && prefix !== "command" && prefix !== "exec") external = true;
+		last = prefix;
 		let directory: string | undefined;
 		at++;
 		while (at < words.length && words[at].value.startsWith("-") && (words[at].value !== "-" || prefix === "env")) {
 			const option = words[at++].value;
 			if (option === "--") break;
 			if (option === "-") { assignments.clear(); continue; }
-			if (option === "--help" || option === "--version") return undefined;
 			if (option.startsWith("--")) {
 				const [flag, ...parts] = option.split("="), attached = parts.length ? parts.join("=") : undefined;
 				if (prefix === "env" && flag === "--split-string") return undefined;
-				if (prefix === "env" && flag === "--ignore-environment") assignments.clear();
+				if (prefix === "env" && (flag === "--ignore-environment" || flag === "--env0-from")) assignments.clear();
 				if (PREFIX_VALUES[prefix]?.has(flag)) {
 					const value = attached ?? words[at++]?.value;
 					if (value === undefined) return undefined;
@@ -124,7 +125,7 @@ export function kataCommands(path: Pick<PathOps, "basename">, command: string, c
 		if (!context) continue;
 		const j = context.index;
 		const executable = segment[j];
-		if (executable && (path.basename(executable.value) === "kata" || executable.value === configuredExecutable || executableVars.some(name => executable.value === `$${name}` || executable.value === `\${${name}}`))) commands.push({ executable, words: segment.slice(j + 1), assignments: context.assignments, directories: context.directories });
+		if (executable && (path.basename(executable.value) === "kata" || executable.value === configuredExecutable || executableVars.some(name => executable.value === `$${name}` || executable.value === `\${${name}}`))) commands.push({ executable, words: segment.slice(j + 1), assignments: context.assignments, directories: context.directories, inject: context.inject });
 	}
 	return commands;
 }
@@ -149,6 +150,11 @@ export function shellOptions(words: ShellWord[]) {
 // Whose session a close records: `id` under `agent`, with the recording switch read from `env` (see `closeEnv`).
 type Transcript = { env: Pick<Platform["env"], "get">; agent: string; id: string | undefined };
 
+export function inject(invocation: Invocation, vars: Record<string, string>): { at: number; text: string } {
+	const text = invocation.inject.raw ? Object.entries(vars).map(([name, value]) => `${name}=${quote(value)}`).join(" ") : envPrefix(vars).trimEnd();
+	return { at: invocation.inject.at, text: text ? `${text} ` : "" };
+}
+
 // The pair `transcript` gives a close, or nothing for any other command and for a close whose own assignments already set
 // that pair (the last assignment of a name is the one Kata gets).
 function owedPair(invocation: Invocation, args: readonly string[], transcript: Transcript | undefined): Record<string, string> | undefined {
@@ -162,7 +168,7 @@ function owedPair(invocation: Invocation, args: readonly string[], transcript: T
 export function transcriptCommand(path: Pick<PathOps, "basename">, command: string, executable: string, executableVars: readonly string[], transcript: Transcript): string {
 	for (const invocation of kataCommands(path, command, executable, executableVars).reverse()) {
 		const owed = owedPair(invocation, shellOptions(invocation.words).args, transcript);
-		if (owed) command = command.slice(0, invocation.executable.start) + envPrefix(owed) + command.slice(invocation.executable.start);
+		if (owed) { const edit = inject(invocation, owed); command = command.slice(0, edit.at) + edit.text + command.slice(edit.at); }
 	}
 	return command;
 }
@@ -193,8 +199,8 @@ export function delegateCommand(path: Pick<PathOps, "basename">, command: string
 		edits.push({ start: invocation.executable.end, end: invocation.executable.end, value: flags });
 		// The session the host names for the delegate: its own where it has one, else the lead's that holds its transcript.
 		// Without it a close would record whatever pair the process carries.
-		const prefix = envPrefix({ ...owedPair(invocation, parsed.args, transcript), ...extraEnv });
-		if (prefix) edits.push({ start: invocation.executable.start, end: invocation.executable.start, value: prefix });
+		const prefix = inject(invocation, { ...owedPair(invocation, parsed.args, transcript), ...extraEnv });
+		if (prefix.text) edits.push({ start: prefix.at, end: prefix.at, value: prefix.text });
 	}
 	for (const edit of edits.sort((a, b) => b.start - a.start)) command = command.slice(0, edit.start) + edit.value + command.slice(edit.end);
 	return command;
