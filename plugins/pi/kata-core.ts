@@ -433,9 +433,8 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 	let progressed = true;
 	// What one session's prompt reads from Kata, kept between turns. A core serves the lead and every delegate running in its
 	// process, so each has its own: the lead's by session id ("" when the host gives none), a delegate's by delegate id.
-	type PromptReads = { cwd: string; contract?: string; inbox?: string; address?: string; pending?: Promise<void>; inboxPending?: Promise<void>; inboxNext?: Promise<void>; personInbox?: boolean };
+	type PromptReads = { cwd: string; contract?: string; inbox?: string; address?: string; pending?: Promise<void>; inboxPending?: Promise<void>; inboxNext?: Promise<void>; personInbox?: boolean; sourceWarned?: boolean };
 	const leadReads = new Map<string, PromptReads>();
-	const contractSourceWarnings = new Set<string>();
 	const delegateReads = new Map<string, PromptReads>();
 	const leadKey = (id: string | undefined) => id ?? "";
 	const kata = createKata({ path, exec: (...args) => host.exec(...args), executable: options.executable, teammate: () => sessionTeammate, ctx: () => currentCtx, session: () => currentId, debug });
@@ -2261,9 +2260,8 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 					const absolute = source = path.resolve(cwd, configured);
 					try { await platform.realpath(absolute); }
 					catch {
-						const session = leadKey(sid(ctx));
-						if (!contractSourceWarnings.has(session) && uiOf(ctx)?.notify) {
-							contractSourceWarnings.add(session);
+						if (!entry.sourceWarned && uiOf(ctx)?.notify) {
+							entry.sourceWarned = true;
 							uiOf(ctx)?.notify?.(`Kata contract source ${absolute} could not be checked. Kata uses its built-in contract when the file is missing.`, "warning");
 						}
 					}
@@ -2528,7 +2526,6 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 				stopFollower();
 				// The reads of the session this one replaces go.
 				for (const other of [...leadReads.keys()]) if (other !== leadKey(id)) leadReads.delete(other);
-				for (const other of contractSourceWarnings) if (other !== leadKey(id)) contractSourceWarnings.delete(other);
 				const user = setting("KATA_INBOX_USER");
 				const live = !!host.liveInbox && !!user && isSessionAddress(user);
 				if (live) liveInbox = "";
