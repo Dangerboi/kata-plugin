@@ -259,7 +259,7 @@ export function createInboxFollower(deps: InboxFollowerDeps): InboxFollower {
 		const since = streamed, quiet = forceQuiet || !seededOnce;
 		let requests: unknown;
 		try { requests = asRecord(await deps.read())?.requests; } catch (error) { deps.debug(error); return scheduleSeedRetry(gen); }
-		if (gen !== generation || !Array.isArray(requests)) return;
+		if (gen !== generation || !Array.isArray(requests)) return scheduleSeedRetry(gen);
 		seededOnce = true;
 		const newer = (issue: string) => (states.get(issue)?.streamed ?? 0) > since;
 		const listed = new Set<string>();

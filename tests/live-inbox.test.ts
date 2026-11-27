@@ -296,17 +296,21 @@ test("a failing spawn or actor lookup backs off quietly and recovers", async () 
 	t.follow.stop();
 });
 
-test("a failed first inbox read is retried while the stream stays open, and the waiting request is published", async () => {
+for (const failure of ["error", "malformed"]) test(`a ${failure} first inbox read is retried and the waiting requests are published`, async () => {
 	let reads = 0;
-	const t = follower({ read: async () => { if (++reads === 1) throw new Error("kata slow"); return { requests: [{ ref: "abcd", title: "T", ...slot("waiting") }] }; } });
+	const t = follower({ read: async () => {
+		if (++reads === 1) { if (failure === "error") throw new Error("kata slow"); return {}; }
+		return { requests: [{ ref: "abcd", title: "T", ...slot("waiting") }, { ref: "efgh", title: "U", ...slot("also waiting") }] };
+	} });
 	t.follow.start(); await tick();
-	expect(t.published).toEqual([]);
-	expect(t.timers).toHaveLength(1);
-	t.timers.shift()!(); await tick();
-	expect(t.published.at(-1)).toBe("abcd:waiting");
-	expect(t.delivered).toEqual([]);
-	expect(t.streams).toHaveLength(1);
-	t.follow.stop();
+	try {
+		expect(t.published).toEqual([]);
+		expect(t.timers).toHaveLength(1);
+		t.timers.shift()!(); await tick();
+		expect(t.published.at(-1)).toBe("abcd:waiting|efgh:also waiting");
+		expect(t.delivered).toEqual([]);
+		expect(t.streams).toHaveLength(1);
+	} finally { t.follow.stop(); }
 });
 
 test("a pending seed retry does nothing once the first read landed another way", async () => {
