@@ -433,7 +433,7 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 	let progressed = true;
 	// What one session's prompt reads from Kata, kept between turns. A core serves the lead and every delegate running in its
 	// process, so each has its own: the lead's by session id ("" when the host gives none), a delegate's by delegate id.
-	type PromptReads = { cwd: string; contract?: string; inbox?: string; address?: string; pending?: Promise<void>; inboxPending?: Promise<void>; inboxNext?: Promise<void>; personInbox?: boolean };
+	type PromptReads = { cwd: string; contract?: string; contractError?: string; contractWarned?: boolean; inbox?: string; address?: string; pending?: Promise<void>; inboxPending?: Promise<void>; inboxNext?: Promise<void>; personInbox?: boolean };
 	const leadReads = new Map<string, PromptReads>();
 	const delegateReads = new Map<string, PromptReads>();
 	const leadKey = (id: string | undefined) => id ?? "";
@@ -2254,9 +2254,18 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 			entry.pending = (async () => {
 				if (!await probe(job, cwd)) return;
 				// Exactly these arguments: some Kata builds print nothing for any other form.
-				const out = await kata.run(job, ["agent-contract-hook", "--source", "kata-agent-contract-hook"], cwd, { timeout: 1000, workspace: false }).then(out => JSON.parse(out)?.hookSpecificOutput?.additionalContext);
-				if (typeof out === "string") entry.contract = out;
-			})().catch(debug).finally(() => { entry.pending = undefined; });
+				const raw = await kata.run(job, ["agent-contract-hook", "--source", "kata-agent-contract-hook"], cwd, { timeout: 10_000, workspace: false });
+				let output: any;
+				try { output = JSON.parse(raw); } catch { throw new Error("invalid JSON from kata agent-contract-hook"); }
+				const out = output?.hookSpecificOutput?.additionalContext;
+				if (typeof out !== "string") throw new Error("unexpected hook output");
+				entry.contract = out;
+				entry.contractError = undefined;
+			})().catch(error => {
+				debug(error);
+				if (isKataCode(error, "unsupported_version")) { entry.contractError = undefined; return; }
+				entry.contractError = ((error as Error)?.message ?? String(error)).split(/\r?\n/)[0].slice(0, 160);
+			}).finally(() => { entry.pending = undefined; });
 		}
 		const user = setting("KATA_INBOX_USER");
 		let inboxRead: Promise<void> | undefined;
@@ -2563,6 +2572,14 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 				if (turnReads) {
 					const { entry } = turnReads;
 					if (entry.contract) sections.contract = entry.contract;
+					else if (entry.contractError) {
+						sections.contract = `Kata contract is unavailable (${entry.contractError}). Run \`kata quickstart --format contract\` before using kata.`;
+						const ui = uiOf(ctx);
+						if (!entry.contractWarned && ui?.notify) {
+							entry.contractWarned = true;
+							ui.notify(`Kata contract is unavailable (${entry.contractError}). The plugin will retry on the next prompt.`, "warning");
+						}
+					}
 					const inbox = main(ctx) && liveInbox !== undefined ? liveInbox : entry.inbox;
 					if (inbox && turnReads.showsInbox) sections.inbox = inbox;
 				}
