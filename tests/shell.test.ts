@@ -73,6 +73,9 @@ test("claim positions prove success only through a top-level && suffix", () => {
     ["kata claim abcd >&2", true], ["kata claim abcd <&0", true], ["kata claim abcd && echo ok 2>&1", true],
     ["kata claim abcd && echo $(date)", true], ["kata claim abcd && (true)", true], ["kata claim abcd && echo $(date) && true", true], ["kata claim abcd && echo $(date) || true", false], ["kata claim abcd && (true) &", false], ["kata claim abcd; (true)", false],
     ["kata claim abcd && (( 1 || 0 ))", true], ["kata claim abcd && (( 1 & 1 ))", true], ["kata claim abcd; (( 1 ))", false], ["kata claim abcd && (( 1 ))", true], ["kata claim abcd;", true], ["kata claim abcd\n", true], ["kata claim abcd; # done\n", true],
+    ["(( case = 1 )); kata claim abcd", true], ["(( $(kata claim abcd >/dev/null; printf 1) ))", false],
+    ["echo `true; kata claim abcd `", false], ["x=`true; kata claim abcd `", false],
+    ["kata claim abcd && echo `date`", true], ["kata claim abcd; echo `date`", false],
     ["kata claim abcd --comment '!'", true], ["((kata claim abcd) && echo)", false], ["(kata claim abcd)", false], ["{ echo hi; kata claim abcd; }", false],
     ["if true; then kata claim abcd; fi", false], ["while true; do kata claim abcd; done", false],
     ["for x in a; do kata claim abcd; done", false], ["if true; then if true; then echo x; fi; kata claim abcd; fi", false], ["! kata claim abcd", false],
@@ -81,17 +84,17 @@ test("claim positions prove success only through a top-level && suffix", () => {
     expect(claims.length, command).toBeGreaterThan(0);
     expect(claims.every(c => c.proven), command).toBe(proven);
   }
+  expect(coreCommands(nodePlatform.path, "kata claim abcd && (( $(kata show abcd) + 1 ))").map(c => c.proven)).toEqual([true, false]);
 });
 
 test("arithmetic, substitutions and CRLF keep executable commands visible", () => {
-  expect(coreCommands(nodePlatform.path, "(( case = 1 )); kata claim abcd")[0].proven).toBe(true);
   for (const command of ["(( x << 1 ))\nkata claim abcd", "for (( i = 1; i < 9; i <<= 1 )); do echo x; done\nkata claim abcd", "echo x\r\nkata claim abcd"]) {
     expect(coreCommands(nodePlatform.path, command).map(c => shellOptions(c.words).args)).toEqual([["claim", "abcd"]]);
   }
 
   const input = "(( $(kata claim abcd >/dev/null; printf 1) ))";
   const invocations = coreCommands(nodePlatform.path, input);
-  expect(invocations.map(c => [shellOptions(c.words).args[0], c.proven])).toEqual([["claim", false]]);
+  expect(invocations.map(c => shellOptions(c.words).args[0])).toEqual(["claim"]);
   expect(delegateCommand(nodePlatform.path, input, "kata", [], "worker")).toContain("kata --teammate 'worker' claim abcd");
   expect(() => delegateCommand(nodePlatform.path, "(( $(kata --as other claim abcd; printf 1) ))", "kata", [], "worker")).toThrow("--as");
   expect(transcriptCommand(nodePlatform.path, "(( $(kata close abcd; printf 1) ))", "kata", [], own)).toContain("KATA_TRANSCRIPT_SESSION_ID='child-uuid'");
@@ -99,8 +102,6 @@ test("arithmetic, substitutions and CRLF keep executable commands visible", () =
   expect(coreCommands(nodePlatform.path, heredoc).map(c => shellOptions(c.words).args)).toEqual([["claim", "abcd"]]);
   expect(delegateCommand(nodePlatform.path, heredoc, "kata", [], "worker")).toContain("\nkata claim hidden\n");
   expect(coreCommands(nodePlatform.path, "(( (x << 2) ))\nkata claim abcd")).toHaveLength(1);
-  const nested = coreCommands(nodePlatform.path, "kata claim abcd && (( $(kata show abcd) + 1 ))");
-  expect(nested.map(c => c.proven)).toEqual([true, false]);
   const command = "(( $(printf %s $((1 << 1))) ))\nkata claim abcd && kata claim efgh";
   expect(coreCommands(nodePlatform.path, command).map(c => shellOptions(c.words).args)).toEqual([["claim", "abcd"], ["claim", "efgh"]]);
   expect(delegateCommand(nodePlatform.path, command, "kata", [], "worker").match(/--teammate 'worker'/g)).toHaveLength(2);
@@ -113,15 +114,13 @@ test("ANSI-C quoted text cannot introduce a shell command", () => {
 });
 
 
-test("backtick substitutions remain visible but cannot prove a claim", () => {
+test("backtick substitutions remain visible to command rewriting", () => {
   for (const command of ["echo `true; kata claim abcd `", "x=`true; kata claim abcd `"]) {
     const found = coreCommands(nodePlatform.path, command);
-    expect(found.map(c => [shellOptions(c.words).args[0], c.proven])).toEqual([["claim", false]]);
+    expect(found.map(c => shellOptions(c.words).args[0])).toEqual(["claim"]);
     expect(delegateCommand(nodePlatform.path, command, "kata", [], "worker")).toContain("kata --teammate 'worker' claim abcd");
   }
   expect(coreCommands(nodePlatform.path, "echo '`kata claim abcd`'")).toEqual([]);
-  expect(coreCommands(nodePlatform.path, "kata claim abcd && echo `date`")[0].proven).toBe(true);
-  expect(coreCommands(nodePlatform.path, "kata claim abcd; echo `date`")[0].proven).toBe(false);
   const command = "(( `cat <<EOF\nkata claim hidden\nEOF\nprintf 1` ))\nkata claim abcd";
   expect(coreCommands(nodePlatform.path, command).map(c => shellOptions(c.words).args)).toEqual([["claim", "abcd"]]);
 });
