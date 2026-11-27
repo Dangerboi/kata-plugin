@@ -25,3 +25,26 @@ test("a delegate's close whose own session is not known yet records nothing rath
   expect(command).not.toContain("KATA_TRANSCRIPT_SESSION_ID");
   expect(await rewrite("kata show ab12", "scout-y")).not.toContain("KATA_CLOSE_TRANSCRIPT_ENABLED");
 });
+
+test("lifecycle installs the shim before returning and publishes distinct session identities", async () => {
+  const app = ompHost({ run: args => run(args), cwd, sid: SID });
+  await app.event("session_start");
+  const dir = process.env.KATA_OMP_SHIM_DIR!;
+  expect(dir).toBeTruthy();
+  expect(process.env.PATH?.split(":")[0]).toBe(`${dir}/bin`);
+  expect(process.env.PI_SHELL_PREFIX).toContain("KATA_OMP_SHIM_DIR=");
+  await app.event("before_agent_start", { reason: "prompt", systemPrompt: [] });
+  const { readFileSync } = await import("node:fs");
+  expect(readFileSync(`${dir}/${SID}.env`, "utf8")).toContain("KATA_AUTHOR='actor-a'");
+  const sub = { ...app.ctx, agent: { kind: "sub", id: "shell-child" }, sessionManager: { getSessionId: () => "shell-child-session", getBranch: () => [], getEntries: () => [], getHeader: () => ({}), getSessionFile: () => undefined } };
+  await app.event("tool_call", { toolName: "bash", input: { command: "bash -c 'kata show ab12'" } }, sub);
+  const identity = readFileSync(`${dir}/shell-child-session.env`, "utf8");
+  const teammate = teammateFor("shell-child", SID);
+  expect(identity).toContain(`KATA_TEAMMATE='${teammate}'`);
+  expect(identity).toContain(`KATA_INBOX_USER='actor-a/${teammate}'`);
+  for (const event of ["session_switch", "session_branch"]) {
+    await app.event(event);
+    expect(process.env.KATA_OMP_SHIM_DIR).toBe(dir);
+    expect(process.env.PATH?.split(":")[0]).toBe(`${dir}/bin`);
+  }
+});

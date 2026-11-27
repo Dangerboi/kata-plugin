@@ -11,7 +11,7 @@ export type Issue = {
 	ref: string; title: string; status: string; owner?: string;
 	/** Kata stores JSON values: most are strings, `omp.auto_parent` is a boolean. */
 	metadata: Record<string, unknown>;
-	events: { type: string; payload: any }[];
+	events: { type: string; payload: any; actor?: string }[];
 };
 export type Check = { name: string; ok: boolean; detail?: string };
 
@@ -93,7 +93,7 @@ export function scratchRoot(prefix: string): string {
 
 // ---- Kata ----
 type Listed = { uid: string; short_id: string; title: string; status: string; owner?: string; metadata?: Record<string, unknown> };
-type Logged = { issue_uid: string; type: string; payload: unknown };
+type Logged = { issue_uid: string; type: string; payload: unknown; actor?: string };
 /** Kata in one folder of the run, under `env`; `name` is the project `init` creates there. The teardown stops its daemon. */
 export function kataProject(env: NodeJS.ProcessEnv, cwd: string, name: string) {
 	const kata = (args: string[], extra: NodeJS.ProcessEnv = {}): string => {
@@ -122,7 +122,7 @@ export function kataProject(env: NodeJS.ProcessEnv, cwd: string, name: string) {
 			const events: Logged[] = JSON.parse(kata(["events", "--project", name, "--after", "0", "--limit", "10000", "--json"])).events;
 			return listed.map(i => ({
 				ref: i.short_id, title: i.title, status: i.status, owner: i.owner, metadata: i.metadata ?? {},
-				events: events.filter(e => e.issue_uid === i.uid).map(e => ({ type: e.type, payload: e.payload })),
+				events: events.filter(e => e.issue_uid === i.uid).map(e => ({ type: e.type, payload: e.payload, actor: e.actor })),
 			}));
 		},
 		/** Stops the daemon now rather than at the teardown. */
