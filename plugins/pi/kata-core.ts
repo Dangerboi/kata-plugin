@@ -92,6 +92,7 @@ export type PlanView = {
 	phases: { name: string; tasks: { content: string; status: Status; ref: string; blocker?: string }[] }[];
 };
 // What a prompt gets from the core, as text: the host formats each section for its prompt.
+// inbox is omitted when unknown or not requested, empty when known empty or disabled, otherwise rendered trusted inbox text.
 export type PromptSections = { contract?: string; inbox?: string; todo?: string; assignment?: string; todoRules?: string; plan?: string };
 // The tag each section is wrapped in where a host's prompt has no structure of its own.
 export const PROMPT_TAGS = { contract: "kata_contract", inbox: "kata_inbox", assignment: "kata_binding", todo: "kata_todo" } as const satisfies Record<"contract" | "inbox" | "assignment" | "todo", string>;
