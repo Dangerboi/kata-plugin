@@ -100,7 +100,7 @@ export type LiveInbox = {
 	/** Hands one request to the session as an aside. */
 	deliver(text: string): void | Promise<unknown>;
 };
-type SlotState = { eventId?: number; identity: string | null; slot?: Slot; title?: string; ref: string; streamed: number; seeded: boolean };
+type SlotState = { eventId?: number; identity: string | null; slot?: Slot; title?: string; ref: string; streamed: number; seeded: boolean; awaitingActor?: boolean };
 type StreamEvent = { type: "reset"; after: number } | { type: "reread" } | { type: "slot"; key: string; ref: string; eventId: number; to: Slot | null };
 export type InboxFollower = { start(): void; stop(): void; refreshActor(): void };
 export type InboxFollowerDeps = {
@@ -113,6 +113,8 @@ export type InboxFollowerDeps = {
 	deliver(text: string): void;
 	/** The trusted requests rendered for the `<kata_inbox>` section; "" when there are none. */
 	publish(text: string, counts: InboxCounts): void;
+	/** Reports a failed inbox read, and clears it after a successful read. */
+	readState?(error?: unknown): void;
 	/** The id of the newest event of the project: the stream is tailed from there, so history never replays. */
 	head(): Promise<number>;
 	/** Milliseconds on a monotonic clock. */
@@ -255,6 +257,7 @@ export function createInboxFollower(deps: InboxFollowerDeps): InboxFollower {
 			eventId: o.eventId ?? stored?.eventId, identity, slot: slot ?? undefined, title: o.title ?? stored?.title, ref: o.ref ?? stored?.ref ?? issue,
 			streamed: o.read ? (stored?.streamed ?? 0) : ++streamed,
 			seeded: same && !confirm ? stored?.seeded === true : slot !== null && !!o.read && o.quiet,
+			awaitingActor: same && !confirm ? stored?.awaitingActor : !!slot && !o.quiet && mine === undefined,
 		});
 		if (same && !confirm) return publish();
 		publish();
@@ -265,8 +268,10 @@ export function createInboxFollower(deps: InboxFollowerDeps): InboxFollower {
 	async function readOnce(gen: number, forceQuiet: boolean) {
 		const since = streamed, quiet = forceQuiet || !seededOnce;
 		let requests: unknown;
-		try { requests = asRecord(await deps.read())?.requests; } catch (error) { deps.debug(error); return scheduleSeedRetry(gen); }
-		if (gen !== generation || !Array.isArray(requests)) return;
+		try { requests = asRecord(await deps.read())?.requests; if (!Array.isArray(requests)) throw new Error("Kata inbox returned no requests."); }
+		catch (error) { if (gen === generation) deps.readState?.(error); deps.debug(error); return scheduleSeedRetry(gen); }
+		if (gen !== generation) return;
+		deps.readState?.();
 		seededOnce = true;
 		const newer = (issue: string) => (states.get(issue)?.streamed ?? 0) > since;
 		const listed = new Set<string>();
@@ -277,6 +282,7 @@ export function createInboxFollower(deps: InboxFollowerDeps): InboxFollower {
 			if (!newer(r.ref)) apply(r.ref, slot, { quiet, read: true, title: typeof r.title === "string" ? r.title : undefined });
 		}
 		for (const [issue, state] of states) if (state.identity !== null && !listed.has(issue) && !newer(issue)) apply(issue, null, { quiet: true, read: true });
+		publish();
 	}
 
 	// The first read is the only source of requests that existed at start, and a session with a live inbox has no per-turn read: retry it with its own backoff until it lands.
@@ -349,7 +355,17 @@ export function createInboxFollower(deps: InboxFollowerDeps): InboxFollower {
 	return {
 		refreshActor() {
 			const gen = generation, actorGen = ++actorGeneration;
-			void deps.actor().then(actor => { if (running && gen === generation && actorGen === actorGeneration) { mine = actor; publish(); } }).catch(deps.debug);
+			mine = undefined;
+			deps.publish("", { trusted: 0, foreign: 0 });
+			void deps.actor().then(actor => {
+				if (!running || gen !== generation || actorGen !== actorGeneration) return;
+				mine = actor; publish();
+				for (const state of states.values()) {
+					if (!state.awaitingActor) continue;
+					state.awaitingActor = false;
+					if (state.slot && isTrusted(state.slot, mine) && state.slot.message.trim()) deps.deliver(deliveryText(state.ref, deps.address, state.slot));
+				}
+			}).catch(deps.debug);
 		},
 		start() {
 			if (running) return;
