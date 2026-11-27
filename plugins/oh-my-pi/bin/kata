@@ -7,9 +7,9 @@ case ${PI_SESSION_ID:-} in
   *) file=${KATA_OMP_SHIM_DIR:-}/${PI_SESSION_ID}.env
      [ -n "${KATA_OMP_SHIM_DIR:-}" ] && [ -f "$file" ] && . "$file" ;;
 esac
-if [ -n "${KATA_OMP_SHIM_REAL:-}" ] && [ -x "$KATA_OMP_SHIM_REAL" ] && [ ! -d "$KATA_OMP_SHIM_REAL" ]; then
-  exec "$KATA_OMP_SHIM_REAL" "$@"
-fi
+case ${KATA_OMP_SHIM_REAL:-} in
+  /*) if [ -x "$KATA_OMP_SHIM_REAL" ] && [ ! -d "$KATA_OMP_SHIM_REAL" ]; then exec "$KATA_OMP_SHIM_REAL" "$@"; fi ;;
+esac
 set -f
 oldifs=$IFS
 IFS=:

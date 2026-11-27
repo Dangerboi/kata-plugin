@@ -59,6 +59,23 @@ test("configured executable basename selects each session identity in nested she
   ]);
 });
 
+test("an unresolved executable uses PATH instead of recursing when cwd contains kata", () => {
+  const modulePath = new URL("../plugins/oh-my-pi/shim.ts", import.meta.url).pathname;
+  const script = `import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs"; import { tmpdir } from "node:os"; import { join } from "node:path"; import { spawnSync } from "node:child_process"; import { installShim } from ${JSON.stringify(modulePath)};
+    const root = mkdtempSync(join(tmpdir(), "shim-unresolved-")), cwd = join(root, "work"), real = join(root, "real"); mkdirSync(cwd); mkdirSync(real);
+    try {
+      process.env.PATH = "/usr/bin:/bin";
+      const shim = installShim("kata", message => { throw new Error(message); }, { roots: [root] });
+      writeFileSync(join(cwd, "kata"), "#!/bin/sh\\nprintf cwd\\n", { mode: 0o700 });
+      writeFileSync(join(real, "kata"), "#!/bin/sh\\nprintf real\\n", { mode: 0o700 });
+      const run = path => { const out = spawnSync(join(shim.dir, "bin/kata"), [], { cwd, env: { ...process.env, PATH: path }, encoding: "utf8", timeout: 1000 }); return [out.status, out.signal, out.stdout]; };
+      console.log(JSON.stringify([run(join(shim.dir, "bin") + ":" + real + ":/usr/bin:/bin"), run(join(shim.dir, "bin") + ":/usr/bin:/bin")]));
+    } finally { rmSync(root, { recursive: true, force: true }); }`;
+  const result = Bun.spawnSync([process.execPath, "-e", script], { env: { PATH: "/usr/bin:/bin", HOME: process.env.HOME!, KATA_HOME: process.env.KATA_HOME! } });
+  expect(result.exitCode).toBe(0);
+  expect(JSON.parse(result.stdout.toString())).toEqual([[0, null, "real"], [127, null, ""]]);
+});
+
 test("sweep removes only the known private layout for dead processes", async () => {
   const { existsSync } = await import("node:fs");
   const { sweep } = await import("../plugins/oh-my-pi/shim");
