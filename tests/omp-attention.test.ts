@@ -14,7 +14,7 @@ const issue = async () => {
 };
 const apps: ReturnType<typeof ompHost>[] = [];
 function host(before?: Parameters<typeof ompHost>[0]["before"], dir = cwd) {
-  const app = ompHost({ cwd: dir, sid: `attention-${unique()}`, before, attentionRuntime: true, run: (args, opts) => run(args, opts.cwd, opts.timeout, opts.env) });
+  const app = ompHost({ cwd: dir, sid: `attention-${unique()}`, before, run: (args, opts) => run(args, opts.cwd, opts.timeout, opts.env) });
   apps.push(app); return app;
 }
 beforeAll(async () => { await text(["agent-hook", "install", "pi", "--scope", "project", "--executable", binary]); });
@@ -239,6 +239,7 @@ test("a fork whose plan parent is the claimed ticket keeps it ok under the new s
   await claimed(app, ref);
   const before = (await attention(ref)).session;
   await app.event("session_switch", { reason: "fork" }, switched(app, "attention-fork", app.sid));
+  await eventually(async () => { const value = await attention(ref); return value.state === "ok" && !!value.session && value.session !== before; }, true);
   const after = await attention(ref);
   expect(after.state).toBe("ok"); expect(after.session).toBeTruthy(); expect(after.session).not.toBe(before);
   await app.event("session_shutdown");
@@ -395,10 +396,19 @@ test("core shutdown uses the detached production spawn after its host dies", asy
     expect(hooks.map(hook => hook.mode)).toEqual(["start", "end", "start"]);
     expect(new Set(hooks.map(hook => hook.launcher)).size).toBe(1);
     expect(hooks[0].launcher).toBe(`omp-${processHost.pid}-${performance.timeOrigin}`);
+    // Adopt two more tickets in the switched session, then end all three through the real detached transport.
+    delete process.env.KATA_REF;
+    const attended = [await fresh(), await fresh()];
+    for (const ticket of attended) {
+      await text(["claim", ticket]);
+      await core.tools.result(ctx(`${session}-switch`), { toolName: "bash", input: { command: `kata claim ${ticket}`, cwd }, isError: false });
+      await eventually(async () => (await attention(ticket)).state, "ok");
+    }
     processHost.kill(); await processHost.exited;
     await core.session.shutdown(ctx(`${session}-switch`));
     await eventually(async () => (await attention(ref)).state, "needs-human");
     expect((await attention(ref)).session).toBe(`ended:${before.session}`);
+    for (const ticket of attended) await eventually(async () => (await attention(ticket)).state, "needs-human");
   } finally { processHost.kill(); await processHost.exited; }
 });
 
