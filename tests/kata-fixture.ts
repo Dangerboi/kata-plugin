@@ -1,5 +1,6 @@
 import { afterAll, beforeAll, beforeEach, expect, setSystemTime } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, symlinkSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, symlinkSync } from "node:fs";
+import { tmpdir } from "node:os";
 import path from "node:path";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
@@ -112,10 +113,18 @@ export function realKata(options: RealKataOptions) {
   beforeEach(() => {
     restore();
     const saved = [...SCRUBBED_ENV, "PATH", "PI_SHELL_PREFIX"].map(key => [key, process.env[key]] as const);
+    // The fixture scrubs the singleton between tests; remove only this test process's newly created shim directories.
+    const roots = [...new Set([tmpdir(), process.env.XDG_RUNTIME_DIR].filter((root): root is string => !!root && path.isAbsolute(root)))];
+    const shims = () => roots.flatMap(root => {
+      try { return readdirSync(root, { withFileTypes: true }).filter(entry => entry.isDirectory() && entry.name.startsWith(`omp-kata-${process.pid}-`)).map(entry => path.join(root, entry.name)); }
+      catch { return []; }
+    });
+    const existing = new Set(shims());
     const unadopt = options.adopt ? adoptIsolatedKata(store.binary, store.home) : undefined;
     for (const key of SCRUBBED_ENV) delete process.env[key];
     Object.assign(process.env, { KATA_AUTHOR: options.author, ...options.process });
     restore = () => {
+      for (const dir of shims()) if (!existing.has(dir)) rmSync(dir, { recursive: true, force: true });
       unadopt?.();
       for (const [key, value] of saved) value === undefined ? delete process.env[key] : process.env[key] = value;
       restore = () => {};

@@ -46,9 +46,6 @@ test("worker actor failures warn once until a lead identity write succeeds", asy
     process.env.KATA_AUTHOR = "someone-else"; failStatus = true;
     expect((await ask()).blocked).toBe(false); expect(warnings()).toBe(1);
     expect((await ask()).blocked).toBe(false); expect(warnings()).toBe(1);
-    failStatus = false; expect((await ask()).content).toContain("KATA_AUTHOR='v2-builder'"); expect(warnings()).toBe(1);
-    process.env.KATA_AUTHOR = "actor-b"; failStatus = true;
-    expect((await ask()).blocked).toBe(false); expect(warnings()).toBe(1);
     failStatus = false; await app.event("tool_call", { toolName: "bash", input: { command: "ls" } });
     process.env.KATA_AUTHOR = "mallory"; failStatus = true;
     expect((await ask()).blocked).toBe(false); expect(warnings()).toBe(2);

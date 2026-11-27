@@ -6,7 +6,7 @@ import { execOf } from "../plugins/claude-code/hooks/host";
 import { writeIdentity } from "../plugins/oh-my-pi/shim";
 import { claudeHost } from "./claude-fixture";
 
-test("Claude plugin calls keep their identity when launched from an omp shell", async () => {
+test("Claude exec overrides the inherited selector and forwards the close transcript", async () => {
   const root = mkdtempSync(join(tmpdir(), "claude-shim-"));
   const dir = join(root, "shim"), bin = join(dir, "bin"), real = join(root, "real"); mkdirSync(bin, { recursive: true });
   copyFileSync(new URL("../plugins/oh-my-pi/bin/kata", import.meta.url), join(bin, "kata")); chmodSync(join(bin, "kata"), 0o700);

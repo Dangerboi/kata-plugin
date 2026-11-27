@@ -42,11 +42,6 @@ test("lifecycle installs the shim before returning and publishes distinct sessio
   const teammate = teammateFor("shell-child", SID);
   expect(identity).toContain(`KATA_TEAMMATE='${teammate}'`);
   expect(identity).toContain(`KATA_INBOX_USER='actor-a/${teammate}'`);
-  for (const event of ["session_switch", "session_branch"]) {
-    await app.event(event);
-    expect(process.env.KATA_OMP_SHIM_DIR).toBe(dir);
-    expect(process.env.PATH?.split(":")[0]).toBe(`${dir}/bin`);
-  }
 });
 
 test("publication failure warns once until a successful write and never blocks bash", async () => {

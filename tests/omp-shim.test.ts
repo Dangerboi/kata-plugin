@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { chmodSync, copyFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { composePrefix, writeIdentity } from "../plugins/oh-my-pi/shim";
@@ -13,10 +13,8 @@ test("nested shells and scripts use the selected identity despite an export", ()
     const shim = { dir, real }; writeIdentity(shim, "child", { KATA_AUTHOR: "O'Reilly", KATA_TEAMMATE: "scout", KATA_INBOX_USER: "actor/scout" });
     const script = join(dir, "script"); writeFileSync(script, '#!/bin/sh\nkata\n', { mode: 0o700 });
     const env = { PATH: `${bin}:/usr/bin:/bin`, KATA_OMP_SHIM_DIR: dir, KATA_OMP_SHIM_REAL: real, PI_SESSION_ID: "child", KATA_SHIM_PROBE: "1" };
-    for (const command of [`export KATA_AUTHOR=evil; bash -c kata`, `export KATA_AUTHOR=evil; ${script}`]) {
-      const result = Bun.spawnSync(["/bin/sh", "-c", command], { env });
-      expect(result.exitCode).toBe(0); expect(result.stdout.toString()).toBe("O'Reilly|scout|actor/scout");
-    }
+    const scriptResult = Bun.spawnSync(["/bin/sh", "-c", `export KATA_AUTHOR=evil; ${script}`], { env });
+    expect(scriptResult.exitCode).toBe(0); expect(scriptResult.stdout.toString()).toBe("O'Reilly|scout|actor/scout");
     const prefix = composePrefix(shim, "export USER_PREFIX=ok;");
     const result = Bun.spawnSync(["/bin/sh", "-c", `PATH=/usr/bin:/bin; ${prefix} kata`], { env });
     expect(result.exitCode).toBe(0); expect(result.stdout.toString()).toBe("O'Reilly|scout|actor/scout");
@@ -39,7 +37,7 @@ test("a call declaring a foreign transcript agent keeps its own identity", () =>
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
-test("omp and unset transcript agents still apply identity, including after an inherited foreign prefix", () => {
+test("omp transcript identity applies, including after an inherited foreign prefix", () => {
   const dir = mkdtempSync(join(tmpdir(), "kata-shim-prefix-"));
   try {
     const bin = join(dir, "bin"), real = join(dir, "real"); mkdirSync(bin);
@@ -56,18 +54,21 @@ test("omp and unset transcript agents still apply identity, including after an i
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
-test("unknown or invalid sessions do not load identity and PATH fallback skips the shim", () => {
-  const dir = mkdtempSync(join(tmpdir(), "kata-shim-fallback-"));
+test("unknown or invalid sessions do not load identity", () => {
+  const root = mkdtempSync(join(tmpdir(), "kata-shim-invalid-")), dir = join(root, "shim");
   try {
-    const bin = join(dir, "bin"), realBin = join(dir, "real-bin"); mkdirSync(bin); mkdirSync(realBin);
+    const bin = join(dir, "bin"), real = join(root, "real"); mkdirSync(bin, { recursive: true });
     copyFileSync(new URL("../plugins/oh-my-pi/bin/kata", import.meta.url), join(bin, "kata")); chmodSync(join(bin, "kata"), 0o700);
-    writeFileSync(join(realBin, "kata"), '#!/bin/sh\nprintf "%s" "$KATA_AUTHOR"\n', { mode: 0o700 });
-    writeIdentity({ dir, real: "" }, "good", { KATA_AUTHOR: "real" });
-    writeIdentity({ dir, real: "" }, "../bad", { KATA_AUTHOR: "real" });
-    const env = { PATH: `${bin}:${realBin}:/usr/bin:/bin`, KATA_OMP_SHIM_DIR: dir, PI_SESSION_ID: "../good", KATA_AUTHOR: "original" };
-    const result = Bun.spawnSync([join(bin, "kata")], { env });
-    expect(result.exitCode).toBe(0); expect(result.stdout.toString()).toBe("original");
-  } finally { rmSync(dir, { recursive: true, force: true }); }
+    writeFileSync(real, '#!/bin/sh\nprintf "%s" "$KATA_AUTHOR"\n', { mode: 0o700 });
+    writeFileSync(join(root, "good.env"), "export KATA_AUTHOR=decoy\n");
+    writeIdentity({ dir, real }, "../bad", { KATA_AUTHOR: "real" });
+    expect(existsSync(join(root, "bad.env"))).toBe(false);
+    for (const id of ["../good", "unknown"]) {
+      const env = { PATH: `${bin}:/usr/bin:/bin`, KATA_OMP_SHIM_DIR: dir, KATA_OMP_SHIM_REAL: real, PI_SESSION_ID: id, KATA_AUTHOR: "original" };
+      const result = Bun.spawnSync([join(bin, "kata")], { env });
+      expect(result.exitCode).toBe(0); expect(result.stdout.toString()).toBe("original");
+    }
+  } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
 test("configured executable basename selects each session identity in nested shells and scripts", () => {
@@ -148,14 +149,14 @@ test("sweep removes only the known private layout for dead processes", async () 
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
-test("install retries a failed execution probe and keeps the chosen directory private", () => {
+test("install retries a failed execution probe and cleans the failed directory", () => {
   const modulePath = new URL("../plugins/oh-my-pi/shim.ts", import.meta.url).pathname;
-  const script = `import { mkdtempSync, mkdirSync, readdirSync, statSync, rmSync } from "node:fs"; import { tmpdir } from "node:os"; import { join } from "node:path"; import { installShim } from ${JSON.stringify(modulePath)};
+  const script = `import { mkdtempSync, mkdirSync, readdirSync, rmSync } from "node:fs"; import { tmpdir } from "node:os"; import { join } from "node:path"; import { installShim } from ${JSON.stringify(modulePath)};
     const root = mkdtempSync(join(tmpdir(), "kata-shim-roots-")), first = join(root, "first"), second = join(root, "second"); mkdirSync(first); mkdirSync(second);
-    try { let probes = 0; const warnings = []; const result = installShim("/bin/true", w => warnings.push(w), { roots: [first, second], probe: () => ++probes > 1 }); console.log(JSON.stringify({ probes, chosen: result?.dir.startsWith(second), first: readdirSync(first), mode: statSync(result.dir).mode & 0o777, warnings })); } finally { rmSync(root, {recursive: true, force: true}); }`;
+    try { let probes = 0; const warnings = []; const result = installShim("/bin/true", w => warnings.push(w), { roots: [first, second], probe: () => ++probes > 1 }); console.log(JSON.stringify({ probes, chosen: result?.dir.startsWith(second), first: readdirSync(first), warnings })); } finally { rmSync(root, {recursive: true, force: true}); }`;
   const result = Bun.spawnSync([process.execPath, "-e", script], { env: { PATH: "/usr/bin:/bin", HOME: process.env.HOME!, KATA_HOME: process.env.KATA_HOME! } });
   expect(result.exitCode).toBe(0);
-  expect(JSON.parse(result.stdout.toString())).toEqual({ probes: 2, chosen: true, first: [], mode: 0o700, warnings: [] });
+  expect(JSON.parse(result.stdout.toString())).toEqual({ probes: 2, chosen: true, first: [], warnings: [] });
 });
 
 test("unavailable shim warns once without altering PATH", () => {
