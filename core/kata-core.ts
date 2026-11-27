@@ -425,7 +425,8 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 	// Refs this session claimed in its shell or named with `/todo ref`: its work, though the plan may never hold them. Read by `tools.guard`.
 	const claimed = new Set<string>();
 	const closedMarks = new Set<string>();
-	let claimStamp = 0, footerGeneration = 0;
+	const claimRevisions = new Map<string, number>();
+	let footerGeneration = 0, claimsChanged = 0;
 	let reconciledAt = 0, reconciling: Promise<void> | undefined;
 	let requestedRef: string | undefined;
 	// A native host's list says what is in progress, so the core never starts a pending task itself (see nextTask).
@@ -868,7 +869,7 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 		// Only a bind that starts a session this core did not already hold restores delegates: /tree and a branch switch keep the same one.
 		const isNew = currentId !== id, previous = currentId;
 		currentId = id;
-		if (isNew && main(ctx)) { host.switched?.(ctx); newSession(); shown.clear(); closedMarks.clear(); footerGeneration++; reconciledAt = 0; reconciling = undefined; }
+		if (isNew && main(ctx)) { host.switched?.(ctx); newSession(); shown.clear(); closedMarks.clear(); claimRevisions.clear(); footerGeneration++; reconciledAt = 0; reconciling = undefined; }
 		lastSnapshot = undefined;
 		currentCtx = ctx;
 		plan = { tasks: [], workspace: path.resolve(ctx.cwd) }; named = []; aliases.clear(); deletedParent = undefined;
@@ -2191,12 +2192,12 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 			const workspace = path.resolve(event.input.cwd || ctx.cwd, parsed.value("--workspace") || ".");
 			// A word the shell expands (`$ref`, a glob) names nothing yet; only the shape of a ref counts. A bare id is recorded at once (with the
 			// plan's project when the workspace is its own) and replaced by the ref Kata resolves it to, in the background: the hook never waits.
-			if (args[0] === "claim") { claimStamp++; closedMarks.delete(ref); }
+			if (args[0] === "claim") { claimsChanged++; claimRevisions.set(ref, (claimRevisions.get(ref) ?? 0) + 1); closedMarks.delete(ref); reconciledAt = 0; }
 			if (args[0] === "claim" && QUALIFIED_REF_ONLY.test(ref)) claimed.add(ref);
 			else if (args[0] === "claim" && SHORT_ID_ONLY.test(ref)) {
 				const bare = ref, session = currentId;
 				claimed.add(plan.parent && plan.workspace === workspace ? `${projectOf(plan.parent)}#${bare}` : bare);
-				void serial(job => kata.pin(job, bare, workspace)).then(pinned => { if (currentId === session) { claimed.delete(bare); claimed.add(pinned); closedMarks.delete(pinned); } }).catch(debug);
+				void serial(job => kata.pin(job, bare, workspace)).then(pinned => { if (currentId === session) { claimed.delete(bare); claimed.add(pinned); claimsChanged++; claimRevisions.set(pinned, (claimRevisions.get(pinned) ?? 0) + 1); closedMarks.delete(pinned); reconciledAt = 0; } }).catch(debug);
 			}
 			if (!adopting) continue;
 			const target = ref;
@@ -2333,13 +2334,14 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 	// ------------------------------------------------------------ live inbox
 
 	// While the follower runs, `liveInbox` is the main session's `<kata_inbox>` text and the per-turn read is skipped for it.
-	let liveInbox: string | undefined, liveCounts: InboxCounts | undefined, follower: InboxFollower | undefined;
+	let liveInbox: string | undefined, liveCounts: InboxCounts | undefined, liveFailed: string | undefined, follower: InboxFollower | undefined;
 	let footerFormat: ((view: SessionView) => string | undefined) | undefined;
 	function stopFollower() {
 		follower?.stop();
 		follower = undefined;
 		liveInbox = undefined;
 		liveCounts = undefined;
+		liveFailed = undefined;
 	}
 
 	// Requests are delivered as an aside: an idle session starts a turn on them, a working one takes them at its
@@ -2353,6 +2355,7 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 			spawn: cursor => live.spawn([options.executable, "events", "--tail", "--json", "--workspace", cwd, ...(cursor ? ["--last-event-id", String(cursor)] : [])], cwd),
 			deliver: text => { try { Promise.resolve(live.deliver(text)).catch(debug); } catch (error) { debug(error); } },
 			publish: (text, counts) => { liveInbox = text; liveCounts = counts; if (footerFormat) void footer(ctx, "throttle", footerFormat); },
+			readState: error => { liveFailed = error === undefined ? undefined : (error as Error)?.message ?? String(error); if (footerFormat) void footer(ctx, "throttle", footerFormat); },
 			head: () => knownProjectHead(cwd, args => kata.run(job, args, cwd), platform.env.get("KATA_HOME")),
 			now: () => performance.now(),
 			setTimer: (fn, ms) => platform.setTimer(fn, ms),
@@ -2529,20 +2532,31 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 		})(), closing.delegate ? DELEGATE_SHUTDOWN_MS : SHUTDOWN_BOUND_MS);
 	}
 
-	const displayRefs = () => [...new Set([plan.parent, configuredRef(), requestedRef, ...claimed].filter((ref): ref is string => !!ref))].filter(ref => !closedMarks.has(ref));
+	const candidateRefs = () => [...new Set([plan.parent, configuredRef(), requestedRef, ...claimed].filter((ref): ref is string => !!ref))];
+	const displayRefs = () => candidateRefs().filter(ref => !closedMarks.has(ref));
 	function reconcile(ctx: HostContext, force: boolean): Promise<void> {
 		if (reconciling) return reconciling;
 		if (!force && Date.now() - reconciledAt < 15_000) return Promise.resolve();
-		const id = currentId, stamp = claimStamp;
+		const id = currentId, generation = footerGeneration, claimsAtStart = claimsChanged, refs = candidateRefs();
+		const revisions = new Map(refs.map(ref => [ref, claimRevisions.get(ref) ?? 0]));
+		let invalidated = false;
+		const current = (ref: string) => {
+			const valid = id === currentId && generation === footerGeneration && revisions.get(ref) === (claimRevisions.get(ref) ?? 0);
+			if (!valid) invalidated = true;
+			return valid;
+		};
 		const running = (async () => {
 			const mine = await actor(NO_JOB, ctx.cwd).catch(() => undefined);
-			await Promise.all(displayRefs().map(async ref => {
+			await Promise.all(refs.map(async ref => {
 				try {
 					const issue = (await kata.show(NO_JOB, ref, ctx.cwd)).issue;
-					if (id === currentId && stamp === claimStamp && (issue.status === "closed" || (issue.owner && mine && issue.owner !== mine))) closedMarks.add(ref);
-				} catch (error) { if (id === currentId && stamp === claimStamp && isKataCode(error, "issue_not_found")) closedMarks.add(ref); }
+					if (!current(ref)) return;
+					const ownershipMatters = claimed.has(ref) || (ref === requestedRef && ref !== configuredRef());
+					if (issue.status === "closed" || (ownershipMatters && issue.owner && mine && issue.owner !== mine)) closedMarks.add(ref);
+					else closedMarks.delete(ref);
+				} catch (error) { if (current(ref) && isKataCode(error, "issue_not_found")) closedMarks.add(ref); }
 			}));
-		})().finally(() => { if (reconciling === running) { reconciling = undefined; reconciledAt = Date.now(); } });
+		})().finally(() => { if (reconciling === running) { reconciling = undefined; reconciledAt = invalidated || claimsAtStart !== claimsChanged ? 0 : Date.now(); } });
 		return reconciling = running;
 	}
 	const inboxAddress = (): SessionView["inbox"] => {
@@ -2551,15 +2565,16 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 	};
 	async function sessionView(ctx: HostContext, opts: { reconcile?: boolean; context?: boolean } = {}): Promise<SessionView | undefined> {
 		if (!main(ctx)) return undefined;
-		await bounded(probe(NO_JOB, ctx.cwd)).catch(debug);
-		if (opts.reconcile) await bounded(reconcile(ctx, true));
+		const probeError = await bounded(probe(NO_JOB, ctx.cwd).then(() => undefined, error => error));
+		if (opts.reconcile) { await reconcile(ctx, true); if (!reconciledAt) await reconcile(ctx, true); }
 		const identity = await bounded(actor(NO_JOB, ctx.cwd).then(who => ({ who, error: undefined as string | undefined }), error => ({ who: undefined, error: (error as Error)?.message ?? String(error) })));
 		const entry = leadReads.get(leadKey(sid(ctx))), inbox = inboxAddress();
-		if (inbox.address && !host.liveInbox && entry?.failed) inbox.delivery = "failed";
-		return { workspace: path.resolve(ctx.cwd), scope, outage, project: plan.parent ? projectOf(plan.parent) : candidate(ctx.cwd).project,
+		if (inbox.address && (host.liveInbox ? liveFailed : entry?.failed)) inbox.delivery = "failed";
+		return { workspace: path.resolve(ctx.cwd), scope: isKataCode(probeError, "unsupported_version") ? "down" : scope,
+			outage: isKataCode(probeError, "unsupported_version") ? (probeError as Error).message : outage, project: plan.parent ? projectOf(plan.parent) : candidate(ctx.cwd).project,
 			actor: identity?.who, actorError: identity?.error, teammate: ownTeammate(), inbox, refs: displayRefs(),
 			contract: opts.context === false ? "off" : entry?.contract ? new TextEncoder().encode(entry.contract).length : "not-fetched",
-			counts: host.liveInbox && inbox.address ? liveCounts : entry?.count, inboxFailed: entry?.failed,
+			counts: host.liveInbox && inbox.address ? liveCounts : entry?.count, inboxFailed: host.liveInbox && inbox.address ? liveFailed : entry?.failed,
 			settings: { executable: options.executable, refGuard: !refGuardOff(setting("KATA_REF_GUARD")), liveInbox: !!host.liveInbox, debug: !!options.debugFile } };
 	}
 	async function sessionInbox(ctx: HostContext): Promise<InboxView> {
@@ -2583,9 +2598,16 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 		if (!main(ctx) || ctx.hasUI !== true || !ctx.ui?.setStatus) return;
 		footerFormat = format;
 		const id = sid(ctx), generation = footerGeneration;
-		await bounded(reconcile(ctx, mode === "force"));
-		const view = await sessionView(ctx);
-		if (generation === footerGeneration && id === currentId && view) ctx.ui.setStatus("kata", view.scope === "down" ? undefined : format(view));
+		const pending = reconcile(ctx, mode === "force");
+		let finished = false;
+		void pending.then(() => { finished = true; }).catch(debug);
+		const draw = async () => {
+			const view = await sessionView(ctx);
+			if (generation === footerGeneration && id === currentId && view) ctx.ui!.setStatus!("kata", view.scope === "down" ? undefined : format(view));
+		};
+		await bounded(pending);
+		await draw();
+		if (!finished) void pending.then(draw).catch(debug);
 	}
 
 	const completion = createTicketCompletion(kata, () => ({ session: currentId, cwd: path.resolve(currentCtx?.cwd ?? platform.cwd()), defaultProject: setting("KATA_DEFAULT_PROJECT") }), debug, platform);

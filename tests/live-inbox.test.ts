@@ -37,6 +37,7 @@ function follower(options: { requests?: () => unknown[]; read?: () => Promise<un
 	const streams: ReturnType<typeof fakeStream>[] = [], cursors: (number | undefined)[] = [];
 	const delivered: string[] = [], published: string[] = [], timers: (() => void)[] = [], delays: number[] = [], debugged: unknown[] = [];
 	const counts: { trusted: number; foreign: number }[] = [];
+	const readStates: unknown[] = [];
 	let reads = 0;
 	const clock = { now: 0 };
 	const deps: InboxFollowerDeps = {
@@ -52,14 +53,48 @@ function follower(options: { requests?: () => unknown[]; read?: () => Promise<un
 		},
 		deliver: text => delivered.push(text),
 		publish: (text, count) => { published.push(summary(text)); counts.push(count); },
+		readState: error => readStates.push(error),
 		head: options.head ?? (async () => 0),
 		now: () => clock.now,
 		setTimer: (fn, ms) => { timers.push(fn); delays.push(ms); return timers.length; },
 		clearTimer: () => { timers.length = 0; },
 		debug: error => debugged.push(error),
 	};
-	return { follow: createInboxFollower(deps), streams, cursors, delivered, published, counts, timers, delays, clock, debugged, reads: () => reads };
+	return { follow: createInboxFollower(deps), streams, cursors, delivered, published, counts, readStates, timers, delays, clock, debugged, reads: () => reads };
 }
+
+test("a pending or failed actor refresh never delivers using the old actor", async () => {
+	const pending = Promise.withResolvers<string>();
+	let actor = 0;
+	const t = follower({ actor: () => ++actor === 1 ? Promise.resolve("lead") : pending.promise });
+	t.follow.start(); await tick();
+	t.streams[0].push(slotLine(1, "old", slot("delivered before refresh"))); await tick();
+	t.follow.refreshActor();
+	t.streams[0].push(slotLine(2, "old", slot("old actor")));
+	t.streams[0].push(slotLine(3, "new", { from: "new", message: "new actor" }));
+	await tick(); expect(t.delivered).toHaveLength(1);
+	pending.resolve("new"); await tick();
+	expect(t.delivered).toHaveLength(2);
+	expect(t.delivered[1]).toContain("new actor");
+	t.follow.stop();
+
+	let fail = false;
+	const failed = follower({ actor: async () => { if (fail) throw new Error("identity unavailable"); return "lead"; } });
+	failed.follow.start(); await tick(); fail = true; failed.follow.refreshActor(); await tick();
+	failed.streams[0].push(slotLine(4, "old", slot("must not deliver"))); await tick();
+	expect(failed.delivered).toEqual([]);
+	failed.follow.stop();
+});
+
+test("live inbox reports a failed read and clears the failure on recovery", async () => {
+	let fail = true;
+	const t = follower({ read: async () => { if (fail) throw new Error("read failed"); return { requests: [] }; } });
+	t.follow.start(); await tick();
+	expect((t.readStates.at(-1) as Error).message).toBe("read failed");
+	fail = false; t.timers[0]!(); await tick();
+	expect(t.readStates.at(-1)).toBeUndefined();
+	t.follow.stop();
+});
 
 test("refreshing the actor updates counts without replaying delivered slots", async () => {
 	let actor = "lead";
