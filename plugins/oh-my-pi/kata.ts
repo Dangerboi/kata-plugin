@@ -481,7 +481,7 @@ export default function ompKata(pi: any) {
 				await core.delegate(record.id).todo.mirror(ctx, event.details.phases);
 			}
 		}
-		const reason = core.tools.warning(ctx, event.toolCallId);
+		const reason = core.tools.warning(event.toolCallId);
 		if (reason) return { additionalContext: `Tool call ${JSON.stringify(event.toolCallId)}: ${reason}` };
 	});
 	// omp's own todo tracker does the reminding; the mirror keeps Kata in step with it.

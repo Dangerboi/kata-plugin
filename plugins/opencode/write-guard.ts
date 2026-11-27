@@ -12,7 +12,7 @@ export function install(seam: Seam): void {
 	seam.after(async event => {
 		const role = await seam.roleOf(event.sessionID);
 		if (role.kind === "other") return;
-		const warning = role.lead.warning(event.sessionID, event.id);
+		const warning = role.lead.warning(event.id);
 		if (!warning) return;
 		if (event.status === "completed") {
 			const { content, output } = event.result;

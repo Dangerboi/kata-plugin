@@ -176,7 +176,7 @@ export default async function piKata(pi: ExtensionAPI) {
 	pi.on("tool_result", async (event, ctx) => {
 		const next = await core.tools.result(ctx, { ...event, details: undefined });
 		if (!inherited) lead = next;
-		const warning = core.tools.warning(ctx, event.toolCallId, event.parentToolCallId);
+		const warning = core.tools.warning(event.toolCallId, event.parentToolCallId);
 		if (warning) return { content: [...event.content, { type: "text" as const, text: warning }], structuredContent: event.structuredContent };
 	});
 
