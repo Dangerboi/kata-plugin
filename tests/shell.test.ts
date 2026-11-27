@@ -119,3 +119,17 @@ test("ANSI-C quoted text cannot introduce a shell command", () => {
   expect(execute(command)).toEqual(["'; kata claim abcd"]);
   expect(coreCommands(nodePlatform.path, command)).toEqual([]);
 });
+
+
+test("backtick substitutions remain visible but cannot prove a claim", () => {
+  for (const command of ["echo `true; kata claim abcd `", "x=`true; kata claim abcd `"]) {
+    const found = coreCommands(nodePlatform.path, command);
+    expect(found.map(c => [shellOptions(c.words).args[0], c.proven])).toEqual([["claim", false]]);
+    expect(delegateCommand(nodePlatform.path, command, "kata", [], "worker")).toContain("kata --teammate 'worker' claim abcd");
+  }
+  expect(coreCommands(nodePlatform.path, "echo '`kata claim abcd`'")).toEqual([]);
+  expect(coreCommands(nodePlatform.path, "kata claim abcd && echo `date`")[0].proven).toBe(true);
+  expect(coreCommands(nodePlatform.path, "kata claim abcd; echo `date`")[0].proven).toBe(false);
+  const command = "(( `cat <<EOF\nkata claim hidden\nEOF\nprintf 1` ))\nkata claim abcd";
+  expect(coreCommands(nodePlatform.path, command).map(c => shellOptions(c.words).args)).toEqual([["claim", "abcd"]]);
+});

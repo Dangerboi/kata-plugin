@@ -27,7 +27,7 @@ export function commandSegments(command: string): Segment[] {
 	let depth = 0;
 	const split = (operator: string) => { segments.at(-1)!.end = operator; segments.push({ words: [], bodies: [], end: "", depth }); };
 	const arithmetic: { end: number; substAt: number }[] = [];
-	let i = 0, heredoc: string | undefined, owner: Segment | undefined, wantDelimiter = false, hereString = false;
+	let i = 0, backtick = false, heredoc: string | undefined, owner: Segment | undefined, wantDelimiter = false, hereString = false;
 	const continued = (at: number) => command.slice(at, at + 2) === "\\\n" ? 2 : 0;
 	while (i < command.length) {
 		if (command[i] === "\n" && heredoc) {
@@ -45,6 +45,12 @@ export function commandSegments(command: string): Segment[] {
 		}
 		if (command[i] === "#") { const end = command.indexOf("\n", i); if (end < 0) break; i = end; continue; }
 		let arith = arithmetic.at(-1);
+		if (command[i] === "`") {
+			backtick = !backtick;
+			if (backtick) { depth++; if (arith && !arith.substAt) arith.substAt = depth; }
+			else { depth = Math.max(0, depth - 1); if (arith?.substAt && depth < arith.substAt) arith.substAt = 0; }
+			split(backtick ? "(" : ")"); i++; continue;
+		}
 		if (i === arith?.end) { i += 2; arithmetic.pop(); continue; }
 		if ((!arith || arith.substAt) && command.slice(i, i + 2) === "((") {
 			// A double opening parenthesis can also start nested subshells. Skip only a complete arithmetic command.
@@ -75,7 +81,7 @@ export function commandSegments(command: string): Segment[] {
 			const char = command[i];
 			if (open !== "'" && continued(i)) { i += 2; continue; }
 			if (!open && (char === "&" || char === "|") && redirectAt === i - 1) { value += char; i++; continue; }
-			if (!open && (/[\s()]/.test(char) || (";&|".includes(char) && (!arith || arith.substAt)))) break;
+			if (!open && (/[\s()`]/.test(char) || (";&|".includes(char) && (!arith || arith.substAt)))) break;
 			if (char === "\\" && (open !== "'" || ansi)) { value += command[i + 1] || ""; i += 2; continue; }
 			if (char === open) { open = ""; ansi = false; i++; continue; }
 			if (!open && (char === "'" || char === '"')) { open = char; ansi = char === "'" && dollarAt >= 0 && dollarAt === i - 1; i++; continue; }
