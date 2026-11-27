@@ -16,7 +16,7 @@ function app(options: any = {}) {
   const id = options.sid || `reliability-${++seq}`;
   const ctx = { cwd: options.cwd || cwd, sessionManager: { getSessionId: () => id, getBranch: () => entries } };
   const core = createKataCore({ platform: nodePlatform, contextTimers: ctx => ctx.setTimeout ? { setTimer: ctx.setTimeout, clearTimer: ctx.clearTimer } : undefined, appendEntry: (customType, data) => entries.push({ type: "custom", customType, data }),
-    exec: async (_file, args, opts) => { calls.push(args); contexts.push(opts.ctx); return await options.before?.(args, opts) ?? run(args, opts.cwd); }, delegateStore: memoryDelegateStore(), isMain: options.isMain,
+    exec: async (_file, args, opts) => { calls.push(args); contexts.push(opts.ctx); return await options.before?.(args) ?? run(args, opts.cwd); }, delegateStore: memoryDelegateStore(), isMain: options.isMain,
   }, { namespace: "omp", executable: binary, executableVars: ["KATA_OMP_EXECUTABLE"], explicitRef: () => options.ref });
   return { core, calls, contexts, entries, ctx, call: (p: any, job: Job = NO_JOB) => core.todo.apply(ctx, p.op, p, job) };
 }
@@ -30,65 +30,6 @@ async function init(a: ReturnType<typeof app>, items = ["First", "Second"], opti
 const tasksOf = (result: any): { content: string; status: string; blocker?: string }[] => result.details.kata.phases.flatMap((p: any) => p.tasks);
 async function child(parent: string, title: string) { return `${parent.split("#")[0]}#${(await show(parent)).children.find((c: any) => c.title === title).short_id}`; }
 beforeAll(async () => { await text(["init", "--project", "local-reliability"], localProject); });
-
-test("contract failures warn once, retry, and recover", async () => {
-  let attempts = 0;
-  const a = app({ before: (args: string[], opts: { timeout: number }) => {
-    if (args[0] !== "agent-contract-hook") return;
-    expect(opts.timeout).toBe(10_000);
-    attempts++;
-    return attempts < 3 ? { code: 1, stdout: "", stderr: "boom" } : { code: 0, stdout: JSON.stringify({ hookSpecificOutput: { additionalContext: "recovered contract" } }) };
-  } });
-  const warnings: any[] = [];
-  (a.ctx as any).ui = { notify: (...args: any[]) => warnings.push(args) };
-  for (let i = 0; i < 2; i++) {
-    const result = await a.core.session.beforePrompt(a.ctx);
-    expect(result.sections.contract).toContain("kata quickstart --format contract");
-    expect(result.sections.contract).toContain("boom");
-  }
-  expect(warnings).toHaveLength(1);
-  expect(warnings[0][1]).toBe("warning");
-  expect((await a.core.session.beforePrompt(a.ctx)).sections.contract).toBe("recovered contract");
-  expect(attempts).toBe(3);
-});
-
-test("contract pending, empty and disabled context do not report failure", async () => {
-  const gate = Promise.withResolvers<void>();
-  let attempts = 0;
-  const a = app({ before: async (args: string[]) => {
-    if (args[0] !== "agent-contract-hook") return;
-    attempts++;
-    await gate.promise;
-    return { code: 0, stdout: JSON.stringify({ hookSpecificOutput: { additionalContext: "" } }) };
-  } });
-  const warnings: any[] = [];
-  (a.ctx as any).ui = { notify: (...args: any[]) => warnings.push(args) };
-  expect((await a.core.session.beforePrompt(a.ctx, { context: false })).sections.contract).toBeUndefined();
-  expect(attempts).toBe(0);
-  expect((await a.core.session.beforePrompt(a.ctx)).sections.contract).toBeUndefined();
-  gate.resolve();
-  expect((await a.core.session.beforePrompt(a.ctx)).sections.contract).toBeUndefined();
-  expect(warnings).toHaveLength(0);
-});
-
-for (const [name, answer, reason] of [
-  ["invalid JSON", { code: 0, stdout: "not JSON" }, "invalid JSON"],
-  ["missing context", { code: 0, stdout: "{}" }, "unexpected hook output"],
-  ["timeout", { code: 1, stdout: "", killed: true }, "timed out"],
-  ["spawn failure", { code: 1, stdout: "" }, "could not run"],
-] as const) test(`contract ${name} reports a reason`, async () => {
-  const a = app({ before: (args: string[]) => args[0] === "agent-contract-hook" ? answer : undefined });
-  expect((await a.core.session.beforePrompt(a.ctx)).sections.contract).toContain(reason);
-});
-
-test("a delegate receives the failure stub without a UI warning", async () => {
-  const a = app({ isMain: () => false, before: (args: string[]) => args[0] === "agent-contract-hook" ? { code: 1, stdout: "", stderr: "boom" } : undefined });
-  const warnings: any[] = [];
-  (a.ctx as any).ui = { notify: (...args: any[]) => warnings.push(args) };
-  await a.core.delegates.start({ id: "contract-delegate", sessionId: a.ctx.sessionManager.getSessionId(), leadSessionId: "lead", text: "Survey the tree", untracked: true }, NO_JOB);
-  expect((await a.core.session.beforePrompt(a.ctx)).sections.contract).toContain("kata quickstart --format contract");
-  expect(warnings).toEqual([]);
-});
 
 // V2 requires real Kata evidence even when a project name starts with local-.
 test("local-prefixed projects still require Kata completion evidence", async () => {

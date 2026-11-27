@@ -1,5 +1,5 @@
 import { decidePlanParent, explicitParent, isExplicitParent, namesPlanParent } from "./plan-parent";
-import { createInboxFollower, knownProjectHead, trustedInbox, type InboxFollower, type LiveInbox } from "./inbox";
+import { createInboxFollower, escapeMarkup, knownProjectHead, trustedInbox, type InboxFollower, type LiveInbox } from "./inbox";
 import { createDelegates, FINAL, heldByDelegate as heldBy, isUntracked, nameOf, Refusal, teammateFor, type DelegateAssignment, type DelegateStore, type Refused, type Reservation, type SavedDelegate, type Who } from "./delegates";
 import { createSettlement, MAX_FAILURES, openChildren, type PendingClose, type SettlementSnapshot } from "./settlement";
 import { createKata, debugTo, type CORE_ENV, isKataCode, refGuardOff, isUnusable, KataError, NO_JOB, waitAtMost, type Batch, type Exec, type Job, type PathOps, type Platform, type Timers } from "./kata-cli";
@@ -432,7 +432,7 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 	let progressed = true;
 	// What one session's prompt reads from Kata, kept between turns. A core serves the lead and every delegate running in its
 	// process, so each has its own: the lead's by session id ("" when the host gives none), a delegate's by delegate id.
-	type PromptReads = { cwd: string; contract?: string; contractError?: string; contractWarned?: boolean; inbox?: string; address?: string; pending?: Promise<void>; inboxPending?: Promise<void>; inboxNext?: Promise<void>; personInbox?: boolean };
+	type PromptReads = { cwd: string; contract?: string; contractError?: string; contractNotice?: string; contractWarned?: boolean; inbox?: string; address?: string; pending?: Promise<void>; inboxPending?: Promise<void>; inboxNext?: Promise<void>; personInbox?: boolean };
 	const leadReads = new Map<string, PromptReads>();
 	const delegateReads = new Map<string, PromptReads>();
 	const leadKey = (id: string | undefined) => id ?? "";
@@ -2229,13 +2229,7 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 			].join("\n");
 	}
 
-	function warnContract(ctx: HostContext, entry: PromptReads) {
-		const ui = uiOf(ctx);
-		if (entry.contractError && !entry.contractWarned && ui?.notify) {
-			entry.contractWarned = true;
-			ui.notify(`Kata contract is unavailable (${entry.contractError}). The plugin will retry on the next prompt.`, "warning");
-		}
-	}
+	const contractReason = (error: unknown) => escapeMarkup(((error as Error)?.message ?? String(error)).replace(/\s+/g, " ").trim().slice(0, 80) || "unknown error");
 
 	// The contract is fetched until one arrives non-empty: Kata 0.23.0 sends an empty one outside a `.kata.toml`
 	// folder, so a mid-session `kata init` takes effect on the next turn. The inbox is read on every call, and a call
@@ -2271,8 +2265,8 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 			})().catch(error => {
 				debug(error);
 				if (isKataCode(error, "unsupported_version")) { entry.contractError = undefined; return; }
-				entry.contractError = ((error as Error)?.message ?? String(error)).split(/\r?\n/)[0].slice(0, 160);
-				warnContract(ctx, entry);
+				entry.contractError = contractReason(error);
+				if (!entry.contractWarned) { entry.contractWarned = true; entry.contractNotice = entry.contractError; }
 			}).finally(() => { entry.pending = undefined; });
 		}
 		const user = setting("KATA_INBOX_USER");
@@ -2582,7 +2576,11 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 					if (entry.contract) sections.contract = entry.contract;
 					else if (entry.contractError) {
 						sections.contract = `Kata contract is unavailable (${entry.contractError}). Run \`kata quickstart --format contract\` before using kata.`;
-						warnContract(ctx, entry);
+					}
+					const ui = uiOf(ctx);
+					if (main(ctx) && entry.contractNotice && ui?.notify) {
+						ui.notify(`Kata contract was unavailable (${entry.contractNotice}). Each prompt retries until it loads.`, "warning");
+						entry.contractNotice = undefined;
 					}
 					const inbox = main(ctx) && liveInbox !== undefined ? liveInbox : entry.inbox;
 					if (inbox && turnReads.showsInbox) sections.inbox = inbox;
