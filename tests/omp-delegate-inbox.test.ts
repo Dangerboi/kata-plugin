@@ -14,7 +14,7 @@ async function team(ids: string[]) {
   await lead.call({ op: "view" });
   return { lead, workers: workers.map(w => host({ sessionFile: w.sessionFile, agent: { kind: "sub", id: w.id, parentId: lead.ctx.agent.id } })) };
 }
-const prompt = async (app: ReturnType<typeof host>) => ((await app.event("before_agent_start", { systemPrompt: ["base"] }))?.systemPrompt ?? []).join("\n");
+const prompt = async (app: ReturnType<typeof host>) => await app.event("before_agent_start", { systemPrompt: ["base"] }).then((result: any) => [...(result?.systemPrompt ?? []), result?.message?.content ?? ""].join("\n"));
 const turn = async (app: ReturnType<typeof host>) => { await prompt(app); return prompt(app); };
 const addressOf = (text: string) => /Your Kata inbox is (\S+?);/.exec(text)?.[1];
 const notify = async (ref: string, to: string, text: string) => { await kata(["notify", ref, "--to", to, "--message", text, "--json"]); };

@@ -15,7 +15,7 @@ function host(options: { agent?: object; sessionFile?: string } = {}) {
 	const app = ompHost({ run: (args, opts) => run(args, opts.cwd, opts.timeout), cwd, sid, sessionFile: options.sessionFile ?? `${scratch}/${sid}.jsonl`, agent: options.agent,
 		sendUserMessage: (...args) => { sent.push(args); },
 		afterEvent: () => { for (const key of TRANSCRIPT_ENV) delete process.env[key]; } });
-	const section = async () => ((await app.event("before_agent_start", { systemPrompt: ["base"] }))?.systemPrompt ?? []).join("\n");
+	const section = async () => await app.event("before_agent_start", { systemPrompt: ["base"] }).then((result: any) => [...(result?.systemPrompt ?? []), result?.message?.content ?? ""].join("\n"));
 	return { sent, calls: app.calls, event: app.event, section, emit: app.emit, ctx: app.ctx };
 }
 
