@@ -7,7 +7,7 @@ import { onLeadShell, onShellCheck } from "./shell";
 import { onWriteGuard } from "./write-guard";
 import { onTurnStart } from "./inbox";
 import { configure } from "./lead";
-import { onBand, onTickets, onTodoCard, onTodoCommand, onTodoUse } from "./ui";
+import { onBand, onKataCommand, onTickets, onTodoCard, onTodoCommand, onTodoUse } from "./ui";
 
 // The hooks module: one line per event. `claude plugin validate` follows `$` through a helper only when the helper is declared at
 // the top of its file, so every helper that takes the `$` a hook gets lives there.
@@ -38,4 +38,5 @@ export const register: Register = (on, options) => {
 	on("ui.render", { component: "ToolResult" }, onTodoCard);
 	on("prompt.autocomplete", { token: /^#/ }, onTickets);
 	on("command.run", { command: "todo" }, onTodoCommand);
+	on("command.run", { command: "kata" }, onKataCommand);
 };

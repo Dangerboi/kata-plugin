@@ -62,7 +62,7 @@ Kata refs resolve only in the local tracker, so the plugin refuses a `Write`, `E
 
 | Moment | What the mod does |
 | --- | --- |
-| Session start | Takes up the plan: a resumed session's saved plan, pending closes and unfinished delegates resume with it. Registers the `/todo` command. A slow Kata holds the session start (and the first hook of a new session id) for at most 5 s; the session then goes on without its plan, which binds when Kata answers. |
+| Session start | Takes up the plan: a resumed session's saved plan, pending closes and unfinished delegates resume with it. Registers the `/todo` and `/kata` commands. A slow Kata holds the session start (and the first hook of a new session id) for at most 5 s; the session then goes on without its plan, which binds when Kata answers. |
 | `/clear`, `/resume`, `/branch` | These fire no session start, so the next hook finds the new session id and switches the core to it, releasing the tasks the old session held. A fork made in the session (`/branch`) shares the source's plan when `classic.SessionStart` runs (not under a managed-settings guard, see [limits](../explanation/limits.md#claude-code)): the fork starts from what its source saved. `claude --resume <id> --fork-session` starts a new session that names no source to the mod, so it starts from a plan of its own ([limits](../explanation/limits.md#claude-code)). |
 | End of each lead turn | Retries due closes and hands back exited delegates. When a task is still open, the end-of-turn Stop hook returns the core's reminder so the model keeps working. |
 | Compaction | The plan is sent again with the next prompt. |
@@ -80,6 +80,7 @@ The mod draws in the terminal UI, and in the desktop Code tab and the VS Code ch
 - **Checklist card** under each of the lead's `todo` calls, with the result's notice (a deleted parent, a close Kata deferred) above the checklist. A delegate's `todo` call keeps the engine's own row. A session-local plan (kept while Kata is unreachable) draws no band and no card.
 - **`#` ticket completion** in the prompt, with the same tokens as the [omp ticket references](oh-my-pi.md#ticket-references-in-the-prompt). A loaded list answers at once, whatever Kata is doing; only the first fill of a session's list waits, for 400 ms at most, beside the rows of other plugins.
 - **`/todo`** shows the plan; the subcommands `start`, `done`, `drop`, `rm`, `append`, `block`, `unblock` and `takeover` change it, as in Pi.
+- **`/kata`** (or `/kata status`), `/kata inbox` and `/kata refresh`, as in [Pi](pi.md), shown to the person only. The contract line says `off — kata agent-hook supplies it` unless the `contract` option is on. Claude Code has no footer.
 
 ## Live inbox
 

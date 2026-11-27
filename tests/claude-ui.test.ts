@@ -146,7 +146,7 @@ test("/todo is registered at the session start and answers the omp subcommands f
 	const h = host();
 	const ui = engineUi(h);
 	await h.start();
-	expect(ui.commands.map(c => c.name)).toEqual(["todo"]);
+	expect(ui.commands.map(c => c.name)).toEqual(["todo", "kata"]);
 	const run = (args: string) => h.fire("command.run", { command: "todo", args, origin: { kind: "composer" } });
 	expect(await run("")).toMatchObject({ text: expect.stringContaining("No todo plan"), isTextDisplayOnly: true });
 	await h.todo({ op: "init", items: ["First item"] });
@@ -167,6 +167,20 @@ test("/todo is registered at the session start and answers the omp subcommands f
 	const before = (await run("")).text;
 	for (const inherited of ["toString", "constructor", "__proto__"]) expect((await run(inherited)).text, inherited).toContain(`/todo ${inherited} is not available with Kata`);
 	expect((await run("")).text).toBe(before);
+});
+
+test("/kata is registered beside /todo and answers for the person only", async () => {
+	const h = host();
+	const ui = engineUi(h);
+	await h.start();
+	expect(ui.commands.find(c => c.name === "kata")).toMatchObject({ argumentHint: "[status|inbox|refresh]" });
+	const run = (args: string) => h.fire("command.run", { command: "kata", args, origin: { kind: "composer" } });
+	const status = await run("");
+	expect(status).toMatchObject({ isTextDisplayOnly: true });
+	expect(status.text).toMatch(/^workspace  /);
+	expect(status.text).toContain("contract   off — kata agent-hook supplies it");
+	expect(await run("refresh")).toEqual({ text: "Kata contract and actor cleared; the next prompt reads both again.", isTextDisplayOnly: true });
+	expect(await run("explode")).toEqual({ text: "Usage: /kata [status|inbox|refresh]", isTextDisplayOnly: true });
 });
 
 test("/todo takeover starts a ticket item of the plan", async () => {
