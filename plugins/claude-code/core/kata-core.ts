@@ -2095,7 +2095,7 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 			if (!found.length) return undefined;
 			return `Refused: this ${call.tool} call puts ${found.join(", ")} into the repository. Kata refs only resolve in the local tracker, so code, comments, tests, docs and commit messages should describe the behaviour instead. Rewrite it without the ref and retry. To turn this check off, set KATA_REF_GUARD=off.`;
 		})(), REF_GUARD_MS).then(reason => {
-			if (reason && mode === "warn" && options.warn && call.id) { warnings.set(call.id, reason); return undefined; }
+			if (reason && mode === "warn" && options.warn && call.id) { warnings.set(call.id, reason.replace(/^Refused: this (.*?) call puts/, "This $1 call ran; it asked to put").replace(" Rewrite it without the ref and retry.", "")); return undefined; }
 			return reason;
 		});
 	}
