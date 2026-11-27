@@ -8,7 +8,7 @@ All notable changes to `@dangerboi/kata-pi` are listed here. The format follows 
 
 #### Repository content
 
-- `KATA_REF_GUARD=warn` lets a call the ref guard would refuse run, and adds the reason to that call's result, once, saying the call ran.
+- `KATA_REF_GUARD=warn` lets a call the ref guard would refuse run, and adds the reason to that call's result, once.
 
 ### Fixed
 

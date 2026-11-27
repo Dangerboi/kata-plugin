@@ -8,7 +8,7 @@ All notable changes to the `kata-cc` Claude Code plugin are listed here. The for
 
 #### Repository content
 
-- `KATA_REF_GUARD=warn` lets a call the ref guard would refuse run, and adds the reason to that call's result context, once, saying the call ran. The `refGuard` option stays on or off, and off still wins.
+- `KATA_REF_GUARD=warn` lets a call the ref guard would refuse run, and adds the reason to that call's result context, once. The `refGuard` option stays on or off, and off still wins.
 
 ### Fixed
 
