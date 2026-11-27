@@ -4,6 +4,14 @@ All notable changes to `@dangerboi/kata-pi` are listed here. The format follows 
 
 ## [Unreleased]
 
+### Fixed
+
+#### Plans
+
+- A main-agent `kata claim <ref>` (or `kata meta set <ref> work.attention ok`) inside a compound shell command binds the issue only when the command's success proves the claim ran: at the top level, not right after `||`, in no pipeline, block or background job, and followed only by `&&` up to the last command. `cd repo && kata claim <ref>` and `make; kata claim <ref>` bind; `kata claim <ref>; kata show <ref>` and `kata claim <ref> || true` record the claim without binding. Several proven claims bind in order, and the last becomes the parent.
+  - `kata claim --ttl 2h <ref>` binds `<ref>`, not `2h`, and a ref the shell expands (`$ID`) binds nothing.
+- The shell reader keeps arithmetic (`(( ))`, `$(( ))`), redirections (`2>&1`, `&>`, `>|`), line continuations, ANSI-C quoting and nested `$( )` and backtick substitutions in one command, so a `kata` call in them is found or ignored correctly.
+
 ## [1.13.0] - 2026-11-26
 
 ### Added

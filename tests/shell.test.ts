@@ -84,6 +84,7 @@ test("claim positions prove success only through a top-level && suffix", () => {
 });
 
 test("arithmetic, substitutions and CRLF keep executable commands visible", () => {
+  expect(coreCommands(nodePlatform.path, "(( case = 1 )); kata claim abcd")[0].proven).toBe(true);
   for (const command of ["(( x << 1 ))\nkata claim abcd", "for (( i = 1; i < 9; i <<= 1 )); do echo x; done\nkata claim abcd", "echo x\r\nkata claim abcd"]) {
     expect(coreCommands(nodePlatform.path, command).map(c => shellOptions(c.words).args)).toEqual([["claim", "abcd"]]);
   }

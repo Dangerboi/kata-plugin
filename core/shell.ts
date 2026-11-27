@@ -110,19 +110,13 @@ export function kataCommands(path: Pick<PathOps, "basename">, command: string, c
 		next = part.end === "(" ? next ?? true : next === undefined ? ["", ";", "\n"].includes(part.end) : part.end === "&&" && next;
 		suffix[index] = next;
 	}
-	let blockDepth = 0;
 	for (let index = 0; index < segments.length; index++) {
 		const { words: segment, depth } = segments[index];
-		for (const word of segment) {
-			if (["fi", "done", "esac", "}"].includes(word.value)) blockDepth = Math.max(0, blockDepth - 1);
-			else if (["if", "while", "until", "for", "select", "case", "{"].includes(word.value)) blockDepth++;
-			else if (!["then", "do", "else", "elif"].includes(word.value)) break;
-		}
 		const before = index ? segments[index - 1].end : "";
 		let j = 0;
 		while (j < segment.length && (ASSIGNMENT.test(segment[j].value) || PREFIXES.includes(segment[j].value))) j++;
 		const executable = segment[j];
-		const proven = !depth && !blockDepth && !["||", "|", "|&"].includes(before)
+		const proven = !depth && !["||", "|", "|&"].includes(before)
 			&& !segment.slice(0, j).some(word => word.value === "!") && suffix[index];
 		if (executable && (path.basename(executable.value) === "kata" || executable.value === configuredExecutable || executableVars.some(name => executable.value === `$${name}` || executable.value === `\${${name}}`))) commands.push({ executable, words: segment.slice(j + 1), assignments: segment.slice(0, j).filter(word => ASSIGNMENT.test(word.value)), proven });
 	}
