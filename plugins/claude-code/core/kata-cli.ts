@@ -105,7 +105,9 @@ export function closeEnv(env: Pick<Platform["env"], "get">, args: readonly strin
 }
 
 export type ExecResult = { code: number; stdout: string; stderr?: string; killed?: boolean };
-export type Exec = (file: string, args: string[], options: { cwd: string; timeout: number; ctx?: any }) => Promise<ExecResult>;
+// What a detached end checks first, from the issue as attention began: its owner and teammate must still be these.
+export type OwnerGuard = { show: string[]; owner: string; teammate: string };
+export type Exec = (file: string, args: string[], options: { cwd: string; timeout: number; ctx?: any; env?: Record<string, string> }) => Promise<ExecResult>;
 
 type Project = { id: number; name: string };
 
@@ -138,8 +140,10 @@ export interface Job {
 export const NO_JOB: Job = {};
 
 export interface Kata {
+	// Build the same CLI flags for a detached call as for an awaited one.
+	argv(args: string[], cwd: string, workspace?: boolean): string[];
 	// `workspace: false` leaves out `--workspace <cwd>`.
-	run(job: Job, args: string[], cwd: string, options?: { timeout?: number; workspace?: boolean }): Promise<string>;
+	run(job: Job, args: string[], cwd: string, options?: { timeout?: number; workspace?: boolean; env?: Record<string, string> }): Promise<string>;
 	show(job: Job, ref: string, cwd: string): Promise<KataShow>;
 	// The registered projects, read once per session and again with `fresh` (a project registered later).
 	projects(job: Job, cwd: string, fresh?: boolean): Promise<Project[]>;
@@ -176,33 +180,37 @@ export function createKata(env: {
 		try { return await fn({ ...from, reads: store }); } finally { store.open = false; store.seen.clear(); }
 	}
 
-	async function invoke(job: Job, args: string[], cwd: string, { timeout = 120_000, workspace = true } = {}): Promise<string> {
+	function argv(args: string[], cwd: string, workspace = true): string[] {
 		// --json makes every failure carry Kata's error code; the contract hook prints its own format.
 		const plain = args[0] === "agent-contract-hook" || args[0] === "version";
 		const teammate = env.teammate();
 		// Options end at `--`: what follows (a title, an item) is data, even when it reads `--json`.
 		const at = args.indexOf("--"), end = at < 0 ? args.length : at;
 		const flags = [...(plain || args.slice(0, end).includes("--json") ? [] : ["--json"]), ...(teammate !== undefined && !plain ? ["--teammate", teammate] : []), ...(workspace ? ["--workspace", env.path.resolve(cwd)] : [])];
-		args = [...args.slice(0, end), ...flags, ...args.slice(end)];
+		return [...args.slice(0, end), ...flags, ...args.slice(end)];
+	}
+
+	async function invoke(job: Job, input: string[], cwd: string, { timeout = 120_000, workspace = true, env: childEnv }: { timeout?: number; workspace?: boolean; env?: Record<string, string> } = {}): Promise<string> {
+		const args = argv(input, cwd, workspace);
 		if (!isRead(args)) {
 			// Counted when it starts and when it ends, so a read that overlapped it is not reused either.
 			writes.count++;
-			try { return await call(job, args, cwd, timeout); } finally { writes.count++; }
+			try { return await call(job, args, cwd, timeout, childEnv); } finally { writes.count++; }
 		}
 		const store = args[0] === "show" ? job.reads : undefined;
-		if (!store?.open) return call(job, args, cwd, timeout);
+		if (!store?.open) return call(job, args, cwd, timeout, childEnv);
 		const key = args.join("\0");
 		const seen = store.seen.get(key);
 		if (seen && seen.writes === writes.count) return seen.out;
-		const out = call(job, args, cwd, timeout);
+		const out = call(job, args, cwd, timeout, childEnv);
 		store.seen.set(key, { writes: writes.count, out });
 		out.catch(() => { if (store.seen.get(key)?.out === out) store.seen.delete(key); });
 		return out;
 	}
 
-	async function call(job: Job, args: string[], cwd: string, timeout: number): Promise<string> {
+	async function call(job: Job, args: string[], cwd: string, timeout: number, childEnv?: Record<string, string>): Promise<string> {
 		let result: ExecResult;
-		try { result = await env.exec(env.executable, args, { cwd, timeout, ctx: job.ctx ?? env.ctx() }); }
+		try { result = await env.exec(env.executable, args, { cwd, timeout, ctx: job.ctx ?? env.ctx(), env: childEnv }); }
 		catch (error) {
 			if ((error as { code?: unknown })?.code !== "ENOENT") throw error;
 			throw new KataError(`kata ${args[0]} could not run: ${(error as Error).message}`, { exit: -1, notRun: true });
@@ -223,7 +231,7 @@ export function createKata(env: {
 	// Share one bounded check across concurrent reads. Failed checks retry so installing
 	// or upgrading Kata can recover without restarting the host; outages stay outages.
 	let compatible: Promise<void> | undefined;
-	async function run(job: Job, args: string[], cwd: string, options?: { timeout?: number; workspace?: boolean }): Promise<string> {
+	async function run(job: Job, args: string[], cwd: string, options?: { timeout?: number; workspace?: boolean; env?: Record<string, string> }): Promise<string> {
 		await (compatible ??= (async () => {
 			let version: unknown, output = "";
 			try { output = await invoke(job, ["version", "--json"], cwd, { timeout: 3000, workspace: false }); }
@@ -267,7 +275,7 @@ export function createKata(env: {
 	}
 
 	return {
-		run, show, projects, qualify,
+		argv, run, show, projects, qualify,
 		operation,
 		fresh: job => ({ ...job, reads: undefined }),
 		projectNames: (job, cwd) => projects(job, cwd).then(list => new Set(list.map(p => p.name)), error => { env.debug(error); return new Set<string>(); }),

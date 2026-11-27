@@ -1,10 +1,10 @@
 // Generated from core/node-host.ts; edit there.
-import { execFile } from "node:child_process";
+import { execFile, spawn, type SpawnOptions } from "node:child_process";
 import { appendFileSync, realpathSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import path from "node:path";
-import { transcriptEnv, type ExecResult, type Platform } from "./kata-cli";
+import { transcriptEnv, type ExecResult, type OwnerGuard, type Platform } from "./kata-cli";
 
 // The Node implementations of what the core takes from its host. Only adapters that run on Node import this module:
 // the core itself never does.
@@ -47,4 +47,30 @@ export function execKata(file: string, args: string[], options: { cwd: string; t
 				resolve({ code: typeof failure.code === "number" ? failure.code : 1, stdout, stderr, killed: failure.name === "AbortError" || !!failure.killed });
 			});
 	});
+}
+
+// Run by the host's own runtime when an end has a guard: the end follows only while the issue still has the owner and teammate attention began under.
+// A failed read ends nothing, as a failed awaited end would not. A compiled Bun host (omp) runs a script only with BUN_BE_BUN.
+const GUARDED = `const { execFileSync } = require("node:child_process");
+const [file, guard, args] = process.argv.slice(1).map((value, index) => index ? JSON.parse(value) : value);
+delete process.env.BUN_BE_BUN;
+try {
+	const { issue } = JSON.parse(execFileSync(file, guard.show, { encoding: "utf8", timeout: 5000 }));
+	if (issue.owner === guard.owner && (issue.metadata?.teammate || "") === guard.teammate) execFileSync(file, args, { stdio: "ignore", timeout: 5000 });
+} catch {}`;
+
+// The detached child's command, as `spawn` takes it.
+function spawnArgs(file: string, args: string[], { cwd, env, guard }: { cwd: string; env?: Record<string, string>; guard?: OwnerGuard }): [string, string[], SpawnOptions] {
+	const spawned: SpawnOptions = { cwd, env: { ...process.env, ...env }, detached: true, stdio: "ignore" };
+	return guard ? [process.execPath, ["-e", GUARDED, file, JSON.stringify(guard), JSON.stringify(args)], { ...spawned, env: { ...spawned.env, BUN_BE_BUN: "1" } }] : [file, args, spawned];
+}
+
+// A shutdown hook must survive the host exiting and must never keep it alive.
+export function spawnDetached(file: string, args: string[], options: { cwd: string; env?: Record<string, string>; guard?: OwnerGuard }, onError?: (error: unknown) => void): void {
+	const report = (error: unknown) => { try { onError?.(error); } catch { /* Shutdown must not throw. */ } };
+	try {
+		const child = spawn(...spawnArgs(file, args, options));
+		child.on("error", report);
+		child.unref();
+	} catch (error) { report(error); }
 }

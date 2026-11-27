@@ -17,9 +17,9 @@ export function v2Fixture() {
   function host(options: any = {}) {
     const sid = options.sid === null ? undefined : options.sid || `v2-${unique()}`;
     const app = ompHost({
-      run: (args, opts) => run(args, opts.cwd, opts.timeout), cwd: options.cwd || cwd, sid, agent: options.agent, entries: options.entries,
-      sessionFile: options.sessionFile || `${scratch}/${sid}.jsonl`, header: options.header, snapshot: options.snapshot, before: options.before,
-      // The adapter spawns closes itself while a transcript session is exported, so a host that must see or fail closes runs without one; `transcript: true` keeps it.
+      run: (args, opts) => run(args, opts.cwd, opts.timeout, opts.env), cwd: options.cwd || cwd, sid, agent: options.agent, entries: options.entries,
+      execKata: options.execKata, sessionFile: options.sessionFile || `${scratch}/${sid}.jsonl`, header: options.header, snapshot: options.snapshot, before: options.before,
+      // Keep the exported transcript pair only for tests that need it after an event.
       afterEvent: () => { if (!options.transcript) clearTranscriptEnv(); },
     });
     // Not a spread copy: `sid` is a getter that follows `switchSession`.

@@ -4,6 +4,12 @@ All notable changes to `@dangerboi/kata-omp` are listed here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+
+#### Inbox and attention
+
+- Quitting omp flags the session's attended issues `needs-human` even when closes and hand backs outlast omp's 2 s shutdown budget: the attention ends now run as detached processes before that work. The `KATA_REF` issue's end still checks its owner and teammate first, outside the budget, and ends nothing if they changed or the check fails.
+
 ## [3.1.0] - 2026-11-26
 
 ### Added

@@ -150,13 +150,18 @@ test("queued close survives extension recreation and retries only after its dead
   const app = host({ before: (a: string[]) => a[0] === "close" ? siblingThrottle() : undefined });
   await app.event("session_start");
   const parent = await app.init(["Durable queued close"]);
-  await app.done("Durable queued close");
+  const task = `v2test#${(await show(parent)).children[0].short_id}`;
+  // Drop asks the mirror to close the still-open task, so the throttle queues a task close with a deadline.
+  expect((await app.call({ op: "drop", task: "Durable queued close" })).isError).toBeUndefined();
   const entries = JSON.parse(JSON.stringify(app.entries));
+  const snapshot = entries.filter((entry: any) => entry.data?.retries).at(-1);
+  expect(snapshot?.data.retries.some(([ref]: [string, unknown]) => ref === task)).toBe(true);
+  expect((await show(task)).issue.status).toBe("open");
   const resumed = host({ sid: app.sid, entries }); await resumed.event("session_start");
-  expect(resumed.calls.some(a => a[0] === "close")).toBe(false);
+  expect(resumed.calls.some(a => a[0] === "close" && a.includes(task))).toBe(false);
   await later(async () => { const restarted = host({ sid: app.sid, entries }); await restarted.event("session_start"); await restarted.call({ op: "view" }); });
-  expect((await show(parent)).issue.status).toBe("closed");
-  expect(await closesOf(parent)).toHaveLength(1);
+  expect((await show(task)).issue.status).toBe("closed");
+  expect(await closesOf(task)).toHaveLength(1);
 });
 
 // The 2026-10-19 eval: omp sent todo init and the tests delegation in one batch.

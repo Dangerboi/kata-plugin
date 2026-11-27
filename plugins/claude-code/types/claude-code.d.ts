@@ -309,4 +309,4 @@ declare class TextDecoder {
 }
 declare function structuredClone<T>(value: T): T;
 declare function btoa(text: string): string;
-declare const performance: { now(): number };
+declare const performance: { readonly timeOrigin: number; now(): number };

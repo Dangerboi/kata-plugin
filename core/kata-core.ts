@@ -2,7 +2,7 @@ import { decidePlanParent, explicitParent, isExplicitParent, namesPlanParent } f
 import { createInboxFollower, knownProjectHead, trustedInbox, type InboxFollower, type LiveInbox } from "./inbox";
 import { createDelegates, FINAL, heldByDelegate as heldBy, isUntracked, nameOf, Refusal, teammateFor, type DelegateAssignment, type DelegateStore, type Refused, type Reservation, type SavedDelegate, type Who } from "./delegates";
 import { createSettlement, MAX_FAILURES, openChildren, type PendingClose, type SettlementSnapshot } from "./settlement";
-import { createKata, debugTo, type CORE_ENV, isKataCode, refGuardOff, isUnusable, KataError, NO_JOB, waitAtMost, type Batch, type Exec, type Job, type PathOps, type Platform, type Timers } from "./kata-cli";
+import { createKata, debugTo, type CORE_ENV, isKataCode, refGuardOff, isUnusable, KataError, NO_JOB, waitAtMost, type Batch, type Exec, type Job, type OwnerGuard, type PathOps, type Platform, type Timers } from "./kata-cli";
 import { createTicketCompletion } from "./autocomplete";
 import { offendingRefs } from "./ref-guard";
 import { kataCommands, quote, shellOptions } from "./shell";
@@ -37,6 +37,7 @@ export interface HostContext {
 interface CoreHost {
 	// What the core takes from the machine it runs on (environment, cwd, timers, filesystem): node-host.ts's `nodePlatform` on Node.
 	platform: Platform;
+	detached?(file: string, args: string[], options: { cwd: string; env?: Record<string, string>; guard?: OwnerGuard }): void;
 	// Timers the event's context owns, preferred over the platform's: omp's are contained in the session and cleared at its shutdown.
 	contextTimers?(ctx: any): Timers | undefined;
 	// `ctx` is the context of the event the call serves, for a host that spawns differently per agent (omp's transcript identity).
@@ -2335,14 +2336,26 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 	// to end them under: this session's, and every earlier one that may still hold the ref because a start for a restored parent may not have applied.
 	// Each stays until the session ends or switches: Kata's end flags a ticket still on `ok`, and does nothing to a closed one.
 	type Attended = Map<string, { cwd: string; sessions: Set<string> }>;
-	let attentionSession: { id: string; cwd: string; ref?: string; hostCwd: string; hostRef?: string; marker?: string; attended: Attended } | undefined;
+	let attentionSession: { id: string; cwd: string; ref?: string; hostCwd: string; hostRef?: string; marker?: string; guard?: OwnerGuard; attended: Attended } | undefined;
 	const logSkip = (error: unknown) => debug(`Kata attention skipped: ${(error as Error).message}`);
+	const attentionLauncher = `omp-${platform.pid}-${performance.timeOrigin}`;
+	const attentionEnv = () => ({ KATA_SESSION_ID: attentionLauncher });
+	const attentionArgs = (mode: "start" | "end", id: string, ref: string) =>
+		["agent-hook", "attention-native", options.attentionHarness!, mode, "--session", id, "--host-pid", String(platform.pid), "--ref", ref];
+	const guardOf = (ref: string, cwd: string, issue: KataIssue): OwnerGuard => ({ show: kata.argv(["show", ref], cwd), owner: issue.owner ?? "", teammate: String(issue.metadata?.teammate || "") });
 	const attentionHook = (job: Job, mode: "start" | "end", sessionId: string, ref: string, cwd: string) =>
-		kata.run(job, ["agent-hook", "attention-native", options.attentionHarness!, mode, "--session", sessionId, "--host-pid", String(platform.pid), "--ref", ref], cwd, { timeout: mode === "start" ? 3000 : 1500 });
+		kata.run(job, attentionArgs(mode, sessionId, ref), cwd, { timeout: mode === "start" ? 3000 : 1500, env: attentionEnv() });
 	// Kata ends only what the given attention session holds, so no ownership check is needed here. Together, not one by one: omp gives a shutdown handler 2 s.
 	async function endAttended(job: Job, session: NonNullable<typeof attentionSession>) {
 		await Promise.all([...session.attended].flatMap(([ref, { cwd, sessions }]) => [...sessions].map(id => attentionHook(job, "end", id, ref, cwd).catch(logSkip))));
 		session.attended.clear();
+	}
+	function detachAttention(session: NonNullable<typeof attentionSession>) {
+		const end = (id: string, ref: string, cwd: string, guard?: OwnerGuard) => host.detached!(options.executable, kata.argv(attentionArgs("end", id, ref), cwd), { cwd, env: attentionEnv(), guard });
+		if (session.ref && session.guard) end(session.id, session.ref, session.cwd, session.guard);
+		for (const [ref, held] of session.attended) for (const id of held.sessions) end(id, ref, held.cwd);
+		session.attended.clear();
+		if (session.marker && platform.env.get("KATA_ATTENTION_HOST") === session.marker) platform.env.set("KATA_ATTENTION_HOST", undefined);
 	}
 	// Starts attention for the plan's explicit parent; true when the start may not have applied: a failure, including a timeout after Kata wrote ok. Kata's start would reset any `stuck` or `needs-human`
 	// to ok, Kata's own session-ended flag included, so those issues are skipped; `kata meta set <ref> work.attention ok` clears the flag and
@@ -2369,7 +2382,7 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 		if (!ref || !options.attentionHarness) return;
 		try {
 			// The native hook guards revisions, not the actor or teammate.
-			await owned(job, ref, session.cwd);
+			session.guard = guardOf(ref, session.cwd, await owned(job, ref, session.cwd));
 			await attentionHook(job, mode, session.id, ref, session.cwd);
 			if (mode === "start" && session.hostRef) {
 				const route = JSON.parse(await kata.run(job, ["daemon", "locate"], session.hostCwd, { timeout: 1500 }));
@@ -2474,6 +2487,7 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 			await serial(async job => {
 				const session = attentionSession;
 				attentionSession = undefined;
+				if (session && host.detached) detachAttention(session);
 				await load(job, plan.workspace).catch(debug);
 				const ends = main(ctx) && !closing.continues && !closing.forking;
 				// A pi child that started before this lead had a plan made the session's automatic parent itself (see join),
@@ -2484,7 +2498,6 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 				}
 				await sweep(job, options.closeParent !== "shutdown" || ends);
 				const ending = ends ? leaving() : undefined;
-				if (session) { await attention(job, "end", session); await endAttended(job, session); }
 				await moveMarks(job, ending, undefined);
 			});
 			if (closing.delegate?.report) await delegates.apply({ type: "reported", id: closing.delegate.id, text: closing.delegate.report }, NO_JOB);

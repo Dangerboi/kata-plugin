@@ -30,6 +30,8 @@ mock.module("@oh-my-pi/pi-coding-agent/config/registry", () => ({
 
 export interface OmpHostOptions extends Omit<FakeHostOptions, "exec"> {
   agent?: any;
+  /** Use the real runtime for a test of native execution failures. */
+  execKata?: typeof import("../core/node-host").execKata;
   /** Omitted: the session manager has no session file. */
   sessionFile?: string;
   /** Async-job snapshot; omitted: nothing is running. */
@@ -82,7 +84,18 @@ function loadAdapter(options: OmpHostOptions, makeManager?: (entries: any[]) => 
   ctx.agent = options.agent || { kind: "main", id: `main-${options.sid}` };
   ctx.getAsyncJobSnapshot = () => options.snapshot?.() || { running: [], recent: [] };
   void setBackend("kata");
-  ompKata({ ...host.api, ...extra, pi: { settings }, events: { on: bus.on }, ...options.sendUserMessage && { sendUserMessage: options.sendUserMessage } });
+  const detached: Promise<any>[] = [];
+  const runtime = {
+    execKata: options.execKata ?? ((file: string, args: string[], opts: any) => host.api.exec(file, args, opts)),
+    spawnDetached: (file: string, args: string[], opts: any) => {
+      detached.push(host.api.exec(file, args, opts));
+    },
+  };
+  // omp's pi.exec ignores the env option; the separate runtime port is the path that can carry it.
+  const exec = (file: string, args: string[], { env: _env, ...opts }: any) => host.api.exec(file, args, opts);
+  ompKata({ ...host.api, ...extra, exec, pi: { settings }, events: { on: bus.on }, ...options.sendUserMessage && { sendUserMessage: options.sendUserMessage } }, runtime);
+  const event = host.event;
+  host.event = async (...args: Parameters<typeof event>) => { const result = await event(...args); await Promise.all(detached.splice(0)); return result; };
   return { host, bus };
 }
 
