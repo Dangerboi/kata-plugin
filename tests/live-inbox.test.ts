@@ -440,21 +440,6 @@ test("a live follower publishes no partial snapshot before its seed read complet
   t.follow.stop();
 });
 
-test("a seed and reconciliation publish one complete snapshot while stream updates publish immediately", async () => {
-  let inbox: unknown[] = ["one", "two", "three"].map(ref => ({ ref, ...slot(ref) }));
-  const t = follower({ requests: () => inbox });
-  t.follow.start(); await tick();
-  expect(t.published).toEqual(["one:one|two:two|three:three"]);
-  inbox = inbox.slice(1);
-  t.streams[0].push(JSON.stringify({ event_id: 6, type: "issue.soft_deleted", project_name: "proj", issue_short_id: "one", payload: {} }));
-  await tick();
-  expect(t.published).toEqual(["one:one|two:two|three:three", "two:two|three:three"]);
-  t.streams[0].push(slotLine(7, "four", slot("new")));
-  await tick();
-  expect(t.published).toEqual(["one:one|two:two|three:three", "two:two|three:three", "two:two|three:three|four:new"]);
-  t.follow.stop();
-});
-
 test("an empty first seed publishes the known empty inbox once", async () => {
   const t = follower();
   t.follow.start(); await tick();

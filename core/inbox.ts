@@ -249,8 +249,8 @@ export function createInboxFollower(deps: InboxFollowerDeps): InboxFollower {
 			streamed: o.read ? (stored?.streamed ?? 0) : ++streamed,
 			seeded: same && !confirm ? stored?.seeded === true : slot !== null && !!o.read && o.quiet,
 		});
-		if (!o.read) publish();
-		if (same && !confirm) return;
+		if (same && !confirm) return publish();
+		publish();
 		if (slot === null || o.quiet || !isTrusted(slot, mine) || !slot.message.trim()) return;
 		deps.deliver(deliveryText(o.ref ?? stored?.ref ?? issue, deps.address, slot));
 	}
