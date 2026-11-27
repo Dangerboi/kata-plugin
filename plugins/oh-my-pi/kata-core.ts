@@ -407,7 +407,7 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 	let assignedRef: string | undefined;
 	const configuredRef = () => options.explicitRef?.() ?? setting("KATA_REF");
 	const aliases = new Set<string>(); // refs the plan's parent was rehomed from: they still name it
-	// Refs this session claimed in its shell or named with `/todo ref`: its work, though the plan may never hold them. Read by `tools.guard`.
+	// Refs this session claimed in its shell, named with `/todo ref` or learned from its kata calls and output: its work, though the plan may never hold them. Read by `tools.guard`.
 	const claimed = new Set<string>();
 	const learnedProjects = new Set<string>();
 	let requestedRef: string | undefined;
