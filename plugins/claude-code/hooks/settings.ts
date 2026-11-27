@@ -39,7 +39,7 @@ export interface Settings {
 	liveInbox: boolean;
 	// Refuse writes and commits that put a Kata ref into the repository. Off: the option or KATA_REF_GUARD is `off` or `0`.
 	refGuard: boolean;
-	// A file whose text replaces Kata's contract; read only with `contract` on. Blank: KATA_CONTRACT_SOURCE, else the built-in contract.
+	// A file whose text replaces Kata's contract; blank leaves KATA_CONTRACT_SOURCE to the core.
 	contractSource?: string;
 }
 
@@ -53,6 +53,6 @@ export function resolveSettings(options: Record<string, unknown> | undefined, en
 		contract: options?.contract === true,
 		liveInbox: options?.liveInbox !== false && env.get("KATA_CLAUDE_LIVE_INBOX") !== "0",
 		refGuard: options?.refGuard !== false && !refGuardOff(env.get("KATA_REF_GUARD")),
-		contractSource: text(options?.contractSource) ?? text(env.get("KATA_CONTRACT_SOURCE"))
+		contractSource: text(options?.contractSource)
 	};
 }
