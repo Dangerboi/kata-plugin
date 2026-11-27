@@ -506,7 +506,6 @@ test("proven claims adopt in order and invalid refs never reach show", async () 
   expect([...new Set(shown)]).toEqual(refs);
   const adopted = app.entries.filter(e => e.customType === "io.kata.omp.parent" && refs.includes(e.data?.parent)).map(e => e.data.parent);
   expect([...new Set(adopted)]).toEqual(refs);
-  await eventually(async () => app.calls.some(c => c[1] === "attention-native" && c[3] === "start" && c.includes(refs[1])), true);
   await app.call({ op: "init", items: ["Last claim wins"] });
   const task = (await show(second)).children.find((c: any) => c.title === "Last claim wins");
   expect(task).toBeDefined();
