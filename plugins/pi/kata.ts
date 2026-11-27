@@ -2,7 +2,7 @@ import path from "node:path";
 import type { BeforeAgentStartEvent, ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { createKataCore, DESCRIPTION, PROMPT_TAGS, TODO_OPS, TODO_PARAMS, type Lead, type ChildParent } from "./kata-core";
 import { NO_JOB } from "./kata-cli";
-import { clearInheritedOmpSession, exportTranscriptSession, nodePlatform } from "./node-host";
+import { exportTranscriptSession, nodePlatform } from "./node-host";
 import { delegateCommand, kataCommands, quote } from "./shell";
 import type { DelegateRecord, DelegateStore } from "./delegates";
 import { lastText } from "./model";
@@ -52,7 +52,6 @@ export default async function piKata(pi: ExtensionAPI) {
 	// OMP also discovers legacy pi manifests. Do not register a second todo
 	// tool there, or even ask its loader to resolve pi's TypeBox dependency.
 	if ((pi as any).zod) return;
-	clearInheritedOmpSession();
 	let inherited: PiParent | undefined;
 	try {
 		const marker = JSON.parse(process.env.KATA_PI_PARENT || "null");
