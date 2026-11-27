@@ -136,6 +136,12 @@ test("git message options and stdin are checked for commits, merges, tags and no
     `git tag -m "demo#ab3d" v1`,
     `git notes add -m "demo#ab3d"`,
     `git notes append --message=demo#ab3d`,
+    `git notes --ref=reviews add -m "demo#ab3d"`,
+    `git notes --ref reviews append -F - <<< "demo#ab3d"`,
+    `git -C /work notes --ref=other add -m "demo#ab3d"`,
+    `git -C /work tag -m "demo#ab3d" v1`,
+    `git merge -Skey -m "demo#ab3d" feature`,
+    `git merge -Skey -F - <<< "demo#ab3d"`,
     `git commit --file=/dev/stdin <<< "demo#ab3d"`,
     `git commit -F /dev/stdin <<< "demo#ab3d"`,
     `git merge -F - <<EOF\ndemo#ab3d\nEOF`,
@@ -151,6 +157,9 @@ test("git non-message arguments and messages outside the workspace pass", async 
     `git tag v1`, `git merge feature`, `git notes show`, `git constructor -m demo#ab3d`,
     `git merge -smy-strategy demo#ab3d`, `git tag -uuser-m demo#ab3d`,
     `git -C /tmp/x merge -m "demo#ab3d"`,
+    `git -C /tmp/x tag -m "demo#ab3d" v1`,
+    `git -C /tmp/x notes --ref reviews add -m "demo#ab3d"`,
+    `git merge --no-commit --no-ff -Sm" demo#ab3d" feature`,
   ]) expect(await check("bash", { command }), command).toEqual([]);
 });
 

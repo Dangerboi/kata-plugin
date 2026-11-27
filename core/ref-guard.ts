@@ -66,7 +66,7 @@ const addedRows = (diff: string, file: string | undefined): Added => ({ files: f
 const GIT_VALUE_OPTIONS = new Set(["-C", "-c", "--git-dir", "--work-tree", "--namespace", "--exec-path"]);
 // Value-taking short flags before `m` consume the rest of a cluster, rather than introducing a message.
 const GIT_MESSAGE_OPTIONS: Record<string, { values: RegExp; trailer?: boolean }> = {
-  commit: { values: /[FCctSu]/, trailer: true }, merge: { values: /[FsX]/ },
+  commit: { values: /[FCctSu]/, trailer: true }, merge: { values: /[FsXS]/ },
   tag: { values: /[Fu]/ }, notes: { values: /[FCc]/ },
 };
 
@@ -89,7 +89,10 @@ function gitMessages(command: string, cwd: string | undefined): Added[] {
 		for (at++; at < words.length && words[at].value.startsWith("-"); at += GIT_VALUE_OPTIONS.has(words[at].value) ? 2 : 1) if (words[at].value === "-C" && words[at + 1]) place = fold(place, words[at + 1].value);
 		const subcommand = words[at]?.value, options = GIT_MESSAGE_OPTIONS[subcommand];
 		if (!Object.hasOwn(GIT_MESSAGE_OPTIONS, subcommand)) continue;
-		if (subcommand === "notes" && !["add", "append"].includes(words[++at]?.value)) continue;
+		if (subcommand === "notes") {
+			for (at++; words[at]?.value.startsWith("-"); at += words[at].value === "--ref" ? 2 : 1) { /* notes options precede its action */ }
+			if (!["add", "append"].includes(words[at]?.value)) continue;
+		}
 		const rest = words.slice(at + 1).map(word => word.value), parts: string[] = [];
 		for (let n = 0; n < rest.length; n++) {
 			const word = rest[n];
