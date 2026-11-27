@@ -8,7 +8,7 @@ All notable changes to the `kata-cc` Claude Code plugin are listed here. The for
 
 #### Inbox and attention
 
-- With the `contract` option on, a failed Kata contract fetch is no longer silent: until a fetch succeeds, `<kata_contract>` names the reason and tells the model to run `kata quickstart --format contract` (with the configured Kata executable in place of `kata`), and the main session shows one warning toast with the reason at its next prompt, once per session. Each prompt retries the fetch.
+- With the `contract` option on, a failed Kata contract fetch is no longer silent: until a fetch succeeds, `<kata_contract>` names the reason and tells the model to run `kata quickstart --format contract` (with the configured Kata executable in place of `kata`), and the main session shows one warning toast with the reason, once per session. Each prompt retries the fetch.
   - A folder without a `.kata.toml` (empty contract) and an incompatible Kata stay quiet, as before.
   - The contract fetch now waits up to 10 seconds instead of 1, so a slow Kata still delivers one in the background; the main prompt still waits 250 ms, and a delegate's prompt up to 1 second, on the contract.
 
