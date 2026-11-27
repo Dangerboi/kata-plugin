@@ -47,6 +47,13 @@ export default function(api){registerSmokeProvider(api,AssistantMessageEventStre
     args.push("-e", provider, "--model", "probe/dummy", "--mode", "json", "-p", "lead");
     console.log(run(host === "pi" ? pi : omp, args, { KATA_REF: refs[0], ATTENTION_OTHER_REF: refs[1], ATTENTION_HOST: host, PI_CODING_AGENT_DIR: path.join(scratch, host + "-agent") }));
     if (host === "omp") {
+      // The child writes this row only after both inheritance checks have left the live lead untouched.
+      const rows = linesIn<{ host: string; marker?: string; before: Record<string, unknown>; final: Record<string, unknown> }>(results);
+      const lead = rows[1];
+      if (rows.length !== 2 || rows[0].host !== "pi" || lead?.host !== "omp" || !lead.marker ||
+          lead.before?.["work.attention"] !== "ok" || !lead.before?.["work.attention_session"] ||
+          lead.final?.["work.attention"] !== "ok" || lead.final?.["work.attention_session"] !== lead.before["work.attention_session"])
+        throw new Error("OMP live lead and child proof did not complete before shutdown check");
       let metadata: Record<string, unknown> = {};
       for (const end = Date.now() + 20_000; Date.now() < end;) {
         metadata = JSON.parse(kata(["show", refs[0], "--json"])).issue.metadata ?? {};
