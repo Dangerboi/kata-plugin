@@ -4,7 +4,7 @@ import { piFixture } from "./pi-fixture";
 import { USAGE } from "../core/session-status";
 
 // pi's `/kata` and `kata` footer: replies go to the person through notify, never to the model through sendMessage.
-const { host } = piFixture();
+const { host, kata, issue } = piFixture();
 
 async function pi(options: any = {}) {
 	const app = await host(options);
@@ -34,6 +34,22 @@ test("pi /kata answers through notify, the footer follows the session and clears
 	expect(app.messages.filter(m => m[0]?.customType !== "kata.todo.command")).toEqual([]);
 	await app.event("session_shutdown", { reason: "quit" });
 	expect(app.statuses.at(-1)).toEqual(["kata", undefined]);
+});
+
+test("pi /kata inbox redraws the footer with the trusted count it read", async () => {
+	const address = "pi-builder/kata-inbox";
+	process.env.KATA_INBOX_USER = address;
+	const app = await pi();
+	await app.event("session_start", { reason: "startup" });
+	const ref = await issue("Pi inbox footer");
+	await kata(["notify", ref, "--to", address, "--message", "pi-footer-ping-2207", "--json"]);
+	await app.kata("inbox");
+	expect(app.notes().at(-1)).toStartWith(`Kata inbox for "${address}" (shown here only; the next prompt is unchanged)`);
+	expect(app.notes().at(-1)).toContain("pi-footer-ping-2207");
+	expect(await until(() => !!app.footer()?.endsWith(" · inbox 1"))).toBe(true);
+	expect(app.messages.filter(m => m[0]?.customType !== "kata.todo.command")).toEqual([]);
+	await kata(["notify", ref, "--to", address, "--clear", "--json"]);
+	await app.event("session_shutdown", { reason: "quit" });
 });
 
 test("pi without a UI draws no footer and runs no Kata for it", async () => {

@@ -153,11 +153,11 @@ export default async function piKata(pi: ExtensionAPI) {
 	pi.registerCommand("kata", {
 		description: KATA_DESCRIPTION,
 		async handler(args, ctx) {
-			try { ctx.ui.notify(inherited ? MAIN_ONLY : await kataCommand(core.session, ctx, args, { context: !nativeContractActive(ctx.cwd) }), "info"); }
+			try { ctx.ui.notify(inherited ? MAIN_ONLY : await kataCommand(core.session, ctx, args, { context: !nativeContractActive(ctx.cwd) }), "info"); drawFooter(ctx, "force"); }
 			catch (error) { ctx.ui.notify(`Kata could not answer /kata: ${error instanceof Error ? error.message : String(error)}`, "warning"); }
 		},
 	});
-	// The footer: redrawn at once at session start, before each prompt and after a bash command that may start a pi child; other tool results are throttled.
+	// The footer: redrawn at once at session start, before each prompt, after /kata and after a bash command that may start a pi child; other tool results are throttled.
 	const drawFooter = (ctx: ExtensionContext, mode: "force" | "throttle") => { if (!inherited) void core.session.footer(ctx, mode, footerText).catch(() => {}); };
 	pi.on("input", async (event) => {
 		if (event.source === "interactive" && !event.text.trim().startsWith("/")) core.session.input();

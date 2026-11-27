@@ -331,11 +331,11 @@ export default function ompKata(pi: any) {
 		description: KATA_DESCRIPTION,
 		async handler(args: string, ctx: any) {
 			const at = main(ctx) ? ctx : !ctx?.agent && seen && main(seen) ? seen : undefined;
-			try { ctx?.ui?.notify?.(at ? await kataCommand(core.session, at, args) : MAIN_ONLY, "info"); }
+			try { ctx?.ui?.notify?.(at ? await kataCommand(core.session, at, args) : MAIN_ONLY, "info"); if (at) drawFooter(at, "force"); }
 			catch (error) { debug(error); ctx?.ui?.notify?.(`Kata could not answer /kata: ${error instanceof Error ? error.message : String(error)}`, "warning"); }
 		},
 	});
-	// The footer: redrawn at once at session start, before each prompt and after a task call; other tool results are throttled.
+	// The footer: redrawn at once at session start, before each prompt, after /kata and after a task call; other tool results are throttled.
 	const drawFooter = (ctx: any, mode: "force" | "throttle") => { if (main(ctx)) void core.session.footer(ctx, mode, footerText).catch(debug); };
 
 	// The Delegates that owns a delegate's record is the lead's, on the main thread; a worker's copy reaches it over the channel.
