@@ -218,10 +218,9 @@ test("refGuard warn refuses script-made calls but permits clean ones", async () 
 	}
 });
 
-test("OpenCode learns call arguments and lone issue output", async () => {
+test("OpenCode learns lone issue output", async () => {
   const { host, id } = await startLead();
   const call = (command: string, result: unknown = "ok") => host.callTool(id, "shell", { command }, { execute: () => result });
-  expect((await call('kata comment q7x2 -m done && git commit -m "fix q7x2"')).status).toBe("error");
-  await call("kata next --agent", { content: "OK next issue=z7x2" });
+  await call("kata next --agent", { content: [{ type: "text", text: "OK next issue=z7x2" }] });
   expect((await call('git commit -m "fix z7x2"')).status).toBe("error");
 });

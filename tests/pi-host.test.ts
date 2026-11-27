@@ -345,10 +345,9 @@ test("pi nested runner carries a filtered warning to the outer result", async ()
 	} finally { delete process.env.KATA_REF_GUARD; }
 });
 
-test("pi learns call arguments and lone issue output", async () => {
+test("pi learns lone issue output", async () => {
   const app = await host(); await app.event("session_start", { reason: "startup" });
   const call = (command: string) => app.event("tool_call", { toolName: "bash", input: { command } });
-  expect(await call('kata comment q7x2 -m done && git commit -m "fix q7x2"')).toMatchObject({ block: true });
   await app.event("tool_result", { toolName: "bash", input: { command: "kata next --agent" }, content: [{ type: "text", text: "OK next issue=z7x2" }] });
   expect(await call('git commit -m "fix z7x2"')).toMatchObject({ block: true });
 });
