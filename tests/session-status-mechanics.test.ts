@@ -13,7 +13,7 @@ function fixture(hook: () => Promise<string> = async () => "contract", issue?: (
     if (args[0] === "version") return { code: 0, stdout: JSON.stringify({ kata_api_version: 1, version: "0.23.0" }), stderr: "" };
     if (args[0] === "status") { const item = issue?.(); return { code: 0, stdout: JSON.stringify({ kata_api_version: 1, issue_status: item?.status, owner: item?.owner, actor: "alice" }), stderr: "" }; }
     if (args[0] === "agent-contract-hook") return { code: 0, stdout: JSON.stringify({ hookSpecificOutput: { additionalContext: await hook() } }), stderr: "" };
-    if (args[0] === "inbox") return { code: 0, stdout: JSON.stringify({ requests: [{ ref: "p#1", from: "alice", message: "hello" }, { ref: "p#2", from: "other", message: "private" }] }), stderr: "" };
+    if (args[0] === "inbox") return { code: 0, stdout: JSON.stringify({ kata_api_version: 1, requests: [{ ref: "p#1", from: "alice", message: "hello" }, { ref: "p#2", from: "other", message: "private" }] }), stderr: "" };
     return { code: 0, stdout: JSON.stringify({ issues: [] }), stderr: "" };
   } }, { namespace: "test", executable: "/tmp/kata-fixture", executableVars: [], explicitRef: () => issue ? "test#one" : undefined, env: name => ({ KATA_AUTHOR: "alice", KATA_INBOX_USER: "alice/worker" } as Record<string, string>)[name] });
   return { core, ctx, calls };
@@ -410,7 +410,7 @@ test("status reads the inbox now and reports failure then recovery", async () =>
   const ctx = { cwd: "/tmp/kata-status-fresh-inbox" };
   const core = createKataCore({ platform: nodePlatform, appendEntry() {}, delegateStore: memoryDelegateStore(), exec: async (_file, args) => {
     if (args[0] === "version") return { code: 0, stdout: JSON.stringify({ kata_api_version: 1, version: "0.24.0" }), stderr: "" };
-    if (args[0] === "inbox") return fail ? { code: 1, stdout: "", stderr: "offline" } : { code: 0, stdout: JSON.stringify({ requests: [{ ref: "p#1", from: "alice", message: "one" }] }), stderr: "" };
+    if (args[0] === "inbox") return fail ? { code: 1, stdout: "", stderr: "offline" } : { code: 0, stdout: JSON.stringify({ kata_api_version: 1, requests: [{ ref: "p#1", from: "alice", message: "one" }] }), stderr: "" };
     return { code: 0, stdout: JSON.stringify({ issues: [] }), stderr: "" };
   } }, { namespace: "test", executable: "/tmp/kata-fixture", executableVars: [], env: n => ({ KATA_AUTHOR: "alice", KATA_INBOX_USER: "alice/worker" } as Record<string, string>)[n] });
   expect((await core.session.view(ctx, { reconcile: true }))?.counts?.trusted).toBe(1);
@@ -475,7 +475,7 @@ test('live inspection updates footer without consuming either of several request
   const ctx = { cwd:'/tmp/kata-r6-synthetic', hasUI:true, sessionManager:{ getSessionId:()=> 'lead', getBranch:()=>[] }, ui:{setStatus: (_:string, s:string|undefined)=>writes.push(s)} };
   const core = createKataCore({platform:nodePlatform, appendEntry(){}, delegateStore:memoryDelegateStore(), liveInbox: {spawn:()=>({lines:(async function*(){await done.promise})(), exited:done.promise, kill:()=>done.resolve()}), deliver(){}}, exec:async (_f,args)=> {
     if(args[0]==='version') return r6ok({kata_api_version:1,version:'0.24.0'});
-    if(args[0]==='inbox') return r6ok({requests:[...requests]});
+    if(args[0]==='inbox') return r6ok({kata_api_version:1,requests:[...requests]});
     if(args[0]==='agent-contract-hook') return r6ok({hookSpecificOutput:{additionalContext:'contract'}});
     if(args[0]==='events') return r6ok({events:[],next_after_id:0});
     return r6ok({issues:[]});
