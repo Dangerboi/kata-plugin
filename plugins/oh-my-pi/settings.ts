@@ -17,7 +17,7 @@ const boolean: Parser<boolean> = value => {
 const refGuard: Parser<typeof REF_GUARD_VALUES[number]> = value => {
 	if (typeof value !== "string") return undefined;
 	if (refGuardOff(value)) return "off";
-	return value.trim().toLowerCase() === "block" ? "block" : undefined;
+	return ["block", "1", "true", "on", "yes"].includes(value.trim().toLowerCase()) ? "block" : undefined;
 };
 export const KEYS = {
 	defaultProject: { env: "KATA_DEFAULT_PROJECT", default: "", parse: text },

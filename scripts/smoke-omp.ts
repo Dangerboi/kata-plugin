@@ -144,6 +144,11 @@ async function run(scenario: Scenario) {
 			omp("plugin", "config", "set", "@dangerboi/kata-omp", "refGuard", "off");
 			const list = omp("plugin", "config", "list", "@dangerboi/kata-omp");
 			report("config list shows refGuard off and its variable", /refGuard:\s*off/.test(list) && list.includes("KATA_REF_GUARD"), list);
+			if (scenario.name === "settings-project") {
+				mkdirSync(path.join(work, ".omp"), { recursive: true });
+				writeFileSync(path.join(work, ".omp/plugin-overrides.json"), JSON.stringify({ settings: { "@dangerboi/kata-omp": { refGuard: "block" } } }));
+			}
+			if (scenario.name === "settings-env") env.KATA_REF_GUARD = "block";
 		}
 		// The plugin mirrors and guards omp's native todo only while the `kata` backend is selected, so every run selects it; the scenario's own settings follow.
 		writeFileSync(ompConfig, `todo:\n  backend: kata\n${scenario.ompConfig ?? ""}`);

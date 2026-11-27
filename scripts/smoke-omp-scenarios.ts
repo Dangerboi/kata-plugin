@@ -618,7 +618,7 @@ SCENARIOS.push({ ...workers, name: "workers-slow-kata", livePrompt: undefined,
 	env: { KATA_OMP_EXECUTABLE: fileURLToPath(new URL("./smoke-slow-kata.sh", import.meta.url)) } });
 
 // These use omp's actual plugin installation and config commands in the driver.
-for (const [name, blocked] of [["settings-package", false], ["settings-marketplace", false]] as const) {
+for (const [name, blocked] of [["settings-package", false], ["settings-marketplace", false], ["settings-project", true], ["settings-env", true]] as const) {
 	SCENARIOS.push({
 		name, prompt: `${MAIN} Exercise the configured ref guard.`,
 		scripts: { [MAIN]: [

@@ -14,7 +14,7 @@ All notable changes to `@dangerboi/kata-omp` are listed here. The format follows
 ### Changed
 
 - `KATA_OMP_LIVE_INBOX` also reads `false`/`off` as off and `1`/`true`/`on` as on; before, only `0` turned live delivery off.
-- `KATA_REF_GUARD` reads only `block`, `off` and `0`. Any other value, `1`, `true` and `on` included, used to mean on; it is now skipped for the stored `refGuard`, then `block`.
+- `KATA_REF_GUARD` reads `block`, `1`, `true`, `on` or `yes` as on and `off` or `0` as off. Any other value, `false` included, used to mean on; it is now skipped for the stored `refGuard`, then `block`.
 
 ## [3.1.0] - 2026-11-26
 

@@ -1,15 +1,16 @@
 import { afterEach, expect, test } from "bun:test";
-import { realKata, until } from "./kata-fixture";
+import { fakeHost, memoryDelegateStore, realKata, until } from "./kata-fixture";
+import { createKataCore } from "../core/kata-core";
+import { nodePlatform } from "../core/node-host";
 import { ompHost, setPluginSettings } from "./omp-host";
 
-const store = realKata({ prefix: "review97", author: "v2-builder", project: "omp-v2-live", adopt: true });
+const store = realKata({ prefix: "omp-settings-branch", author: "v2-builder", project: "omp-v2-live", adopt: true });
 const apps: ReturnType<typeof ompHost>[] = [];
 afterEach(async () => { for (const app of apps.splice(0)) await app.event("session_shutdown"); setPluginSettings(() => ({})); delete process.env.KATA_INBOX_USER; });
 
 for (const [initial, next] of [[false, true], [true, false]] as const) test(`branch applies liveInbox ${initial} -> ${next}`, async () => {
   let liveInbox = initial;
-  let reads = 0;
-  setPluginSettings(() => { reads++; return { defaultProject: "", liveInbox, refGuard: "off" }; });
+  setPluginSettings(() => ({ defaultProject: "", liveInbox, refGuard: "off" }));
   process.env.KATA_INBOX_USER = `v2-builder/branch-${initial}`;
   const sent: string[] = [];
   const app = ompHost({ cwd: store.cwd, sid: `branch-${initial}`, run: (args, opts) => store.run(args, opts.cwd, opts.timeout), sendUserMessage: (text) => { sent.push(text); } });
@@ -20,9 +21,7 @@ for (const [initial, next] of [[false, true], [true, false]] as const) test(`bra
   if (!initial) await store.kata(["notify", refs[1], "--to", process.env.KATA_INBOX_USER!, "--message", "already-present", "--json"]);
   liveInbox = next;
   app.ctx.sessionManager.switchTo(`branch-new-${initial}`, {});
-  const started = performance.now();
   await app.event("session_branch");
-  console.log(`branch ${initial}->${next} elapsed ${(performance.now()-started).toFixed(1)}ms; settings reads ${reads}; unselected issues: ${refs.length-1}`);
   await store.kata(["notify", refs[0], "--to", process.env.KATA_INBOX_USER!, "--message", "branch-message", "--json"]);
   const delivered = await until(() => sent.some(text => text.includes("branch-message")));
   expect(delivered).toBe(next);
@@ -35,15 +34,26 @@ for (const [initial, next] of [[false, true], [true, false]] as const) test(`bra
 
 
 test("an unchanged live setting keeps the existing follower on branch", async () => {
-  setPluginSettings(() => ({ liveInbox: true }));
   process.env.KATA_INBOX_USER = "v2-builder/branch-unchanged";
-  const app = ompHost({ cwd: store.cwd, sid: "branch-unchanged", run: (args, opts) => store.run(args, opts.cwd, opts.timeout), sendUserMessage: () => {} });
-  apps.push(app);
-  const children = () => Bun.spawnSync(["pgrep", "-f", `events --tail --json --workspace ${store.cwd}`]).stdout.toString().trim().split("\n").filter(Boolean);
-  await app.event("session_start");
-  expect(await until(() => children().length === 1)).toBe(true);
-  const first = children()[0];
-  app.ctx.sessionManager.switchTo("branch-same", {});
-  await app.event("session_branch", { reason: "btw" });
-  expect(children()).toEqual([first]);
+  const host = fakeHost({ cwd: store.cwd, sid: "branch-unchanged", run: (args, opts) => store.run(args, opts.cwd, opts.timeout) });
+  let spawns = 0, killed = 0, finish!: () => void;
+  const exited = new Promise<void>(resolve => { finish = resolve; });
+  const core = createKataCore({
+    platform: nodePlatform,
+    appendEntry: host.api.appendEntry,
+    exec: host.api.exec,
+    delegateStore: memoryDelegateStore(),
+    liveInbox: {
+      spawn: () => { spawns++; return { lines: (async function* () { await exited; })(), exited, kill: () => { killed++; finish(); } }; },
+      deliver: () => {},
+    },
+  }, { namespace: "omp", executable: store.binary, executableVars: ["KATA_OMP_EXECUTABLE"] });
+  try {
+    await core.session.start(host.ctx);
+    expect(await until(() => spawns === 1)).toBe(true);
+    await core.session.branch(host.ctx);
+    expect(spawns).toBe(1);
+    expect(killed).toBe(0);
+  } finally { await core.session.shutdown(host.ctx); }
+  expect(killed).toBe(1);
 });

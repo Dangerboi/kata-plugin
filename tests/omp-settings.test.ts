@@ -32,14 +32,18 @@ test("a padded legacy guard variable overrides a stored block setting", async ()
 
 test("resolution preserves text and falls through unreadable values", () => {
   const stored = { defaultProject: " Mixed Project ", liveInbox: "false", refGuard: "off" };
-  const value = resolveSettings(stored, { KATA_OMP_LIVE_INBOX: "bad", KATA_REF_GUARD: "on" });
+  const value = resolveSettings(stored, { KATA_OMP_LIVE_INBOX: "bad", KATA_REF_GUARD: "bogus" });
   expect(value.liveInbox).toBe(false);
   expect(value.env("KATA_DEFAULT_PROJECT")).toBe(" Mixed Project ");
   expect(value.env("KATA_REF_GUARD")).toBe("off");
   expect(resolveSettings(stored, { KATA_DEFAULT_PROJECT: "", KATA_REF_GUARD: " OFF ", KATA_OMP_LIVE_INBOX: " ON " }).env("KATA_DEFAULT_PROJECT")).toBe("");
   expect(resolveSettings(stored, { KATA_REF_GUARD: " OFF " }).env("KATA_REF_GUARD")).toBe("off");
   expect(resolveSettings(stored, { KATA_OMP_LIVE_INBOX: " ON " }).liveInbox).toBe(true);
-  for (const guard of ["1", "true", "on", "yes"]) expect(resolveSettings({ refGuard: "off" }, { KATA_REF_GUARD: guard }).env("KATA_REF_GUARD")).toBe("off");
+  for (const guard of ["1", "true", "on", "yes", " YES "]) {
+    expect(resolveSettings({ refGuard: "off" }, { KATA_REF_GUARD: guard }).env("KATA_REF_GUARD")).toBe("block");
+    expect(resolveSettings({ refGuard: guard }, {}).env("KATA_REF_GUARD")).toBe("block");
+  }
+  expect(resolveSettings({ refGuard: "off" }, { KATA_REF_GUARD: "false" }).env("KATA_REF_GUARD")).toBe("off");
   for (const [input, expected] of [["0",false],["false",false],["off",false],["1",true],["true",true],["on",true]] as const) expect(resolveSettings({ liveInbox: input }, {}).liveInbox).toBe(expected);
 });
 
@@ -49,6 +53,21 @@ test("loader ignores malformed results and errors", async () => {
     setPluginSettings(() => { throw new Error("unavailable"); });
     expect(await loadPluginSettings(cwd)).toEqual({});
   } finally { setPluginSettings(() => ({})); }
+});
+
+test("the real settings loader tolerates an absent omp module", () => {
+  const home = path.join(store.scratch, "loader-home");
+  mkdirSync(home, { recursive: true });
+  const env: NodeJS.ProcessEnv = { ...process.env, HOME: home, XDG_CONFIG_HOME: path.join(home, "config"), XDG_DATA_HOME: path.join(home, "data"), XDG_CACHE_HOME: path.join(home, "cache") };
+  delete env.CODEX_HOME; delete env.CLAUDE_CONFIG_DIR; delete env.PI_CODING_AGENT_DIR;
+  const child = Bun.spawnSync([process.execPath, "-e", `
+    let absent = false;
+    try { await import("@oh-my-pi/pi-coding-agent/extensibility/plugins"); } catch { absent = true; }
+    const { loadPluginSettings } = await import("./plugins/oh-my-pi/settings.ts");
+    console.log(JSON.stringify({ absent, settings: await loadPluginSettings(${JSON.stringify(home)}) }));
+  `], { cwd: process.cwd(), env, stdout: "pipe", stderr: "pipe" });
+  expect(child.exitCode).toBe(0);
+  expect(JSON.parse(child.stdout.toString())).toEqual({ absent: true, settings: {} });
 });
 
 test("switch and branch reload settings, while tree keeps the current values", async () => {
