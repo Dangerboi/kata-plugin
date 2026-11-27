@@ -199,7 +199,7 @@ export default function ompKata(pi: any, runtime = { execKata, spawnDetached }) 
 	};
 	const core = createKataCore({
 		platform: nodePlatform,
-		detached: runtime.spawnDetached,
+		detached: (file, args, opts) => runtime.spawnDetached(file, args, opts, error => debug(`Kata attention skipped: ${String(error)}`)),
 		// omp's timers, contained in the session and cleared at its shutdown.
 		contextTimers: ctx => typeof ctx?.setTimeout === "function" && typeof ctx.clearTimer === "function" ? { setTimer: (fire, ms) => ctx.setTimeout(fire, ms), clearTimer: handle => ctx.clearTimer(handle) } : undefined,
 		// omp's exec spawns with the environment it captured at startup and ignores an env option, so

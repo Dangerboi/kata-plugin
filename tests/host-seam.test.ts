@@ -11,6 +11,7 @@ import { explicitParent } from "../core/plan-parent";
 import { slotKey } from "../core/inbox";
 import { CORE_ENV, debugTo, waitAtMost, type Timers } from "../core/kata-cli";
 import { readEnv } from "../plugins/claude-code/hooks/settings";
+import { spawnDetached } from "../core/node-host";
 
 test("the pure SHA-256 matches the published vectors", () => {
   expect(sha256Hex("")).toBe("e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855");
@@ -86,6 +87,17 @@ test("debugTo writes the error to its file, and nothing without one", () => {
   expect(written[0][1]).toContain("Error: boom");
   debugTo(undefined, (file, text) => written.push([file, text]))("quiet");
   expect(written).toHaveLength(1);
+});
+
+test("detached spawn reports asynchronous and synchronous failures without throwing", async () => {
+  const errors: unknown[] = [];
+  const reported = Promise.withResolvers<void>();
+  const debug = debugTo("/log", (_file, line) => { errors.push(line); reported.resolve(); });
+  expect(() => spawnDetached("/no-such-kata-executable", [], { cwd: process.cwd() }, debug)).not.toThrow();
+  await Promise.race([reported.promise, new Promise((_, reject) => setTimeout(() => reject(new Error("spawn error was not reported")), 1000))]);
+  expect(String(errors[0])).toContain("ENOENT");
+  expect(() => spawnDetached("bad\0file", [], { cwd: process.cwd() }, debug)).not.toThrow();
+  expect(errors).toHaveLength(2);
 });
 
 test("core/ imports nothing from Node, except the Node host module", () => {

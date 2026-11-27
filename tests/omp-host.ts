@@ -87,7 +87,9 @@ function loadAdapter(options: OmpHostOptions, makeManager?: (entries: any[]) => 
     execKata: (file: string, args: string[], opts: any) => host.api.exec(file, args, opts),
     spawnDetached: (file: string, args: string[], opts: any) => { detached.push(host.api.exec(file, args, opts)); },
   };
-  ompKata({ ...host.api, ...extra, pi: { settings }, events: { on: bus.on }, ...options.sendUserMessage && { sendUserMessage: options.sendUserMessage } }, runtime);
+  // omp's pi.exec ignores the env option; the separate runtime port is the path that can carry it.
+  const exec = (file: string, args: string[], { env: _env, ...opts }: any) => host.api.exec(file, args, opts);
+  ompKata({ ...host.api, ...extra, exec, pi: { settings }, events: { on: bus.on }, ...options.sendUserMessage && { sendUserMessage: options.sendUserMessage } }, runtime);
   const event = host.event;
   host.event = async (...args: Parameters<typeof event>) => { const result = await event(...args); await Promise.all(detached.splice(0)); return result; };
   return { host, bus };

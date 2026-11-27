@@ -384,6 +384,7 @@ test("shutdown ends attention before settling a missed delegate exit", async () 
   await child.event("tool_call", { toolName: "read", input: { path: "README.md" } });
   const task = (await kata(["show", parent, "--json"])).children.find((c: any) => c.title === "Implement the widget");
   expect(task).toBeDefined();
+  await eventually(async () => app.entries.some(e => e.data?.delegates?.some((d: any) => d.id === id && d.state === "assigned")), true);
   recent = [{ id, type: "task", status: "completed" }]; slow = true;
   const stop = app.event("session_shutdown");
   try {
