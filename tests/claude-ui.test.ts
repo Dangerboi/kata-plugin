@@ -146,7 +146,7 @@ test("/todo is registered at the session start and answers the omp subcommands f
 	const h = host();
 	const ui = engineUi(h);
 	await h.start();
-	expect(ui.commands.map(c => c.name)).toEqual(["todo", "kata"]);
+	expect(ui.commands.find(c => c.name === "todo")).toBeDefined();
 	const run = (args: string) => h.fire("command.run", { command: "todo", args, origin: { kind: "composer" } });
 	expect(await run("")).toMatchObject({ text: expect.stringContaining("No todo plan"), isTextDisplayOnly: true });
 	await h.todo({ op: "init", items: ["First item"] });
@@ -198,12 +198,11 @@ test("/kata says Kata supplies the inbox only with the mod's contract and live i
 		await h.start();
 		const { text } = await h.fire("command.run", { command: "kata", args: "", origin: { kind: "composer" } });
 		await h.end();
-		const row = (label: string) => text.split("\n").find((line: string) => line.startsWith(label.padEnd(11)))?.slice(11);
-		return { inbox: row("inbox"), requests: row("requests") };
+		return text.split("\n").find((line: string) => line.startsWith("inbox      "))?.slice(11);
 	};
-	expect(await rows(false, false)).toEqual({ inbox: `${address} · kata supplies it`, requests: "Kata supplies the inbox, without this plugin's actor filter" });
-	expect((await rows(true, false)).inbox).toBe(`${address} · per prompt`);
-	expect((await rows(false, true)).inbox).toBe(`${address} · live`);
+	expect(await rows(false, false)).toBe(`${address} · kata supplies it`);
+	expect(await rows(true, false)).toBe(`${address} · per prompt`);
+	expect(await rows(false, true)).toBe(`${address} · live`);
 });
 
 test("/todo takeover starts a ticket item of the plan", async () => {

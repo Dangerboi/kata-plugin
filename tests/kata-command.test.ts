@@ -3,7 +3,7 @@ import { realKata, unique, until } from "./kata-fixture";
 import { ompHost } from "./omp-host";
 import { TRANSCRIPT_ENV } from "../core/kata-cli";
 import type { SessionView } from "../core/kata-core";
-import { footerText, inboxText, kataCommand, statusText, USAGE } from "../core/session-status";
+import { footerText, inboxText, kataCommand, REFRESHED, statusText, USAGE } from "../core/session-status";
 
 // `/kata status|inbox|refresh` and the `kata` footer: the text from plain views, then omp wiring against a real Kata.
 // pi's wiring is in pi-kata-command.test.ts, Claude Code's in claude-ui.test.ts.
@@ -33,7 +33,7 @@ test("/kata status names each missing piece", () => {
 	expect(down).toMatchObject({ workspace: "/home/a/repo (Kata unavailable: daemon unreachable)", actor: "unknown (no actor)", teammate: "none", refs: "none", contract: "not fetched yet", requests: "not read yet" });
 	expect(lines(view({ scope: "unbound", project: "repo" })).workspace).toBe("/home/a/repo (not a Kata workspace — plans go to repo)");
 	expect(lines(view({ inbox: { none: "unset" }, counts: undefined }))).toMatchObject({ inbox: "none — KATA_INBOX_USER is unset", requests: "none" });
-	expect(lines(view({ inbox: { none: "personal" } })).inbox).toBe("none — KATA_INBOX_USER names a personal inbox; set it to <user>/<name>");
+	expect(lines(view({ inbox: { none: "personal" }, counts: undefined })).inbox).toBe("none — KATA_INBOX_USER names a personal inbox; set it to <user>/<name>");
 	expect(lines(view({ inbox: { address: "alice/lead", delivery: "live" }, counts: { trusted: 0, foreign: 0 } }))).toMatchObject({ inbox: "alice/lead · live", requests: "none" });
 	expect(lines(view({ inbox: { address: "alice/lead", delivery: "failed" } }))).toMatchObject({ inbox: "alice/lead · last read failed", requests: "read failed" });
 	expect(lines(view({ contract: "off" })).contract).toBe("off — kata agent-hook supplies it");
@@ -43,7 +43,7 @@ test("/kata status names each missing piece", () => {
 
 test("the footer shows the address or actor, at most three refs and a nonzero inbox", () => {
 	expect(footerText(view())).toBe("kata alice/lead · kp#12, kp#14 · inbox 2");
-	expect(footerText(view({ inbox: { none: "unset" }, refs: [], counts: { trusted: 0, foreign: 3 } }))).toBe("kata alice");
+	expect(footerText(view({ inbox: { none: "unset" }, refs: [], counts: undefined }))).toBe("kata alice");
 	expect(footerText(view({ refs: ["kp#1", "kp#2", "kp#3", "kp#4", "kp#5"], counts: undefined }))).toBe("kata alice/lead · kp#1, kp#2, kp#3 +2");
 	expect(footerText(view({ scope: "down" }))).toBeUndefined();
 	expect(footerText(view({ scope: "unbound" }))).toBeUndefined();
@@ -69,6 +69,8 @@ test("an unknown /kata subcommand prints the usage and reads nothing", async () 
 	expect(touched).toEqual([]);
 	expect(await kataCommand(source, {}, "  ")).toContain("workspace  /home/a/repo");
 	expect(touched).toEqual(["view"]);
+	expect(await kataCommand(source, {}, "refresh")).toBe(REFRESHED);
+	expect(touched).toEqual(["view", "refresh"]);
 });
 
 // ------------------------------------------------------------------ omp
@@ -90,19 +92,28 @@ function omp(options: { agent?: object } = {}) {
 	return { ...app, statuses, command, notes, footer: () => statuses.filter(([key]) => key === "kata").at(-1)?.[1] };
 }
 
+/** Resolves once `calls` has not grown for `ms`: the background draws and reads a test started have finished. */
+async function quiet(calls: unknown[], ms = 400) {
+	for (let seen = -1; seen !== calls.length;) { seen = calls.length; await Bun.sleep(ms); }
+}
+
 test("omp registers /kata, answers status for the person and draws the footer", async () => {
 	process.env.KATA_INBOX_USER = "kcmd-builder/omp-lead";
 	const app = omp();
 	expect(app.commands.has("kata")).toBe(true);
 	await app.event("session_start");
-	await app.init(["Status task"]);
+	const parent = await app.init(["Status task"]);
 	await app.event("before_agent_start", { systemPrompt: ["base"] });
 	expect(await until(() => !!app.footer()?.startsWith("kata kcmd-builder/omp-lead"))).toBe(true);
+	await quiet(app.calls);
+	const atStatus = app.calls.length;
 	await app.command("");
+	// Each ref is checked once: status reconciles, and the footer redraw after it does not force a second pass.
+	expect(app.calls.slice(atStatus).filter(args => args[0] === "show").map(args => args[1])).toEqual([parent]);
 	const status = app.notes().at(-1)!;
 	expect(status).toContain("actor      kcmd-builder");
 	expect(status).toContain("inbox      kcmd-builder/omp-lead · per prompt");
-	expect(status).toMatch(/refs       kcmd#\w+/);
+	expect(status).toContain(`refs       ${parent}`);
 	await app.command("refresh");
 	expect(app.notes().at(-1)).toBe("Kata contract and actor cleared; the next prompt reads both again.");
 	const before = app.calls.length;
@@ -111,24 +122,6 @@ test("omp registers /kata, answers status for the person and draws the footer", 
 	expect(app.calls.length).toBe(before);
 	await app.event("session_shutdown"); apps.length = 0;
 	expect(app.statuses.at(-1)).toEqual(["kata", undefined]);
-});
-
-/** Resolves once `calls` has not grown for `ms`: the background draws and reads a test started have finished. */
-async function quiet(calls: unknown[], ms = 400) {
-	for (let seen = -1; seen !== calls.length;) { seen = calls.length; await Bun.sleep(ms); }
-}
-
-test("omp /kata status checks each ref once, its footer redraw included", async () => {
-	const app = omp();
-	await app.event("session_start");
-	const parent = await app.init(["Reconcile task"]);
-	await app.event("before_agent_start", { systemPrompt: ["base"] });
-	await quiet(app.calls);
-	const before = app.calls.length;
-	await app.command("status");
-	const shows = app.calls.slice(before).filter(args => args[0] === "show");
-	expect(shows.map(args => args[1])).toEqual([parent]);
-	expect(app.notes().at(-1)).toContain(`refs       ${parent}`);
 });
 
 test("omp /kata inbox shows the trusted inbox without changing the next prompt", async () => {

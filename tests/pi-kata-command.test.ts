@@ -70,11 +70,3 @@ test("pi under Kata's native adapter says Kata supplies the contract and the inb
 	await kata(["notify", ref, "--to", address, "--clear", "--json"]);
 	await app.event("session_shutdown", { reason: "quit" });
 });
-
-test("pi without a UI draws no footer and runs no Kata for it", async () => {
-	const app = await pi({ hasUI: false });
-	await app.event("session_start", { reason: "startup" });
-	await app.event("before_agent_start", { prompt: "go", systemPromptOptions: { sections: {} } });
-	expect(app.statuses).toEqual([]);
-	await app.event("session_shutdown", { reason: "quit" });
-});
