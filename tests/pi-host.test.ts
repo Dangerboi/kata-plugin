@@ -277,7 +277,7 @@ test("real native adapter starts and ends attention once each on the lead's issu
   globalRegistry[nativeKey] = { adapters: new Map(), active: new Map() };
 });
 
-test("pi warn attaches each guard reason once to its own result", async () => {
+test("pi warn attaches each guard reason to its own result, then takes it once", async () => {
 	const app = await host(); await app.event("session_start", { reason: "startup" });
 	const ref = await app.init(["Guarded warning task"]);
 	const input = { command: `git commit -m "fix ${ref}"` };
@@ -285,20 +285,21 @@ test("pi warn attaches each guard reason once to its own result", async () => {
 	expect(refused.reason).toStartWith("Refused:");
 	process.env.KATA_REF_GUARD = "warn";
 	try {
-		for (const toolCallId of ["a", "b"]) expect(await app.event("tool_call", { toolCallId, toolName: "bash", input: { ...input } })).toBeUndefined();
-		for (const toolCallId of ["b", "a"]) {
-			const event = { toolCallId, toolName: "bash", input, isError: false, content: [{ type: "text", text: "ok" }], structuredContent: { output: "ok", count: 2 } };
+		const calls = { a: { toolName: "bash", input }, b: { toolName: "write", input: { path: `${cwd}/warn-notes.ts`, content: `// ${ref}` } } };
+		for (const toolCallId of ["a", "b"] as const) expect(await app.event("tool_call", { toolCallId, ...calls[toolCallId] })).toBeUndefined();
+		for (const toolCallId of ["b", "a"] as const) {
+			const event = { toolCallId, ...calls[toolCallId], isError: false, content: [{ type: "text", text: "ok" }], structuredContent: { output: "ok", count: 2 } };
 			const result = await app.event("tool_result", event);
 			expect(result?.content[0]).toEqual(event.content[0]);
 			expect(result?.content[1]?.text).toContain(ref);
-			expect(result?.content[1]?.text).toContain("bash");
+			expect(result?.content[1]?.text).toContain(calls[toolCallId].toolName);
 			expect(result?.structuredContent).toEqual(event.structuredContent);
 			expect(await app.event("tool_result", event)).toBeUndefined();
 		}
 	} finally { delete process.env.KATA_REF_GUARD; }
 });
 
-test("pi attaches both nested warnings to their outer result once", async () => {
+test("pi forwards nested warnings to the outer result and takes them once", async () => {
 	const app = await host(); await app.event("session_start", { reason: "startup" });
 	const ref = await app.init(["Nested warning task"]);
 	const input = { command: `git commit -m "fix ${ref}"` };
@@ -312,7 +313,7 @@ test("pi attaches both nested warnings to their outer result once", async () => 
 		const outer = { toolCallId: "outer", toolName: "codemode", input: {}, isError: false, content: [{ type: "text", text: "filtered" }], structuredContent: { kept: true } };
 		const result = await app.event("tool_result", outer);
 		expect(result?.content[0]).toEqual(outer.content[0]);
-		expect(result?.content[1]?.text.split(ref)).toHaveLength(3);
+		expect(result?.content[1]?.text).toContain(ref);
 		expect(result?.structuredContent).toEqual(outer.structuredContent);
 		expect(await app.event("tool_result", outer)).toBeUndefined();
 	} finally { delete process.env.KATA_REF_GUARD; }

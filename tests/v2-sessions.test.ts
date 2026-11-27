@@ -476,7 +476,7 @@ test("typed automatic parent can be recovered after losing the session entry", a
   expect(await sessionParents(app.sid)).toHaveLength(1);
 });
 
-test("omp warn attaches each guard reason once to its own result", async () => {
+test("omp warn attaches each guard reason to its own result, then takes it once", async () => {
 	const app = host(); await app.event("session_start");
 	const ref = await app.init(["Guarded warning task"]);
 	const input = { command: `git commit -m "fix ${ref}"` };
@@ -484,12 +484,13 @@ test("omp warn attaches each guard reason once to its own result", async () => {
 	expect(refused.reason).toStartWith("Refused:");
 	process.env.KATA_REF_GUARD = "warn";
 	try {
-		for (const toolCallId of ["a", "b"]) expect(await app.event("tool_call", { toolCallId, toolName: "bash", input })).toBeUndefined();
-		for (const toolCallId of ["b", "a"]) {
-			const result = await app.event("tool_result", { toolCallId, toolName: "bash", input, isError: false });
+		const calls = { a: { toolName: "bash", input }, b: { toolName: "write", input: { path: `${cwd}/warn-notes.ts`, content: `// ${ref}` } } };
+		for (const toolCallId of ["a", "b"] as const) expect(await app.event("tool_call", { toolCallId, ...calls[toolCallId] })).toBeUndefined();
+		for (const toolCallId of ["b", "a"] as const) {
+			const result = await app.event("tool_result", { toolCallId, ...calls[toolCallId], isError: false });
 			expect(result?.additionalContext).toContain(ref);
-			expect(result?.additionalContext).toContain("bash");
-			expect(await app.event("tool_result", { toolCallId, toolName: "bash", input, isError: false })).toBeUndefined();
+			expect(result?.additionalContext).toContain(calls[toolCallId].toolName);
+			expect(await app.event("tool_result", { toolCallId, ...calls[toolCallId], isError: false })).toBeUndefined();
 		}
 	} finally { delete process.env.KATA_REF_GUARD; }
 });

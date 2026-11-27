@@ -166,21 +166,7 @@ test("a write, patch or commit that names a ref of the plan is refused until the
 	}
 });
 
-test("refGuard warn runs interleaved calls and appends each reason once", async () => {
-	const { host, id } = await startLead({ refGuard: "warn" });
-	await host.callTool(id, "todowrite", todos(["Guarded warning task", "in_progress"]));
-	const ref = qref(await parentOf(id));
-	const call = () => host.callTool(id, "shell", { command: `git commit -m "fix ${ref}"` }, { execute: () => "ok" });
-	for (const result of await Promise.all([call(), call()])) {
-		expect(result.status).toBe("completed"); expect(result.text).toStartWith("ok\n");
-		expect(result.text).toContain(ref); expect(result.text).toContain("shell");
-	}
-	expect((await shell(host, id, "echo clean")).text).toBe("ok");
-	const failed = await host.callTool(id, "shell", { command: `git commit -m "fix ${ref}"` }, { execute: () => { throw new Error("tool failed"); } });
-	expect(failed.status).toBe("error"); expect(failed.text).toContain("tool failed"); expect(failed.text).toContain(ref);
-});
-
-test("refGuard warn keeps earlier hook content and metadata in every result shape", async () => {
+test("refGuard warn takes each result warning once and keeps earlier content and metadata", async () => {
 	let shape: "string" | "absent" | "array" = "string";
 	const plugin = { id: opencode.id, async setup(ctx: any) {
 		await ctx.tool.hook("execute.after", (event: any) => {
@@ -202,6 +188,21 @@ test("refGuard warn keeps earlier hook content and metadata in every result shap
 		expect(result.text).toContain("shell");
 		expect(result.metadata).toEqual({ kept: true });
 	}
+	shape = "array";
+	const calls = [
+		{ tool: "shell", input: { command: `git commit -m "fix ${ref}"` } },
+		{ tool: "write", input: { path: `${cwd}/warn-notes.ts`, content: `// ${ref}` } },
+	] as const;
+	const results = await Promise.all(calls.map(({ tool, input }) => host.callTool(id, tool, input, { execute: () => "ok" })));
+	for (const [index, result] of results.entries()) {
+		expect(result.status).toBe("completed");
+		expect(result.text).toContain(ref);
+		expect(result.text).toContain(calls[index]!.tool);
+		expect(result.text.match(/Kata refs only resolve/g)).toHaveLength(1);
+	}
+	expect((await shell(host, id, "echo clean")).text).toBe("earlier part");
+	const failed = await host.callTool(id, "shell", { command: `git commit -m "fix ${ref}"` }, { execute: () => { throw new Error("tool failed"); } });
+	expect(failed.status).toBe("error"); expect(failed.text).toContain("tool failed"); expect(failed.text).toContain(ref);
 });
 
 test("refGuard warn refuses script-made calls but permits clean ones", async () => {
