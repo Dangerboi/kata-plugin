@@ -210,7 +210,7 @@ test("pi adopts a successful Bash claim using isError without OMP exitCode detai
   const ref = await issue("Pi adopted parent");
   await kata(["claim", ref, "--json"]);
   const app = await host(); await app.event("session_start", { reason: "startup" });
-  await app.event("tool_result", { toolName: "bash", input: { command: `true; kata claim ${ref}` }, isError: false, details: {} });
+  await app.event("tool_result", { toolName: "bash", input: { command: `kata claim ${ref}` }, isError: false, details: {} });
   expect((await app.call({ op: "view" })).details.kata.parent).toBe(`pitest#${ref}`);
 });
 

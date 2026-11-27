@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { spawnSync } from "bun";
 import { assertIsolated } from "./isolation";
 import { kataCommands } from "../plugins/oh-my-pi/kata";
-import { delegateCommand, kataCommands as coreCommands, shellOptions } from "../core/shell";
+import { delegateCommand, kataCommands as coreCommands, shellOptions, transcriptCommand } from "../core/shell";
 import { nodePlatform } from "../core/node-host";
 assertIsolated();
 
@@ -66,9 +66,11 @@ test("claim positions prove success only through a top-level && suffix", () => {
     ["kata claim abcd && kata show abcd", true], ["kata claim abcd && kata claim efgh", true],
     ["kata claim abcd; kata show abcd", false], ["kata claim abcd || true", false],
     ["true || kata claim abcd", false], ["true ||\n kata claim abcd", false], ["true |\n kata claim abcd", false], ["true &&\n kata claim abcd", true], ["kata claim abcd | tee log", false],
-    ["kata claim abcd &", false], ["kata claim abcd \\>& true", false], ["kata claim abcd |& tee log", false], ["true || printf ignored |& kata claim abcd", false],
+    ["kata claim abcd &", false], ["kata claim abcd --comment \\>& true", false], ["kata claim abcd --comment \\>| tee x", false], ["kata claim abcd --comment '>'", true], ["kata claim abcd |& tee log", false], ["true || printf ignored |& kata claim abcd", false],
+    ["kata claim abcd >| /dev/null", true], ["kata claim abcd 2>| /dev/null", true], ["true &&\\\n kata claim abcd", true], ["true ||\\\n kata claim abcd", false],
     ["kata claim abcd 2>&1", true], ["kata claim abcd >/dev/null 2>&1", true], ["kata claim abcd &>/dev/null", true],
     ["kata claim abcd >&2", true], ["kata claim abcd <&0", true], ["kata claim abcd && echo ok 2>&1", true],
+    ["kata claim abcd && (( $(kata show abcd) + 1 ))", true], ["kata claim abcd && echo $(date)", true], ["kata claim abcd && (true)", true], ["kata claim abcd && echo $(date) && true", true], ["kata claim abcd && echo $(date) || true", false], ["kata claim abcd && (true) &", false], ["kata claim abcd; (true)", false],
     ["kata claim abcd; (( 1 ))", false], ["kata claim abcd && (( 1 ))", true], ["kata claim abcd;", true], ["kata claim abcd\n", true], ["kata claim abcd; # done\n", true],
     ["kata claim abcd --comment '!'", true], ["((kata claim abcd) && echo)", false], ["(kata claim abcd)", false], ["{ echo hi; kata claim abcd; }", false],
     ["if true; then kata claim abcd; fi", false], ["while true; do kata claim abcd; done", false],
@@ -87,4 +89,20 @@ test("arithmetic shifts and CRLF leave later Kata commands visible", () => {
   expect(coreCommands(nodePlatform.path, "((unterminated\nkata claim abcd").map(c => shellOptions(c.words).args)).toEqual([["claim", "abcd"]]);
   expect(delegateCommand(nodePlatform.path, "(( x << 1 ))\nkata claim abcd", "kata", [], "worker")).toContain("kata --teammate 'worker' claim abcd");
   expect(shellOptions(coreCommands(nodePlatform.path, "kata claim --ttl 2h abcd")[0].words).args).toEqual(["claim", "abcd"]);
+});
+
+
+test("arithmetic substitutions retain executable commands and heredoc data", () => {
+  const input = "(( $(kata claim abcd >/dev/null; printf 1) ))";
+  const invocations = coreCommands(nodePlatform.path, input);
+  expect(invocations.map(c => [shellOptions(c.words).args[0], c.proven])).toEqual([["claim", false]]);
+  expect(delegateCommand(nodePlatform.path, input, "kata", [], "worker")).toContain("kata --teammate 'worker' claim abcd");
+  expect(() => delegateCommand(nodePlatform.path, "(( $(kata --as other claim abcd; printf 1) ))", "kata", [], "worker")).toThrow("--as");
+  expect(transcriptCommand(nodePlatform.path, "(( $(kata close abcd; printf 1) ))", "kata", [], own)).toContain("KATA_TRANSCRIPT_SESSION_ID='child-uuid'");
+  const heredoc = "(( $(cat <<EOF\nkata claim hidden\nEOF\n) ))\nkata claim abcd";
+  expect(coreCommands(nodePlatform.path, heredoc).map(c => shellOptions(c.words).args)).toEqual([["claim", "abcd"]]);
+  expect(delegateCommand(nodePlatform.path, heredoc, "kata", [], "worker")).toContain("\nkata claim hidden\n");
+  expect(coreCommands(nodePlatform.path, "(( (x << 2) ))\nkata claim abcd")).toHaveLength(1);
+  const nested = coreCommands(nodePlatform.path, "kata claim abcd && (( $(kata show abcd) + 1 ))");
+  expect(nested.map(c => c.proven)).toEqual([true, false]);
 });

@@ -479,9 +479,9 @@ test("typed automatic parent can be recovered after losing the session entry", a
 
 test("only shell claims proved by the command status adopt owned issues", async () => {
   for (const [template, adopts] of [
-    ["true && kata claim REF", true], ["true; kata claim REF", true], ["kata claim REF && true", true], ["kata claim REF >/dev/null 2>&1", true], ["kata claim REF --comment '!'", true], ["kata claim REF; # done\n", true],
-    ["kata claim REF; true", false], ["kata claim REF; (( 1 ))", false], ["kata claim REF && (( 1 ))", true], ["kata claim REF || true", false], ["true || kata claim REF", false],
-    ["kata claim REF | cat", false], ["true || printf ignored |& kata claim REF", false], ["kata claim REF &", false], ["(kata claim REF)", false],
+    ["true; kata claim REF", true], ["kata claim REF && true", true], ["true &&\\\n kata claim REF", true], ["kata claim REF >| /dev/null", true],
+    ["kata claim REF; true", false], ["true || printf ignored |& kata claim REF", false], ["kata claim REF &", false],
+    ["true; kata meta set REF work.attention ok", true], ["kata meta set REF work.attention ok; true", false],
   ] as const) {
     const ref = await issue(); await kata(["claim", ref, "--json"]);
     const app = host({ sid: unique() }); await app.event("session_start");

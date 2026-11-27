@@ -346,12 +346,11 @@ test("two failed fork starts in a row still leave the ticket flagged when the la
 });
 
 
-test("shell proof starts attention for redirects and literal bang, not a skipped pipeline", async () => {
+test("shell proof starts attention for a final redirected claim only", async () => {
   delete process.env.KATA_REF;
   for (const [make, starts] of [
     [(ref: string) => `kata claim ${ref} >/dev/null 2>&1`, true],
-    [(ref: string) => `kata claim ${ref} --comment '!'`, true],
-    [(ref: string) => `true || printf ignored |& kata claim ${ref}`, false],
+    [(ref: string) => `kata claim ${ref}; true`, false],
   ] as const) {
     const ref = await issue(), app = host(); await app.event("session_start");
     const command = make(ref);
