@@ -428,21 +428,21 @@ test("the project head found after a purge is the newest event, so the stream do
 });
 
 test("a live follower publishes no partial snapshot before its seed read completes", async () => {
-  const seed = Promise.withResolvers<unknown>();
-  const t = follower({ read: () => seed.promise });
-  t.follow.start(); await tick();
-  t.streams[0].push(slotLine(2, "cleared", null));
-  await tick();
-  expect(t.published).toEqual([]);
-  seed.resolve({ requests: [{ ref: "proj#pending", ...slot("waiting") }] });
-  await tick();
-  expect(t.published.at(-1)).toBe("proj#pending:waiting");
-  t.follow.stop();
+	const seed = Promise.withResolvers<unknown>();
+	const t = follower({ read: () => seed.promise });
+	t.follow.start(); await tick();
+	t.streams[0].push(slotLine(2, "cleared", null));
+	await tick();
+	expect(t.published).toEqual([]);
+	seed.resolve({ requests: [{ ref: "proj#pending", ...slot("waiting") }] });
+	await tick();
+	expect(t.published.at(-1)).toBe("proj#pending:waiting");
+	t.follow.stop();
 });
 
 test("an empty first seed publishes the known empty inbox once", async () => {
-  const t = follower();
-  t.follow.start(); await tick();
-  expect(t.published).toEqual([""]);
-  t.follow.stop();
+	const t = follower();
+	t.follow.start(); await tick();
+	expect(t.published).toEqual([""]);
+	t.follow.stop();
 });
