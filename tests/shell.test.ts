@@ -58,7 +58,7 @@ test("command positions behind shell prefixes and their options", () => {
 });
 
 test("rewritten closes execute through each prefix", () => {
-  for (const prefix of ["env -u FOO", 'env -iu FOO PATH="$PATH"', 'env -iC /tmp PATH="$PATH"', 'env -i PATH="$PATH"', "env -C /tmp --", "command -p", "exec -a name", "time -p", "nohup", "timeout -s TERM -k 1 30", "time nohup"]) {
+  for (const prefix of ["env -u FOO", 'env -iu FOO PATH="$PATH"', 'env -iC /tmp PATH="$PATH"', 'env -i PATH="$PATH"', "env -C /tmp --", "command -p", "exec -a name", "time -p", "nohup", ...(Bun.which("timeout") ? ["timeout -s TERM -k 1 30"] : []), "time nohup"]) {
     const input = `${prefix} kata close ab12`;
     expect(execute(delegateCommand(nodePlatform.path, input, "kata", [], "tm-1", undefined, own)), input).toEqual(["omp/child-uuid/true --teammate tm-1 close ab12"]);
   }

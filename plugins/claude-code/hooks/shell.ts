@@ -38,7 +38,7 @@ export const onLeadShell: Hook<"tool.call"> = async ($, e, next) => {
 	return runRewritten(e, next, command, "A kata close records the session that made it.", false);
 };
 
-// What a rewrite adds (`env KATA_TRANSCRIPT_...=…`, `--teammate`) keeps a settings allow rule such as `Bash(kata *)` from
+// What a rewrite adds (`/usr/bin/env KATA_TRANSCRIPT_...=…`, `--teammate`) keeps a settings allow rule such as `Bash(kata *)` from
 // matching: Claude Code matches no allow rule past an unknown variable's assignment (deny and ask rules see past it). When
 // the engine's own rules would put a rewritten call to its decider, the call is allowed if the model's own command is allowed
 // outright. An ask from a hook (a PreToolUse guard, another plugin) stands, as does every other verdict: the query runs no

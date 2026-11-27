@@ -130,7 +130,7 @@ test("commit workspace follows ordered env directory changes before git -C", asy
     ["/outside", "env -C /work -C /outside git commit -m demo#ab3d", []],
     ["/outside", "env -iC /work git commit -m demo#ab3d", ["demo#ab3d"]],
     ["/work", "env -C /outside env -C ../work git -C ../outside commit -m demo#ab3d", []],
-  ] as const) expect(await check("bash", { cwd, command }), command).toEqual(expected);
+  ] as const) expect(await check("bash", { cwd, command }), command).toEqual([...expected]);
 });
 
 test("a heredoc body belongs to the command whose line holds its <<", async () => {
