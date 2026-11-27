@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import { createKataCore } from "../core/kata-core";
 import { nodePlatform } from "../core/node-host";
 import { memoryDelegateStore } from "./kata-fixture";
-import { trustedInbox } from "../core/inbox";
+import { countInbox, trustedInbox } from "../core/inbox";
 import { statusText } from "../core/session-status";
 
 function fixture(hook: () => Promise<string> = async () => "contract", issue?: () => { status: string; owner?: string }) {
@@ -27,6 +27,11 @@ test("inspecting the inbox before any prompt publishes its counts and leaves the
   expect(result.text).not.toContain("private");
   expect((await core.session.view(ctx))?.counts).toEqual({ trusted: 1, foreign: 1 });
   expect((await core.session.beforePrompt(ctx)).sections.inbox).toContain("hello");
+  expect((await core.session.view(ctx, { context: false }))?.inbox.delivery).toBe("per prompt");
+  const native = await core.session.view(ctx, { nativeInbox: true });
+  expect(native?.inbox.delivery).toBe("kata");
+  expect(native?.counts).toBeUndefined();
+  expect((await core.session.inbox(ctx, { nativeInbox: true })).native).toBe(true);
 });
 
 test("refresh rejects a stale contract and its finalizer while a new read is running", async () => {
@@ -46,7 +51,11 @@ test("refresh rejects a stale contract and its finalizer while a new read is run
     await waitForCount(2);
     first.resolve("old");
     await old;
+    const concurrent = core.session.beforePrompt(ctx);
+    await Bun.sleep(10);
+    expect(count).toBe(2);
     second.resolve("new");
+    expect((await concurrent).sections.contract).toBe("new");
     expect((await next).sections.contract).toBe("new");
     expect((await core.session.beforePrompt(ctx)).sections.contract).toBe("new");
     expect(count).toBe(2);
@@ -54,10 +63,12 @@ test("refresh rejects a stale contract and its finalizer while a new read is run
 });
 
 test("inbox counts and custom heading share the trusted request filter", async () => {
-  const { countInbox } = await import("../core/inbox");
   const requests = [{ ref: "p#1", from: "alice", message: "yes" }, { ref: "p#2", from: "bob", message: "no" }, { from: "bob", message: "invalid" }];
   expect(countInbox(requests, "alice")).toEqual({ trusted: 1, foreign: 1 });
-  expect(trustedInbox(requests, "alice", "alice/worker", "Heading")).toStartWith("Heading\n");
+  const text = trustedInbox(requests, "alice", "alice/worker", "Heading");
+  expect(text).toStartWith("Heading\n");
+  expect(text).toContain("yes");
+  expect(text).not.toContain("no");
 });
 
 test("footer does no work without a UI and shutdown suppresses a pending redraw", async () => {
@@ -71,27 +82,19 @@ test("footer does no work without a UI and shutdown suppresses a pending redraw"
   await drawing;
   expect(writes).not.toContain("footer");
 });
-test("configured ref reappears after external reopen", async () => {
-  let status = "open";
-  const { core, ctx, calls } = fixture(undefined, () => ({ status }));
-  expect((await core.session.view(ctx, { reconcile: true }))?.refs).toEqual(["test#one"]);
-  status = "closed";
-  expect((await core.session.view(ctx, { reconcile: true }))?.refs).toEqual([]);
-  status = "open";
-  expect((await core.session.view(ctx, { reconcile: true }))?.refs).toEqual(["test#one"]);
-});
-
-test("forced status includes a slow close", async () => {
+test("configured refs survive other ownership and reappear after a slow close and reopen", async () => {
   let status = "open", slow = false;
   const ctx = { cwd: "/tmp/kata-review-synthetic", hasUI: true };
   const core = createKataCore({ platform: nodePlatform, appendEntry() {}, delegateStore: memoryDelegateStore(), exec: async (_file, args) => {
     if (args[0] === "version") return { code: 0, stdout: JSON.stringify({ kata_api_version: 1, version: "0.23.0" }), stderr: "" };
-    if (args[0] === "show") { if (slow) await Bun.sleep(350); return { code: 0, stdout: JSON.stringify({ issue: {status} }), stderr: "" }; }
+    if (args[0] === "show") { if (slow) await Bun.sleep(350); return { code: 0, stdout: JSON.stringify({ issue: { status, owner: "other" } }), stderr: "" }; }
     return { code: 0, stdout: JSON.stringify({ issues: [] }), stderr: "" };
   } }, { namespace: "test", executable: "/tmp/kata-fixture", executableVars: [], explicitRef: () => "test#one", env: name => name === "KATA_AUTHOR" ? "alice" : undefined });
-  expect((await core.session.view(ctx, {reconcile:true}))?.refs).toEqual(["test#one"]);
+  expect((await core.session.view(ctx, { reconcile: true }))?.refs).toEqual(["test#one"]);
   status = "closed"; slow = true;
-  expect((await core.session.view(ctx, {reconcile:true}))?.refs).toEqual([]);
+  expect((await core.session.view(ctx, { reconcile: true }))?.refs).toEqual([]);
+  status = "open"; slow = false;
+  expect((await core.session.view(ctx, { reconcile: true }))?.refs).toEqual(["test#one"]);
 });
 
 test("unrelated claim while checking several refs does not hide a closure", async () => {
@@ -144,11 +147,6 @@ test("status exposes an unsupported Kata version even with a configured actor", 
     { namespace: "test", executable: "/tmp/kata-fixture", executableVars: [], env: name => name === "KATA_AUTHOR" ? "alice" : undefined });
   const view = await core.session.view({ cwd: "/tmp/kata-review-synthetic" }, { reconcile: true });
   expect(statusText(view!)).toContain("requires Kata >=0.23.0");
-});
-
-test("a configured ref remains visible when owned by another actor", async () => {
-  const { core, ctx } = fixture(undefined, () => ({ status: "open", owner: "other" }));
-  expect((await core.session.view(ctx, { reconcile: true }))?.refs).toEqual(["test#one"]);
 });
 
 test("a parent explicitly named with todo ref is hidden after another actor takes ownership", async () => {
@@ -257,15 +255,6 @@ test("an inspection started before refresh cannot restore stale counts", async (
     core.session.refresh(); gate.resolve(); await inspecting;
     expect((await core.session.view(ctx))?.counts).toBeUndefined();
   } finally { gate.resolve(); }
-});
-
-test("native inbox is explicit and hides plugin counts from the view", async () => {
-  const { core, ctx } = fixture();
-  await core.session.inbox(ctx);
-  expect((await core.session.view(ctx, { context: false }))?.inbox.delivery).toBe("per prompt");
-  const view = await core.session.view(ctx, { nativeInbox: true });
-  expect(view?.inbox.delivery).toBe("kata"); expect(view?.counts).toBeUndefined();
-  expect((await core.session.inbox(ctx, { nativeInbox: true })).native).toBe(true);
 });
 
 test("refresh preserves a personal-inbox warning and clears cached delegate contracts", async () => {

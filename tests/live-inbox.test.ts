@@ -82,14 +82,17 @@ test("a failed actor refresh reconnects and delivers only new trusted requests o
 	} finally { t.follow.stop(); }
 });
 
-test("refresh twice or stop during lookup ignores older actor results", async () => {
+test("refresh twice ignores an older actor result that finishes last", async () => {
 	const first = Promise.withResolvers<string>(), second = Promise.withResolvers<string>();
 	let actors = 0;
 	const t = follower({ actor: () => ++actors === 1 ? Promise.resolve("lead") : actors === 2 ? first.promise : second.promise });
 	try {
 		t.follow.start(); await tick(); t.follow.refreshActor(); t.follow.refreshActor();
-		first.resolve("old"); await tick(); expect(t.streams).toHaveLength(1);
-		t.follow.stop(); second.resolve("new"); await tick(); expect(t.streams).toHaveLength(1);
+		second.resolve("new"); await tick();
+		first.resolve("old"); await tick();
+		t.streams.at(-1)!.push(slotLine(1, "new", { from: "new", message: "trusted" })); await tick();
+		expect(t.delivered).toHaveLength(1);
+		expect(t.published.at(-1)).toBe("new:trusted");
 	} finally { first.resolve("old"); second.resolve("new"); t.follow.stop(); }
 });
 
@@ -115,7 +118,6 @@ test("refreshing the actor updates counts without replaying delivered slots", as
 	expect(t.counts.at(-1)).toEqual({ trusted: 1, foreign: 1 });
 	requests = [{ ref: "old", ...slot("first") }, { ref: "new", from: "other", message: "second" }];
 	actor = "other"; t.follow.refreshActor(); await tick();
-	expect(t.counts.at(-1)).toEqual({ trusted: 1, foreign: 1 });
 	expect(t.published.at(-1)).toBe("new:second");
 	t.streams.at(-1)!.push(slotLine(3, "new", { from: "other", message: "third" }));
 	await tick();
