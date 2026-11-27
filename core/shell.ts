@@ -100,7 +100,7 @@ export function shellOptions(words: ShellWord[]) {
 }
 
 // Ref-bearing operands and options, as named by Kata's command forms.
-const REF_AFTER: Record<string, "one" | "all" | "move"> = Object.fromEntries([
+export const REF_AFTER: Record<string, "one" | "all" | "move"> = Object.fromEntries([
 	..."assign unassign claim close comment delete edit notify deadline schedule purge restore reopen status show".split(" ").map(key => [key, "one"]),
 	["wait", "all"], ["move", "move"], ["comment edit", "one"],
 	..."add rm".split(" ").map(op => [`label ${op}`, "one"]),
