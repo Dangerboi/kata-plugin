@@ -1,4 +1,4 @@
-import { chmodSync, copyFileSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmdirSync, statSync, unlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, copyFileSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, readlinkSync, renameSync, rmdirSync, statSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
@@ -32,7 +32,13 @@ function clearLayout(dir: string): void {
 	const leaf = (p: string) => { try { const s = lstatSync(p); if (s.isFile() || s.isSymbolicLink()) unlinkSync(p); } catch {} };
 	try {
 		const bin = join(dir, "bin");
-		try { if (lstatSync(bin).isDirectory()) { leaf(join(bin, "kata")); rmdirSync(bin); } else leaf(bin); } catch {}
+		try { if (lstatSync(bin).isDirectory()) {
+			for (const name of readdirSync(bin)) {
+				const path = join(bin, name);
+				try { if (name !== "kata" && lstatSync(path).isSymbolicLink() && readlinkSync(path) === "kata") unlinkSync(path); } catch {}
+			}
+			leaf(join(bin, "kata")); rmdirSync(bin);
+		} else leaf(bin); } catch {}
 		for (const name of readdirSync(dir)) if (/\.env(?:\.\d+\.tmp)?$/.test(name)) leaf(join(dir, name));
 		rmdirSync(dir);
 	} catch {}
@@ -77,7 +83,10 @@ export function installShim(executable: string, warn: (message: string) => void,
 		try {
 			dir = mkdtempSync(join(root, `omp-kata-${process.pid}-`)); chmodSync(dir, 0o700);
 			const bin = join(dir, "bin"); mkdirSync(bin, { mode: 0o700 }); const target = join(bin, "kata"); copyFileSync(source, target); chmodSync(target, 0o700);
-			const probe = spawnSync(target, [], { env: { PATH: "/usr/bin:/bin", KATA_SHIM_PROBE: "1" }, stdio: "ignore" });
+			const name = basename(executable);
+			if (!name || name === "." || name === "..") throw new Error("invalid executable basename");
+			if (name !== "kata") symlinkSync("kata", join(bin, name));
+			const probe = spawnSync(target, [], { env: { PATH: "/usr/bin:/bin", KATA_SHIM_PROBE: "1" }, stdio: "ignore", timeout: 5000 });
 			if (!(options.probe ? options.probe(target) : !probe.error && probe.status === 0)) throw probe.error ?? new Error(`probe exited ${probe.status}`);
 			sweep(root); owned = { dir, real }; adoptShim(owned); process.once("exit", () => { if (owned) clearLayout(owned.dir); }); return owned;
 		} catch (error) { if (dir) clearLayout(dir); errors.push(`${root}: ${String(error)}`); }

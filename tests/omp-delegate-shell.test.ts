@@ -48,3 +48,27 @@ test("lifecycle installs the shim before returning and publishes distinct sessio
     expect(process.env.PATH?.split(":")[0]).toBe(`${dir}/bin`);
   }
 });
+
+test("publication failure warns once until a successful write and never blocks bash", async () => {
+  const { existsSync, renameSync } = await import("node:fs");
+  const app = ompHost({ run: args => run(args), cwd, sid: SID });
+  await app.event("session_start");
+  await app.event("before_agent_start", { reason: "prompt", systemPrompt: [] });
+  const dir = process.env.KATA_OMP_SHIM_DIR!, held = `${dir}-held`;
+  const sub = { ...app.ctx, agent: { kind: "sub", id: "failure-child" }, sessionManager: { getSessionId: () => "failure-child-session", getBranch: () => [], getEntries: () => [], getHeader: () => ({}), getSessionFile: () => undefined } };
+  const call = () => app.event("tool_call", { toolName: "bash", input: { command: "ls" } }, sub);
+  const before = app.notices.length;
+  try {
+    renameSync(dir, held);
+    expect((await call())?.block).toBeUndefined();
+    expect((await call())?.block).toBeUndefined();
+    expect(app.notices.length - before).toBe(1);
+    expect(app.notices[before][0]).toContain("identity could not be published");
+    renameSync(held, dir);
+    expect((await call())?.block).toBeUndefined();
+    expect(existsSync(`${dir}/failure-child-session.env`)).toBe(true);
+    renameSync(dir, held);
+    expect((await call())?.block).toBeUndefined();
+    expect(app.notices.length - before).toBe(2);
+  } finally { if (existsSync(held)) renameSync(held, dir); }
+});

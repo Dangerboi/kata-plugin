@@ -111,7 +111,7 @@ export function realKata(options: RealKataOptions) {
   beforeAll(async () => { if (options.project) await store.text(["init", "--project", options.project]); });
   beforeEach(() => {
     restore();
-    const saved = SCRUBBED_ENV.map(key => [key, process.env[key]] as const);
+    const saved = [...SCRUBBED_ENV, "PATH", "PI_SHELL_PREFIX"].map(key => [key, process.env[key]] as const);
     const unadopt = options.adopt ? adoptIsolatedKata(store.binary, store.home) : undefined;
     for (const key of SCRUBBED_ENV) delete process.env[key];
     Object.assign(process.env, { KATA_AUTHOR: options.author, ...options.process });

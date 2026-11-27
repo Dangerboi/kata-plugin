@@ -413,6 +413,7 @@ export default function ompKata(pi: any) {
 		void leadOf(seen)?.delegates?.apply({ type: "reported", id: payload.id, text }, NO_JOB);
 	});
 
+	let publishFailed = false;
 	async function publish(ctx: any, record?: DelegateRecord) {
 		const id = sessionId(ctx);
 		if (!id || (!main(ctx) && id === leadSession())) return;
@@ -427,7 +428,11 @@ export default function ompKata(pi: any) {
 			const pair = transcriptPairOf(ctx);
 			const transcript = pair?.id ? transcriptEnv(nodePlatform.env, pair.agent, pair.id) : pair ? { KATA_TRANSCRIPT_AGENT: undefined, KATA_TRANSCRIPT_SESSION_ID: undefined, KATA_CLOSE_TRANSCRIPT_ENABLED: "false" } : {};
 			writeIdentity(shim, id, { KATA_AUTHOR: actor, KATA_TEAMMATE: teammate, KATA_INBOX_USER: main(ctx) ? launchInbox : `${actor}/${teammate}`, ...transcript });
-		} catch (error) { debug(error); }
+			publishFailed = false;
+		} catch (error) {
+			debug(error);
+			if (!publishFailed) { publishFailed = true; (ctx.ui ?? seen?.ui)?.notify?.("Kata identity could not be published; kata commands in scripts, functions or bash -c may run under the lead's identity until the next successful publication. If the shim directory was removed, restart omp.", "warning"); }
+		}
 	}
 	function startShim(ctx: any) {
 		if (!main(ctx)) return;
@@ -557,7 +562,6 @@ export default function ompKata(pi: any) {
 		await enter(ctx);
 		if (!main(ctx)) { await core.session.start(ctx, { after: nextUseOf(ctx) }); return; }
 		core.offerTickets(ctx.ui);
-		exportTranscriptSession(NAMESPACE, sessionId(ctx));
 		const backend = await kataBackend();
 		await core.session.start(ctx);
 		leadPublish = publish(ctx);

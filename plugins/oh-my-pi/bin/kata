@@ -2,6 +2,7 @@
 # Session identity is applied immediately before starting the real Kata binary.
 [ "${KATA_SHIM_PROBE:-}" = 1 ] && exit 0
 self=$(CDPATH= cd -- "$(dirname -- "$0")" 2>/dev/null && pwd -P)
+name=${0##*/}
 case ${PI_SESSION_ID:-} in
   ''|*/*) ;;
   *) file=${KATA_OMP_SHIM_DIR:-}/${PI_SESSION_ID}.env
@@ -17,9 +18,9 @@ for dir in ${PATH}:; do
   [ -n "$dir" ] || dir=.
   physical=$(CDPATH= cd -- "$dir" 2>/dev/null && pwd -P) || continue
   [ "$physical" = "$self" ] && continue
-  if [ -x "$dir/kata" ] && [ ! -d "$dir/kata" ]; then
+  if [ -x "$dir/$name" ] && [ ! -d "$dir/$name" ]; then
     IFS=$oldifs
-    exec "$dir/kata" "$@"
+    exec "$dir/$name" "$@"
   fi
 done
 echo 'kata: no real executable found on PATH' >&2
