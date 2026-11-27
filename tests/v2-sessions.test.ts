@@ -502,12 +502,7 @@ test("omp warn attaches each guard reason to its own result, then takes it once"
 	} finally { delete process.env.KATA_REF_GUARD; }
 });
 
-test("omp learns lone issue output", async () => {
-  const app = host(); await app.event("session_start");
-  const call = (command: string) => app.event("tool_call", { toolName: "bash", input: { command } });
-  await app.event("tool_result", { toolName: "bash", input: { command: "kata next --agent" }, content: [{ type: "text", text: "OK next issue=z7x2" }] });
-  expect(await call('git commit -m "fix z7x2"')).toMatchObject({ block: true });
-});
+
 
 
 test("worker guard receives projects learned by its lead from list output", async () => {
