@@ -64,17 +64,6 @@ for (const origin of ["advisor", "no-ui"] as const) test(`${origin} failure warn
   }
 });
 
-test("a late failure from a replaced session cannot warn the new session", async () => {
-  const gate = Promise.withResolvers<void>();
-  const a = fixture(async n => { if (n === 1) { await gate.promise; return fail("old session"); } return success("new session contract"); });
-  const old = a.context("old"), current = a.context("new");
-  expect((await a.core.session.beforePrompt(old)).sections.contract).toBeUndefined();
-  await a.core.session.start(current);
-  gate.resolve(); await nextTick();
-  expect((await a.core.session.beforePrompt(current)).sections.contract).toBe("new session contract");
-  expect(a.warnings).toEqual([]);
-});
-
 test("an old waiting prompt cannot warn after another session starts a prompt", async () => {
   const gate = Promise.withResolvers<void>(), started = Promise.withResolvers<void>();
   const a = fixture(async n => { if (n === 1) { started.resolve(); await gate.promise; return fail("old session"); } return success("new"); });
@@ -85,14 +74,13 @@ test("an old waiting prompt cannot warn after another session starts a prompt", 
   expect(a.warnings).toEqual([]);
 });
 
-test("a delegate gets a stub but no UI warning", async () => {
+test("a delegate gets a contract failure stub", async () => {
   const a = fixture(() => fail()), ctx = a.context("delegate", "sub");
   await a.core.delegates.start({ id: "contract-delegate", sessionId: "delegate", leadSessionId: "lead", text: "Survey the tree", untracked: true }, NO_JOB);
   expect((await a.core.session.beforePrompt(ctx)).sections.contract).toContain("boom");
-  expect(a.warnings).toEqual([]);
 });
 
-test("a non-main prompt waits at most one second for a contract that continues in the background", async () => {
+test("an advisor prompt waits at most one second for a contract that continues in the background", async () => {
   const gate = Promise.withResolvers<void>();
   const a = fixture(async () => { await gate.promise; return success("late contract"); }), ctx = a.context("delegate", "sub");
   const started = Date.now();

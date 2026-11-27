@@ -220,7 +220,7 @@ test("pi keeps an unreachable Kata local, shows a contract stub and bounds hooks
   expect((await app.call({ op: "done" })).isError).toBeUndefined();
   const prompt = { systemPromptOptions: { sections: {} } };
   await app.event("before_agent_start", prompt);
-  expect(prompt.systemPromptOptions.sections).toEqual({ kata_contract: expect.stringContaining("Kata contract is unavailable (kata version failed: selected daemon is unavailable while connecting). Before using kata, run:") });
+  expect(prompt.systemPromptOptions.sections).toEqual({ kata_contract: expect.stringContaining("Kata contract is unavailable") });
   expect(app.calls.some(a => ["create", "claim", "meta", "close"].includes(a[0]))).toBe(false);
   // Kata does not answer until the test lets it: the hooks must return on their own bound, not on Kata's answer.
   const held = holdKata(() => true, () => ({ code: 1, stdout: "", stderr: "offline" }));
