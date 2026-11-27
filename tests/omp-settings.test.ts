@@ -44,6 +44,20 @@ test("resolution preserves text and falls through unreadable values", () => {
     expect(resolveSettings({ refGuard: guard }, {}).env("KATA_REF_GUARD")).toBe("block");
   }
   expect(resolveSettings({ refGuard: "off" }, { KATA_REF_GUARD: "false" }).env("KATA_REF_GUARD")).toBe("off");
+  const snapshot = { defaultProject: "initial", liveInbox: false, refGuard: "off" };
+  const env: Record<string, string | undefined> = {};
+  const cached = resolveSettings(snapshot, env);
+  snapshot.defaultProject = "changed"; snapshot.liveInbox = true; snapshot.refGuard = "block";
+  expect(cached.env("KATA_DEFAULT_PROJECT")).toBe("initial");
+  expect(cached.liveInbox).toBe(false);
+  expect(cached.env("KATA_REF_GUARD")).toBe("off");
+  env.KATA_DEFAULT_PROJECT = "environment"; env.KATA_OMP_LIVE_INBOX = "on"; env.KATA_REF_GUARD = "yes";
+  expect(cached.env("KATA_DEFAULT_PROJECT")).toBe("environment");
+  expect(cached.liveInbox).toBe(true);
+  expect(cached.env("KATA_REF_GUARD")).toBe("block");
+  env.KATA_OMP_LIVE_INBOX = "bogus"; env.KATA_REF_GUARD = "bogus";
+  expect(cached.liveInbox).toBe(false);
+  expect(cached.env("KATA_REF_GUARD")).toBe("off");
   for (const [input, expected] of [["0",false],["false",false],["off",false],["1",true],["true",true],["on",true]] as const) expect(resolveSettings({ liveInbox: input }, {}).liveInbox).toBe(expected);
 });
 

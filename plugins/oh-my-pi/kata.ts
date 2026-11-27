@@ -24,7 +24,7 @@ import { closeEnv, debugTo, NO_JOB } from "./kata-cli";
 import { delegateCommand, kataCommands as parseKataCommands } from "./shell";
 import { FINAL, isUntracked, Refusal, teammateFor } from "./delegates";
 import { textOf } from "./model";
-import { loadPluginSettings, resolveSettings, type StoredSettings } from "./settings";
+import { loadPluginSettings, resolveSettings } from "./settings";
 import type { DelegateOutcome, DelegateRecord, Delegates, DelegateStore } from "./delegates";
 import type { Setting } from "@oh-my-pi/pi-coding-agent/config/registry";
 import type { InboxStream } from "./inbox";
@@ -198,9 +198,8 @@ export default function ompKata(pi: any) {
 			return record?.id === ctx.agent?.id ? record : undefined;
 		},
 	};
-	let stored: StoredSettings = {};
-	const reload = async (ctx: any) => { stored = await loadPluginSettings(ctx.cwd); };
-	const resolved = () => resolveSettings(stored);
+	let resolved = resolveSettings({});
+	const reload = async (ctx: any) => { resolved = resolveSettings(await loadPluginSettings(ctx.cwd)); };
 	const core = createKataCore({
 		platform: nodePlatform,
 		// omp's timers, contained in the session and cleared at its shutdown.
@@ -226,10 +225,10 @@ export default function ompKata(pi: any) {
 		delegateStore: store,
 		// Live delivery needs the aside delivery, and no opt-out (tern-kata delivers for the agents it starts).
 		get liveInbox() {
-			if (!resolved().liveInbox || typeof pi.sendUserMessage !== "function") return undefined;
+			if (!resolved.liveInbox || typeof pi.sendUserMessage !== "function") return undefined;
 			return { spawn: spawnEvents, deliver: (text: string) => pi.sendUserMessage(text, { deliverAs: "aside", attribution: "agent" }) };
 		},
-	}, { env: name => resolved().env(name), namespace: NAMESPACE, executable: EXECUTABLE, executableVars: EXECUTABLE_VARS, debugFile: process.env.KATA_OMP_DEBUG, attentionHarness: "pi", prefetch: true,
+	}, { env: name => resolved.env(name), namespace: NAMESPACE, executable: EXECUTABLE, executableVars: EXECUTABLE_VARS, debugFile: process.env.KATA_OMP_DEBUG, attentionHarness: "pi", prefetch: true,
 		native: true });
 	// The task calls of the lead session `callsLead` that are not over yet.
 	const taskCalls = new Map<string, TaskCall>();

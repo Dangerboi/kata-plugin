@@ -33,12 +33,13 @@ export async function loadPluginSettings(cwd: string): Promise<StoredSettings> {
 	} catch { return {}; }
 }
 export function resolveSettings(stored: StoredSettings, env: Record<string, string | undefined> = process.env) {
-	function get<T>(key: { env: string; default: T; parse: Parser<T> }, name: string): T {
-		return key.parse(env[key.env]) ?? key.parse(stored[name]) ?? key.default;
+	function fallback<T>(key: { default: T; parse: Parser<T> }, name: string): T {
+		return key.parse(stored[name]) ?? key.default;
 	}
-	const project = get(KEYS.defaultProject, "defaultProject"), guard = get(KEYS.refGuard, "refGuard");
+	const project = fallback(KEYS.defaultProject, "defaultProject"), guard = fallback(KEYS.refGuard, "refGuard"), live = fallback(KEYS.liveInbox, "liveInbox");
 	return {
-		liveInbox: get(KEYS.liveInbox, "liveInbox"),
-		env: (name: string) => name === KEYS.defaultProject.env ? project : name === KEYS.refGuard.env ? guard : undefined,
+		get liveInbox() { return KEYS.liveInbox.parse(env[KEYS.liveInbox.env]) ?? live; },
+		env: (name: string) => name === KEYS.defaultProject.env ? KEYS.defaultProject.parse(env[name]) ?? project
+			: name === KEYS.refGuard.env ? KEYS.refGuard.parse(env[name]) ?? guard : undefined,
 	};
 }
