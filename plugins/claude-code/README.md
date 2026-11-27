@@ -44,7 +44,7 @@ The plugin makes no network requests of its own. Everything it records goes to K
 - **Prompts it submits.** When `KATA_INBOX_USER` names a session address (`<actor>/<name>`), the main session follows that inbox and submits each new request from the same actor into the session, starting a turn if the session is idle. Turn this off with `liveInbox` off or `KATA_CLAUDE_LIVE_INBOX=0`.
 - **Refused tool calls.** A `Write`, `Edit`, `NotebookEdit` or `git commit` that would put a Kata ref the session works into the repository is denied, with the reason; the check runs locally. Turn it off with `refGuard` off or `KATA_REF_GUARD=off` (or `0`).
 - **Local storage.** Each session's plan record is saved in Claude Code's plugin store under `session/<session id>`. Ended sessions' records are dropped after 7 days, or 30 days when the session left work open. With `debugFile` set, the plugin writes a diagnostic log there, capped at its last 1,000,000 characters.
-- **Environment.** It reads `KATA_REF`, `KATA_DEFAULT_PROJECT`, `KATA_AUTHOR`, `KATA_TEAMMATE`, `KATA_INBOX_USER`, `KATA_HOME`, `KATA_ATTENTION_HOST`, `KATA_CLOSE_TRANSCRIPT_ENABLED`, `KATA_REF_GUARD`, `HOME`, `KATA_CLAUDE_LIVE_INBOX`, `KATA_CLAUDE_EXECUTABLE`, `KATA_CLAUDE_DEBUG` and `USER`, and writes none.
+- **Environment.** It reads `KATA_REF`, `KATA_DEFAULT_PROJECT`, `KATA_AUTHOR`, `KATA_TEAMMATE`, `KATA_INBOX_USER`, `KATA_HOME`, `KATA_ATTENTION_HOST`, `KATA_CLOSE_TRANSCRIPT_ENABLED`, `KATA_REF_GUARD`, `KATA_CONTRACT_SOURCE`, `HOME`, `KATA_CLAUDE_LIVE_INBOX`, `KATA_CLAUDE_EXECUTABLE`, `KATA_CLAUDE_DEBUG` and `USER`, and writes none.
 
 ## Settings
 
@@ -55,6 +55,7 @@ Set with `/plugin configure kata-cc@kata-plugin` or `--config KEY=VALUE` at inst
 | `liveInbox` | `KATA_CLAUDE_LIVE_INBOX` | on | Deliver inbox requests as they arrive. Either one set off turns it off. |
 | `refGuard` | `KATA_REF_GUARD` | on | Refuse writes and commits that name a Kata ref. Either one set off turns it off. |
 | `contract` | | off | Add the Kata contract and inbox to each prompt. Leave off when `kata agent-hook install claude` is set up. |
+| `contractSource` | `KATA_CONTRACT_SOURCE` | built-in | A file whose text replaces the Kata contract; applies only with `contract` on. An absolute path is used as given, a relative one is read from the session folder. Blank: Kata's built-in contract. A file that does not exist gets one warning per session, and the built-in contract is used. A folder without `.kata.toml` still gets no contract. |
 | `kataExecutable` | `KATA_CLAUDE_EXECUTABLE` | `kata` | The Kata executable the plugin runs. |
 | `debugFile` | `KATA_CLAUDE_DEBUG` | none | Path of the diagnostic log. |
 

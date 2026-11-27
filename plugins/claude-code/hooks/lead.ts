@@ -63,6 +63,7 @@ async function create($: EngineInterface): Promise<Runtime> {
 	const settings = resolveSettings(options, env);
 	// The core reads the switch from its environment, where the option becomes the variable.
 	if (!settings.refGuard) env.set("KATA_REF_GUARD", "off");
+	if (settings.contractSource) env.set("KATA_CONTRACT_SOURCE", settings.contractSource);
 	const state = { cwd: "" };
 	const platform = platformOf($, env, state);
 	const exec = execOf($, env, () => rt.latest);

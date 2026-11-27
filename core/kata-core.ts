@@ -434,6 +434,7 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 	// process, so each has its own: the lead's by session id ("" when the host gives none), a delegate's by delegate id.
 	type PromptReads = { cwd: string; contract?: string; inbox?: string; address?: string; pending?: Promise<void>; inboxPending?: Promise<void>; inboxNext?: Promise<void>; personInbox?: boolean };
 	const leadReads = new Map<string, PromptReads>();
+	const contractSourceWarnings = new Set<string>();
 	const delegateReads = new Map<string, PromptReads>();
 	const leadKey = (id: string | undefined) => id ?? "";
 	const kata = createKata({ path, exec: (...args) => host.exec(...args), executable: options.executable, teammate: () => sessionTeammate, ctx: () => currentCtx, session: () => currentId, debug });
@@ -2252,8 +2253,21 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 		if (!entry.pending && !entry.contract) {
 			entry.pending = (async () => {
 				if (!await probe(job, cwd)) return;
-				// Exactly these arguments: some Kata builds print nothing for any other form.
-				const out = await kata.run(job, ["agent-contract-hook", "--source", "kata-agent-contract-hook"], cwd, { timeout: 1000, workspace: false }).then(out => JSON.parse(out)?.hookSpecificOutput?.additionalContext);
+				// Keep the reserved source for the default: some Kata builds need this exact form.
+				let source = "kata-agent-contract-hook";
+				const configured = setting("KATA_CONTRACT_SOURCE")?.trim();
+				if (configured) {
+					const absolute = path.resolve(cwd, configured);
+					try { await platform.realpath(absolute); source = absolute; }
+					catch {
+						const session = leadKey(sid(ctx));
+						if (!contractSourceWarnings.has(session) && uiOf(ctx)?.notify) {
+							contractSourceWarnings.add(session);
+							uiOf(ctx)?.notify?.(`Kata contract source ${absolute} does not exist, so this session uses Kata's built-in contract.`, "warning");
+						}
+					}
+				}
+				const out = await kata.run(job, ["agent-contract-hook", "--source", source], cwd, { timeout: 1000, workspace: false }).then(out => JSON.parse(out)?.hookSpecificOutput?.additionalContext);
 				if (typeof out === "string") entry.contract = out;
 			})().catch(debug).finally(() => { entry.pending = undefined; });
 		}
@@ -2513,6 +2527,7 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 				stopFollower();
 				// The reads of the session this one replaces go.
 				for (const other of [...leadReads.keys()]) if (other !== leadKey(id)) leadReads.delete(other);
+				for (const other of contractSourceWarnings) if (other !== leadKey(id)) contractSourceWarnings.delete(other);
 				const user = setting("KATA_INBOX_USER");
 				const live = !!host.liveInbox && !!user && isSessionAddress(user);
 				if (live) liveInbox = "";
