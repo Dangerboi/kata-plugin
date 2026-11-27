@@ -423,7 +423,8 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 	// Refs this session claimed in its shell or named with `/todo ref`: its work, though the plan may never hold them. Read by `tools.guard`.
 	const claimed = new Set<string>();
 	let closed = new Set<string>();
-	const claimedAt = new Map<string, number>();
+	// Bumped by every claim or close of a ref this session makes: a ref check that saw it move discards its whole batch.
+	let refEpoch = 0;
 	let footerGeneration = 0;
 	let checkedAt = 0, checking: Promise<void> | undefined, checkNext: Promise<void> | undefined;
 	let requestedRef: string | undefined;
@@ -859,7 +860,7 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 		// Only a bind that starts a session this core did not already hold restores delegates: /tree and a branch switch keep the same one.
 		const isNew = currentId !== id, previous = currentId;
 		currentId = id;
-		if (isNew && main(ctx)) { host.switched?.(ctx); newSession(); shown.clear(); closed.clear(); claimedAt.clear(); footerGeneration++; footerActor = undefined; footerPainted = false; checkedAt = 0; checking = undefined; checkNext = undefined; }
+		if (isNew && main(ctx)) { host.switched?.(ctx); newSession(); shown.clear(); closed.clear(); footerGeneration++; footerActor = undefined; footerPainted = false; checkedAt = 0; checking = undefined; checkNext = undefined; }
 		lastSnapshot = undefined;
 		currentCtx = ctx;
 		plan = { tasks: [], workspace: path.resolve(ctx.cwd) }; named = []; aliases.clear(); deletedParent = undefined;
@@ -2181,7 +2182,7 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 			if (!ref.includes("#") && parsed.value("--project")) ref = `${parsed.value("--project")}#${ref}`;
 			const workspace = path.resolve(event.input.cwd || ctx.cwd, parsed.value("--workspace") || ".");
 			if (args[0] === "close") {
-				for (const candidate of candidateRefs()) if (candidate === ref || (SHORT_ID_ONLY.test(ref) && candidate.endsWith(`#${ref}`))) touchRef(candidate);
+				if (candidateRefs().some(candidate => candidate === ref || (SHORT_ID_ONLY.test(ref) && candidate.endsWith(`#${ref}`)))) touchRef();
 				checkedAt = 0;
 				if (checking) void checkRefs(ctx, true);
 				if (footerFormat) void footer(footerCtx ?? ctx, "force", footerFormat);
@@ -2538,8 +2539,8 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 
 	const candidateRefs = () => [...new Set([plan.parent, configuredRef(), ...claimed].filter((ref): ref is string => !!ref))];
 	const displayRefs = () => candidateRefs().filter(ref => !closed.has(ref));
-	function touchRef(ref: string) { claimedAt.set(ref, (claimedAt.get(ref) ?? 0) + 1); checkedAt = 0; }
-	function markClaim(ref: string) { claimed.add(ref); touchRef(ref); closed.delete(ref); }
+	function touchRef() { refEpoch++; checkedAt = 0; }
+	function markClaim(ref: string) { claimed.add(ref); touchRef(); closed.delete(ref); }
 	function checkRefs(ctx: HostContext, force: boolean): Promise<void> {
 		if (checking) {
 			if (!force) return checking;
@@ -2556,7 +2557,7 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 		const id = currentId, generation = footerGeneration;
 		const running = (async () => {
 			for (;;) {
-				const refs = candidateRefs(), stamps = new Map(refs.map(ref => [ref, claimedAt.get(ref) ?? 0]));
+				const refs = candidateRefs(), epoch = refEpoch;
 				// true: closed, missing or another actor's claim; false: confirmed open; undefined: nothing confirmed (a failed read, or
 				// an answer this plugin cannot read), so the ref keeps its last confirmed state.
 				const results = await Promise.all(refs.map(async (ref): Promise<boolean | undefined> => {
@@ -2567,10 +2568,12 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 					} catch (error) { return isKataCode(error, "issue_not_found") ? true : undefined; }
 				}));
 				if (generation !== footerGeneration || id !== currentId) return;
+				// A claim or close, or a ref joining or leaving, while the batch ran: none of it is published; the whole batch runs again.
 				const current = candidateRefs();
-				const changed = current.length !== refs.length || current.some(ref => !stamps.has(ref) || stamps.get(ref) !== (claimedAt.get(ref) ?? 0));
-				closed = new Set(refs.filter((ref, index) => stamps.get(ref) === (claimedAt.get(ref) ?? 0) && (results[index] ?? closed.has(ref))));
-				if (!changed) { checkedAt = Date.now(); break; }
+				if (epoch !== refEpoch || current.length !== refs.length || current.some((ref, index) => ref !== refs[index])) continue;
+				closed = new Set(refs.filter((ref, index) => results[index] ?? closed.has(ref)));
+				checkedAt = Date.now();
+				break;
 			}
 		})().finally(() => { if (checking === running) checking = undefined; });
 		return checking = running;
