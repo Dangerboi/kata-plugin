@@ -267,9 +267,9 @@ export function createInboxFollower(deps: InboxFollowerDeps): InboxFollower {
 	async function readOnce(gen: number, forceQuiet: boolean) {
 		const since = streamed, quiet = forceQuiet || !seededOnce;
 		let requests: unknown;
-		try { requests = asRecord(await deps.read())?.requests; if (!Array.isArray(requests)) throw new Error("Kata inbox returned no requests."); }
+		try { requests = asRecord(await deps.read())?.requests; }
 		catch (error) { if (gen === generation) deps.readState?.(error); deps.debug(error); return scheduleSeedRetry(gen); }
-		if (gen !== generation) return;
+		if (gen !== generation || !Array.isArray(requests)) return;
 		deps.readState?.();
 		seededOnce = true;
 		const newer = (issue: string) => (states.get(issue)?.streamed ?? 0) > since;
