@@ -19,7 +19,7 @@ test("host manifests expose only the intended host and declare pi's supplied pee
   expect(json("package.json").keywords).toContain("pi-package");
   expect(pi.keywords).toContain("pi-package");
   // pi supplies these at run time; bundling them would load a second copy.
-  expect(pi.peerDependencies).toMatchObject({ "@earendil-works/pi-coding-agent": "*", typebox: "*" });
+  expect(pi.peerDependencies).toMatchObject({ "@earendil-works/pi-coding-agent": ">=1.2.0", typebox: "*" });
   expect(pi.dependencies).toBeUndefined();
 });
 
