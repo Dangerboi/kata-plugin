@@ -13,6 +13,7 @@ test("plan updates leave the system prompt stable and are delivered from committ
   await app.init(["Implement fixture", "Verify fixture"]);
   const first = await prompt(app);
   expect(first.message.content).toContain("Current plan");
+  expect(first.message.attribution).toBe("agent");
   expect(first.systemPrompt.join("\n")).not.toContain("Current plan");
   // A discarded hook result must not count as delivered.
   expect((await prompt(app)).message).toEqual(first.message);

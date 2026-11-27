@@ -522,7 +522,7 @@ export default function ompKata(pi: any) {
 		const send = (current: string, last: string) => current !== last || (crossed && !!current);
 		if (send(inbox, previous.inbox)) updates.push(inbox ? tagged("inbox", `Current Kata inbox (replaces earlier inbox messages):\n${inbox}`) : "The Kata inbox is now empty or disabled; earlier inbox messages no longer apply.");
 		if (send(plan, previous.plan)) updates.push(plan ? tagged("todo", `This is the current plan and replaces earlier plan messages.\n${plan}`) : "The current Kata plan has been cleared; earlier plan messages no longer apply.");
-		const message = updates.length ? { customType: "kata-prompt", content: updates.join("\n\n"), display: false, details: { inbox, plan } } : undefined;
+		const message = updates.length ? { customType: "kata-prompt", content: updates.join("\n\n"), display: false, attribution: "agent", details: { inbox, plan } } : undefined;
 		if (!out.length && !message) return;
 		return { ...(out.length ? { systemPrompt: [...base, out.join("\n\n")] } : {}), ...(message ? { message } : {}) };
 	});
