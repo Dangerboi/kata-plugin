@@ -36,6 +36,7 @@ const slot = (message: string, extra: object = {}) => ({ from: "lead", message, 
 function follower(options: { requests?: () => unknown[]; read?: () => Promise<unknown>; head?: () => Promise<number>; actor?: () => Promise<string>; spawn?: (cursor?: number) => any } = {}) {
 	const streams: ReturnType<typeof fakeStream>[] = [], cursors: (number | undefined)[] = [];
 	const delivered: string[] = [], published: string[] = [], timers: (() => void)[] = [], delays: number[] = [], debugged: unknown[] = [];
+	const counts: { trusted: number; foreign: number }[] = [];
 	let reads = 0;
 	const clock = { now: 0 };
 	const deps: InboxFollowerDeps = {
@@ -50,15 +51,76 @@ function follower(options: { requests?: () => unknown[]; read?: () => Promise<un
 			return { lines: s.lines(), exited: s.exited, kill: () => { s.killed++; s.end(); } };
 		},
 		deliver: text => delivered.push(text),
-		publish: text => published.push(summary(text)),
+		publish: (text, count) => { published.push(summary(text)); counts.push(count); },
 		head: options.head ?? (async () => 0),
 		now: () => clock.now,
 		setTimer: (fn, ms) => { timers.push(fn); delays.push(ms); return timers.length; },
 		clearTimer: () => { timers.length = 0; },
 		debug: error => debugged.push(error),
 	};
-	return { follow: createInboxFollower(deps), streams, cursors, delivered, published, timers, delays, clock, debugged, reads: () => reads };
+	return { follow: createInboxFollower(deps), streams, cursors, delivered, published, counts, timers, delays, clock, debugged, reads: () => reads };
 }
+
+test("a failed actor refresh reconnects and delivers only new trusted requests once", async () => {
+	let actors = 0, requests: unknown[] = [];
+	const t = follower({ actor: async () => { if (++actors === 2) throw new Error("identity unavailable"); return actors === 1 ? "lead" : "new"; }, requests: () => requests });
+	try {
+		t.follow.start(); await tick();
+		t.streams[0].push(slotLine(1, "old", slot("already delivered"))); await tick();
+		requests = [{ ref: "old", ...slot("already delivered") }, { ref: "new", from: "new", message: "arrived during refresh" }];
+		t.follow.refreshActor(); await tick();
+		expect(t.streams[0].killed).toBe(1);
+		expect((t.debugged.at(-1) as Error).message).toBe("identity unavailable");
+		expect(t.delivered).toHaveLength(1);
+		t.timers[0]!(); await tick();
+		expect(t.cursors.at(-1)).toBe(1);
+		expect(t.delivered).toHaveLength(2);
+		expect(t.delivered[1]).toContain("arrived during refresh");
+	} finally { t.follow.stop(); }
+});
+
+test("refresh twice ignores an older actor result that finishes last", async () => {
+	const first = Promise.withResolvers<string>(), second = Promise.withResolvers<string>();
+	let actors = 0;
+	const t = follower({ actor: () => ++actors === 1 ? Promise.resolve("lead") : actors === 2 ? first.promise : second.promise });
+	try {
+		t.follow.start(); await tick(); t.follow.refreshActor(); t.follow.refreshActor();
+		second.resolve("new"); await tick();
+		first.resolve("old"); await tick();
+		t.streams.at(-1)!.push(slotLine(1, "new", { from: "new", message: "trusted" })); await tick();
+		expect(t.delivered).toHaveLength(1);
+		expect(t.published.at(-1)).toBe("new:trusted");
+	} finally { first.resolve("old"); second.resolve("new"); t.follow.stop(); }
+});
+
+test("live inbox reports a failed read and clears the failure on recovery", async () => {
+	let fail = true;
+	const t = follower({ read: async () => { if (fail) throw new Error("read failed"); return { requests: [] }; } });
+	t.follow.start(); await tick();
+	expect((t.debugged.at(-1) as Error).message).toBe("read failed");
+	fail = false; t.timers[0]!(); await tick();
+	expect(t.reads()).toBe(2);
+	t.follow.stop();
+});
+
+test("refreshing the actor updates counts without replaying delivered slots", async () => {
+	let actor = "lead";
+	let requests: unknown[] = [];
+	const t = follower({ actor: async () => actor, requests: () => requests });
+	t.follow.start(); await tick();
+	t.streams[0].push(slotLine(1, "old", slot("first")));
+	t.streams[0].push(slotLine(2, "new", { from: "other", message: "second" }));
+	await tick();
+	expect(t.delivered).toHaveLength(1);
+	expect(t.counts.at(-1)).toEqual({ trusted: 1, foreign: 1 });
+	requests = [{ ref: "old", ...slot("first") }, { ref: "new", from: "other", message: "second" }];
+	actor = "other"; t.follow.refreshActor(); await tick();
+	expect(t.published.at(-1)).toBe("new:second");
+	t.streams.at(-1)!.push(slotLine(3, "new", { from: "other", message: "third" }));
+	await tick();
+	expect(t.delivered).toHaveLength(2);
+	t.follow.stop();
+});
 
 test("parseStreamLine reads a slot write, a clear and a reset frame, and ignores other keys", () => {
 	expect(parseStreamLine(slotLine(5, "abcd", slot("hi", { re: "c:1", kind: "reply" })), KEY)).toMatchObject({ type: "slot", key: "abcd", ref: "proj#abcd", eventId: 5, to: { from: "lead", message: "hi", re: "c:1", kind: "reply" } });
@@ -425,4 +487,60 @@ test("the project head found after a purge is the newest event, so the stream do
 	const kept = await issue();
 	const newest = (await kata(["comment", `omp-v2-live#${kept}`, "-m", "newest", "--json"])).event.id;
 	expect(await projectHead(text)).toBe(newest);
+});
+
+test("a snapshot publishes its complete counts once and stream changes publish immediately", async () => {
+	const requests = Array.from({ length: 20 }, (_, i) => ({ ref: `proj#${i}`, ...slot(`message ${i}`) }));
+	const t = follower({ requests: () => requests });
+	try {
+		t.follow.start(); await tick();
+		expect(t.published).toHaveLength(1);
+		expect(t.counts[0]).toEqual({ trusted: 20, foreign: 0 });
+		t.streams[0]!.push(slotLine(1, "new", slot("live"))); await tick();
+		expect(t.published).toHaveLength(2);
+		expect(t.delivered).toHaveLength(1);
+	} finally { t.follow.stop(); }
+});
+
+test("a failed refresh reseed retries while the stream stays open", async () => {
+	let reads = 0;
+	const t = follower({ read: async () => { if (++reads === 2) throw new Error("temporary"); return { requests: [{ ref: "proj#one", ...slot("first") }] }; } });
+	try {
+		t.follow.start(); await tick();
+		t.follow.refreshActor(); await tick();
+		expect(t.timers).toHaveLength(1);
+		t.timers[0]!(); await tick();
+		expect(reads).toBe(3);
+		expect(t.published.at(-1)).toBe("proj#one:first");
+		expect(t.delivered).toHaveLength(0);
+	} finally { t.follow.stop(); }
+});
+
+for (const refreshedActor of ["lead", "other"]) test(`verified ${refreshedActor} filters retained slots while reseed is pending`, async () => {
+	const actorGate = Promise.withResolvers<string>(), readGate = Promise.withResolvers<void>(), readStarted = Promise.withResolvers<void>();
+	let actors = 0, reads = 0;
+	const requests = [{ ref: "old", ...slot("first") }, { ref: "new", from: "other", message: "second" }];
+	const t = follower({
+		actor: () => ++actors === 1 ? Promise.resolve("lead") : actorGate.promise,
+		read: async () => { if (++reads === 2) { readStarted.resolve(); await readGate.promise; } return { requests: reads === 1 ? [] : requests }; },
+	});
+	try {
+		t.follow.start(); await tick();
+		t.streams[0]!.push(slotLine(1, "old", slot("first")));
+		t.streams[0]!.push(slotLine(2, "new", { from: "other", message: "second" }));
+		t.streams[0]!.push(slotLine(3, "gone", slot("cleared")));
+		t.streams[0]!.push(slotLine(4, "gone", null));
+		await tick();
+		expect(t.delivered).toHaveLength(2);
+		const before = t.published.length;
+		t.follow.refreshActor(); await tick();
+		expect(t.published).toHaveLength(before);
+		actorGate.resolve(refreshedActor);
+		expect(await Promise.race([readStarted.promise.then(() => true), Bun.sleep(2000).then(() => false)])).toBe(true);
+		expect(t.published).toHaveLength(before + 1);
+		expect(t.published.at(-1)).toBe(refreshedActor === "lead" ? "old:first" : "new:second");
+		expect(t.delivered).toHaveLength(2);
+		readGate.resolve(); await tick();
+		expect(t.delivered).toHaveLength(2);
+	} finally { actorGate.resolve(refreshedActor); readGate.resolve(); t.follow.stop(); }
 });

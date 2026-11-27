@@ -76,14 +76,14 @@ export const clearTranscriptEnv = () => { for (const key of TRANSCRIPT_ENV) dele
  * session manager over the host's entries (default: `FakeSessionManager`); `extra` is merged into the adapter's api.
  */
 function loadAdapter(options: OmpHostOptions, makeManager?: (entries: any[]) => any, extra: Record<string, unknown> = {}) {
-  const host = fakeHost(options), bus = registry();
+  const host = fakeHost(options), bus = registry(), commands = new Map<string, any>();
   const { ctx } = host;
   ctx.sessionManager = makeManager ? makeManager(host.entries) : new FakeSessionManager(options.sid, host.entries, options.header, options.sessionFile);
   ctx.agent = options.agent || { kind: "main", id: `main-${options.sid}` };
   ctx.getAsyncJobSnapshot = () => options.snapshot?.() || { running: [], recent: [] };
   void setBackend("kata");
-  ompKata({ ...host.api, ...extra, pi: { settings }, events: { on: bus.on }, ...options.sendUserMessage && { sendUserMessage: options.sendUserMessage } });
-  return { host, bus };
+  ompKata({ ...host.api, registerCommand: (name: string, value: any) => commands.set(name, value), ...extra, pi: { settings }, events: { on: bus.on }, ...options.sendUserMessage && { sendUserMessage: options.sendUserMessage } });
+  return { host, bus, commands };
 }
 
 /**
@@ -139,7 +139,7 @@ export function kataViews(show: (ref: string) => Promise<any>) {
  * `contractReady` settles once the adapter's contract read has answered.
  */
 export function ompHost(options: OmpHostOptions) {
-  const { host, bus } = loadAdapter(options);
+  const { host, bus, commands } = loadAdapter(options);
   const { ctx } = host;
   const manager = ctx.sessionManager as FakeSessionManager;
 
@@ -242,6 +242,8 @@ export function ompHost(options: OmpHostOptions) {
   }
 
   const app = { ctx, get sid() { return manager.getSessionId(); }, entries: host.entries, calls: host.calls, notices: host.notices, widgets: host.widgets,
+    /** The commands the adapter registered, by name. */
+    commands,
     contractReady: host.answered("agent-contract-hook"),
     /** Every warning the adapter showed except the backend-off one: a failing or refused mirror shows only here, because the adapter catches a failing `replace` and tells the user. */
     mirrorFailures: () => mirrorFailures(host.notices),

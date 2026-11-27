@@ -2,6 +2,7 @@ import type { EngineInterface, Hook, MatchedHook } from "claude-code";
 import { TODO_COMMANDS, type PlanView } from "../core/kata-core";
 import { enter, runtime, type Runtime } from "./lead";
 import { cardOf, planOf } from "./plan";
+import { KATA_DESCRIPTION, KATA_SUBCOMMANDS, kataCommand, parseKataCommand, USAGE } from "../core/session-status";
 
 // What the lead sees of its Kata plan, as omp shows it: the progress band above the prompt, the checklist card under each
 // `todo` call, `#` ticket completion and the /todo command. Render hooks draw from `$.state` (plan.ts) and never run Kata.
@@ -131,6 +132,7 @@ export async function registerTodoCommand($: EngineInterface) {
 			description: "Show or change the Kata plan",
 			argumentHint: `[${TODO_COMMANDS.join("|")}] [task]`
 		});
+		await $.command.register({ name: "kata", description: KATA_DESCRIPTION, argumentHint: `[${KATA_SUBCOMMANDS.join("|")}]` });
 	} catch (error) {
 		runtime()?.debug(error);
 	}
@@ -144,5 +146,19 @@ export const onTodoCommand: Hook<"command.run"> = async ($, e) => {
 		return { text: await rt.core.todo.command(ctx, e.args), isTextDisplayOnly: true };
 	} catch (error) {
 		return { text: `Kata todo could not run: ${error instanceof Error ? error.message : String(error)}`, isTextDisplayOnly: true };
+	}
+};
+
+// /kata status|inbox|refresh, for the person only: the text never reaches the model, and Claude Code has no footer.
+export const onKataCommand: Hook<"command.run"> = async ($, e) => {
+	// The usage reply does no work at all: no session start or switch, no Kata.
+	if (!parseKataCommand(e.args)) return { text: USAGE, isTextDisplayOnly: true };
+	try {
+		const { rt, ctx } = await enter($);
+		// With the mod's contract and live inbox both off, Kata's agent hook reads the inbox into each prompt, unfiltered.
+		const nativeInbox = !rt.settings.contract && !rt.settings.liveInbox;
+		return { text: await kataCommand(rt.core.session, ctx, e.args, { context: rt.settings.contract, nativeInbox }), isTextDisplayOnly: true };
+	} catch (error) {
+		return { text: `Kata could not answer /kata: ${error instanceof Error ? error.message : String(error)}`, isTextDisplayOnly: true };
 	}
 };

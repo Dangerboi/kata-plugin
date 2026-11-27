@@ -4,6 +4,10 @@ All notable changes to the `kata-cc` Claude Code plugin are listed here. The for
 
 ## [Unreleased]
 
+### Added
+
+- `/kata` (or `/kata status`), `/kata inbox` and `/kata refresh` show the person this session's actor, inbox address, refs, contract and settings, read the trusted inbox without changing the next prompt, and clear the cached contract and actor. The text is display-only. With `contract` and `liveInbox` both off, the inbox line says Kata's agent hook supplies it.
+
 ## [1.2.0] - 2026-11-26
 
 ### Added

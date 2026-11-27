@@ -5,7 +5,7 @@ import { EVIDENCE, eventually, holdKata, MESSAGE, until } from "./kata-fixture";
 // The Claude mod's plan band, todo cards, `#` ticket completion and /todo, against a real Kata. A todo call writes `$.state`,
 // the render hooks read it back: the cards and the band are checked through `ui.render`, as the transcript would draw them.
 // How each surface lays them out is drawn in plugins/claude-code/tests/ui.test.tsx.
-const { host, issue, deleteIssue, sessionParents } = claudeKata("claude-ui");
+const { host, issue, deleteIssue, sessionParents, binary, author } = claudeKata("claude-ui");
 
 // The engine's JSX factory, which the render hooks call: an element is its type, props and children.
 (globalThis as any).h = (type: string, props: Record<string, unknown> | null, ...children: unknown[]) => ({ type, props, children });
@@ -146,7 +146,7 @@ test("/todo is registered at the session start and answers the omp subcommands f
 	const h = host();
 	const ui = engineUi(h);
 	await h.start();
-	expect(ui.commands.map(c => c.name)).toEqual(["todo"]);
+	expect(ui.commands.find(c => c.name === "todo")).toBeDefined();
 	const run = (args: string) => h.fire("command.run", { command: "todo", args, origin: { kind: "composer" } });
 	expect(await run("")).toMatchObject({ text: expect.stringContaining("No todo plan"), isTextDisplayOnly: true });
 	await h.todo({ op: "init", items: ["First item"] });
@@ -167,6 +167,42 @@ test("/todo is registered at the session start and answers the omp subcommands f
 	const before = (await run("")).text;
 	for (const inherited of ["toString", "constructor", "__proto__"]) expect((await run(inherited)).text, inherited).toContain(`/todo ${inherited} is not available with Kata`);
 	expect((await run("")).text).toBe(before);
+});
+
+test("/kata is registered beside /todo and answers for the person only", async () => {
+	const h = host();
+	const ui = engineUi(h);
+	await h.start();
+	expect(ui.commands.find(c => c.name === "kata")).toMatchObject({ argumentHint: "[status|inbox|refresh]" });
+	const run = (args: string) => h.fire("command.run", { command: "kata", args, origin: { kind: "composer" } });
+	const status = await run("");
+	expect(status).toMatchObject({ isTextDisplayOnly: true });
+	expect(status.text).toMatch(/^workspace  /);
+	expect(status.text).toContain("contract   off — kata agent-hook supplies it");
+	expect(await run("refresh")).toEqual({ text: "Kata contract and actor cleared; the next prompt reads both again.", isTextDisplayOnly: true });
+});
+
+test("an unknown /kata subcommand answers with the usage before any session work", async () => {
+	const h = host();
+	engineUi(h);
+	const reply = await h.fire("command.run", { command: "kata", args: "explode", origin: { kind: "composer" } });
+	expect(reply).toEqual({ text: "Usage: /kata [status|inbox|refresh]", isTextDisplayOnly: true });
+	expect(h.calls).toEqual([]);
+});
+
+test("/kata says Kata supplies the inbox only with the mod's contract and live inbox both off", async () => {
+	const address = `${author}/kata-owner`;
+	const rows = async (contract: boolean, liveInbox: boolean) => {
+		const h = host({ env: { KATA_INBOX_USER: address }, options: { kataExecutable: binary, contract, liveInbox } });
+		engineUi(h);
+		await h.start();
+		const { text } = await h.fire("command.run", { command: "kata", args: "", origin: { kind: "composer" } });
+		await h.end();
+		return text.split("\n").find((line: string) => line.startsWith("inbox      "))?.slice(11);
+	};
+	expect(await rows(false, false)).toBe(`${address} · kata supplies it`);
+	expect(await rows(true, false)).toBe(`${address} · per prompt`);
+	expect(await rows(false, true)).toBe(`${address} · live`);
 });
 
 test("/todo takeover starts a ticket item of the plan", async () => {
