@@ -26,7 +26,8 @@ export function commandSegments(command: string): Segment[] {
 	const segments: Segment[] = [{ words: [], bodies: [], end: "", depth: 0 }];
 	let depth = 0;
 	const split = (operator: string) => { segments.at(-1)!.end = operator; segments.push({ words: [], bodies: [], end: "", depth }); };
-	let i = 0, arithEnd = -1, substAt = 0, heredoc: string | undefined, owner: Segment | undefined, wantDelimiter = false, hereString = false;
+	const arithmetic: { end: number; substAt: number }[] = [];
+	let i = 0, heredoc: string | undefined, owner: Segment | undefined, wantDelimiter = false, hereString = false;
 	const continued = (at: number) => command.slice(at, at + 2) === "\\\n" ? 2 : 0;
 	while (i < command.length) {
 		if (command[i] === "\n" && heredoc) {
@@ -43,8 +44,9 @@ export function commandSegments(command: string): Segment[] {
 			i++; continue;
 		}
 		if (command[i] === "#") { const end = command.indexOf("\n", i); if (end < 0) break; i = end; continue; }
-		if (i === arithEnd) { i += 2; arithEnd = -1; substAt = 0; continue; }
-		if (arithEnd < 0 && command.slice(i, i + 2) === "((") {
+		let arith = arithmetic.at(-1);
+		if (i === arith?.end) { i += 2; arithmetic.pop(); continue; }
+		if ((!arith || arith.substAt) && command.slice(i, i + 2) === "((") {
 			// A double opening parenthesis can also start nested subshells. Skip only a complete arithmetic command.
 			let at = i + 2, nested = 0;
 			while (at < command.length) {
@@ -55,28 +57,29 @@ export function commandSegments(command: string): Segment[] {
 				}
 				at++;
 			}
-			if (command.slice(at, at + 2) === "))") { arithEnd = at; i += 2; continue; }
+			if (command.slice(at, at + 2) === "))") { arithmetic.push({ end: at, substAt: 0 }); i += 2; continue; }
 		}
-		if (command[i] === "&" && command[i + 1] === ">") { i++; continue; }
+		if ((!arith || arith.substAt) && command[i] === "&" && command[i + 1] === ">") { i++; continue; }
 
-		if (";&|()".includes(command[i])) {
+		if (";&|()".includes(command[i]) && (!arith || arith.substAt || "()".includes(command[i]))) {
 			const char = command[i], operator = (char === "&" && command[i + 1] === "&") || (char === "|" && "|&".includes(command[i + 1] || "\0")) ? char + command[i + 1] : char;
-			if (char === "(") { depth++; if (arithEnd >= 0 && !substAt && command[i - 1] === "$") substAt = depth; }
-			if (char === ")") { depth = Math.max(0, depth - 1); if (substAt && depth < substAt) substAt = 0; }
+			if (char === "(") { depth++; if (arith && !arith.substAt && command[i - 1] === "$") arith.substAt = depth; }
+			if (char === ")") { depth = Math.max(0, depth - 1); if (arith?.substAt && depth < arith.substAt) arith.substAt = 0; }
 			split(operator); i += operator.length; continue;
 		}
-		if ((arithEnd < 0 || substAt) && command.slice(i, i + 3) === "<<<") { i += 3; hereString = true; continue; }
-		if ((arithEnd < 0 || substAt) && command.slice(i, i + 2) === "<<") { i += command[i + 2] === "-" ? 3 : 2; wantDelimiter = true; continue; }
+		if ((!arith || arith.substAt) && command.slice(i, i + 3) === "<<<") { i += 3; hereString = true; continue; }
+		if ((!arith || arith.substAt) && command.slice(i, i + 2) === "<<") { i += command[i + 2] === "-" ? 3 : 2; wantDelimiter = true; continue; }
 		const start = i;
-		let value = "", open = "", redirectAt = -1;
+		let value = "", open = "", redirectAt = -1, dollarAt = -1, ansi = false;
 		while (i < command.length) {
 			const char = command[i];
 			if (open !== "'" && continued(i)) { i += 2; continue; }
 			if (!open && (char === "&" || char === "|") && redirectAt === i - 1) { value += char; i++; continue; }
-			if (!open && /[\s;&|()]/.test(char)) break;
-			if (char === "\\" && open !== "'") { value += command[i + 1] || ""; i += 2; continue; }
-			if (char === open) { open = ""; i++; continue; }
-			if (!open && (char === "'" || char === '"')) { open = char; i++; continue; }
+			if (!open && (/[\s()]/.test(char) || (";&|".includes(char) && (!arith || arith.substAt)))) break;
+			if (char === "\\" && (open !== "'" || ansi)) { value += command[i + 1] || ""; i += 2; continue; }
+			if (char === open) { open = ""; ansi = false; i++; continue; }
+			if (!open && (char === "'" || char === '"')) { open = char; ansi = char === "'" && dollarAt >= 0 && dollarAt === i - 1; i++; continue; }
+			if (!open && char === "$") dollarAt = i;
 			if (!open && (char === "<" || char === ">")) redirectAt = i;
 			value += char; i++;
 		}
