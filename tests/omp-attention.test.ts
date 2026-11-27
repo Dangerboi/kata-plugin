@@ -1,5 +1,5 @@
 import { afterEach, beforeAll, expect, jest, test } from "bun:test";
-import { mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { eventually, finishes, holdKata, memoryDelegateStore, realKata, unique } from "./kata-fixture";
 import { ompHost } from "./omp-host";
@@ -369,6 +369,46 @@ test("shutdown ends attention before blocked work exceeds the OMP deadline", asy
   } finally { held.release(); await stop; }
 }, 15000);
 
+test("shutdown preserves attention after an explicit issue is assigned to another actor", async () => {
+  const ref = await issue(); process.env.KATA_REF = ref;
+  const app = host(); await app.event("session_start");
+  const started = await attention(ref);
+  expect(started.state).toBe("ok"); expect(started.session).toBeTruthy();
+  await text(["assign", ref, "new-owner"]);
+  expect((await meta(ref)).owner).toBe("new-owner");
+  expect(await attention(ref)).toMatchObject({ state: "ok", session: started.session });
+  await app.event("session_shutdown");
+  expect((await meta(ref)).owner).toBe("new-owner");
+  expect(await attention(ref)).toMatchObject({ state: "ok", session: started.session });
+});
+
+test("shutdown preserves attention after an explicit issue is assigned to another teammate", async () => {
+  const ref = await issue(); process.env.KATA_REF = ref;
+  const app = host(); await app.event("session_start");
+  const started = await attention(ref);
+  expect(started.state).toBe("ok"); expect(started.session).toBeTruthy();
+  await text(["meta", "set", ref, "teammate", "new-teammate"]);
+  expect((await meta(ref)).metadata.teammate).toBe("new-teammate");
+  expect(await attention(ref)).toMatchObject({ state: "ok", session: started.session });
+  await app.event("session_shutdown");
+  expect((await meta(ref)).metadata.teammate).toBe("new-teammate");
+  expect(await attention(ref)).toMatchObject({ state: "ok", session: started.session });
+});
+
+test("shutdown preserves reassigned attention after returning to the original session", async () => {
+  const ref = await issue(); process.env.KATA_REF = ref;
+  const app = host(); await app.event("session_start");
+  const started = await attention(ref);
+  expect(started.state).toBe("ok"); expect(started.session).toBeTruthy();
+  await text(["assign", ref, "new-owner"]);
+  await app.event("session_switch", {}, switched(app, "other-session"));
+  await app.event("session_switch", {}, switched(app, app.sid!));
+  expect(await attention(ref)).toMatchObject({ state: "ok", session: started.session });
+  await app.event("session_shutdown");
+  expect((await meta(ref)).owner).toBe("new-owner");
+  expect(await attention(ref)).toMatchObject({ state: "ok", session: started.session });
+});
+
 test("shutdown ends attention before settling a missed delegate exit", async () => {
   const ref = await issue(); process.env.KATA_REF = ref;
   let recent: any[] = [], slow = false;
@@ -424,6 +464,24 @@ test("core shutdown uses the detached production spawn after its host dies", asy
     expect(hooks.map(hook => hook.mode)).toEqual(["start", "end", "start"]);
     expect(new Set(hooks.map(hook => hook.launcher)).size).toBe(1);
     expect(hooks[0].launcher).toBe(`omp-${processHost.pid}-${performance.timeOrigin}`);
+    // A test-owned executable records the guarded child's PID during its real Kata read.
+    // Waiting for that child to exit proves the mismatched-owner end had time to run.
+    const reassigned = await issue(), pidFile = path.join(scratch, `guard-pid-${unique()}`), wrapper = path.join(scratch, `guard-kata-${unique()}`);
+    writeFileSync(wrapper, `#!/bin/sh\nprintf '%s' "$PPID" > '${pidFile}'\nexec '${binary}' "$@"\n`, { mode: 0o755 });
+    const secondEntries: any[] = [], secondSession = `${session}-reassigned`;
+    const second = createKataCore({
+      platform: { ...nodePlatform, pid: processHost.pid },
+      exec: (_file, args, opts) => run(args, opts.cwd, opts.timeout, opts.env),
+      detached: spawnDetached,
+      appendEntry: (customType, data) => secondEntries.push({ type: "custom", customType, data }),
+      delegateStore: memoryDelegateStore(),
+    }, { namespace: "omp", executable: wrapper, executableVars: [], attentionHarness: "pi" });
+    const secondCtx = { cwd, sessionManager: { getSessionId: () => secondSession, getBranch: () => secondEntries } };
+    process.env.KATA_REF = reassigned;
+    await second.session.start(secondCtx);
+    const held = await attention(reassigned);
+    expect(held.state).toBe("ok"); expect(held.session).toBeTruthy();
+    await text(["assign", reassigned, "new-owner"]);
     // Adopt two more tickets in the switched session, then end all three through the real detached transport.
     delete process.env.KATA_REF;
     const attended = [await fresh(), await fresh()];
@@ -433,10 +491,17 @@ test("core shutdown uses the detached production spawn after its host dies", asy
       await eventually(async () => (await attention(ticket)).state, "ok");
     }
     processHost.kill(); await processHost.exited;
+    await second.session.shutdown(secondCtx);
     await core.session.shutdown(ctx(`${session}-switch`));
     await eventually(async () => (await attention(ref)).state, "needs-human");
     expect((await attention(ref)).session).toBe(`ended:${before.session}`);
     for (const ticket of attended) await eventually(async () => (await attention(ticket)).state, "needs-human");
+    await eventually(async () => existsSync(pidFile), true);
+    const guardedPid = Number(readFileSync(pidFile, "utf8"));
+    expect(guardedPid).toBeGreaterThan(1);
+    await eventually(async () => { try { process.kill(guardedPid, 0); return false; } catch (error: any) { return error.code === "ESRCH"; } }, true);
+    expect((await meta(reassigned)).owner).toBe("new-owner");
+    expect(await attention(reassigned)).toMatchObject({ state: "ok", session: held.session });
   } finally { processHost.kill(); await processHost.exited; }
 });
 

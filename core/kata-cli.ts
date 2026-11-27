@@ -104,6 +104,8 @@ export function closeEnv(env: Pick<Platform["env"], "get">, args: readonly strin
 }
 
 export type ExecResult = { code: number; stdout: string; stderr?: string; killed?: boolean };
+// What a detached end checks first, from the issue as attention began: its owner and teammate must still be these.
+export type OwnerGuard = { show: string[]; owner: string; teammate: string };
 export type Exec = (file: string, args: string[], options: { cwd: string; timeout: number; ctx?: any; env?: Record<string, string> }) => Promise<ExecResult>;
 
 type Project = { id: number; name: string };

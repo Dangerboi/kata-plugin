@@ -85,7 +85,20 @@ function loadAdapter(options: OmpHostOptions, makeManager?: (entries: any[]) => 
   const detached: Promise<any>[] = [];
   const runtime = {
     execKata: (file: string, args: string[], opts: any) => host.api.exec(file, args, opts),
-    spawnDetached: (file: string, args: string[], opts: any) => { detached.push(host.api.exec(file, args, opts)); },
+    spawnDetached: (file: string, args: string[], opts: any) => {
+      detached.push((async () => {
+        if (opts.guard) {
+          try {
+            // The detached child reads independently of the host exec and any held host call.
+            const result = await options.run(opts.guard.show, { cwd: opts.cwd, timeout: 5000, env: opts.env });
+            if (result.code) return;
+            const issue = JSON.parse(result.stdout).issue;
+            if (issue.owner !== opts.guard.owner || (issue.metadata?.teammate || "") !== opts.guard.teammate) return;
+          } catch { return; }
+        }
+        await host.api.exec(file, args, opts);
+      })());
+    },
   };
   // omp's pi.exec ignores the env option; the separate runtime port is the path that can carry it.
   const exec = (file: string, args: string[], { env: _env, ...opts }: any) => host.api.exec(file, args, opts);
