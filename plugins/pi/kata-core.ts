@@ -2154,7 +2154,7 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 		if (!main(ctx) || event.toolName !== "bash" || event.isError || (event.details?.exitCode !== undefined && event.details.exitCode !== 0)) return;
 		const command = event.input?.command;
 		if (typeof command !== "string") return;
-		const adopting = !configuredRef() && !/[;|\n]/.test(command);
+		const initial = [...plan.tasks]; // Adopting an earlier claim of this command loads its children: only items the plan already held skip adoption.
 		for (const invocation of kataCommands(path, command, options.executable, options.executableVars)) {
 			const parsed = shellOptions(invocation.words), args = parsed.args;
 			let ref = args[0] === "claim" ? args[1] : args[0] === "meta" && args[1] === "set" && args[3] === "work.attention" && args[4] === "ok" ? args[2] : undefined;
@@ -2169,10 +2169,9 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 				claimed.add(plan.parent && plan.workspace === workspace ? `${projectOf(plan.parent)}#${bare}` : bare);
 				void serial(job => kata.pin(job, bare, workspace)).then(pinned => { if (currentId === session) { claimed.delete(bare); claimed.add(pinned); } }).catch(debug);
 			}
-			if (!adopting) continue;
+			if (configuredRef() || !invocation.proven || (!QUALIFIED_REF_ONLY.test(ref) && !SHORT_ID_ONLY.test(ref)) || initial.some(task => hasRef(task, ref))) continue;
 			const target = ref;
 			await bounded(serial(async job => {
-				if (plan.tasks.some(t => hasRef(t, target))) return;
 				await owned(job, target, workspace);
 				await adoptParent(job, target, ctx, workspace);
 			}));

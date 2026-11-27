@@ -477,3 +477,16 @@ test("a delegate's note names no inbox: the Claude path shows a delegate none", 
 	expect(spawned.prompt).toContain("Your Kata issue is");
 	expect(spawned.prompt).not.toContain("Your Kata inbox");
 });
+
+
+test("Claude adopts a claim proved by the Bash result", async () => {
+  const h = host(); await h.start();
+  const ref = await issue("Shell claim");
+  const command = `true; kata claim ${ref}`;
+  await h.fire("tool.call", { tool: "Bash", tool_use_id: crypto.randomUUID(), command }, async () => {
+    const result = await sh(command);
+    return { isError: result.code !== 0 };
+  });
+  await h.todo({ op: "init", items: ["Shell child"] });
+  expect((await show(ref)).children?.some((child: any) => child.title === "Shell child") ?? false).toBe(true);
+});

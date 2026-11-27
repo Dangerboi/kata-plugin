@@ -327,7 +327,7 @@ test("omp keeps the refs a shell claim named across /tree and qualifies a bare c
   const app = host(); await app.event("session_start");
   const short = await issue(), ref = `v2test#${short}`;
   const write = (content: string) => app.event("tool_call", { toolName: "write", input: { path: `${cwd}/claimed.ts`, content } });
-  // A claim inside a compound command is recorded, not adopted; a bare id is recorded with the project it resolves in.
+  // The unexecuted claim is recorded; a bare id is recorded with the project it resolves in.
   await app.event("tool_result", { toolName: "bash", input: { command: `kata claim ${short} && echo claimed` }, isError: false, details: { exitCode: 0 } });
   expect(await write(`// ${short} on its own`)).toMatchObject({ block: true });
   await eventually(async () => !!(await write(`// ${ref}`))?.block, true);
@@ -474,4 +474,43 @@ test("typed automatic parent can be recovered after losing the session entry", a
   expect((await recovered.call({ op: "init", items: ["Durable existing task", "Recovered task"] })).isError).toBeUndefined();
   expect((await show(parent)).children.map((c: any) => c.title).sort()).toEqual(["Durable existing task", "Recovered task"]);
   expect(await sessionParents(app.sid)).toHaveLength(1);
+});
+
+
+test("only shell claims proved by the command status adopt owned issues", async () => {
+  for (const [template, adopts] of [
+    ["true; kata claim REF", true], ["kata claim REF; true", false],
+    ["true; kata meta set REF work.attention ok", true], ["kata meta set REF work.attention ok; true", false],
+  ] as const) {
+    const ref = await issue(); await kata(["claim", ref, "--json"]);
+    const app = host({ sid: unique() }); await app.event("session_start");
+    const command = template.replace("REF", ref);
+    await exec("bash", ["-c", command.replace("kata", `\"${binary}\"`)], { cwd, env });
+    await app.event("tool_result", { toolName: "bash", input: { command }, isError: false });
+    await app.call({ op: "init", items: ["Check shell claim"] });
+    expect((await show(ref)).children?.some((c: any) => c.title === "Check shell claim") ?? false, template).toBe(adopts);
+  }
+});
+
+test("proven claims adopt in order and invalid refs never reach show", async () => {
+  const first = await issue(), second = await issue("Plan child", { parent: first, meta: ["todo.phase=implementation", "todo.status=pending"] });
+  await kata(["claim", first, "--json"]); await kata(["claim", second, "--json"]);
+  const app = host({ sid: unique() }); await app.event("session_start");
+  const refs = [`v2test#${first}`, `v2test#${second}`];
+  const command = `kata claim ${refs[0]} && kata claim ${refs[1]}`;
+  await exec("/bin/bash", ["-c", command.replaceAll("kata", `\"${binary}\"`)], { cwd, env });
+  await app.event("tool_result", { toolName: "bash", input: { command }, isError: false });
+  await eventually(async () => refs.every(ref => app.entries.some(e => e.customType === "io.kata.omp.parent" && e.data?.parent === ref)), true);
+  const adopted = app.entries.filter(e => e.customType === "io.kata.omp.parent" && refs.includes(e.data?.parent)).map(e => e.data.parent);
+  expect([...new Set(adopted)]).toEqual(refs);
+  await app.call({ op: "init", items: ["Last claim wins"] });
+  const task = (await show(second)).children.find((c: any) => c.title === "Last claim wins");
+  expect(task).toBeDefined();
+  await kata(["claim", task.short_id, "--json"]);
+  await app.event("tool_result", { toolName: "bash", input: { command: `kata claim v2test#${task.short_id}` }, isError: false });
+  await app.call({ op: "append", items: ["Still under second"] });
+  expect((await show(second)).children.some((c: any) => c.title === "Still under second")).toBe(true);
+  const calls = app.calls.length;
+  for (const ref of ["$ID", "2h"]) await app.event("tool_result", { toolName: "bash", input: { command: `kata claim ${ref}` }, isError: false });
+  expect(app.calls.slice(calls).filter(c => c[0] === "show")).toEqual([]);
 });

@@ -4,6 +4,12 @@ All notable changes to `@dangerboi/kata-opencode` are listed here. The format fo
 
 ## [Unreleased]
 
+### Fixed
+
+#### Shell commands
+
+- The shell reader keeps arithmetic (`(( ))`, `$(( ))`), redirections (`2>&1`, `&>`, `>|`), line continuations, ANSI-C quoting and nested `$( )` and backtick substitutions in one command, so a `kata` call in them is found or ignored correctly.
+
 ## [1.3.0] - 2026-11-26
 
 ### Added
