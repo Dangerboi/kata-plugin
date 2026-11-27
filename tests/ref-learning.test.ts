@@ -114,3 +114,15 @@ test('R5 symlinked plan workspace supplies project to a canonical invocation', a
  await core.tools.result({ ...ctx, cwd: actual }, { toolName: 'bash', input: { command: 'kata next --agent' }, content: 'OK next z7x2' });
  expect(core.tools.refs(ctx)).toContain('demo#z7x2');
 });
+
+test('R6 project header with a trailing comment seeds its name', async () => {
+ const h = setup();
+ writeFileSync(path.join(h.cwd, '.kata.toml'), 'version = 1\n[project] # workspace\nname = "demo"\n');
+ expect(await h.commit('demo#z7x2')).toContain('demo#z7x2');
+});
+
+test('R6 table version cannot shadow an unsupported root version', async () => {
+ const h = setup();
+ writeFileSync(path.join(h.cwd, '.kata.toml'), 'version = 2\n[project]\nversion = 1\nname = "future"\n');
+ expect(await h.commit('future#z7x2')).toBeUndefined();
+});
