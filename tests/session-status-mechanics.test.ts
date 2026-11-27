@@ -636,3 +636,50 @@ test("a late footer call cannot repaint after shutdown and works after restart",
     expect(writes.at(-1)).toContain("alice");
   } finally { await core.session.shutdown(ctx); }
 });
+
+test("a held inbox inspection cannot roll back a later prompt read", async () => {
+  const entered = Promise.withResolvers<void>(), release = Promise.withResolvers<void>();
+  const requests = [{ ref: "p#1", from: "alice", message: "first" }, { ref: "p#2", from: "alice", message: "second" }];
+  let reads = 0;
+  const writes: (string | undefined)[] = [];
+  const ctx = { cwd: "/tmp/kata-capped-prompt-race", hasUI: true, ui: { setStatus: (_key: string, value: string | undefined) => writes.push(value) } };
+  const core = createKataCore({ platform: nodePlatform, appendEntry() {}, delegateStore: memoryDelegateStore(), exec: async (_file, args) => {
+    if (args[0] === "version") return r6ok({ kata_api_version: 1, version: "0.24.0" });
+    if (args[0] === "inbox") { const n = ++reads; if (n === 1) { entered.resolve(); await release.promise; } return r6ok({ kata_api_version: 1, requests: n === 1 ? requests.slice(0, 1) : requests }); }
+    if (args[0] === "agent-contract-hook") return r6ok({ hookSpecificOutput: { additionalContext: "contract" } });
+    return r6ok({ issues: [] });
+  } }, { namespace: "test", executable: "/tmp/kata-fixture", executableVars: [], env: n => ({ KATA_AUTHOR: "alice", KATA_INBOX_USER: "alice/worker" } as Record<string, string>)[n] });
+  try {
+    await core.session.footer(ctx, "force", footerText);
+    const inspection = core.session.inbox(ctx);
+    expect(await Promise.race([entered.promise.then(() => true), Bun.sleep(2000).then(() => false)])).toBe(true);
+    expect((await core.session.beforePrompt(ctx)).sections.inbox).toContain("second");
+    const deadline = Date.now() + 2000;
+    while (!writes.at(-1)?.includes("inbox 2") && Date.now() < deadline) await Bun.sleep(5);
+    expect(writes.at(-1)).toContain("inbox 2");
+    release.resolve(); expect((await inspection).counts?.trusted).toBe(1);
+    expect(writes.at(-1)).toContain("inbox 2");
+  } finally { release.resolve(); await core.session.shutdown(ctx); }
+});
+
+test("a held status read cannot repaint an older count after a newer inspection", async () => {
+  const entered = Promise.withResolvers<void>(), release = Promise.withResolvers<void>();
+  const requests = [{ ref: "p#1", from: "alice", message: "first" }, { ref: "p#2", from: "alice", message: "second" }];
+  let reads = 0;
+  const writes: (string | undefined)[] = [];
+  const ctx = { cwd: "/tmp/kata-capped-status-race", hasUI: true, ui: { setStatus: (_key: string, value: string | undefined) => writes.push(value) } };
+  const core = createKataCore({ platform: nodePlatform, appendEntry() {}, delegateStore: memoryDelegateStore(), exec: async (_file, args) => {
+    if (args[0] === "version") return r6ok({ kata_api_version: 1, version: "0.24.0" });
+    if (args[0] === "inbox") { const n = ++reads; if (n === 1) { entered.resolve(); await release.promise; } return r6ok({ kata_api_version: 1, requests: n === 1 ? requests.slice(0, 1) : requests }); }
+    return r6ok({ issues: [] });
+  } }, { namespace: "test", executable: "/tmp/kata-fixture", executableVars: [], env: n => ({ KATA_AUTHOR: "alice", KATA_INBOX_USER: "alice/worker" } as Record<string, string>)[n] });
+  try {
+    await core.session.footer(ctx, "force", footerText);
+    const status = core.session.view(ctx, { reconcile: true });
+    expect(await Promise.race([entered.promise.then(() => true), Bun.sleep(2000).then(() => false)])).toBe(true);
+    expect((await core.session.inbox(ctx)).counts?.trusted).toBe(2);
+    expect(writes.at(-1)).toContain("inbox 2");
+    release.resolve(); await status;
+    expect(writes.at(-1)).toContain("inbox 2");
+  } finally { release.resolve(); await core.session.shutdown(ctx); }
+});
