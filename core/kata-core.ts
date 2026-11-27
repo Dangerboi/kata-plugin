@@ -2307,7 +2307,7 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 		liveInbox = undefined;
 	}
 
-	// Requests are delivered as an aside: an idle session starts a turn on them, a working one takes them at its
+	// Requests are delivered by the host: an idle session starts a turn on them, a working one takes them at its
 	// next step boundary without losing its tool batch. The sender is a relayed agent request, not the person.
 	function startFollower(ctx: HostContext, address: string) {
 		const job = NO_JOB, cwd = path.resolve(ctx.cwd), live = host.liveInbox!;

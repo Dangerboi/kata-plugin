@@ -2,7 +2,7 @@ import { afterEach, expect, test } from "bun:test";
 import { until } from "./kata-fixture";
 import { piFixture } from "./pi-fixture";
 
-const { cwd, host, issue, kata, nativeKey, globalRegistry } = piFixture({ adopt: true });
+const { cwd, host, issue, kata, nativeKey, globalRegistry, asChild, down } = piFixture({ adopt: true });
 const apps: any[] = [];
 const children = () => Bun.spawnSync(["pgrep", "-f", `events --tail --json --workspace ${cwd}`]).stdout.toString().split("\n").filter(Boolean);
 async function open(address: string, options: any = {}) {
@@ -81,4 +81,38 @@ test("a resumed session replaces its predecessor's stream", async () => {
   const [first] = children();
   await app.event("session_start", { reason: "resume" });
   expect(await until(() => children().length === 1 && children()[0] !== first)).toBe(true);
+});
+
+
+test("a child session does not start a follower", async () => {
+  asChild(JSON.stringify({ pid: process.pid, sessionId: "parent", workspace: cwd, teammate: "" }));
+  const app = await open("pi-builder/live-child");
+  await app.event("before_agent_start", { prompt: "child task", systemPromptOptions: { sections: {} } });
+  expect(children()).toHaveLength(0);
+});
+
+test("a child that cannot reach its parent workspace falls back to a live main session", async () => {
+  asChild(JSON.stringify({ pid: process.pid, sessionId: "parent", workspace: cwd, teammate: "" }));
+  let failed = false;
+  await open("pi-builder/live-fallback", { before: (args: string[]) => {
+    if (!failed && args[0] === "list") { failed = true; return down(); }
+  } });
+  expect(failed).toBe(true);
+  expect(await until(() => children().length === 1)).toBe(true);
+});
+
+test("a late native adapter suppresses delivery before the next prompt", async () => {
+  const address = "pi-builder/live-native-delivery", app = await open(address);
+  expect(await until(() => children().length === 1)).toBe(true);
+  const ref = await issue("Native delivery suppression");
+  let checks = 0;
+  globalRegistry[nativeKey].adapters.set("native", { options: { scope: "user", get contract() { checks++; return true; } } });
+  await kata(["notify", ref, "--to", address, "--message", "suppressed", "--json"]);
+  expect(await until(() => checks > 0)).toBe(true);
+  expect(app.messages).toEqual([]);
+  globalRegistry[nativeKey].adapters.clear();
+  const sentinel = await issue("After suppressed delivery");
+  await kata(["notify", sentinel, "--to", address, "--message", "sentinel", "--json"]);
+  expect(await until(() => app.messages.length === 1)).toBe(true);
+  expect(app.messages[0][0].content).toContain("sentinel");
 });

@@ -224,9 +224,9 @@ export default async function piKata(pi: ExtensionAPI) {
 		// A /fork replaces the source session in this process: the fork takes the tasks the source holds.
 		const forked = event?.reason === "fork";
 		liveCwd = ctx.cwd;
-		liveAllowed = !inherited && (ctx.mode === "tui" || ctx.mode === "rpc") && !nativeContractActive(ctx.cwd);
+		liveAllowed = (ctx.mode === "tui" || ctx.mode === "rpc") && !nativeContractActive(ctx.cwd);
 		let next = await core.session.start(ctx, { child: inherited && !inherited.ref ? inherited.workspace : undefined, forked });
-		if (!next) { inherited = undefined; liveAllowed = (ctx.mode === "tui" || ctx.mode === "rpc") && !nativeContractActive(ctx.cwd); next = await core.session.start(ctx, { forked }) as Lead; } // Kata does not answer from the child's workspace
+		if (!next) { inherited = undefined; next = await core.session.start(ctx, { forked }) as Lead; } // Kata does not answer from the child's workspace
 		if (inherited?.provider && inherited.model) {
 			const inherit = inheritsModel(process.argv);
 			const model = inherit.model ? ctx.modelRegistry?.find(inherited.provider, inherited.model) : undefined;
