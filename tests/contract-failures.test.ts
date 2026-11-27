@@ -1,9 +1,9 @@
 import { expect, test } from "bun:test";
-import { createKataCore } from "../core/kata-core";
+import { createKataCore, tagged } from "../core/kata-core";
 import { nodePlatform } from "../core/node-host";
 import { memoryDelegateStore } from "./kata-fixture";
 import { NO_JOB, type ExecResult } from "../core/kata-cli";
-import { commandSegments } from "../core/shell";
+import { commandSegments, quoteIfNeeded } from "../core/shell";
 
 const success = (text: string): ExecResult => ({ code: 0, stdout: JSON.stringify({ hookSpecificOutput: { additionalContext: text } }) });
 const fail = (stderr = "boom"): ExecResult => ({ code: 1, stdout: "", stderr });
@@ -43,7 +43,7 @@ test("late failure notice survives fast recovery and waits for the next main pro
   expect(a.warnings).toEqual([]);
   expect((await a.core.session.beforePrompt(ctx)).sections.contract).toBe("recovered");
   expect(a.warnings).toHaveLength(1);
-  expect(a.warnings[0]).toContain("boom");
+  expect(a.warnings[0]).toBe("Kata contract was unavailable (kata agent-contract-hook failed: boom).");
 });
 
 for (const origin of ["advisor", "no-ui"] as const) test(`${origin} failure waits for a main prompt with UI`, async () => {
@@ -91,6 +91,21 @@ test("a delegate gets a stub but no UI warning", async () => {
   await a.core.delegates.start({ id: "contract-delegate", sessionId: "delegate", leadSessionId: "lead", text: "Survey the tree", untracked: true }, NO_JOB);
   expect((await a.core.session.beforePrompt(ctx)).sections.contract).toContain("boom");
   expect(a.warnings).toEqual([]);
+});
+
+test("a delegate waits at most one second for a contract that continues in the background", async () => {
+  const gate = Promise.withResolvers<void>();
+  const a = fixture(async () => { await gate.promise; return success("late contract"); }), ctx = a.context("delegate", "sub");
+  const started = Date.now();
+  try {
+    const result = await Promise.race([a.core.session.beforePrompt(ctx), new Promise<undefined>(resolve => setTimeout(resolve, 1800))]);
+    expect(result).toBeDefined();
+    expect(result?.sections.contract).toBeUndefined();
+    expect(Date.now() - started).toBeGreaterThanOrEqual(850);
+    expect(a.timeouts).toEqual([10_000]);
+  } finally { gate.resolve(); }
+  await nextTick();
+  expect((await a.core.session.beforePrompt(ctx)).sections.contract).toBe("late contract");
 });
 
 for (const [name, output, reason] of [
@@ -144,17 +159,17 @@ test("failure reasons are capped and cannot inject prompt markup", async () => {
   const section = (await a.core.session.beforePrompt(a.context())).sections.contract!;
   expect(section).not.toContain("<");
   expect(section).toContain("&lt;/kata_contract&gt;");
-  const reason = section.match(/unavailable \((.*)\)\. Run/)![1];
+  const reason = section.match(/unavailable \((.*)\)\. Before/)![1];
   expect(reason.replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&amp;/g, "&")).toHaveLength(80);
   expect(a.warnings[0]).toContain("</kata_contract>");
 });
 
-test("recovery command uses the configured executable safely in tagged text", async () => {
-  const executable = "/tmp/kata user/'test' <binary>&";
-  const a = fixture(() => fail(), { executable });
+for (const executable of ["/tmp/kata user/'test' <binary>&", "/tmp/kata`quoted` name"]) test("recovery command is copyable for " + executable, async () => {
+  const a = fixture(() => fail("</kata_contract>"), { executable });
   const section = (await a.core.session.beforePrompt(a.context())).sections.contract!;
-  expect(section).not.toContain("<");
-  const command = section.match(/`([^`]+)`/)![1].replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&amp;/g, "&");
+  const command = `${quoteIfNeeded(executable, /^[\w./-]+$/)} quickstart --format contract`;
+  expect(section.endsWith(command)).toBe(true);
+  expect(tagged("contract", section).split("</kata_contract>")).toHaveLength(2);
   expect(commandSegments(command)[0].words.map(word => word.value)).toEqual([executable, "quickstart", "--format", "contract"]);
 });
 
