@@ -3,6 +3,7 @@
 import { spawnSync } from "node:child_process";
 import { mkdirSync, writeFileSync, realpathSync } from "node:fs";
 import path from "node:path";
+import { setTimeout as sleep } from "node:timers/promises";
 import { cleanEnv, kataProject, linesIn, scratchRoot, teardown } from "./smoke-lib";
 const repo = path.resolve(import.meta.dirname, ".."), scratch = scratchRoot("omp-attention-");
 const pi = process.env.PI_BIN || path.join(repo, "node_modules/.bin/pi"), omp = process.env.OMP_BIN || "omp";
@@ -45,6 +46,17 @@ export default function(api){registerSmokeProvider(api,AssistantMessageEventStre
       : ["--no-extensions", "--no-skills", "--no-rules", "--no-context-files", "--no-lsp", "--no-title", "--no-session", "-e", path.join(repo, "plugins/oh-my-pi/kata.ts")];
     args.push("-e", provider, "--model", "probe/dummy", "--mode", "json", "-p", "lead");
     console.log(run(host === "pi" ? pi : omp, args, { KATA_REF: refs[0], ATTENTION_OTHER_REF: refs[1], ATTENTION_HOST: host, PI_CODING_AGENT_DIR: path.join(scratch, host + "-agent") }));
+    if (host === "omp") {
+      let metadata: Record<string, unknown> = {};
+      for (const end = Date.now() + 20_000; Date.now() < end;) {
+        metadata = JSON.parse(kata(["show", refs[0], "--json"])).issue.metadata ?? {};
+        if (metadata["work.attention"] === "needs-human" && String(metadata["work.attention_session"] ?? "").startsWith("ended:") && metadata["work.attention_msg"] === "session ended without hand-off") break;
+        await sleep(100);
+      }
+      if (metadata["work.attention"] !== "needs-human" || !String(metadata["work.attention_session"] ?? "").startsWith("ended:") || metadata["work.attention_msg"] !== "session ended without hand-off")
+        throw new Error("OMP lead attention did not end after exit: " + JSON.stringify(metadata));
+      console.log("OMP lead attention ended after exit");
+    }
   }
   const rows = linesIn<{ host: string }>(results);
   if (rows.length !== 2 || rows[0].host !== "pi" || rows[1].host !== "omp") throw new Error("Both hosts must execute their bash proof");
