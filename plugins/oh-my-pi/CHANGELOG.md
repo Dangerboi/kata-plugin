@@ -8,7 +8,7 @@ All notable changes to `@dangerboi/kata-omp` are listed here. The format follows
 
 #### Inbox and attention
 
-- Session attention ends at shutdown are launched as detached processes before the plan's closes and hand backs. Each carries a launcher identity that stays the same for the whole omp process. The `KATA_REF` issue's end still checks its owner and teammate, outside omp's shutdown budget, and ends nothing if they changed or the read fails.
+- Quitting omp flags the session's attended issues `needs-human` even when closes and hand backs outlast omp's 2 s shutdown budget: the attention ends now run as detached processes before that work. The `KATA_REF` issue's end still checks its owner and teammate first, outside the budget, and ends nothing if they changed or the check fails.
 
 ## [3.1.0] - 2026-11-26
 

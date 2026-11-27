@@ -2351,7 +2351,7 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 		session.attended.clear();
 	}
 	function detachAttention(session: NonNullable<typeof attentionSession>) {
-		const end = (id: string, ref: string, cwd: string, guard?: OwnerGuard) => host.detached?.(options.executable, kata.argv(attentionArgs("end", id, ref), cwd), { cwd, env: attentionEnv(), guard });
+		const end = (id: string, ref: string, cwd: string, guard?: OwnerGuard) => host.detached!(options.executable, kata.argv(attentionArgs("end", id, ref), cwd), { cwd, env: attentionEnv(), guard });
 		if (session.ref && session.guard) end(session.id, session.ref, session.cwd, session.guard);
 		for (const [ref, held] of session.attended) for (const id of held.sessions) end(id, ref, held.cwd);
 		session.attended.clear();
