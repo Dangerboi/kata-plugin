@@ -97,6 +97,8 @@ function gitMessages(command: string, cwd: string | undefined): Added[] {
 		const rest = words.slice(at + 1).map(word => word.value), parts: string[] = [];
 		for (let n = 0; n < rest.length; n++) {
 			const word = rest[n];
+			if (word === "--") break;
+			if (subcommand === "commit" && word === "--author") { n++; continue; }
 			const short = !word.startsWith("--") && /^-([a-zA-Z]*?)m([\s\S]*)$/.exec(word);
 			const file = !word.startsWith("--") && /^-([a-zA-Z]*?)F([\s\S]*)$/.exec(word);
 			if (word === "--message" || (options.trailer && word === "--trailer")) { if (rest[n + 1] !== undefined) parts.push(rest[++n]); }
