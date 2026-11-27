@@ -5,7 +5,7 @@ import { createSettlement, MAX_FAILURES, openChildren, type PendingClose, type S
 import { createKata, debugTo, type CORE_ENV, isKataCode, refGuardMode, isUnusable, KataError, NO_JOB, waitAtMost, type Batch, type Exec, type Job, type PathOps, type Platform, type Timers } from "./kata-cli";
 import { createTicketCompletion } from "./autocomplete";
 import { offendingRefs } from "./ref-guard";
-import { callRefs, commandSegments, kataCommands, quote, shellOptions } from "./shell";
+import { callRefs, kataCommands, loneCommand, quote, shellOptions } from "./shell";
 import { closedTaskStatus, digest, FULL_ID_REF, hasLabel, heldBySession, heldMessage, itemTicket, NATIVE_WORDING, OPEN, outputRefs, PROOF_MIN, projectOf, proofProblem, QUALIFIED_REF_ONLY, qualifiedRef, SESSION_KEY, SHORT_ID_ONLY, sessionParentKeys, slug, tasksOf, textOf, TITLE_MAX, TODO_WORDING, WONTFIX_MIN, WORKING, type Binding, type Change, type KataIssue, type KataShow, type Plan, type Status, type Task, type ToolWording } from "./model";
 import { diffNativeList, nativeOpen, nativeTargets, type NativeItem, type NativePhase, type NativeStatus } from "./todo-list";
 
@@ -2081,7 +2081,7 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 			try { await platform.realpath(path.join(dir, ".git")); break; } catch { /* keep walking */ }
 			const parent = path.dirname(dir); if (parent === dir) break; dir = parent;
 		}
-		return plan.parent && path.resolve(plan.workspace) === origin ? projectOf(plan.parent) : undefined;
+		return plan.parent && await canonicalPath(platform, plan.workspace, plan.workspace) === await canonicalPath(platform, origin, origin) ? projectOf(plan.parent) : undefined;
 	}
 	async function invocationProject(invocation: ReturnType<typeof kataCommands>[number], cwd: string): Promise<string | undefined> {
 		const parsed = shellOptions(invocation.words);
@@ -2089,7 +2089,7 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 	}
 	async function learnCall(ctx: HostContext, call: { tool: string; input: unknown }): Promise<void> {
 		const input = call.input as { command?: unknown; cwd?: string; workdir?: string } | undefined;
-		if (!/^(bash|shell)$/i.test(call.tool) || typeof input?.command !== "string") return;
+		if (!main(ctx) || !/^(bash|shell)$/i.test(call.tool) || typeof input?.command !== "string") return;
 		const cwd = input.cwd || input.workdir || ctx.cwd;
 		for (const invocation of kataCommands(path, input.command, options.executable, options.executableVars, cwd)) {
 			const refs = callRefs(invocation.words), project = await invocationProject(invocation, cwd);
@@ -2100,7 +2100,7 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 	async function learn(ctx: HostContext, event: { toolName: string; input?: any; content?: unknown }): Promise<void> {
 		if (!main(ctx) || event.toolName !== "bash" || typeof event.input?.command !== "string") return;
 		const command: string = event.input.command;
-		if (/[;&|<>\n`]|\$\(/.test(command) || commandSegments(command).filter(segment => segment.words.length).length !== 1) return;
+		if (!loneCommand(command)) return;
 		const cwd = event.input.cwd || event.input.workdir || ctx.cwd;
 		const invocations = kataCommands(path, command, options.executable, options.executableVars, cwd);
 		if (invocations.length !== 1) return;
@@ -2109,9 +2109,8 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 		const output = outputRefs(textOf(event.content));
 		if (kind === "list" || kind === "search") { for (const ref of output.refs) learnedProjects.add(projectOf(ref)); return; }
 		const project = await invocationProject(invocation, cwd);
-		const projects = new Set([...learnedProjects, ...[...knownRefs(ctx)].filter(ref => ref.includes("#")).map(projectOf), ...(project ? [project] : [])]);
 		for (const ref of output.lines) claimed.add(ref.includes("#") || !project ? ref : `${project}#${ref}`);
-		for (const ref of output.refs) if (projects.has(projectOf(ref))) claimed.add(ref);
+		for (const ref of output.refs) claimed.add(ref);
 	}
 	// Called before a tool runs: returns a refusal or records a warning to attach to its result. Warn without a call id refuses. It
 	// never rejects: an error, a slow check or an off switch (KATA_REF_GUARD=off or 0) lets the call through. `also`: refs a host knows that

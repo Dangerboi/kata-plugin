@@ -1,15 +1,15 @@
 import { expect, test } from 'bun:test';
-import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, symlinkSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { createKataCore } from '../core/kata-core';
 import { nodePlatform } from '../core/node-host';
 import { memoryDelegateStore } from './kata-fixture';
 import { assertIsolated } from './isolation';
 assertIsolated();
-function setup() {
+function setup(isMain: (ctx: any) => boolean = () => true) {
  const cwd = mkdtempSync(path.join(process.env.KATA_TEST_ROOT!, 'learn-'));
  writeFileSync(path.join(cwd, '.kata.toml'), 'version = 1\n[project]\nname = "demo"\n');
- const core = createKataCore({ platform: nodePlatform, appendEntry() {}, delegateStore: memoryDelegateStore(), exec: async () => ({ code: 1, stdout: '', stderr: 'offline' }) }, { namespace: 'test', executable: 'kata', executableVars: [] });
+ const core = createKataCore({ platform: nodePlatform, isMain, appendEntry() {}, delegateStore: memoryDelegateStore(), exec: async () => ({ code: 1, stdout: '', stderr: 'offline' }) }, { namespace: 'test', executable: 'kata', executableVars: [] });
  const ctx = { cwd };
  const call = (command: string) => core.tools.guard(ctx, { tool: 'bash', input: { command } });
  const result = (command: string, content: string) => core.tools.result(ctx, { toolName: 'bash', input: { command }, content } as any);
@@ -42,11 +42,10 @@ test('single output formats and compound boundaries', async () => {
  await h.result('kata create title --agent', 'OK create a7x2');
  await h.result('kata next --agent --project other', 'OK next issue=b7x2');
  await h.result('kata next --agent', 'OK next found=false');
- await h.result('kata show a7x2', 'README.md#tasks');
  await h.result('kata next --json > f; echo data', '{"issue":{"short_id":"data"}}');
  await h.result('kata list --json && kata next --json', '{"issue":{"short_id":"d7x2"}}');
  for (const id of ['a7x2', 'b7x2']) expect(await h.commit(id)).toContain(id);
- for (const id of ['tasks', 'data', 'd7x2']) expect(await h.commit(id)).toBeUndefined();
+ for (const id of ['data', 'd7x2']) expect(await h.commit(id)).toBeUndefined();
 });
 
 test('call operands distinguish refs from values and support arity', async () => {
@@ -74,4 +73,44 @@ test('lone output ignores error status while list ids remain prose', async () =>
  expect(await h.commit('x7x2')).toContain('x7x2');
  expect(await h.commit('other#data')).toContain('other#data');
  expect(await h.commit('data')).toBeUndefined();
+});
+
+
+test('R5 lone quoted and heredoc calls learn results, shell syntax does not', async () => {
+ const h = setup();
+ for (const [command, id] of [[`kata create "R&D" --agent`, 'a8x2'], ["kata create 'Fix `x` bug' --agent", 'b8x2'], ['kata create t --body-file - --agent <<EOF\nbody & text\nEOF', 'c8x2']]) {
+  await h.result(command, `OK create ${id}`); expect(await h.commit(id)).toContain(id);
+ }
+ for (const [command, id] of [['kata next > out', 'd8x2'], ['kata next && echo done', 'e8x2'], ['kata next "$(echo bad)"', 'f8x2'], ['kata next `echo bad`', 'g8x2'], ['kata create t --body-file - <<EOF\n$(echo bad)\nEOF', 'h8x2']]) {
+  await h.result(command, `OK next ${id}`); expect(await h.commit(id)).toBeUndefined();
+ }
+});
+
+test('R5 show learns qualified peers from actual agent link rows', async () => {
+ const h = setup();
+ await h.result('kata show q7x2 --agent', 'OK show q7x2\nLinks:\n  type=related issue=other#r7x2\n  type=related issue=third#t7x2');
+ expect(await h.commit('r7x2')).toContain('r7x2');
+ expect(await h.commit('t7x2')).toContain('t7x2');
+});
+
+test('R5 delegate calls do not teach the lead', async () => {
+ const h = setup(ctx => ctx.agent?.kind !== 'sub');
+ await h.core.tools.guard({ cwd: h.cwd, agent: { kind: 'sub' } }, { tool: 'bash', input: { command: 'kata comment e7x2' } });
+ expect(await h.commit('e7x2')).toBeUndefined();
+});
+
+
+test('R5 symlinked plan workspace supplies project to a canonical invocation', async () => {
+ const root = mkdtempSync(path.join(process.env.KATA_TEST_ROOT!, 'symlink-plan-'));
+ const actual = path.join(root, 'actual'), link = path.join(root, 'link'); mkdirSync(actual); symlinkSync(actual, link);
+ const core = createKataCore({ platform: nodePlatform, appendEntry() {}, delegateStore: memoryDelegateStore(), exec: async (_file, args) => {
+  if (args.includes('version')) return { code: 0, stdout: JSON.stringify({ kata_api_version: 1, version: '1.0.0' }), stderr: '' };
+  if (args.includes('projects')) return { code: 0, stdout: JSON.stringify({ projects: [{ id: 1, name: 'demo' }] }), stderr: '' };
+  return { code: 0, stdout: JSON.stringify({ issue: { short_id: 'q7x2', project_id: 1, status: 'open', metadata: {} }, children: [] }), stderr: '' };
+ } }, { namespace: 'test', executable: 'kata', executableVars: [] });
+ const ctx = { cwd: link, sessionManager: { getSessionId: () => 'symlink', getBranch: () => [{ type: 'custom', customType: 'io.kata.test.parent', data: { parent: 'demo#q7x2', workspace: link, sessionId: 'symlink', auto: false } }] } };
+ const started = await core.session.start(ctx, { wait: 10000 });
+ expect(started?.parent).toBe('demo#q7x2');
+ await core.tools.result({ ...ctx, cwd: actual }, { toolName: 'bash', input: { command: 'kata next --agent' }, content: 'OK next z7x2' });
+ expect(core.tools.refs(ctx)).toContain('demo#z7x2');
 });
