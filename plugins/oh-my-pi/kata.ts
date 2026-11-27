@@ -524,8 +524,15 @@ export default function ompKata(pi: any, runtime = { execKata, spawnDetached }) 
 	pi.on("session_tree", async (_event: any, ctx: any) => { await enter(ctx); await core.session.tree(ctx); });
 	// The transcript pair is left for the next session_start to overwrite: clearing after a slow cleanup could delete the pair of an instance omp already started in this process.
 	pi.on("session_shutdown", async (_event: any, ctx: any) => {
-		await enter(ctx);
-		await core.session.shutdown(ctx);
-		backendWatchers.delete(offWatcher);
+		if (!main(ctx)) {
+			await enter(ctx);
+			await core.session.shutdown(ctx);
+			backendWatchers.delete(offWatcher);
+			return;
+		}
+		see(ctx);
+		const shutdown = core.session.shutdown(ctx);
+		try { await syncJobs(ctx); }
+		finally { try { await shutdown; } finally { backendWatchers.delete(offWatcher); } }
 	});
 }

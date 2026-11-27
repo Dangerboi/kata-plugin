@@ -369,6 +369,33 @@ test("shutdown ends attention before blocked work exceeds the OMP deadline", asy
   } finally { held.release(); await stop; }
 }, 15000);
 
+test("shutdown ends attention before settling a missed delegate exit", async () => {
+  const ref = await issue(); process.env.KATA_REF = ref;
+  let recent: any[] = [], slow = false;
+  const held = holdKata(args => slow && ["show", "label", "comment", "close"].includes(args[0]));
+  const app = ompHost({ cwd, sid: `missed-exit-${unique()}`, snapshot: () => ({ running: [], recent }), before: held.before, run: (args, opts) => run(args, opts.cwd, opts.timeout, opts.env) });
+  apps.push(app);
+  await app.event("session_start");
+  const parent = await app.init(["Implement the widget", "Verify the widget"]);
+  const id = `child-${unique()}`, sessionFile = `${scratch}/${id}.jsonl`;
+  app.emit("task:subagent:lifecycle", { id, agent: "task", status: "started", sessionFile, description: "Implement the widget" });
+  await app.call({ op: "view" });
+  const child = ompHost({ cwd, sid: `sub-${unique()}`, sessionFile, agent: { kind: "sub", id, parentId: app.ctx.agent.id }, run: (args, opts) => run(args, opts.cwd, opts.timeout, opts.env) });
+  await child.event("tool_call", { toolName: "read", input: { path: "README.md" } });
+  const task = (await kata(["show", parent, "--json"])).children.find((c: any) => c.title === "Implement the widget");
+  expect(task).toBeDefined();
+  recent = [{ id, type: "task", status: "completed" }]; slow = true;
+  const stop = app.event("session_shutdown");
+  try {
+    await held.entered;
+    await new Promise(r => setTimeout(r, 2100));
+    expect(app.calls.some(a => a[1] === "attention-native" && a[3] === "end" && a.includes(ref))).toBe(true);
+    expect(process.env.KATA_ATTENTION_HOST).toBeUndefined();
+    expect((await attention(ref)).state).toBe("needs-human");
+  } finally { held.release(); await stop; }
+  await eventually(async () => (await kata(["show", `omptest#${task.short_id}`, "--json"])).labels.some((l: any) => l.label === "needs-review"), true);
+}, 15000);
+
 
 test("core shutdown uses the detached production spawn after its host dies", async () => {
   const ref = await issue(); process.env.KATA_REF = ref;

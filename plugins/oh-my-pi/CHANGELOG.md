@@ -4,6 +4,12 @@ All notable changes to `@dangerboi/kata-omp` are listed here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+
+#### Inbox and attention
+
+- Session attention ends at shutdown are launched as detached processes before the plan's closes and hand backs. Each carries a launcher identity that stays the same for the whole omp process.
+
 ## [3.1.0] - 2026-11-26
 
 ### Added
