@@ -2524,6 +2524,7 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 				await bounded(switching, explicit && options.attentionHarness && id ? ATTENTION_START_MS : begin.wait);
 				return lead();
 			},
+			stopInbox: stopFollower,
 			branch: rebind,
 			tree: rebind,
 			input() { reminders = 0; },
