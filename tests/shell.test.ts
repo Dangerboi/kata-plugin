@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { spawnSync } from "bun";
 import { assertIsolated } from "./isolation";
 import { kataCommands } from "../plugins/oh-my-pi/kata";
-import { delegateCommand, kataCommands as coreCommands } from "../core/shell";
+import { REF_AFTER, VALUE_OPTIONS, callRefs, loneCommand, delegateCommand, kataCommands as coreCommands } from "../core/shell";
 import { nodePlatform } from "../core/node-host";
 assertIsolated();
 
@@ -57,4 +57,35 @@ test("a delegate's close still runs after a skipped prefix word, or through an e
     expect(execute(delegateCommand(nodePlatform.path, input, "kata", [], "tm-1", undefined, own))).toEqual(["omp/child-uuid/true --teammate tm-1 close ab12"]);
   }
   expect(execute(delegateCommand(nodePlatform.path, '"$KATA_BIN" close ab12', "kata", ["KATA_BIN"], "tm-1", undefined, own))).toEqual(["omp/child-uuid/true --teammate tm-1 close ab12"]);
+});
+
+test.skipIf(!process.env.KATA_TEST_EXECUTABLE)("typed Kata command options are understood by the shell parser", () => {
+  const paths = Object.keys(REF_AFTER);
+  for (const command of paths) {
+    const result = spawnSync([process.env.KATA_TEST_EXECUTABLE!, ...command.split(" "), "--help"]);
+    expect(result.exitCode, command).toBe(0);
+    for (const line of result.stdout.toString().split("\n")) {
+      const match = /^\s*(?:-\w,\s*)?(--[\w-]+)\s+(?:string(?:Slice|Array)?|int\w*|duration|ref(?:Slice)?|float\w*)\b/.exec(line);
+      if (match && !line.includes("[=")) expect(VALUE_OPTIONS.has(match[1]), `${command} ${line}`).toBe(true);
+    }
+  }
+});
+
+// These operand cases also run when the installed-CLI help check is skipped.
+test("Kata issue operands respect flags and command arity", () => {
+  for (const [command, refs] of [
+    ["kata edit --title backend e7x2", ["e7x2"]],
+    ["kata claim --ttl 120m f7x2", ["f7x2"]],
+    ["kata move g7x2 h7x2 dest", ["g7x2", "h7x2"]],
+    ["kata wait j7x2 k7x2", ["j7x2", "k7x2"]],
+    ["kata label add m7x2 beef", ["m7x2"]],
+    ["kata edit n7x2 --parent p7x2,r7x2", ["p7x2", "r7x2", "n7x2"]],
+  ] as const) {
+    expect(callRefs(coreCommands(nodePlatform.path, command)[0].words), command).toEqual([...refs]);
+  }
+});
+
+test("lone Kata output excludes shell control and active substitutions", () => {
+  for (const command of [`kata create "R&D" --agent`, "kata create 'Fix `x` bug' --agent", 'kata create t --body-file - --agent <<EOF\nbody & text\nEOF']) expect(loneCommand(command), command).toBe(true);
+  for (const command of ['kata next > out', 'kata next --json; echo data', 'kata next "$(echo bad)"', 'kata next `echo bad`', 'kata create t --body-file - <<EOF\n$(echo bad)\nEOF']) expect(loneCommand(command), command).toBe(false);
 });

@@ -53,6 +53,7 @@ export interface Lead extends Planner {
 	// reserved under the call's id. Throws the core's Refusal when the plan refuses the spawn; any other rejection (Kata
 	// unusable) is no refusal and the spawn runs, its delegate decided when it starts.
 	checkSpawn(call: string, text: string): Promise<void>;
+	learn(input: unknown, content: unknown): Promise<void>;
 	// The reason a tool call of the session (the lead's or a delegate's) is refused for putting a Kata ref into the repository, or undefined. Never rejects.
 	guard(sessionID: string, call: { tool: string; input: unknown; id?: string }): Promise<string | undefined>;
 	warning(id: string): string | undefined;
@@ -207,6 +208,7 @@ export function createLead(deps: LeadDeps): Lead {
 		},
 		delegatePlan: sessionID => plannerOf(core.delegate(sessionID), contextOf(sessionID, true), sessionID),
 		checkSpawn: (call, text) => core.todo.batch(ctx, async job => { await core.delegates.check([text], call, undefined, job); }),
+		learn: (input, content) => core.tools.learn(ctx, { toolName: "bash", input, content }),
 		guard: (sessionID, call) => core.tools.guard(contextOf(sessionID, sessionID !== id), call),
 		warning: callID => core.tools.warning(callID),
 		releaseSpawn: call => core.delegates.release(call),

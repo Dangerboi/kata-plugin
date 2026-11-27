@@ -6,8 +6,8 @@ import { createSettlement, MAX_FAILURES, openChildren, type PendingClose, type S
 import { createKata, debugTo, type CORE_ENV, isKataCode, refGuardMode, isUnusable, KataError, NO_JOB, waitAtMost, type Batch, type Exec, type Job, type PathOps, type Platform, type Timers } from "./kata-cli";
 import { createTicketCompletion } from "./autocomplete";
 import { offendingRefs } from "./ref-guard";
-import { kataCommands, quote, shellOptions } from "./shell";
-import { closedTaskStatus, digest, FULL_ID_REF, hasLabel, heldBySession, heldMessage, itemTicket, NATIVE_WORDING, OPEN, PROOF_MIN, projectOf, proofProblem, QUALIFIED_REF_ONLY, qualifiedRef, SESSION_KEY, SHORT_ID_ONLY, sessionParentKeys, slug, tasksOf, textOf, TITLE_MAX, TODO_WORDING, WONTFIX_MIN, WORKING, type Binding, type Change, type KataIssue, type KataShow, type Plan, type Status, type Task, type ToolWording } from "./model";
+import { callRefs, kataCommands, loneCommand, quote, shellOptions } from "./shell";
+import { closedTaskStatus, digest, FULL_ID_REF, hasLabel, heldBySession, heldMessage, itemTicket, NATIVE_WORDING, OPEN, outputRefs, PROOF_MIN, projectOf, proofProblem, QUALIFIED_REF_ONLY, qualifiedRef, SESSION_KEY, SHORT_ID_ONLY, sessionParentKeys, slug, tasksOf, textOf, TITLE_MAX, TODO_WORDING, WONTFIX_MIN, WORKING, type Binding, type Change, type KataIssue, type KataShow, type Plan, type Status, type Task, type ToolWording } from "./model";
 import { diffNativeList, nativeOpen, nativeTargets, type NativeItem, type NativePhase, type NativeStatus } from "./todo-list";
 
 // What omp's own todo list holds, as `todo.mirror` takes it.
@@ -85,6 +85,8 @@ interface CoreOptions {
 }
 
 // Where the session's plan lives: the host hands it to child processes it starts.
+// What a session works, as another thread's ref guard needs it: its refs, and the projects it learned without any ref of them.
+export type Known = { refs: string[]; projects: string[] };
 export type Lead = { parent?: string; workspace: string; label?: string };
 // The plan as todo results (`details.kata`) and the widget hand it to the host. `ref` is the task's issue or named ticket.
 export type PlanView = {
@@ -405,9 +407,10 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 	let assignedRef: string | undefined;
 	const configuredRef = () => options.explicitRef?.() ?? setting("KATA_REF");
 	const aliases = new Set<string>(); // refs the plan's parent was rehomed from: they still name it
-	// Refs this session claimed in its shell or named with `/todo ref`: its work, though the plan may never hold them. Read by `tools.guard`.
+	// Refs this session claimed in its shell, named with `/todo ref` or learned from its kata calls and output: its work, though the plan may never hold them. Read by `tools.guard`.
 	const claimed = new Set<string>();
 	const warnings = new Map<string, string[]>();
+	const learnedProjects = new Set<string>();
 	let requestedRef: string | undefined;
 	// A native host's list says what is in progress, so the core never starts a pending task itself (see nextTask).
 	const autoStart = options.autoStart !== false && !options.native;
@@ -853,7 +856,7 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 		// nor its local plan (replaying that would make a second automatic parent).
 		const { snapshot, source } = savedSnapshot(ctx, branch, id, onBranch(branch));
 		// The shell claims belong to the session: /tree and a branch switch keep it, a fork of it shares them, any other new session starts with none.
-		if (isNew && !(source && source === previous)) { claimed.clear(); warnings.clear(); }
+		if (isNew && !(source && source === previous)) { claimed.clear(); warnings.clear(); learnedProjects.clear(); }
 		// A forked session keeps the source id as the parent's owner: the parent's session_id metadata names it.
 		const parentOwner = source ?? id;
 		// A resumed lead keeps its saved sessions; a fork adds itself to its source's, so it works on what its source started.
@@ -2049,7 +2052,7 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 		return bounded((async () => { await after?.catch(debug); if (!main(ctx) && !delegates.assignment(ctx)) return undefined; return serial(job => guardText(job, ctx, call), { ctx }); })(), GUARD_MS);
 	}
 
-	type MoreRefs = () => Promise<Iterable<string>> | Iterable<string>;
+	type MoreRefs = () => Promise<Known | undefined> | Known | undefined;
 	// How long `tools.guard` waits for its checks (the canonical path of each file the call writes): past it the call goes through unchecked.
 	const REF_GUARD_MS = 2_000;
 
@@ -2065,24 +2068,70 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 		return refs;
 	}
 
+	// Read the project file Kata writes, without starting the daemon.
+	async function workspaceProject(folder: string): Promise<string | undefined> {
+		const origin = path.resolve(folder);
+		let dir = origin;
+		for (;;) {
+			let text: string | undefined;
+			try { text = await platform.readFile(path.join(dir, ".kata.toml")); } catch { /* no config here */ }
+			if (text !== undefined) {
+				const version = /^[ \t]*version\s*=\s*1\s*(?:#.*)?$/m.test(text.split(/^[ \t]*\[/m, 1)[0]);
+				const section = /^[ \t]*\[project\][ \t]*(?:#.*)?$(?:\r?\n)([\s\S]*?)(?=^[ \t]*\[|$(?![\s\S]))/m.exec(text)?.[1] ?? "";
+				const match = /^[ \t]*name\s*=\s*(["'])([A-Za-z0-9_][\w.-]*)\1\s*(?:#.*)?$/m.exec(section);
+				return version ? match?.[2] : undefined;
+			}
+			try { await platform.realpath(path.join(dir, ".git")); break; } catch { /* keep walking */ }
+			const parent = path.dirname(dir); if (parent === dir) break; dir = parent;
+		}
+		return plan.parent && await canonicalPath(platform, plan.workspace, plan.workspace) === await canonicalPath(platform, origin, origin) ? projectOf(plan.parent) : undefined;
+	}
+	async function invocationProject(invocation: ReturnType<typeof kataCommands>[number], cwd: string): Promise<string | undefined> {
+		const parsed = shellOptions(invocation.words);
+		return parsed.value("--project") || workspaceProject(path.resolve(invocation.dir || cwd, parsed.value("--workspace") || "."));
+	}
+	async function learnCall(ctx: HostContext, call: { tool: string; input: unknown }): Promise<void> {
+		const input = call.input as { command?: unknown; cwd?: string; workdir?: string } | undefined;
+		if (!main(ctx) || !/^(bash|shell)$/i.test(call.tool) || typeof input?.command !== "string") return;
+		const cwd = input.cwd || input.workdir || ctx.cwd;
+		for (const invocation of kataCommands(path, input.command, options.executable, options.executableVars, cwd)) {
+			const refs = callRefs(invocation.words), project = await invocationProject(invocation, cwd);
+			if (project) learnedProjects.add(project);
+			for (const ref of refs) claimed.add(ref.includes("#") || !project ? ref : `${project}#${ref}`);
+		}
+	}
+	async function learn(ctx: HostContext, event: { toolName: string; input?: any; content?: unknown }): Promise<void> {
+		if (!main(ctx) || event.toolName !== "bash" || typeof event.input?.command !== "string") return;
+		const command: string = event.input.command;
+		if (!loneCommand(command)) return;
+		const cwd = event.input.cwd || event.input.workdir || ctx.cwd;
+		const invocations = kataCommands(path, command, options.executable, options.executableVars, cwd);
+		if (invocations.length !== 1) return;
+		const invocation = invocations[0], kind = shellOptions(invocation.words).args[0];
+		if (!["show", "create", "next", "claim", "list", "search"].includes(kind)) return;
+		const output = outputRefs(textOf(event.content));
+		if (kind === "list" || kind === "search") { for (const ref of output.refs) learnedProjects.add(projectOf(ref)); return; }
+		const project = await invocationProject(invocation, cwd);
+		for (const ref of output.lines) claimed.add(ref.includes("#") || !project ? ref : `${project}#${ref}`);
+		for (const ref of output.refs) claimed.add(ref);
+	}
 	// Called before a tool runs: returns a refusal or records a warning to attach to its result. Warn without a call id refuses. It
 	// never rejects: an error, a slow check or an off switch (KATA_REF_GUARD=off or 0) lets the call through. `also`: refs a host knows that
 	// this core does not (a delegate on another thread asks its lead); called once, inside the bound, and only for a call that adds text.
-	function refGuard(ctx: HostContext, call: { tool: string; input: unknown; id?: string }, also: MoreRefs = () => []): Promise<string | undefined> {
+	function refGuard(ctx: HostContext, call: { tool: string; input: unknown; id?: string }, also: MoreRefs = () => undefined): Promise<string | undefined> {
 		const mode = refGuardMode(setting("KATA_REF_GUARD"));
 		if (mode === "off") return Promise.resolve(undefined);
 		const warnId = mode === "warn" ? call.id : undefined;
 		return bounded((async () => {
 			const cwd = ctx.cwd ?? platform.cwd();
+			await learnCall(ctx, call);
 			const workspaces = await Promise.all([...new Set([cwd, plan.workspace])].map(root => canonicalPath(platform, ".", root)));
 			const prefix = (root: string) => path.join(root, "x").slice(0, -1);
+			let asked: Promise<Known | undefined> | undefined; const more = () => asked ??= Promise.resolve(also());
 			const found = await offendingRefs({
 				...call,
-				async known() {
-					const refs = knownRefs(ctx);
-					for (const ref of await also()) refs.add(ref);
-					return refs;
-				},
+				async projects() { return [...learnedProjects, ...(await more())?.projects ?? [], ...(await Promise.all(workspaces.map(workspaceProject))).filter((name): name is string => !!name)]; },
+				async known() { return new Set([...knownRefs(ctx), ...(await more())?.refs ?? []]); },
 				async locate(file) {
 					// `~` is the home folder, as the host's own tools read it; a host that knows none cannot place the file.
 					if (file === "~" || file.startsWith("~/")) { if (!platform.home) return undefined; file = path.join(platform.home, file.slice(1)); }
@@ -2594,11 +2643,13 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 				return lead();
 			},
 			// A tool finished: a `kata claim` the agent ran adopts its issue as the plan parent.
-			async result(ctx: HostContext, event: { toolName: string; isError?: boolean; input?: any; details?: any }): Promise<Lead> {
+			async result(ctx: HostContext, event: { toolName: string; isError?: boolean; input?: any; details?: any; content?: unknown }): Promise<Lead> {
 				see(ctx);
 				await observeToolResult(event, ctx);
+				await learn(ctx, event);
 				return lead();
 			},
+			learn,
 			// A tool is about to run: the text that refuses it for putting a Kata ref into the repository, or undefined (see `refGuard`).
 			guard: refGuard,
 			warning: (id: string, parentId?: string): string | undefined => {
@@ -2607,7 +2658,7 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 				return reasons?.join("\n");
 			},
 			// The refs this session works, for a delegate's host that checks calls against its lead's.
-			refs: (ctx: HostContext): string[] => [...knownRefs(ctx)],
+			refs: (ctx: HostContext): Known => ({ refs: [...knownRefs(ctx)], projects: [...learnedProjects] }),
 		},
 		todo: {
 			apply: (ctx: HostContext, op: string, params: any, within: Job) => execute({ ...params, op }, ctx, within),

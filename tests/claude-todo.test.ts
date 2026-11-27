@@ -493,3 +493,10 @@ test("Claude warn preserves the tool result and previous context once", async ()
 	const clean = await h.fire("tool.call", { tool: "Bash", tool_use_id: crypto.randomUUID(), command: "echo clean" }, () => ({ result: "ok" }));
 	expect(clean.context).toBeUndefined();
 });
+
+test("Claude learns lone stdout issue", async () => {
+  const h = host(); await h.start();
+  const call = (command: string, result: unknown = "ok") => h.fire("tool.call", { tool: "Bash", tool_use_id: crypto.randomUUID(), command }, () => ({ result }));
+  await call("kata next --agent", { stdout: "OK next issue=z7x2" });
+  expect((await call('git commit -m "fix z7x2"')).deny).toBeDefined();
+});

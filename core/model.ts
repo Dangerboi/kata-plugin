@@ -171,6 +171,17 @@ export function qualifiedRefs(text: string, projects?: ReadonlySet<string>): str
 	return projects ? refs.filter(ref => projects.has(ref.slice(0, ref.lastIndexOf("#")))) : refs;
 }
 
+// Structured single-issue identities and qualified refs printed in output.
+export function outputRefs(text: string): { lines: string[]; refs: string[] } {
+	const lines: string[] = [];
+	for (const row of text.split("\n")) {
+		try { const issue = JSON.parse(row)?.issue; const ref = issue?.qualified_id || issue?.short_id; if (typeof ref === "string" && (QUALIFIED_REF_ONLY.test(ref) || SHORT_ID_ONLY.test(ref))) lines.push(ref); } catch { /* not JSON */ }
+		const match = /^OK (?:show|create|next|claim) (?:issue=)?(\S+)/.exec(row.trim());
+		if (match && (QUALIFIED_REF_ONLY.test(match[1]) || SHORT_ID_ONLY.test(match[1]))) lines.push(match[1]);
+	}
+	return { lines, refs: qualifiedRefs(text) };
+}
+
 // The ticket a todo item names: a strict `<project>#<short_id>: <action>` prefix.
 // A bare short id, a ref inside the text, or a prefix with no action is no name.
 export function itemTicket(content: string): { ref: string; action: string } | undefined {

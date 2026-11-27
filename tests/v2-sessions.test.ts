@@ -337,7 +337,7 @@ test("omp keeps the refs a shell claim named across /tree and qualifies a bare c
   await app.switchSession("claims-fork", { fork: true });
   expect(await write(`// ${ref}`)).toMatchObject({ block: true });
   await app.switchSession("claims-new");
-  expect(await write(`// ${ref} and ${short}`)).toBeUndefined();
+  expect(await write(`// ${short}`)).toBeUndefined();
 });
 
 test("a claimed bare id is known at once, though Kata is slow to resolve it, and the hook does not wait", async () => {
@@ -501,3 +501,18 @@ test("omp warn attaches each guard reason to its own result, then takes it once"
 		expect(contexts[0]).not.toBe(contexts[1]);
 	} finally { delete process.env.KATA_REF_GUARD; }
 });
+
+
+
+
+test("worker guard receives projects learned by its lead from list output", async () => {
+  const app = host(); await app.event("session_start"); await app.init(["Worker project propagation", "Lead work"]);
+  await app.event("tool_result", { toolName: "bash", input: { command: "kata list --all" }, content: [{ type: "text", text: "otherproject#d7x2" }] });
+  const sessionFile = `${scratch}/r6-worker-${crypto.randomUUID()}.jsonl`, id = `r6-worker-${crypto.randomUUID()}`;
+  app.emit("task:subagent:lifecycle", { id, agent: "task", status: "started", sessionFile, description: "Worker project propagation" });
+  const worker = new Worker(new URL("./omp-worker-delegate.ts", import.meta.url), { workerData: { binary, env, cwd, sessionFile, id, parentId: app.ctx.agent.id, guardCommand: 'git commit -m "otherproject#z7x2"' } } as any);
+  try {
+    const answer = await new Promise<any>((resolve, reject) => { worker.addEventListener("message", event => resolve(event.data), { once: true }); worker.addEventListener("error", reject, { once: true }); });
+    expect(answer.result).toMatchObject({ block: true });
+  } finally { await worker.terminate(); }
+}, 20_000);

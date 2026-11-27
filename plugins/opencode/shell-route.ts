@@ -22,6 +22,12 @@ export function install(seam: Seam): void {
 		return command;
 	}
 
+	seam.after(async event => {
+		if (event.tool !== "shell") return;
+		const role = await seam.roleOf(event.sessionID);
+		if (role.kind === "lead") await role.lead.learn(event.input, typeof event.result === "string" ? event.result : event.result?.content);
+	});
+
 	seam.before(async event => {
 		if (event.tool !== "shell" || typeof event.input?.command !== "string") return;
 		let command: string = event.input.command;

@@ -1,6 +1,6 @@
 // Generated from core/shell.ts; edit there.
 import { closeEnv, type PathOps, type Platform } from "./kata-cli";
-import { projectOf, type Binding } from "./model";
+import { projectOf, QUALIFIED_REF_ONLY, SHORT_ID_ONLY, type Binding } from "./model";
 
 // Kata invocations inside a bash command, and the rewrite that pins a delegate's to its teammate.
 
@@ -15,30 +15,32 @@ export function envPrefix(vars: Record<string, string>): string {
 
 type ShellWord = { value: string; start: number; end: number };
 // One Kata invocation: its executable, the words after it, and the `NAME=value` assignments before it.
-type Invocation = { executable: ShellWord; words: ShellWord[]; assignments: ShellWord[] };
+type Invocation = { executable: ShellWord; words: ShellWord[]; assignments: ShellWord[]; dir?: string };
 export const ASSIGNMENT = /^[A-Za-z_][A-Za-z0-9_]*=/;
 // The words of one simple command, and the bodies of the heredocs fed to it.
-type Segment = { words: ShellWord[]; bodies: string[] };
+type Segment = { words: ShellWord[]; bodies: string[]; unsafe?: boolean };
 // Words that may stand before a command without being it.
 export const PREFIXES = ["if", "then", "elif", "do", "else", "!", "command", "env", "time"];
 // Splits a command at `;`, `&`, `|`, parentheses and newlines. Quoted arguments and heredoc bodies are data (a body belongs to the
 // command whose line holds its `<<`); this lexer never infers whether a test/commit command proves completion.
 export function commandSegments(command: string): Segment[] {
 	const segments: Segment[] = [{ words: [], bodies: [] }];
-	let i = 0, heredoc: string | undefined, owner: Segment | undefined, wantDelimiter = false, hereString = false;
+	let i = 0, heredoc: string | undefined, owner: Segment | undefined, wantDelimiter = false, hereString = false, heredocQuoted = false;
 	while (i < command.length) {
 		if (command[i] === "\n" && heredoc) {
 			const end = command.indexOf(`\n${heredoc}`, i);
 			if (end < 0) break;
-			owner!.bodies.push(command.slice(i + 1, end));
+			const body = command.slice(i + 1, end);
+			owner!.bodies.push(body);
+			if (!heredocQuoted && /`|\$\(/.test(body)) owner!.unsafe = true;
 			i = command.indexOf("\n", end + 1);
 			if (i < 0) break;
 			heredoc = undefined;
 		}
 		if (/\s/.test(command[i])) { if (command[i] === "\n") segments.push({ words: [], bodies: [] }); i++; continue; }
 		if (command[i] === "#") { const end = command.indexOf("\n", i); if (end < 0) break; i = end; continue; }
-		if (";&|()".includes(command[i])) { segments.push({ words: [], bodies: [] }); i++; continue; }
-		if (command.slice(i, i + 3) === "<<<") { i += 3; hereString = true; continue; }
+		if (";&|()".includes(command[i])) { segments.at(-1)!.unsafe = true; segments.push({ words: [], bodies: [] }); i++; continue; }
+		if (command.slice(i, i + 3) === "<<<") { segments.at(-1)!.unsafe = true; i += 3; hereString = true; continue; }
 		if (command.slice(i, i + 2) === "<<") { i += command[i + 2] === "-" ? 3 : 2; wantDelimiter = true; continue; }
 		const start = i;
 		let value = "", open = "";
@@ -46,31 +48,42 @@ export function commandSegments(command: string): Segment[] {
 			const char = command[i];
 			if (!open && /[\s;&|()]/.test(char)) break;
 			if (char === "\\" && open !== "'") { value += command[i + 1] || ""; i += 2; continue; }
+			if (open !== "'" && (char === "`" || (char === "$" && command[i + 1] === "(") || (!open && (char === "<" || char === ">")))) segments.at(-1)!.unsafe = true;
 			if (char === open) { open = ""; i++; continue; }
 			if (!open && (char === "'" || char === '"')) { open = char; i++; continue; }
 			value += char; i++;
 		}
 		// A here-string is the next word, fed to the command as its input.
 		if (hereString) { segments.at(-1)!.bodies.push(value); hereString = false; continue; }
-		if (wantDelimiter) { heredoc = value; owner = segments.at(-1); wantDelimiter = false; continue; }
+		if (wantDelimiter) { heredoc = value; heredocQuoted = /['"\\]/.test(command.slice(start, i)); owner = segments.at(-1); wantDelimiter = false; continue; }
 		segments.at(-1)!.words.push({ value, start, end: i });
 	}
 	return segments;
 }
 
+export const foldDir = (base: string | undefined, dir: string) => dir.startsWith("/") || dir.startsWith("~") || !base ? dir : `${base.replace(/\/+$/, "")}/${dir}`;
+
+// True when the lexer found one command without shell control, redirects or substitutions.
+export function loneCommand(command: string): boolean {
+	const segments = commandSegments(command);
+	return segments.filter(segment => segment.words.length).length === 1 && segments.every(segment => !segment.unsafe);
+}
+
 // Inspect command positions only.
-export function kataCommands(path: Pick<PathOps, "basename">, command: string, configuredExecutable = "kata", executableVars: readonly string[] = []): Invocation[] {
+export function kataCommands(path: Pick<PathOps, "basename">, command: string, configuredExecutable = "kata", executableVars: readonly string[] = [], callFolder?: string): Invocation[] {
 	const commands: Invocation[] = [];
+	let dir = callFolder;
 	for (const { words: segment } of commandSegments(command)) {
 		let j = 0;
 		while (j < segment.length && (ASSIGNMENT.test(segment[j].value) || PREFIXES.includes(segment[j].value))) j++;
 		const executable = segment[j];
-		if (executable && (path.basename(executable.value) === "kata" || executable.value === configuredExecutable || executableVars.some(name => executable.value === `$${name}` || executable.value === `\${${name}}`))) commands.push({ executable, words: segment.slice(j + 1), assignments: segment.slice(0, j).filter(word => ASSIGNMENT.test(word.value)) });
+		if (executable?.value === "cd" && segment[j + 1] && !segment[j + 1].value.startsWith("-")) dir = foldDir(dir, segment[j + 1].value);
+		if (executable && (path.basename(executable.value) === "kata" || executable.value === configuredExecutable || executableVars.some(name => executable.value === `$${name}` || executable.value === `\${${name}}`))) commands.push({ executable, words: segment.slice(j + 1), assignments: segment.slice(0, j).filter(word => ASSIGNMENT.test(word.value)), dir });
 	}
 	return commands;
 }
 
-const VALUE_OPTIONS = new Set(["--body", "--body-file", "--message", "-m", "--comment", "--evidence", "--test", "--commit", "--pr", "--reviewed", "--reason", "--idempotency-key", "--parent", "--related", "--blocked-by", "--blocks", "--meta", "--owner", "--label", "--priority", "--if-match", "--if-value", "--workspace", "--project", "--teammate", "--as", "--for", "--format", "--daemon"]);
+export const VALUE_OPTIONS = new Set(["--body", "--body-file", "--message", "-m", "--comment", "--evidence", "--test", "--commit", "--pr", "--reviewed", "--reason", "--idempotency-key", "--parent", "--related", "--blocked-by", "--blocks", "--meta", "--owner", "--label", "--priority", "--if-match", "--if-value", "--workspace", "--project", "--teammate", "--as", "--for", "--format", "--daemon", "--title", "--ttl", "--since", "--kind", "--thread", "--until", "--reply", "--refute", "--supersede", "--re", "--to", "--repeat", "--timezone", "--confirm", "--expect-owner", "--docbank", "--duplicate-of", "--superseded-by", "--refs-from", "--poll-interval", "--timeout", "--connector", "--external", "--use", "--adopt", "--version", "--remove-parent", "--remove-related", "--remove-blocked-by", "--remove-blocks", "--issue", "-o", "--output"]);
 export function shellOptions(words: ShellWord[]) {
 	const options = new Map<string, ShellWord[]>(), occurrences = new Map<string, ShellWord[][]>(), args: string[] = [];
 	for (let i = 0; i < words.length; i++) {
@@ -85,6 +98,28 @@ export function shellOptions(words: ShellWord[]) {
 	}
 	const value = (key: string) => { const pair = options.get(key); return pair?.[1]?.value ?? pair?.[0]?.value.slice(key.length + 1); };
 	return { options, occurrences, args, value };
+}
+
+// Ref-bearing operands and options, as named by Kata's command forms.
+export const REF_AFTER: Record<string, "one" | "all" | "move"> = Object.fromEntries([
+	..."assign unassign claim close comment delete edit notify deadline schedule purge restore reopen status show".split(" ").map(key => [key, "one"]),
+	["wait", "all"], ["move", "move"], ["comment edit", "one"],
+	..."add rm".split(" ").map(op => [`label ${op}`, "one"]),
+	..."get set unset".split(" ").map(op => [`meta ${op}`, "one"]),
+	..."bind show reconcile pause resume resolve-field resolve-comment unbind".split(" ").map(op => [`bridge ${op}`, "one"]),
+	..."acquire renew release force-release steal".split(" ").map(op => [`federation lease ${op}`, "one"]),
+	..."link add get rm ls".split(" ").map(op => [`docbank attachments ${op}`, "one"]),
+]);
+const REF_OPTIONS = ["--parent", "--related", "--blocked-by", "--blocks", "--remove-parent", "--remove-related", "--remove-blocked-by", "--remove-blocks", "--issue", "--duplicate-of", "--superseded-by"];
+export function callRefs(words: ShellWord[]): string[] {
+	const refs = new Set<string>();
+	const add = (value: string, qualifiedOnly = false) => { for (const part of value.split(",")) { const ref = part.trim(); if (QUALIFIED_REF_ONLY.test(ref) || (!qualifiedOnly && SHORT_ID_ONLY.test(ref))) refs.add(ref); } };
+	for (const word of words) add(word.value.replace(/^--[^=]+=([^]*)$/, "$1"), true);
+	const parsed = shellOptions(words);
+	for (const option of REF_OPTIONS) for (const pair of parsed.occurrences.get(option) ?? []) add(pair[1]?.value ?? pair[0].value.slice(option.length + 1));
+	const key = Object.keys(REF_AFTER).sort((a, b) => b.length - a.length).find(key => key.split(" ").every((part, index) => parsed.args[index] === part));
+	if (key) { const operands = parsed.args.slice(key.split(" ").length), arity = REF_AFTER[key]; for (const value of arity === "one" ? operands.slice(0, 1) : arity === "move" ? operands.slice(0, -1) : operands) add(value); }
+	return [...refs];
 }
 
 // Whose session a close records: `id` under `agent`, with the recording switch read from `env` (see `closeEnv`).
