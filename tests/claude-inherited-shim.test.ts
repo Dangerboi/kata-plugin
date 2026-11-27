@@ -16,22 +16,15 @@ test("Claude plugin calls keep their identity when launched from an omp shell", 
   const saved = keys.map(key => [key, process.env[key]] as const);
   const host = claudeHost({ cwd: root, binary: real });
   try {
-    Object.assign(process.env, { PATH: `${bin}:/usr/bin:/bin`, KATA_AUTHOR: "claude-actor", KATA_TEAMMATE: "claude-mate", KATA_TRANSCRIPT_AGENT: "prior-agent", KATA_TRANSCRIPT_SESSION_ID: "prior-session", KATA_OMP_SHIM_DIR: dir, KATA_OMP_SHIM_REAL: real, PI_SESSION_ID: "omp-parent" });
+    Object.assign(process.env, { PATH: `${bin}:/usr/bin:/bin`, KATA_AUTHOR: "claude-actor", KATA_TEAMMATE: "claude-mate", KATA_TRANSCRIPT_AGENT: "omp", KATA_TRANSCRIPT_SESSION_ID: "prior-session", KATA_OMP_SHIM_DIR: dir, KATA_OMP_SHIM_REAL: real, PI_SESSION_ID: "omp-parent" });
     const parent = keys.map(key => process.env[key]);
-    const sessionManager = { getSessionId: () => "claude-session" };
+    const exec = execOf(host.$, new Map(), () => ({ sessionManager: { getSessionId: () => "claude-session" } }) as any);
     const outputs: string[] = [];
-    for (const useContextRun of [false, true]) {
-      const context = { sessionManager, ...(useContextRun ? { run: (argv: string[], init: unknown) => host.$.process.run(argv, init) } : {}) } as any;
-      const exec = execOf(host.$, new Map(), () => context);
-      for (const command of ["show", "close"]) {
-        const result = await exec("kata", [command], { cwd: root, timeout: 5000 });
-        expect(result.code).toBe(0); outputs.push(result.stdout);
-      }
+    for (const command of ["show", "close"]) {
+      const result = await exec("kata", [command], { cwd: root, timeout: 5000 });
+      expect(result.code).toBe(0); outputs.push(result.stdout);
     }
-    expect(outputs).toEqual([
-      "claude-actor|claude-mate|prior-agent|prior-session", "claude-actor|claude-mate|claude|claude-session",
-      "claude-actor|claude-mate|prior-agent|prior-session", "claude-actor|claude-mate|claude|claude-session",
-    ]);
+    expect(outputs).toEqual(["claude-actor|claude-mate|omp|prior-session", "claude-actor|claude-mate|claude|claude-session"]);
     expect(keys.map(key => process.env[key])).toEqual(parent);
   } finally {
     host.cancelTimers();

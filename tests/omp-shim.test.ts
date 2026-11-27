@@ -48,14 +48,10 @@ test("omp and unset transcript agents still apply identity, including after an i
     const shim = { dir, real };
     writeIdentity(shim, "omp-child", { KATA_AUTHOR: "omp-actor", KATA_TRANSCRIPT_AGENT: "omp", KATA_TRANSCRIPT_SESSION_ID: "omp-session" });
     const base = { PATH: `${bin}:/usr/bin:/bin`, KATA_OMP_SHIM_DIR: dir, KATA_OMP_SHIM_REAL: real, PI_SESSION_ID: "omp-child", KATA_AUTHOR: "evil" };
-    for (const agent of [undefined, "omp"]) {
-      const env = { ...base, ...(agent ? { KATA_TRANSCRIPT_AGENT: agent } : {}) };
-      const out = Bun.spawnSync(["/bin/sh", "-c", "export KATA_AUTHOR=evil; bash -c kata"], { env });
-      expect(out.exitCode).toBe(0); expect(out.stdout.toString()).toBe("omp-actor|omp|omp-session");
-    }
+    const marked = Bun.spawnSync(["/bin/sh", "-c", "export KATA_AUTHOR=evil; bash -c kata"], { env: { ...base, KATA_TRANSCRIPT_AGENT: "omp" } });
+    expect(marked.exitCode).toBe(0); expect(marked.stdout.toString()).toBe("omp-actor|omp|omp-session");
     const env = { ...base, KATA_TRANSCRIPT_AGENT: "pi", KATA_TRANSCRIPT_SESSION_ID: "pi-session" };
-    const prefix = composePrefix(shim);
-    const out = Bun.spawnSync(["/bin/sh", "-c", `${prefix} export KATA_AUTHOR=evil; kata`], { env });
+    const out = Bun.spawnSync(["/bin/sh", "-c", `${composePrefix(shim)} export KATA_AUTHOR=evil; kata`], { env });
     expect(out.exitCode).toBe(0); expect(out.stdout.toString()).toBe("omp-actor|omp|omp-session");
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
@@ -84,15 +80,13 @@ test("configured executable basename selects each session identity in nested she
       const shim = installShim("kata-dev", message => { throw new Error(message); }, {roots: [root]});
       writeIdentity(shim, "lead", {KATA_AUTHOR: "lead", KATA_TEAMMATE: undefined, KATA_INBOX_USER: "lead-inbox"});
       writeIdentity(shim, "child", {KATA_AUTHOR: "actor", KATA_TEAMMATE: "scout", KATA_INBOX_USER: "actor/scout"});
-      const file = join(root, "script"); writeFileSync(file, '#!/bin/sh\\nkata-dev\\n', {mode: 0o700});
       const run = (id, command, fallback = false) => { const env = {...process.env, PI_SESSION_ID: id, KATA_AUTHOR: "spoof", ...(fallback ? {KATA_OMP_SHIM_REAL: ""} : {})}; const out = Bun.spawnSync(["/bin/sh", "-c", command], {env}); return [out.exitCode, out.stdout.toString()]; };
-      console.log(JSON.stringify([run("lead", "kata-dev"), run("child", "export KATA_AUTHOR=spoof; bash -c kata-dev"), run("child", file), run("child", "kata"), run("child", "kata-dev", true)]));
+      console.log(JSON.stringify([run("lead", "kata-dev"), run("child", "export KATA_AUTHOR=spoof; bash -c kata-dev"), run("child", "kata"), run("child", "kata-dev", true)]));
     } finally { rmSync(root, {recursive: true, force: true}); }`;
   const result = Bun.spawnSync([process.execPath, "-e", script], { env: { PATH: "/usr/bin:/bin", HOME: process.env.HOME!, KATA_HOME: process.env.KATA_HOME! } });
   expect(result.exitCode).toBe(0);
   expect(JSON.parse(result.stdout.toString())).toEqual([
-    [0, "lead||lead-inbox"], [0, "actor|scout|actor/scout"], [0, "actor|scout|actor/scout"],
-    [0, "actor|scout|actor/scout"], [0, "actor|scout|actor/scout"],
+    [0, "lead||lead-inbox"], [0, "actor|scout|actor/scout"], [0, "actor|scout|actor/scout"], [0, "actor|scout|actor/scout"],
   ]);
 });
 

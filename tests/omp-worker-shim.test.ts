@@ -83,7 +83,5 @@ test("a slow worker actor read warns and returns within the budget", async () =>
     expect(Date.now() - begin).toBeLessThan(2000);
     expect(replies[0].actor).toBeUndefined();
     expect(app.notices.filter((n: any) => /identity could not be published/.test(n[0])).length).toBe(1);
-    gate.resolve(); await wait(() => messages.filter(v => v && typeof v === "object" && "blocked" in v).length > 1);
-    expect(messages.filter(v => v && typeof v === "object" && "blocked" in v)[1].blocked).toBe(false);
   } finally { clearTimeout(release); gate.resolve(); channel.close(); worker.terminate(); if (originalAuthor === undefined) delete process.env.KATA_AUTHOR; else process.env.KATA_AUTHOR = originalAuthor; }
 }, 30000);

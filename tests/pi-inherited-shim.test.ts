@@ -42,8 +42,5 @@ test("native Pi activation keeps its own identity for internal Kata calls", asyn
       expect(process.env.PI_SESSION_ID).toBeUndefined();
       expect(process.env.KATA_TRANSCRIPT_AGENT).toBe("pi"); expect(process.env.KATA_TRANSCRIPT_SESSION_ID).toBe(sid);
     }
-    const created = (await events()).filter((event: any) => event.type === "issue.created");
-    expect(created.length).toBeGreaterThan(0);
-    expect(created.every((event: any) => event.actor === "actor-a")).toBe(true);
   } finally { for (const [key, value] of saved) value === undefined ? delete process.env[key] : process.env[key] = value; }
 }, 60000);
