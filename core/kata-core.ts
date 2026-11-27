@@ -2231,6 +2231,14 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 			].join("\n");
 	}
 
+	// A contract failure reaches the user once, through the current main session's UI: when it settles, else at that session's next prompt.
+	function warnContract(ctx: HostContext | undefined, entry: PromptReads) {
+		const ui = uiOf(ctx);
+		if (!ctx || sid(currentCtx) !== sid(ctx) || leadReads.get(leadKey(sid(ctx))) !== entry || !entry.contractNotice || !ui?.notify) return;
+		ui.notify(`Kata contract was unavailable (${entry.contractNotice}).`, "warning");
+		entry.contractNotice = undefined;
+	}
+
 	const contractReason = (error: unknown) => Array.from(messageOf(error).replace(/\s+/g, " ").trim()).slice(0, 80).join("") || "unknown error";
 
 	// The contract is fetched until one arrives non-empty: Kata 0.23.0 sends an empty one outside a `.kata.toml`
@@ -2268,7 +2276,7 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 				debug(error);
 				if (isKataCode(error, "unsupported_version")) { entry.contractError = undefined; return; }
 				entry.contractError = contractReason(error);
-				if (!record && !entry.contractWarned) { entry.contractWarned = true; entry.contractNotice = entry.contractError; }
+				if (!record && !entry.contractWarned) { entry.contractWarned = true; entry.contractNotice = entry.contractError; warnContract(currentCtx, entry); }
 			}).finally(() => { entry.pending = undefined; });
 		}
 		const user = setting("KATA_INBOX_USER");
@@ -2580,11 +2588,7 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 						const command = `${quoteIfNeeded(options.executable, /^[\w./-]+$/)} quickstart --format contract`;
 						sections.contract = `Kata contract is unavailable (${escapeMarkup(entry.contractError)}). Before using kata, run: ${command}`;
 					}
-					const ui = uiOf(ctx);
-					if (sid(currentCtx) === sid(ctx) && leadReads.get(leadKey(sid(ctx))) === entry && entry.contractNotice && ui?.notify) {
-						ui.notify(`Kata contract was unavailable (${entry.contractNotice}).`, "warning");
-						entry.contractNotice = undefined;
-					}
+					warnContract(ctx, entry);
 					const inbox = main(ctx) && liveInbox !== undefined ? liveInbox : entry.inbox;
 					if (inbox && turnReads.showsInbox) sections.inbox = inbox;
 				}

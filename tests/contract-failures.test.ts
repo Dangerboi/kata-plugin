@@ -40,10 +40,19 @@ test("late failure notice survives fast recovery and waits for the next main pro
   const a = fixture(async n => { if (n === 1) { await gate.promise; return fail(); } return success("recovered"); }), ctx = a.context();
   expect((await a.core.session.beforePrompt(ctx)).sections.contract).toBeUndefined();
   gate.resolve(); await nextTick();
-  expect(a.warnings).toEqual([]);
+  expect(a.warnings).toHaveLength(1);
   expect((await a.core.session.beforePrompt(ctx)).sections.contract).toBe("recovered");
   expect(a.warnings).toHaveLength(1);
   expect(a.warnings[0]).toBe("Kata contract was unavailable (kata agent-contract-hook failed: boom).");
+});
+
+test("a late failure warns the active main session without another prompt", async () => {
+  const gate = Promise.withResolvers<void>();
+  const a = fixture(async () => { await gate.promise; return fail("late failure"); }), ctx = a.context();
+  expect((await a.core.session.beforePrompt(ctx)).sections.contract).toBeUndefined();
+  gate.resolve(); await nextTick();
+  expect(a.warnings).toHaveLength(1);
+  expect(a.warnings[0]).toContain("late failure");
 });
 
 for (const origin of ["advisor", "no-ui"] as const) test(`${origin} failure waits for a main prompt with UI`, async () => {
