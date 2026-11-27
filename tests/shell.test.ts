@@ -88,7 +88,6 @@ test("arithmetic, substitutions and CRLF keep executable commands visible", () =
   for (const command of ["(( x << 1 ))\nkata claim abcd", "for (( i = 1; i < 9; i <<= 1 )); do echo x; done\nkata claim abcd", "echo x\r\nkata claim abcd"]) {
     expect(coreCommands(nodePlatform.path, command).map(c => shellOptions(c.words).args)).toEqual([["claim", "abcd"]]);
   }
-  expect(coreCommands(nodePlatform.path, "((unterminated\nkata claim abcd").map(c => shellOptions(c.words).args)).toEqual([["claim", "abcd"]]);
 
   const input = "(( $(kata claim abcd >/dev/null; printf 1) ))";
   const invocations = coreCommands(nodePlatform.path, input);

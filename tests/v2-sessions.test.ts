@@ -493,7 +493,7 @@ test("only shell claims proved by the command status adopt owned issues", async 
 });
 
 test("proven claims adopt in order and invalid refs never reach show", async () => {
-  const first = await issue(), second = await issue();
+  const first = await issue(), second = await issue("Plan child", { parent: first, meta: ["todo.phase=implementation", "todo.status=pending"] });
   await kata(["claim", first, "--json"]); await kata(["claim", second, "--json"]);
   const app = host({ sid: unique() }); await app.event("session_start");
   const refs = [`v2test#${first}`, `v2test#${second}`];
@@ -506,8 +506,14 @@ test("proven claims adopt in order and invalid refs never reach show", async () 
   expect([...new Set(shown)]).toEqual(refs);
   const adopted = app.entries.filter(e => e.customType === "io.kata.omp.parent" && refs.includes(e.data?.parent)).map(e => e.data.parent);
   expect([...new Set(adopted)]).toEqual(refs);
+  await eventually(async () => app.calls.some(c => c[1] === "attention-native" && c[3] === "start" && c.includes(refs[1])), true);
   await app.call({ op: "init", items: ["Last claim wins"] });
-  expect((await show(second)).children.some((c: any) => c.title === "Last claim wins")).toBe(true);
+  const task = (await show(second)).children.find((c: any) => c.title === "Last claim wins");
+  expect(task).toBeDefined();
+  await kata(["claim", task.short_id, "--json"]);
+  await app.event("tool_result", { toolName: "bash", input: { command: `kata claim v2test#${task.short_id}` }, isError: false });
+  await app.call({ op: "append", items: ["Still under second"] });
+  expect((await show(second)).children.some((c: any) => c.title === "Still under second")).toBe(true);
   const calls = app.calls.length;
   for (const ref of ["$ID", "2h"]) await app.event("tool_result", { toolName: "bash", input: { command: `kata claim ${ref}` }, isError: false });
   expect(app.calls.slice(calls).filter(c => c[0] === "show")).toEqual([]);
