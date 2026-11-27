@@ -33,7 +33,7 @@ export interface PathOps {
 export type Timers = Pick<Platform, "setTimer" | "clearTimer">;
 
 // Every environment variable the core reads or sets (see `setting` in kata-core.ts); a host asks its own environment for exactly these.
-export const CORE_ENV = ["KATA_REF", "KATA_TEAMMATE", "KATA_AUTHOR", "USER", "KATA_DEFAULT_PROJECT", "KATA_INBOX_USER", "KATA_HOME", "KATA_ATTENTION_HOST", "KATA_CLOSE_TRANSCRIPT_ENABLED", "KATA_REF_GUARD"] as const;
+export const CORE_ENV = ["KATA_REF", "KATA_TEAMMATE", "KATA_AUTHOR", "USER", "KATA_DEFAULT_PROJECT", "KATA_INBOX_USER", "KATA_HOME", "KATA_ATTENTION_HOST", "KATA_CLOSE_TRANSCRIPT_ENABLED", "KATA_REF_GUARD", "KATA_CONTRACT_SOURCE"] as const;
 
 // What the core needs from the machine it runs on, so that it imports nothing from Node. A Node host passes node-host.ts's
 // `nodePlatform`; a host without a process environment, timers or a synchronous filesystem supplies what it has.
