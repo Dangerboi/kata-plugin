@@ -1,5 +1,5 @@
 import { decidePlanParent, explicitParent, isExplicitParent, namesPlanParent } from "./plan-parent";
-import { countInbox, createInboxFollower, knownProjectHead, trustedInbox, type InboxCounts, type InboxFollower, type LiveInbox } from "./inbox";
+import { countInbox, createInboxFollower, inboxRequests, knownProjectHead, trustedInbox, type InboxCounts, type InboxFollower, type LiveInbox } from "./inbox";
 import { createDelegates, FINAL, heldByDelegate as heldBy, isUntracked, nameOf, Refusal, teammateFor, type DelegateAssignment, type DelegateStore, type Refused, type Reservation, type SavedDelegate, type Who } from "./delegates";
 import { createSettlement, MAX_FAILURES, openChildren, type PendingClose, type SettlementSnapshot } from "./settlement";
 import { createKata, debugTo, type CORE_ENV, isKataCode, refGuardOff, isUnusable, KataError, NO_JOB, waitAtMost, type Batch, type Exec, type Job, type PathOps, type Platform, type Timers } from "./kata-cli";
@@ -854,7 +854,7 @@ function buildCore(host: CoreHost, options: CoreOptions, delegateCores: Map<stri
 		// Only a bind that starts a session this core did not already hold restores delegates: /tree and a branch switch keep the same one.
 		const isNew = currentId !== id, previous = currentId;
 		currentId = id;
-		if (isNew && main(ctx)) { host.switched?.(ctx); delegateCores.clear(); shown.clear(); closed.clear(); footerGeneration++; footerActor = undefined; footerPainted = false; checkedAt = 0; checking = undefined; checkNext = undefined; }
+		if (isNew && main(ctx)) { host.switched?.(ctx); delegateCores.clear(); shown.clear(); closed.clear(); footerGeneration++; footerEnded = false; footerActor = undefined; footerPainted = false; checkedAt = 0; checking = undefined; checkNext = undefined; }
 		lastSnapshot = undefined;
 		currentCtx = ctx;
 		plan = { tasks: [], workspace: path.resolve(ctx.cwd) }; named = []; aliases.clear(); deletedParent = undefined;
@@ -2310,7 +2310,7 @@ function buildCore(host: CoreHost, options: CoreOptions, delegateCores: Map<stri
 	// Only requests from the session's own actor reach the prompt. A failed read (or actor lookup) keeps the last inbox;
 	// no trusted request removes the section. `ref` picks the actor's project; `addressFor` names the inbox from that actor.
 	function readInbox(entry: PromptReads, job: Job, cwd: string, ref: string | undefined, addressFor: (actor: string) => string): Promise<void> {
-		const read = (): Promise<void> => {
+		const read = (ticket = ++countSeq): Promise<void> => {
 			let running!: Promise<void>;
 			running = (async () => {
 				const mine = await actor(job, cwd, ref);
@@ -2320,7 +2320,7 @@ function buildCore(host: CoreHost, options: CoreOptions, delegateCores: Map<stri
 				const out = JSON.parse(await kata.run(job, ["inbox", "--for", address], cwd));
 				if (entry.inboxPending !== running) return;
 				entry.inbox = trustedInbox(out?.requests, mine, address);
-				entry.count = countInbox(out?.requests, mine);
+				if (entry === leadReads.get(leadKey(currentId)) && newest(ticket)) entry.count = countInbox(out?.requests, mine);
 			})().catch(error => { if (entry.inboxPending === running) debug(error); }).finally(() => { if (entry.inboxPending === running) entry.inboxPending = undefined; });
 			return entry.inboxPending = running;
 		};
@@ -2336,7 +2336,11 @@ function buildCore(host: CoreHost, options: CoreOptions, delegateCores: Map<stri
 
 	// While the follower runs, `liveInbox` is the main session's `<kata_inbox>` text and the per-turn read is skipped for it.
 	let liveInbox: string | undefined, liveCounts: InboxCounts | undefined, follower: InboxFollower | undefined;
-	let footerFormat: ((view: SessionView) => string | undefined) | undefined, footerCtx: HostContext | undefined;
+	let footerFormat: ((view: SessionView) => string | undefined) | undefined, footerCtx: HostContext | undefined, footerEnded = false;
+	// The displayed count has one clock: a reader takes a ticket when its read begins (the follower, when it publishes), and a count
+	// whose ticket is older than the last one shown is dropped, so no read finishing late can roll the count back.
+	let countSeq = 0, countAt = 0;
+	function newest(ticket: number): boolean { if (ticket < countAt) return false; countAt = ticket; return true; }
 	function stopFollower() {
 		follower?.stop();
 		follower = undefined;
@@ -2354,7 +2358,7 @@ function buildCore(host: CoreHost, options: CoreOptions, delegateCores: Map<stri
 			read: async () => JSON.parse(await kata.run(job, ["inbox", "--for", address], cwd)),
 			spawn: cursor => live.spawn([options.executable, "events", "--tail", "--json", "--workspace", cwd, ...(cursor ? ["--last-event-id", String(cursor)] : [])], cwd),
 			deliver: text => { try { Promise.resolve(live.deliver(text)).catch(debug); } catch (error) { debug(error); } },
-			publish: (text, counts) => { liveInbox = text; liveCounts = counts; if (footerFormat) void footer(footerCtx ?? ctx, "throttle", footerFormat); },
+			publish: (text, counts) => { liveInbox = text; liveCounts = counts; countAt = ++countSeq; if (footerFormat) void footer(footerCtx ?? ctx, "throttle", footerFormat); },
 			head: () => knownProjectHead(cwd, args => kata.run(job, args, cwd), platform.env.get("KATA_HOME")),
 			now: () => performance.now(),
 			setTimer: (fn, ms) => platform.setTimer(fn, ms),
@@ -2499,7 +2503,7 @@ function buildCore(host: CoreHost, options: CoreOptions, delegateCores: Map<stri
 	// `continues`: this shutdown does not end the lead's work (pi's reload: the same session goes on), so it keeps its tasks.
 	// `forking`: a fork replaces this session in a new instance (pi's /fork into a saved session); the tasks are left for it.
 	async function shutdown(ctx: HostContext, closing: { delegate?: { id: string; ended: boolean; report?: string }; continues?: boolean; forking?: boolean } = {}): Promise<void> {
-		if (main(ctx)) { footerGeneration++; footerFormat = undefined; footerCtx = undefined; footerPainted = false; checking = undefined; checkNext = undefined; lastFooter = undefined; if (ctx.hasUI === true) ctx.ui?.setStatus?.("kata", undefined); }
+		if (main(ctx)) { footerGeneration++; footerEnded = true; footerFormat = undefined; footerCtx = undefined; footerPainted = false; checking = undefined; checkNext = undefined; lastFooter = undefined; if (ctx.hasUI === true) ctx.ui?.setStatus?.("kata", undefined); }
 		see(ctx);
 		// A delegate's reads live in its own core (the lead's core never holds them) and go when its own session ends.
 		if (!main(ctx)) { const own = host.delegateStore.of(ctx); if (own) delegateReads.delete(own.id); }
@@ -2605,7 +2609,6 @@ function buildCore(host: CoreHost, options: CoreOptions, delegateCores: Map<stri
 		const view = { ...viewData(ctx, opts), actor: identity?.who, actorError: identity?.error };
 		if (isKataCode(probeError, "unsupported_version")) { view.scope = "down"; view.outage = (probeError as Error).message; }
 		if (read?.failed !== undefined) view.inbox.delivery = "failed";
-		else if (read?.counts) view.counts = read.counts;
 		paint(footerCtx ?? ctx, view);
 		return view;
 	}
@@ -2613,23 +2616,23 @@ function buildCore(host: CoreHost, options: CoreOptions, delegateCores: Map<stri
 		const inbox = inboxAddress();
 		const native = opts.nativeInbox ? { native: true as const } : {};
 		if (!inbox.address) return { none: inbox.none, ...native };
-		const id = currentId, generation = footerGeneration;
+		const id = currentId, generation = footerGeneration, ticket = ++countSeq;
 		try {
 			const mine = await actor(NO_JOB, ctx.cwd);
-			const out = JSON.parse(await kata.run(NO_JOB, ["inbox", "--for", inbox.address], ctx.cwd));
-			const counts = countInbox(out?.requests, mine);
+			const requests = inboxRequests(JSON.parse(await kata.run(NO_JOB, ["inbox", "--for", inbox.address], ctx.cwd)));
+			const counts = countInbox(requests, mine);
 			if (!opts.nativeInbox && main(ctx) && id === currentId && generation === footerGeneration) {
 				const key = leadKey(sid(ctx));
 				let entry = leadReads.get(key);
 				if (!entry) leadReads.set(key, entry = { cwd: path.resolve(ctx.cwd) });
-				if (host.liveInbox) liveCounts = counts; else entry.count = counts;
+				if (newest(ticket)) { if (host.liveInbox) liveCounts = counts; else entry.count = counts; }
 				paint(footerCtx ?? ctx);
 			}
-			return { address: inbox.address, text: trustedInbox(out?.requests, mine, inbox.address, ""), counts, ...native };
+			return { address: inbox.address, text: trustedInbox(requests, mine, inbox.address, ""), counts, ...native };
 		} catch (error) { return { address: inbox.address, failed: (error as Error)?.message ?? String(error), ...native }; }
 	}
 	async function footer(ctx: HostContext, mode: "force" | "throttle", format: (view: SessionView) => string | undefined): Promise<void> {
-		if (!main(ctx) || ctx.hasUI !== true || !ctx.ui?.setStatus) return;
+		if (!main(ctx) || footerEnded || ctx.hasUI !== true || !ctx.ui?.setStatus) return;
 		footerFormat = format; footerCtx = ctx;
 		const id = currentId, generation = footerGeneration, parent = plan.parent;
 		const identity = actor(NO_JOB, ctx.cwd).then(who => {
@@ -2675,7 +2678,7 @@ function buildCore(host: CoreHost, options: CoreOptions, delegateCores: Map<stri
 				}
 				see(ctx);
 				const explicit = configuredRef(), id = sid(ctx);
-				stopFollower();
+				stopFollower(); footerEnded = false;
 				// The reads of the session this one replaces go.
 				for (const other of [...leadReads.keys()]) if (other !== leadKey(id)) leadReads.delete(other);
 				const user = setting("KATA_INBOX_USER");
