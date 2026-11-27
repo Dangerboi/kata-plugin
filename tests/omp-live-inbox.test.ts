@@ -118,7 +118,6 @@ test("a bare actor address starts no follower", async () => {
 	await kata(["notify", ref, "--to", "v2-builder", "--clear", "--json"]);
 });
 
-
 test("padded session addresses work in live and per-prompt inboxes", async () => {
 	const address = "v2-builder/live-padded", padded = `  ${address}  `;
 	const app = await open(padded), ref = await issue();

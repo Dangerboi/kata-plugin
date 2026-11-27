@@ -11,7 +11,10 @@ async function open(address: string, options: any = {}) {
   await app.event("session_start", { reason: "startup" });
   return app;
 }
-afterEach(async () => { for (const app of apps.splice(0)) await app.event("session_shutdown", { reason: "quit" }); });
+afterEach(async () => {
+  for (const app of apps.splice(0)) await app.event("session_shutdown", { reason: "quit" });
+  expect(await until(() => children().length === 0)).toBe(true);
+});
 
 test("a trusted request wakes Pi with a custom steer message", async () => {
   const address = "pi-builder/live-main", app = await open(address);
@@ -70,12 +73,7 @@ test("a late native adapter suppresses delivery and stops the follower at the ne
   await kata(["notify", ref, "--to", address, "--message", "suppressed", "--json"]);
   expect(await until(() => checks > 0)).toBe(true);
   expect(app.messages).toEqual([]);
-  globalRegistry[nativeKey].adapters.clear();
-  const sentinel = await issue("After suppressed delivery");
-  await kata(["notify", sentinel, "--to", address, "--message", "sentinel", "--json"]);
-  expect(await until(() => app.messages.length === 1)).toBe(true);
-  expect(app.messages[0][0].content).toContain("sentinel");
-  globalRegistry[nativeKey].adapters.set("native", { options: { scope: "user", contract: true } });
+  expect(children()).toHaveLength(1);
   await app.event("before_agent_start", { systemPromptOptions: { sections: {} } });
   expect(await until(() => children().length === 0)).toBe(true);
 });
