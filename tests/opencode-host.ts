@@ -4,6 +4,7 @@
 //   packages/core/src/plugin/hooks.ts       hooks run sequentially in registration order, in place on one event object
 //   packages/plugin/src/promise/adapter.ts  Promise ctx, `toolError`, cleanup run when the scope closes
 //   packages/core/src/tool.ts               execute.before -> execute -> execute.after, `Tool.Error` handling
+//   v2.4.2 packages/core/src/tool.ts:161-170 adds `codemode` to execute.before; v2.2.7 omits it.
 //   packages/core/src/tool/runtime.ts       `effectiveName`, `normalizeContent`
 // Deviations are listed next to the code that makes them.
 
@@ -45,6 +46,7 @@ export interface CreateSessionInput {
 }
 
 export interface ToolCallOptions {
+	codemode?: boolean | "absent";
 	/** Executor for this call only; takes precedence over the registered tool. */
 	execute?: ToolExecute;
 }
@@ -290,7 +292,7 @@ async function start(options: OpenCodeHostOptions, shared: Shared): Promise<Open
 		requireSession(sessionID);
 		const id = nextID("call");
 		const base = { sessionID, agent: "build", messageID: nextID("msg"), id };
-		const before = { tool: name, ...base, input: clone(rawInput) as any };
+		const before = { tool: name, ...base, ...(opts.codemode === "absent" ? {} : { codemode: opts.codemode === true }), input: clone(rawInput) as any };
 		const fail = (error: { message: string }, input: unknown, executed: boolean): ToolCallResult =>
 			({ status: "error", text: error.message, input, executed });
 

@@ -2,7 +2,7 @@ import { decidePlanParent, explicitParent, isExplicitParent, namesPlanParent } f
 import { createInboxFollower, knownProjectHead, trustedInbox, type InboxFollower, type LiveInbox } from "./inbox";
 import { createDelegates, FINAL, heldByDelegate as heldBy, isUntracked, nameOf, Refusal, teammateFor, type DelegateAssignment, type DelegateStore, type Refused, type Reservation, type SavedDelegate, type Who } from "./delegates";
 import { createSettlement, MAX_FAILURES, openChildren, type PendingClose, type SettlementSnapshot } from "./settlement";
-import { createKata, debugTo, type CORE_ENV, isKataCode, refGuardOff, isUnusable, KataError, NO_JOB, waitAtMost, type Batch, type Exec, type Job, type PathOps, type Platform, type Timers } from "./kata-cli";
+import { createKata, debugTo, type CORE_ENV, isKataCode, refGuardMode, isUnusable, KataError, NO_JOB, waitAtMost, type Batch, type Exec, type Job, type PathOps, type Platform, type Timers } from "./kata-cli";
 import { createTicketCompletion } from "./autocomplete";
 import { offendingRefs } from "./ref-guard";
 import { kataCommands, quote, shellOptions } from "./shell";
@@ -406,6 +406,7 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 	const aliases = new Set<string>(); // refs the plan's parent was rehomed from: they still name it
 	// Refs this session claimed in its shell or named with `/todo ref`: its work, though the plan may never hold them. Read by `tools.guard`.
 	const claimed = new Set<string>();
+	const warnings = new Map<string, string[]>();
 	let requestedRef: string | undefined;
 	// A native host's list says what is in progress, so the core never starts a pending task itself (see nextTask).
 	const autoStart = options.autoStart !== false && !options.native;
@@ -851,7 +852,7 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 		// nor its local plan (replaying that would make a second automatic parent).
 		const { snapshot, source } = savedSnapshot(ctx, branch, id, onBranch(branch));
 		// The shell claims belong to the session: /tree and a branch switch keep it, a fork of it shares them, any other new session starts with none.
-		if (isNew && !(source && source === previous)) claimed.clear();
+		if (isNew && !(source && source === previous)) { claimed.clear(); warnings.clear(); }
 		// A forked session keeps the source id as the parent's owner: the parent's session_id metadata names it.
 		const parentOwner = source ?? id;
 		// A resumed lead keeps its saved sessions; a fork adds itself to its source's, so it works on what its source started.
@@ -2063,11 +2064,13 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 		return refs;
 	}
 
-	// Called before a tool runs: the text that refuses a call that would put a Kata ref into the repository, or undefined to let it run. It
+	// Called before a tool runs: returns a refusal or records a warning to attach to its result. Warn without a call id refuses. It
 	// never rejects: an error, a slow check or an off switch (KATA_REF_GUARD=off or 0) lets the call through. `also`: refs a host knows that
 	// this core does not (a delegate on another thread asks its lead); called once, inside the bound, and only for a call that adds text.
-	function refGuard(ctx: HostContext, call: { tool: string; input: unknown }, also: MoreRefs = () => []): Promise<string | undefined> {
-		if (refGuardOff(setting("KATA_REF_GUARD"))) return Promise.resolve(undefined);
+	function refGuard(ctx: HostContext, call: { tool: string; input: unknown; id?: string }, also: MoreRefs = () => []): Promise<string | undefined> {
+		const mode = refGuardMode(setting("KATA_REF_GUARD"));
+		if (mode === "off") return Promise.resolve(undefined);
+		const warnId = mode === "warn" ? call.id : undefined;
 		return bounded((async () => {
 			const cwd = ctx.cwd ?? platform.cwd();
 			const workspaces = await Promise.all([...new Set([cwd, plan.workspace])].map(root => canonicalPath(platform, ".", root)));
@@ -2088,8 +2091,14 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 				read: file => platform.readFile(file),
 			});
 			if (!found.length) return undefined;
-			return `Refused: this ${call.tool} call puts ${found.join(", ")} into the repository. Kata refs only resolve in the local tracker, so code, comments, tests, docs and commit messages should describe the behaviour instead. Rewrite it without the ref and retry. To turn this check off, set KATA_REF_GUARD=off.`;
-		})(), REF_GUARD_MS);
+			const refs = found.join(", "), why = "Kata refs only resolve in the local tracker, so code, comments, tests, docs and commit messages should describe the behaviour instead.";
+			return warnId
+				? `This ${call.tool} call asked to put ${refs} into the repository. ${why} To turn this check off, set KATA_REF_GUARD=off.`
+				: `Refused: this ${call.tool} call puts ${refs} into the repository. ${why} Rewrite it without the ref and retry. To turn this check off, set KATA_REF_GUARD=off.`;
+		})(), REF_GUARD_MS).then(reason => {
+			if (reason && warnId) { warnings.set(warnId, [...warnings.get(warnId) ?? [], reason]); return undefined; }
+			return reason;
+		});
 	}
 
 	// `/todo ref <id>`: makes the Kata issue the plan's parent at once, loading its open children. A plan that already has a parent keeps it.
@@ -2591,6 +2600,11 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 			},
 			// A tool is about to run: the text that refuses it for putting a Kata ref into the repository, or undefined (see `refGuard`).
 			guard: refGuard,
+			warning: (id: string, parentId?: string): string | undefined => {
+				const reasons = warnings.get(id); warnings.delete(id);
+				if (reasons && parentId) { warnings.set(parentId, [...warnings.get(parentId) ?? [], ...reasons]); return undefined; }
+				return reasons?.join("\n");
+			},
 			// The refs this session works, for a delegate's host that checks calls against its lead's.
 			refs: (ctx: HostContext): string[] => [...knownRefs(ctx)],
 		},

@@ -276,3 +276,71 @@ test("real native adapter starts and ends attention once each on the lead's issu
   expect(attentionCalls(app)).toEqual([["start", `pitest#${ref}`], ["end", `pitest#${ref}`]]);
   globalRegistry[nativeKey] = { adapters: new Map(), active: new Map() };
 });
+
+test("pi warn attaches each guard reason to its own result, then takes it once", async () => {
+	const app = await host(); await app.event("session_start", { reason: "startup" });
+	const ref = await app.init(["Guarded warning task"]);
+	const input = { command: `git commit -m "fix ${ref}"` };
+	process.env.KATA_REF_GUARD = "warn";
+	try {
+		const calls = { a: { toolName: "bash", input }, b: { toolName: "write", input: { path: `${cwd}/warn-notes.ts`, content: `// ${ref}` } } };
+		for (const toolCallId of ["a", "b"] as const) expect(await app.event("tool_call", { toolCallId, ...calls[toolCallId] })).toBeUndefined();
+		for (const toolCallId of ["b", "a"] as const) {
+			const event = { toolCallId, ...calls[toolCallId], isError: false, content: [{ type: "text", text: "ok" }], structuredContent: { output: "ok", count: 2 } };
+			const result = await app.event("tool_result", event);
+			expect(result?.content[0]).toEqual(event.content[0]);
+			expect(result?.content[1]?.text).toContain(ref);
+			expect(result?.content[1]?.text).toContain(calls[toolCallId].toolName);
+			expect(result?.structuredContent).toEqual(event.structuredContent);
+			expect(await app.event("tool_result", event)).toBeUndefined();
+		}
+	} finally { delete process.env.KATA_REF_GUARD; }
+});
+
+test("pi forwards nested warnings to the outer result and takes them once", async () => {
+	const app = await host(); await app.event("session_start", { reason: "startup" });
+	const ref = await app.init(["Nested warning task"]);
+	const input = { command: `git commit -m "fix ${ref}"` };
+	process.env.KATA_REF_GUARD = "warn";
+	try {
+		for (const toolCallId of ["outer/1", "outer/2"]) {
+			const event = { toolCallId, parentToolCallId: "outer", toolName: "bash", input };
+			expect(await app.event("tool_call", event)).toBeUndefined();
+			expect(await app.event("tool_result", { ...event, isError: false, content: [{ type: "text", text: "inner" }], structuredContent: { output: "inner" } })).toBeUndefined();
+		}
+		const outer = { toolCallId: "outer", toolName: "codemode", input: {}, isError: false, content: [{ type: "text", text: "filtered" }], structuredContent: { kept: true } };
+		const result = await app.event("tool_result", outer);
+		expect(result?.content[0]).toEqual(outer.content[0]);
+		expect(result?.content[1]?.text).toContain(ref);
+		expect(result?.structuredContent).toEqual(outer.structuredContent);
+		expect(await app.event("tool_result", outer)).toBeUndefined();
+	} finally { delete process.env.KATA_REF_GUARD; }
+});
+
+test("pi nested runner carries a filtered warning to the outer result", async () => {
+	const { NestedToolCallRunner } = await import("../node_modules/@earendil-works/pi-coding-agent/dist/core/nested-tool-calls.js");
+	const app = await host(); await app.event("session_start", { reason: "startup" });
+	const ref = await app.init(["Nested runner task"]);
+	process.env.KATA_REF_GUARD = "warn";
+	try {
+		const runner = new NestedToolCallRunner({
+			emit: async () => {}, isSequential: () => false, getTools: () => [],
+			runToolCall: async (call: any, parentToolCallId: string) => {
+				const event = { toolName: call.name, toolCallId: call.id, parentToolCallId, input: call.arguments };
+				expect(await app.event("tool_call", event)).toBeUndefined();
+				if (call.name === "custom") {
+					await runner.execute(call.id, "bash", { command: `git commit -m "fix ${ref}"` });
+				}
+				const result = { content: [{ type: "text", text: "filtered" }], structuredContent: { value: "kept" } };
+				const change = await app.event("tool_result", { ...event, ...result, isError: false });
+				expect(change).toBeUndefined();
+				return { toolCall: call, result, isError: false };
+			},
+		});
+		await runner.execute("outer", "custom", {});
+		const outer = { toolName: "codemode", toolCallId: "outer", input: {}, isError: false, content: [{ type: "text", text: "filtered" }] };
+		const result = await app.event("tool_result", outer);
+		expect(result?.content[1]?.text).toContain(ref);
+		expect(await app.event("tool_result", outer)).toBeUndefined();
+	} finally { delete process.env.KATA_REF_GUARD; }
+});

@@ -477,3 +477,19 @@ test("a delegate's note names no inbox: the Claude path shows a delegate none", 
 	expect(spawned.prompt).toContain("Your Kata issue is");
 	expect(spawned.prompt).not.toContain("Your Kata inbox");
 });
+
+test("Claude warn preserves the tool result and previous context once", async () => {
+	const h = host({ env: { KATA_REF_GUARD: "warn" } }); await h.start();
+	await h.todo({ op: "init", items: ["Guarded warning task"] });
+	const ref = `${PROJECT}#${(await parentOf(h.state.session)).short_id}`;
+	const result = await h.fire("tool.call", { tool: "Bash", tool_use_id: crypto.randomUUID(), command: `git commit -m "fix ${ref}"` }, () => ({ result: { output: "ok" }, isError: true, context: ["earlier context"] }));
+	expect(result.deny).toBeUndefined();
+	expect(result.result).toEqual({ output: "ok" });
+	expect(result.isError).toBe(true);
+	expect(result.context[0]).toBe("earlier context");
+	expect(result.context).toHaveLength(2);
+	expect(result.context[1]).toContain(ref);
+	expect(result.context[1]).toContain("Bash");
+	const clean = await h.fire("tool.call", { tool: "Bash", tool_use_id: crypto.randomUUID(), command: "echo clean" }, () => ({ result: "ok" }));
+	expect(clean.context).toBeUndefined();
+});

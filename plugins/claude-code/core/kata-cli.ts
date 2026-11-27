@@ -58,8 +58,11 @@ export interface Platform {
 	home?: string;
 }
 
-// Whether a KATA_REF_GUARD value (or a host option's text) switches the ref guard off: `off` or `0`.
-export const refGuardOff = (value: string | undefined): boolean => ["off", "0"].includes((value ?? "").trim().toLowerCase());
+// Parse the ref guard mode: off (or 0), warn, or block by default.
+export const refGuardMode = (value: string | undefined): "off" | "warn" | "block" => {
+	const mode = (value ?? "").trim().toLowerCase();
+	return mode === "off" || mode === "0" ? "off" : mode === "warn" ? "warn" : "block";
+};
 
 // The sink for errors the plugin survives: a line in `file`, nothing without one. Debugging must never interrupt work.
 export const debugTo = (file: string | undefined, append: Platform["appendFile"]) => (error: unknown) => {

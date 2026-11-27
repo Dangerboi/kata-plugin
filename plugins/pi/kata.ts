@@ -154,7 +154,7 @@ export default async function piKata(pi: ExtensionAPI) {
 
 	pi.on("tool_call", async (event, ctx) => {
 		if (inherited && current) void core.delegates.apply({ type: "ranTool", id: current.id }, NO_JOB);
-		const refused = await core.tools.guard(ctx, { tool: event.toolName, input: event.input });
+		const refused = await core.tools.guard(ctx, { tool: event.toolName, input: event.input, id: event.toolCallId });
 		if (refused) return { block: true, reason: refused };
 		const bash = event.toolName === "bash" && typeof event.input.command === "string";
 		// A bash command that launches pi may start a child that needs the lead's parent.
@@ -176,6 +176,8 @@ export default async function piKata(pi: ExtensionAPI) {
 	pi.on("tool_result", async (event, ctx) => {
 		const next = await core.tools.result(ctx, { ...event, details: undefined });
 		if (!inherited) lead = next;
+		const warning = core.tools.warning(event.toolCallId, event.parentToolCallId);
+		if (warning) return { content: [...event.content, { type: "text" as const, text: warning }], structuredContent: event.structuredContent };
 	});
 
 	pi.on("before_agent_start", async (event, ctx) => {

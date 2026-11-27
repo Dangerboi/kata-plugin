@@ -7,11 +7,14 @@ export const onWriteGuard: Hook<"tool.call"> = async ($, e, next) => {
 	const rt = runtime();
 	const held = rt?.latest?.held;
 	if (!rt || !held) return next(e);
+	const ctx = contextOf($, rt, held, e.agentId);
 	try {
-		const reason = await rt.core.tools.guard(contextOf($, rt, held, e.agentId), { tool: String(e.tool), input: e });
+		const reason = await rt.core.tools.guard(ctx, { tool: String(e.tool), input: e, id: e.tool_use_id });
 		if (reason) return { deny: reason };
 	} catch (error) {
 		rt.debug(error);
 	}
-	return next(e);
+	const done = await next(e);
+	const warning = rt.core.tools.warning(e.tool_use_id);
+	return warning ? { ...done, context: [...done.context ?? [], warning] } : done;
 };

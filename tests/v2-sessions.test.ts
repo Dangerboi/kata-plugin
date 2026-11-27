@@ -475,3 +475,29 @@ test("typed automatic parent can be recovered after losing the session entry", a
   expect((await show(parent)).children.map((c: any) => c.title).sort()).toEqual(["Durable existing task", "Recovered task"]);
   expect(await sessionParents(app.sid)).toHaveLength(1);
 });
+
+test("omp warn attaches each guard reason to its own result, then takes it once", async () => {
+	const app = host(); await app.event("session_start");
+	const ref = await app.init(["Guarded warning task"]);
+	const input = { command: `git commit -m "fix ${ref}"` };
+	process.env.KATA_REF_GUARD = "warn";
+	try {
+		const calls = { a: { toolName: "bash", input }, b: { toolName: "write", input: { path: `${cwd}/warn-notes.ts`, content: `// ${ref}` } } };
+		for (const toolCallId of ["a", "b"] as const) expect(await app.event("tool_call", { toolCallId, ...calls[toolCallId] })).toBeUndefined();
+		for (const toolCallId of ["b", "a"] as const) {
+			const result = await app.event("tool_result", { toolCallId, ...calls[toolCallId], isError: false });
+			expect(result?.additionalContext).toContain(ref);
+			expect(result?.additionalContext).toContain(calls[toolCallId].toolName);
+			expect(await app.event("tool_result", { toolCallId, ...calls[toolCallId], isError: false })).toBeUndefined();
+		}
+		for (const toolCallId of ["same-a", "same-b"]) expect(await app.event("tool_call", { toolCallId, toolName: "bash", input })).toBeUndefined();
+		const contexts = [];
+		for (const [toolCallId, isError] of [["same-a", false], ["same-b", true]] as const) {
+			const result = await app.event("tool_result", { toolCallId, toolName: "bash", input, isError });
+			expect(result?.additionalContext).toContain(ref);
+			contexts.push(result?.additionalContext);
+		}
+		// omp drops an additionalContext equal to another in the same batch, so each call's must differ.
+		expect(contexts[0]).not.toBe(contexts[1]);
+	} finally { delete process.env.KATA_REF_GUARD; }
+});

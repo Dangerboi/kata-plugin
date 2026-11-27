@@ -36,7 +36,7 @@ declare module "claude-code" {
 		// Hidden context sent after the text.
 		context?: readonly string[];
 	};
-	export type ToolCallResult = { result?: unknown; isError?: boolean; deny?: string };
+	export type ToolCallResult = { result?: unknown; isError?: boolean; deny?: string; context?: readonly string[] };
 	export type Suggestion = { text: string; label?: string; description?: string };
 
 	// The call's tool arguments sit beside `tool` and `tool_use_id`; they are the tool's own JSON, whose names the engine does not fix.
