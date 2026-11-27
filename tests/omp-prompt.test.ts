@@ -161,7 +161,7 @@ test("compaction retaining a prior message still clears the inbox and plan", asy
   } finally { await app.event("session_shutdown"); }
 });
 
-test("a plan update after compaction preserves an inbox whose read is pending", async () => {
+for (const boundary of ["compaction", "reset_boundary"]) test(`a plan update after ${boundary} preserves an inbox whose read is pending`, async () => {
   process.env.KATA_INBOX_USER = "v2-builder/compact-pending";
   process.env.KATA_OMP_LIVE_INBOX = "0";
   const a = host(); await a.event("session_start"); await a.contractReady;
@@ -171,7 +171,7 @@ test("a plan update after compaction preserves an inbox whose read is pending", 
   await prompt(a); const prior = await prompt(a); commit(a, prior);
   const branch = a.ctx.sessionManager.getBranch();
   branch.at(-1).id = "retained-pending";
-  branch.push({ type: "compaction", firstKeptEntryId: "retained-pending" });
+  branch.push({ type: boundary, ...(boundary === "compaction" ? { firstKeptEntryId: "retained-pending" } : {}) });
   const entries = structuredClone(branch);
   await a.event("session_shutdown");
   const held = holdKata(args => args[0] === "inbox");
@@ -189,4 +189,31 @@ test("a plan update after compaction preserves an inbox whose read is pending", 
     held.release();
     await eventually(async () => (await prompt(b))?.message?.content?.includes("inbox is now empty") ?? false, true);
   } finally { held.release(); await b.event("session_shutdown"); }
+});
+
+test("clearing context replays the plan and inbox once across either boundary order", async () => {
+  process.env.KATA_INBOX_USER = "v2-builder/r4-reset";
+  process.env.KATA_OMP_LIVE_INBOX = "0";
+  const app = host(); await app.event("session_start"); await app.contractReady;
+  try {
+    await app.init(["keep first", "keep second", "keep third"]);
+    const a = await issue("reset A"), b = await issue("reset B");
+    await kata(["notify", a, "--to", "v2-builder/r4-reset", "--message", "reset request A", "--json"]);
+    await kata(["notify", b, "--to", "v2-builder/r4-reset", "--message", "reset request B", "--json"]);
+    await prompt(app); const before = await prompt(app);
+    expect(before.message.content).toContain("Current plan");
+    expect(before.message.content).toContain("reset request A"); expect(before.message.content).toContain("reset request B");
+    commit(app, before);
+    const branch = app.ctx.sessionManager.getBranch();
+    for (const boundaries of [["reset_boundary"], ["compaction", "reset_boundary"], ["reset_boundary", "compaction"]]) {
+      branch.at(-1).id = "kept-before-boundary";
+      for (const type of boundaries) branch.push({ type, ...(type === "compaction" ? { firstKeptEntryId: "kept-before-boundary" } : {}) });
+      await app.event("session_clear");
+      const after = await prompt(app);
+      expect(after.message?.content).toContain("Current plan");
+      expect(after.message?.content).toContain("reset request A"); expect(after.message?.content).toContain("reset request B");
+      commit(app, after);
+      expect((await prompt(app)).message).toBeUndefined();
+    }
+  } finally { await app.event("session_shutdown"); }
 });

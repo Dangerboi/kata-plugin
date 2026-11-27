@@ -505,13 +505,13 @@ export default function ompKata(pi: any) {
 		if (useTodo && sections.todoRules) out.push(tagged("todo", sections.todoRules));
 
 		// Only committed messages count: omp can retry or discard a hook result. Compaction
-		// can retain old messages or summarize them, so replay after crossing it and clear
+		// and /clear can change context, so replay after crossing either boundary and clear
 		// old state when needed. /tree changes the branch inspected here.
-		let previous: { inbox: string; plan: string } = { inbox: "", plan: "" }, compacted = false;
+		let previous: { inbox: string; plan: string } = { inbox: "", plan: "" }, crossed = false;
 		const branch = ctx.sessionManager?.getBranch?.() ?? [];
 		for (let i = branch.length - 1; i >= 0; i--) {
 			const entry = branch[i];
-			if (entry.type === "compaction") { compacted = true; continue; }
+			if (entry.type === "compaction" || entry.type === "reset_boundary") { crossed = true; continue; }
 			if (entry.type === "custom_message" && entry.customType === "kata-prompt" && typeof entry.details?.inbox === "string" && typeof entry.details?.plan === "string") {
 				previous = entry.details; break;
 			}
@@ -519,7 +519,7 @@ export default function ompKata(pi: any) {
 		const inbox = sections.inbox ?? previous.inbox;
 		const plan = useTodo ? sections.plan ?? "" : "";
 		const updates: string[] = [];
-		const send = (current: string, last: string) => current !== last || (compacted && !!current);
+		const send = (current: string, last: string) => current !== last || (crossed && !!current);
 		if (send(inbox, previous.inbox)) updates.push(inbox ? tagged("inbox", `Current Kata inbox (replaces earlier inbox messages):\n${inbox}`) : "The Kata inbox is now empty or disabled; earlier inbox messages no longer apply.");
 		if (send(plan, previous.plan)) updates.push(plan ? tagged("todo", `This is the current plan and replaces earlier plan messages.\n${plan}`) : "The current Kata plan has been cleared; earlier plan messages no longer apply.");
 		const message = updates.length ? { customType: "kata-prompt", content: updates.join("\n\n"), display: false, details: { inbox, plan } } : undefined;
