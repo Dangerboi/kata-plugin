@@ -38,11 +38,11 @@ export interface HostContext {
 export type SessionView = {
 	workspace: string; scope: string; outage: string; project?: string;
 	actor?: string; actorError?: string; teammate: string;
-	inbox: { address?: string; none?: "unset" | "personal"; delivery?: "live" | "per prompt" | "failed" };
+	inbox: { address?: string; none?: "unset" | "personal"; delivery?: "live" | "per prompt" | "failed" | "kata" };
 	refs: string[]; contract: "off" | "not-fetched" | number; counts?: InboxCounts; inboxFailed?: string;
 	settings: { executable: string; refGuard: boolean; liveInbox: boolean; debug: boolean };
 };
-export type InboxView = { address?: string; none?: "unset" | "personal"; text?: string; counts?: InboxCounts; failed?: string };
+export type InboxView = { address?: string; none?: "unset" | "personal"; text?: string; counts?: InboxCounts; failed?: string; native?: true };
 
 // The host's callbacks get the context back as the host passed it, so they see their own type.
 interface CoreHost {
@@ -427,7 +427,7 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 	const claimed = new Set<string>();
 	const closedMarks = new Set<string>();
 	const claimRevisions = new Map<string, number>();
-	let footerGeneration = 0, claimsChanged = 0;
+	let footerGeneration = 0;
 	let reconciledAt = 0, reconciling: Promise<void> | undefined;
 	let requestedRef: string | undefined;
 	// A native host's list says what is in progress, so the core never starts a pending task itself (see nextTask).
@@ -551,9 +551,7 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 	// workspace, project and author setting. With no ref (no plan parent yet) it is the author setting or the user, else
 	// git's user name, kept the same way. A failed read is not kept. Ownership checks and the inbox's trust rule share it.
 	const actors = new Map<string, Promise<string>>();
-	let actorEpoch = 0;
 	async function actor(job: Job, cwd: string, ref = plan.parent): Promise<string> {
-		const epoch = actorEpoch;
 		const author = setting("KATA_AUTHOR") || setting("USER");
 		if (!ref && author) return author;
 		const key = [currentId, path.resolve(cwd), ref ? projectOf(ref) : "", setting("KATA_AUTHOR")].join("\0");
@@ -569,13 +567,7 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 			actors.set(key, known);
 			known.catch(() => { if (actors.get(key) === known) actors.delete(key); });
 		}
-		try {
-			const result = await known;
-			return actors.get(key) === known ? result : actor(job, cwd, ref);
-		} catch (error) {
-			if (epoch !== actorEpoch || (actors.has(key) && actors.get(key) !== known)) return actor(job, cwd, ref);
-			throw error;
-		}
+		return known;
 	}
 
 	// Starting unowned work requires a successful claim. Already-owned tasks
@@ -2193,12 +2185,12 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 			const workspace = path.resolve(event.input.cwd || ctx.cwd, parsed.value("--workspace") || ".");
 			// A word the shell expands (`$ref`, a glob) names nothing yet; only the shape of a ref counts. A bare id is recorded at once (with the
 			// plan's project when the workspace is its own) and replaced by the ref Kata resolves it to, in the background: the hook never waits.
-			if (args[0] === "claim") { claimsChanged++; claimRevisions.set(ref, (claimRevisions.get(ref) ?? 0) + 1); closedMarks.delete(ref); reconciledAt = 0; }
+			if (args[0] === "claim") { claimRevisions.set(ref, (claimRevisions.get(ref) ?? 0) + 1); closedMarks.delete(ref); reconciledAt = 0; }
 			if (args[0] === "claim" && QUALIFIED_REF_ONLY.test(ref)) claimed.add(ref);
 			else if (args[0] === "claim" && SHORT_ID_ONLY.test(ref)) {
 				const bare = ref, session = currentId;
 				claimed.add(plan.parent && plan.workspace === workspace ? `${projectOf(plan.parent)}#${bare}` : bare);
-				void serial(job => kata.pin(job, bare, workspace)).then(pinned => { if (currentId === session) { claimed.delete(bare); claimed.add(pinned); claimsChanged++; claimRevisions.set(pinned, (claimRevisions.get(pinned) ?? 0) + 1); closedMarks.delete(pinned); reconciledAt = 0; } }).catch(debug);
+				void serial(job => kata.pin(job, bare, workspace)).then(pinned => { if (currentId === session) { claimed.delete(bare); claimed.add(pinned); claimRevisions.set(pinned, (claimRevisions.get(pinned) ?? 0) + 1); closedMarks.delete(pinned); reconciledAt = 0; } }).catch(debug);
 			}
 			if (!adopting) continue;
 			const target = ref;
@@ -2310,6 +2302,10 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 		} else if (inbox && user) {
 			inboxRead = readInbox(entry, job, cwd, undefined, () => user);
 		}
+		if (main(ctx) && inboxRead) {
+			const gen = footerGeneration;
+			void inboxRead.then(() => { if (gen === footerGeneration && footerFormat) void footer(ctx, "throttle", footerFormat, footerOptions); });
+		}
 		const done = Promise.all([entry.pending, inboxRead]).then(() => undefined);
 		return { entry, record, showsInbox: main(ctx) || !!record, done };
 	}
@@ -2318,18 +2314,24 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 	// no trusted request removes the section. `ref` picks the actor's project; `addressFor` names the inbox from that actor.
 	function readInbox(entry: PromptReads, job: Job, cwd: string, ref: string | undefined, addressFor: (actor: string) => string): Promise<void> {
 		const read = (): Promise<void> => {
-			const running: Promise<void> = (async () => {
+			let running!: Promise<void>;
+			running = (async () => {
 				const mine = await actor(job, cwd, ref);
+				if (entry.inboxPending !== running) return;
 				const address = entry.address = addressFor(mine);
 				const out = JSON.parse(await kata.run(job, ["inbox", "--for", address], cwd));
+				if (entry.inboxPending !== running) return;
 				entry.inbox = trustedInbox(out?.requests, mine, address);
 				entry.count = countInbox(out?.requests, mine); entry.failed = undefined;
-			})().catch(error => { entry.failed = (error as Error)?.message ?? String(error); debug(error); }).finally(() => { if (entry.inboxPending === running) entry.inboxPending = undefined; });
+			})().catch(error => { if (entry.inboxPending === running) { entry.failed = (error as Error)?.message ?? String(error); debug(error); } }).finally(() => { if (entry.inboxPending === running) entry.inboxPending = undefined; });
 			return entry.inboxPending = running;
 		};
 		// A read already running may have begun before a request this call must show, so one more read follows it,
 		// shared by every call made meanwhile.
-		return !entry.inboxPending ? read() : entry.inboxNext ??= entry.inboxPending.then(() => { entry.inboxNext = undefined; return read(); });
+		if (!entry.inboxPending) return read();
+		if (entry.inboxNext) return entry.inboxNext;
+		const next = entry.inboxPending.then(() => { if (entry.inboxNext !== next) return; entry.inboxNext = undefined; return read(); });
+		return entry.inboxNext = next;
 	}
 
 	// ------------------------------------------------------------ live inbox
@@ -2337,6 +2339,7 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 	// While the follower runs, `liveInbox` is the main session's `<kata_inbox>` text and the per-turn read is skipped for it.
 	let liveInbox: string | undefined, liveCounts: InboxCounts | undefined, liveFailed: string | undefined, follower: InboxFollower | undefined;
 	let footerFormat: ((view: SessionView) => string | undefined) | undefined;
+	let footerOptions: { nativeInbox?: boolean } = {};
 	function stopFollower() {
 		follower?.stop();
 		follower = undefined;
@@ -2355,8 +2358,8 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 			read: async () => JSON.parse(await kata.run(job, ["inbox", "--for", address], cwd)),
 			spawn: cursor => live.spawn([options.executable, "events", "--tail", "--json", "--workspace", cwd, ...(cursor ? ["--last-event-id", String(cursor)] : [])], cwd),
 			deliver: text => { try { Promise.resolve(live.deliver(text)).catch(debug); } catch (error) { debug(error); } },
-			publish: (text, counts) => { liveInbox = text; liveCounts = counts; if (footerFormat) void footer(ctx, "throttle", footerFormat); },
-			readState: error => { liveFailed = error === undefined ? undefined : (error as Error)?.message ?? String(error); if (footerFormat) void footer(ctx, "throttle", footerFormat); },
+			publish: (text, counts) => { liveInbox = text; liveCounts = counts; if (footerFormat) void footer(ctx, "throttle", footerFormat, footerOptions); },
+			readState: error => { liveFailed = error === undefined ? undefined : (error as Error)?.message ?? String(error); if (footerFormat) void footer(ctx, "throttle", footerFormat, footerOptions); },
 			head: () => knownProjectHead(cwd, args => kata.run(job, args, cwd), platform.env.get("KATA_HOME")),
 			now: () => performance.now(),
 			setTimer: (fn, ms) => platform.setTimer(fn, ms),
@@ -2538,7 +2541,7 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 	function reconcile(ctx: HostContext, force: boolean): Promise<void> {
 		if (reconciling) return reconciling;
 		if (!force && Date.now() - reconciledAt < 15_000) return Promise.resolve();
-		const id = currentId, generation = footerGeneration, claimsAtStart = claimsChanged, refs = candidateRefs();
+		const id = currentId, generation = footerGeneration, refs = candidateRefs();
 		const revisions = new Map(refs.map(ref => [ref, claimRevisions.get(ref) ?? 0]));
 		let invalidated = false;
 		const current = (ref: string) => {
@@ -2557,53 +2560,56 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 					else closedMarks.delete(ref);
 				} catch (error) { if (current(ref) && isKataCode(error, "issue_not_found")) closedMarks.add(ref); }
 			}));
-		})().finally(() => { if (reconciling === running) { reconciling = undefined; reconciledAt = invalidated || claimsAtStart !== claimsChanged ? 0 : Date.now(); } });
+		})().finally(() => { if (reconciling === running) { reconciling = undefined; reconciledAt = invalidated || candidateRefs().some(ref => !revisions.has(ref)) ? 0 : Date.now(); } });
 		return reconciling = running;
 	}
 	const inboxAddress = (): SessionView["inbox"] => {
 		const user = setting("KATA_INBOX_USER");
 		return !user ? { none: "unset" } : !isSessionAddress(user) ? { none: "personal" } : { address: user, delivery: host.liveInbox ? "live" : "per prompt" };
 	};
-	async function sessionView(ctx: HostContext, opts: { reconcile?: boolean; context?: boolean } = {}): Promise<SessionView | undefined> {
+	async function sessionView(ctx: HostContext, opts: { reconcile?: boolean; context?: boolean; nativeInbox?: boolean } = {}): Promise<SessionView | undefined> {
 		if (!main(ctx)) return undefined;
 		const probeError = await bounded(probe(NO_JOB, ctx.cwd).then(() => undefined, error => error));
 		if (opts.reconcile) { await reconcile(ctx, true); if (!reconciledAt) await reconcile(ctx, true); }
 		const identity = await bounded(actor(NO_JOB, ctx.cwd).then(who => ({ who, error: undefined as string | undefined }), error => ({ who: undefined, error: (error as Error)?.message ?? String(error) })));
 		const entry = leadReads.get(leadKey(sid(ctx))), inbox = inboxAddress();
-		if (inbox.address && (host.liveInbox ? liveFailed : entry?.failed)) inbox.delivery = "failed";
+		if (inbox.address && opts.nativeInbox) inbox.delivery = "kata";
+		else if (inbox.address && (host.liveInbox ? liveFailed : entry?.failed)) inbox.delivery = "failed";
 		return { workspace: path.resolve(ctx.cwd), scope: isKataCode(probeError, "unsupported_version") ? "down" : scope,
 			outage: isKataCode(probeError, "unsupported_version") ? (probeError as Error).message : outage, project: plan.parent ? projectOf(plan.parent) : candidate(ctx.cwd).project,
 			actor: identity?.who, actorError: identity?.error, teammate: ownTeammate(), inbox, refs: displayRefs(),
 			contract: opts.context === false ? "off" : entry?.contract ? new TextEncoder().encode(entry.contract).length : "not-fetched",
-			counts: host.liveInbox && inbox.address ? liveCounts : entry?.count, inboxFailed: host.liveInbox && inbox.address ? liveFailed : entry?.failed,
+			counts: opts.nativeInbox ? undefined : host.liveInbox && inbox.address ? liveCounts : entry?.count, inboxFailed: opts.nativeInbox ? undefined : host.liveInbox && inbox.address ? liveFailed : entry?.failed,
 			settings: { executable: options.executable, refGuard: !refGuardOff(setting("KATA_REF_GUARD")), liveInbox: !!host.liveInbox, debug: !!options.debugFile } };
 	}
-	async function sessionInbox(ctx: HostContext): Promise<InboxView> {
+	async function sessionInbox(ctx: HostContext, opts: { nativeInbox?: boolean } = {}): Promise<InboxView> {
 		const inbox = inboxAddress();
-		if (!inbox.address) return { none: inbox.none };
+		const native = opts.nativeInbox ? { native: true as const } : {};
+		if (!inbox.address) return { none: inbox.none, ...native };
 		const id = currentId, generation = footerGeneration;
 		try {
 			const mine = await actor(NO_JOB, ctx.cwd);
 			const out = JSON.parse(await kata.run(NO_JOB, ["inbox", "--for", inbox.address], ctx.cwd));
 			const counts = countInbox(out?.requests, mine);
-			if (!host.liveInbox && main(ctx) && id === currentId && generation === footerGeneration) {
+			if (!opts.nativeInbox && !host.liveInbox && main(ctx) && id === currentId && generation === footerGeneration) {
 				const key = leadKey(sid(ctx));
 				let entry = leadReads.get(key);
 				if (!entry) leadReads.set(key, entry = { cwd: path.resolve(ctx.cwd) });
 				entry.count = counts; entry.failed = undefined;
 			}
-			return { address: inbox.address, text: trustedInbox(out?.requests, mine, inbox.address, ""), counts };
-		} catch (error) { return { address: inbox.address, failed: (error as Error)?.message ?? String(error) }; }
+			return { address: inbox.address, text: trustedInbox(out?.requests, mine, inbox.address, ""), counts, ...native };
+		} catch (error) { return { address: inbox.address, failed: (error as Error)?.message ?? String(error), ...native }; }
 	}
-	async function footer(ctx: HostContext, mode: "force" | "throttle", format: (view: SessionView) => string | undefined): Promise<void> {
+	async function footer(ctx: HostContext, mode: "force" | "throttle", format: (view: SessionView) => string | undefined, opts: { nativeInbox?: boolean } = {}): Promise<void> {
 		if (!main(ctx) || ctx.hasUI !== true || !ctx.ui?.setStatus) return;
 		footerFormat = format;
+		footerOptions = opts;
 		const id = sid(ctx), generation = footerGeneration;
 		const pending = reconcile(ctx, mode === "force");
 		let finished = false;
 		void pending.then(() => { finished = true; }).catch(debug);
 		const draw = async () => {
-			const view = await sessionView(ctx);
+			const view = await sessionView(ctx, footerOptions);
 			if (generation === footerGeneration && id === currentId && view) ctx.ui!.setStatus!("kata", view.scope === "down" ? undefined : format(view));
 		};
 		await bounded(pending);
@@ -2621,7 +2627,13 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 					entry.pending = undefined;
 				}
 			},
-			refresh(): void { this.clearContract(); actorEpoch++; actors.clear(); follower?.refreshActor(); },
+			refresh(): void {
+				footerGeneration++; this.clearContract(); actors.clear();
+				for (const entry of [...leadReads.values(), ...delegateReads.values()]) {
+					entry.inbox = undefined; entry.count = undefined; entry.failed = undefined; entry.inboxPending = undefined; entry.inboxNext = undefined;
+				}
+				if (follower) { liveInbox = ""; liveCounts = undefined; liveFailed = undefined; follower.refreshActor(); }
+			},
 			view: sessionView,
 			inbox: sessionInbox,
 			footer,
