@@ -101,8 +101,8 @@ test("an unreachable Kata keeps the native list working, makes no Kata mutations
   expect((await app.call({ op: "done", task: "Implement fixture" })).isError).toBeUndefined();
   expect(app.list().flatMap(p => p.tasks.map(t => [t.content, t.status]))).toEqual([["Implement fixture", "completed"], ["Verify fixture", "in_progress"]]);
   expect(app.calls.some(a => ["create", "claim", "meta", "close"].includes(a[0]))).toBe(false);
-  expect(app.mirrorFailures().map(args => String(args[0]))).toEqual([expect.stringContaining("Kata is unreachable")]);
-  expect(app.notices).toHaveLength(1);
+  expect(app.mirrorFailures().filter(n => !String(n[0]).includes("Kata contract was unavailable")).map(n => String(n[0]))).toEqual([expect.stringContaining("Kata is unreachable")]);
+  expect(app.notices.filter(n => !String(n[0]).includes("Kata contract was unavailable"))).toHaveLength(1);
 });
 
 test("KATA_REF beats stored session binding and is qualified", async () => {
@@ -137,7 +137,7 @@ test("a session with no id never creates an unknown automatic parent", async () 
   expect(app.calls.some(a => a[0] === "create")).toBe(false);
 });
 
-test("contract is cached verbatim, inbox read every turn, slow hooks bounded and failures quiet", async () => {
+test("contract is cached verbatim, inbox read every turn, and pending hooks stay quiet and bounded", async () => {
   process.env.KATA_INBOX_USER = "v2-builder/lead";
   const app = host(); await app.event("session_start"); await app.contractReady;
   const first = await app.event("before_agent_start", { systemPrompt: ["base"] });

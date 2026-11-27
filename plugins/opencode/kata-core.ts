@@ -1,12 +1,12 @@
 // Generated from core/kata-core.ts; edit there.
 import { decidePlanParent, explicitParent, isExplicitParent, namesPlanParent } from "./plan-parent";
-import { createInboxFollower, knownProjectHead, trustedInbox, type InboxFollower, type LiveInbox } from "./inbox";
+import { createInboxFollower, escapeMarkup, knownProjectHead, trustedInbox, type InboxFollower, type LiveInbox } from "./inbox";
 import { createDelegates, FINAL, heldByDelegate as heldBy, isUntracked, nameOf, Refusal, teammateFor, type DelegateAssignment, type DelegateStore, type Refused, type Reservation, type SavedDelegate, type Who } from "./delegates";
 import { createSettlement, MAX_FAILURES, openChildren, type PendingClose, type SettlementSnapshot } from "./settlement";
 import { createKata, debugTo, type CORE_ENV, isKataCode, refGuardOff, isUnusable, KataError, NO_JOB, waitAtMost, type Batch, type Exec, type Job, type PathOps, type Platform, type Timers } from "./kata-cli";
 import { createTicketCompletion } from "./autocomplete";
 import { offendingRefs } from "./ref-guard";
-import { kataCommands, quote, shellOptions } from "./shell";
+import { kataCommands, quote, quoteIfNeeded, shellOptions } from "./shell";
 import { closedTaskStatus, digest, FULL_ID_REF, hasLabel, heldBySession, heldMessage, itemTicket, NATIVE_WORDING, OPEN, PROOF_MIN, projectOf, proofProblem, QUALIFIED_REF_ONLY, qualifiedRef, SESSION_KEY, SHORT_ID_ONLY, sessionParentKeys, slug, tasksOf, textOf, TITLE_MAX, TODO_WORDING, WONTFIX_MIN, WORKING, type Binding, type Change, type KataIssue, type KataShow, type Plan, type Status, type Task, type ToolWording } from "./model";
 import { diffNativeList, nativeOpen, nativeTargets, type NativeItem, type NativePhase, type NativeStatus } from "./todo-list";
 
@@ -177,6 +177,8 @@ const SHUTDOWN_BOUND_MS = 10_000;
 // has no plan to close, so both are short (docs/explanation/limits.md).
 const DELEGATE_SHUTDOWN_MS = 3000;
 const DELEGATE_PROMPT_MS = 3000;
+// The hook used to stop at one second; retain that prompt wait while the fetch continues for up to ten seconds.
+const CONTRACT_READ_MS = 1000;
 // How long a delegate's first prompt waits for its assignment, which it cannot learn later. The lead assigns delegates
 // one at a time, about fifteen Kata calls each, so with many at once the last one waits for all the others.
 const DELEGATE_BIND_MS = 15_000;
@@ -433,7 +435,7 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 	let progressed = true;
 	// What one session's prompt reads from Kata, kept between turns. A core serves the lead and every delegate running in its
 	// process, so each has its own: the lead's by session id ("" when the host gives none), a delegate's by delegate id.
-	type PromptReads = { cwd: string; contract?: string; inbox?: string; address?: string; pending?: Promise<void>; inboxPending?: Promise<void>; inboxNext?: Promise<void>; personInbox?: boolean };
+	type PromptReads = { cwd: string; contract?: string; contractError?: string; contractWarned?: boolean; inbox?: string; address?: string; pending?: Promise<void>; inboxPending?: Promise<void>; inboxNext?: Promise<void>; personInbox?: boolean };
 	const leadReads = new Map<string, PromptReads>();
 	const delegateReads = new Map<string, PromptReads>();
 	const leadKey = (id: string | undefined) => id ?? "";
@@ -2230,6 +2232,16 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 			].join("\n");
 	}
 
+	// Warn once in the current main session while the contract is still unavailable.
+	function warnContract(ctx: HostContext | undefined, entry: PromptReads) {
+		const ui = uiOf(ctx);
+		if (sid(currentCtx) !== sid(ctx) || leadReads.get(leadKey(sid(ctx))) !== entry || entry.contractWarned || !entry.contractError || !ui?.notify) return;
+		ui.notify(`Kata contract was unavailable (${entry.contractError}).`, "warning");
+		entry.contractWarned = true;
+	}
+
+	const contractReason = (error: unknown) => Array.from(messageOf(error).replace(/\s+/g, " ").trim()).slice(0, 80).join("") || "unknown error";
+
 	// The contract is fetched until one arrives non-empty: Kata 0.23.0 sends an empty one outside a `.kata.toml`
 	// folder, so a mid-session `kata init` takes effect on the next turn. The inbox is read on every call, and a call
 	// waits for a read that began after it was made, so a request sent before a turn reaches that turn. A read slower
@@ -2252,11 +2264,21 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 		}
 		if (!entry.pending && !entry.contract) {
 			entry.pending = (async () => {
-				if (!await probe(job, cwd)) return;
+				if (!await probe(job, cwd)) throw new Error(outage);
 				// Exactly these arguments: some Kata builds print nothing for any other form.
-				const out = await kata.run(job, ["agent-contract-hook", "--source", "kata-agent-contract-hook"], cwd, { timeout: 1000, workspace: false }).then(out => JSON.parse(out)?.hookSpecificOutput?.additionalContext);
-				if (typeof out === "string") entry.contract = out;
-			})().catch(debug).finally(() => { entry.pending = undefined; });
+				const raw = await kata.run(job, ["agent-contract-hook", "--source", "kata-agent-contract-hook"], cwd, { timeout: 10_000, workspace: false });
+				let output: any;
+				try { output = JSON.parse(raw); } catch { throw new Error("invalid JSON from kata agent-contract-hook"); }
+				const out = output?.hookSpecificOutput?.additionalContext;
+				if (typeof out !== "string") throw new Error("unexpected hook output");
+				entry.contract = out;
+				entry.contractError = undefined;
+			})().catch(error => {
+				debug(error);
+				if (isKataCode(error, "unsupported_version")) { entry.contractError = undefined; return; }
+				entry.contractError = contractReason(error);
+				if (!record) warnContract(currentCtx, entry);
+			}).finally(() => { entry.pending = undefined; });
 		}
 		const user = setting("KATA_INBOX_USER");
 		let inboxRead: Promise<void> | undefined;
@@ -2277,7 +2299,7 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 		} else if (inbox && user) {
 			inboxRead = readInbox(entry, job, cwd, undefined, () => user);
 		}
-		const done = Promise.all([entry.pending, inboxRead]).then(() => undefined);
+		const done = Promise.all([entry.pending && bounded(entry.pending, CONTRACT_READ_MS), inboxRead]).then(() => undefined);
 		return { entry, record, showsInbox: main(ctx) || !!record, done };
 	}
 
@@ -2563,6 +2585,11 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 				if (turnReads) {
 					const { entry } = turnReads;
 					if (entry.contract) sections.contract = entry.contract;
+					else if (entry.contractError) {
+						const command = `${quoteIfNeeded(options.executable, /^[\w./-]+$/)} quickstart --format contract`;
+						sections.contract = `Kata contract is unavailable (${escapeMarkup(entry.contractError)}). Before using kata, run: ${command}`;
+					}
+					warnContract(ctx, entry);
 					const inbox = main(ctx) && liveInbox !== undefined ? liveInbox : entry.inbox;
 					if (inbox && turnReads.showsInbox) sections.inbox = inbox;
 				}
