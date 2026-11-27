@@ -427,7 +427,7 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 	const closedMarks = new Set<string>();
 	const claimRevisions = new Map<string, number>();
 	let footerGeneration = 0;
-	let reconciledAt = 0, reconciling: Promise<void> | undefined;
+	let reconciledAt = 0, reconciling: Promise<void> | undefined, reconcileNext: Promise<void> | undefined;
 	let requestedRef: string | undefined;
 	// A native host's list says what is in progress, so the core never starts a pending task itself (see nextTask).
 	const autoStart = options.autoStart !== false && !options.native;
@@ -861,7 +861,7 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 		// Only a bind that starts a session this core did not already hold restores delegates: /tree and a branch switch keep the same one.
 		const isNew = currentId !== id, previous = currentId;
 		currentId = id;
-		if (isNew && main(ctx)) { host.switched?.(ctx); newSession(); shown.clear(); closedMarks.clear(); claimRevisions.clear(); footerGeneration++; reconciledAt = 0; reconciling = undefined; }
+		if (isNew && main(ctx)) { host.switched?.(ctx); newSession(); shown.clear(); closedMarks.clear(); claimRevisions.clear(); footerGeneration++; reconciledAt = 0; reconciling = undefined; reconcileNext = undefined; }
 		lastSnapshot = undefined;
 		currentCtx = ctx;
 		plan = { tasks: [], workspace: path.resolve(ctx.cwd) }; named = []; aliases.clear(); deletedParent = undefined;
@@ -2178,10 +2178,15 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 		const adopting = !configuredRef() && !/[;|\n]/.test(command);
 		for (const invocation of kataCommands(path, command, options.executable, options.executableVars)) {
 			const parsed = shellOptions(invocation.words), args = parsed.args;
-			let ref = args[0] === "claim" ? args[1] : args[0] === "meta" && args[1] === "set" && args[3] === "work.attention" && args[4] === "ok" ? args[2] : undefined;
+			let ref = args[0] === "claim" || args[0] === "close" ? args[1] : args[0] === "meta" && args[1] === "set" && args[3] === "work.attention" && args[4] === "ok" ? args[2] : undefined;
 			if (!ref || parsed.options.has("--as")) continue;
 			if (!ref.includes("#") && parsed.value("--project")) ref = `${parsed.value("--project")}#${ref}`;
 			const workspace = path.resolve(event.input.cwd || ctx.cwd, parsed.value("--workspace") || ".");
+			if (args[0] === "close") {
+				for (const candidate of candidateRefs()) if (candidate === ref || (SHORT_ID_ONLY.test(ref) && candidate.endsWith(`#${ref}`))) claimRevisions.set(candidate, (claimRevisions.get(candidate) ?? 0) + 1);
+				reconciledAt = 0;
+				continue;
+			}
 			// A word the shell expands (`$ref`, a glob) names nothing yet; only the shape of a ref counts. A bare id is recorded at once (with the
 			// plan's project when the workspace is its own) and replaced by the ref Kata resolves it to, in the background: the hook never waits.
 			if (args[0] === "claim") { claimRevisions.set(ref, (claimRevisions.get(ref) ?? 0) + 1); closedMarks.delete(ref); reconciledAt = 0; }
@@ -2358,7 +2363,7 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 			spawn: cursor => live.spawn([options.executable, "events", "--tail", "--json", "--workspace", cwd, ...(cursor ? ["--last-event-id", String(cursor)] : [])], cwd),
 			deliver: text => { try { Promise.resolve(live.deliver(text)).catch(debug); } catch (error) { debug(error); } },
 			publish: (text, counts) => { liveInbox = text; liveCounts = counts; if (footerFormat) void footer(ctx, "throttle", footerFormat, footerOptions); },
-			readState: error => { liveFailed = error === undefined ? undefined : (error as Error)?.message ?? String(error); if (footerFormat) void footer(ctx, "throttle", footerFormat, footerOptions); },
+			readState: error => { liveFailed = error === undefined ? undefined : (error as Error)?.message ?? String(error); if (error !== undefined && footerFormat) void footer(ctx, "throttle", footerFormat, footerOptions); },
 			head: () => knownProjectHead(cwd, args => kata.run(job, args, cwd), platform.env.get("KATA_HOME")),
 			now: () => performance.now(),
 			setTimer: (fn, ms) => platform.setTimer(fn, ms),
@@ -2503,7 +2508,7 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 	// `continues`: this shutdown does not end the lead's work (pi's reload: the same session goes on), so it keeps its tasks.
 	// `forking`: a fork replaces this session in a new instance (pi's /fork into a saved session); the tasks are left for it.
 	async function shutdown(ctx: HostContext, closing: { delegate?: { id: string; ended: boolean; report?: string }; continues?: boolean; forking?: boolean } = {}): Promise<void> {
-		footerGeneration++; footerFormat = undefined;
+		footerGeneration++; footerFormat = undefined; reconciling = undefined; reconcileNext = undefined;
 		if (main(ctx) && ctx.hasUI === true) ctx.ui?.setStatus?.("kata", undefined);
 		see(ctx);
 		// A delegate's reads live in its own core (the lead's core never holds them) and go when its own session ends.
@@ -2538,7 +2543,17 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 	const candidateRefs = () => [...new Set([plan.parent, configuredRef(), requestedRef, ...claimed].filter((ref): ref is string => !!ref))];
 	const displayRefs = () => candidateRefs().filter(ref => !closedMarks.has(ref));
 	function reconcile(ctx: HostContext, force: boolean): Promise<void> {
-		if (reconciling) return reconciling;
+		if (reconciling) {
+			if (!force) return reconciling;
+			if (reconcileNext) return reconcileNext;
+			const id = currentId, generation = footerGeneration;
+			const next = reconciling.then(() => {
+				if (reconcileNext !== next || id !== currentId || generation !== footerGeneration) return;
+				reconcileNext = undefined;
+				return reconcile(ctx, true);
+			});
+			return reconcileNext = next;
+		}
 		if (!force && Date.now() - reconciledAt < 15_000) return Promise.resolve();
 		const id = currentId, generation = footerGeneration, refs = candidateRefs();
 		const revisions = new Map(refs.map(ref => [ref, claimRevisions.get(ref) ?? 0]));
@@ -2552,7 +2567,7 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 			const mine = await actor(NO_JOB, ctx.cwd).catch(() => undefined);
 			await Promise.all(refs.map(async ref => {
 				try {
-					const issue = (await kata.show(NO_JOB, ref, ctx.cwd)).issue;
+					const issue = (await kata.show(NO_JOB, ref, ctx.cwd, 3000)).issue;
 					if (!current(ref)) return;
 					const ownershipMatters = claimed.has(ref) || (ref === requestedRef && ref !== configuredRef());
 					if (issue.status === "closed" || (ownershipMatters && issue.owner && mine && issue.owner !== mine)) closedMarks.add(ref);
@@ -2569,7 +2584,11 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 	async function sessionView(ctx: HostContext, opts: { reconcile?: boolean; context?: boolean; nativeInbox?: boolean } = {}): Promise<SessionView | undefined> {
 		if (!main(ctx)) return undefined;
 		const probeError = await bounded(probe(NO_JOB, ctx.cwd).then(() => undefined, error => error));
-		if (opts.reconcile) { await reconcile(ctx, true); if (!reconciledAt) await reconcile(ctx, true); }
+		if (opts.reconcile) {
+			const id = currentId, generation = footerGeneration;
+			await reconcile(ctx, true);
+			if (!reconciledAt && id === currentId && generation === footerGeneration) await reconcile(ctx, true);
+		}
 		const identity = await bounded(actor(NO_JOB, ctx.cwd).then(who => ({ who, error: undefined as string | undefined }), error => ({ who: undefined, error: (error as Error)?.message ?? String(error) })));
 		const entry = leadReads.get(leadKey(sid(ctx))), inbox = inboxAddress();
 		if (inbox.address && opts.nativeInbox) inbox.delivery = "kata";
@@ -2627,7 +2646,7 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 				}
 			},
 			refresh(): void {
-				footerGeneration++; this.clearContract(); actors.clear();
+				footerGeneration++; reconciling = undefined; reconcileNext = undefined; reconciledAt = 0; this.clearContract(); actors.clear();
 				for (const entry of [...leadReads.values(), ...delegateReads.values()]) {
 					entry.inbox = undefined; entry.count = undefined; entry.failed = undefined; entry.inboxPending = undefined; entry.inboxNext = undefined;
 				}

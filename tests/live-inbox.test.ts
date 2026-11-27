@@ -489,3 +489,16 @@ test("the project head found after a purge is the newest event, so the stream do
 	const newest = (await kata(["comment", `omp-v2-live#${kept}`, "-m", "newest", "--json"])).event.id;
 	expect(await projectHead(text)).toBe(newest);
 });
+
+test("a snapshot publishes its complete counts once and stream changes publish immediately", async () => {
+	const requests = Array.from({ length: 20 }, (_, i) => ({ ref: `proj#${i}`, ...slot(`message ${i}`) }));
+	const t = follower({ requests: () => requests });
+	try {
+		t.follow.start(); await tick();
+		expect(t.published).toHaveLength(1);
+		expect(t.counts[0]).toEqual({ trusted: 20, foreign: 0 });
+		t.streams[0]!.push(slotLine(1, "new", slot("live"))); await tick();
+		expect(t.published).toHaveLength(2);
+		expect(t.delivered).toHaveLength(1);
+	} finally { t.follow.stop(); }
+});
