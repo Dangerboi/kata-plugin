@@ -6,6 +6,11 @@ import { USAGE } from "../core/session-status";
 // pi's `/kata` and `kata` footer: replies go to the person through notify, never to the model through sendMessage.
 const { host, kata, issue, nativeKey, globalRegistry } = piFixture();
 
+/** Resolves once `calls` has not grown for `ms`: the background draws and reads a test started have finished. */
+async function quiet(calls: unknown[], ms = 400) {
+	for (let seen = -1; seen !== calls.length;) { seen = calls.length; await Bun.sleep(ms); }
+}
+
 async function pi(options: any = {}) {
 	const app = await host(options);
 	const statuses: [string, string | undefined][] = [];
@@ -27,10 +32,12 @@ test("pi /kata answers through notify, the footer follows the session and clears
 	expect(app.notes().at(-1)).toMatch(/refs       pitest#\w+/);
 	await app.kata("inbox");
 	expect(app.notes().at(-1)).toBe("No session inbox: KATA_INBOX_USER is unset");
-	const calls = app.calls.length;
+	await quiet(app.calls);
+	const calls = app.calls.length, paints = app.statuses.length;
 	await app.kata("nope");
 	expect(app.notes().at(-1)).toBe(USAGE);
 	expect(app.calls.length).toBe(calls);
+	expect(app.statuses.length).toBe(paints);
 	expect(app.messages.filter(m => m[0]?.customType !== "kata.todo.command")).toEqual([]);
 	await app.event("session_shutdown", { reason: "quit" });
 	expect(app.statuses.at(-1)).toEqual(["kata", undefined]);

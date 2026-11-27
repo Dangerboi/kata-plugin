@@ -24,7 +24,7 @@ import { closeEnv, debugTo, NO_JOB } from "./kata-cli";
 import { delegateCommand, kataCommands as parseKataCommands } from "./shell";
 import { FINAL, isUntracked, Refusal, teammateFor } from "./delegates";
 import { textOf } from "./model";
-import { footerText, KATA_DESCRIPTION, kataCommand, MAIN_ONLY, parseKataCommand } from "./session-status";
+import { footerText, KATA_DESCRIPTION, kataCommand, MAIN_ONLY } from "./session-status";
 import type { DelegateOutcome, DelegateRecord, Delegates, DelegateStore } from "./delegates";
 import type { Setting } from "@oh-my-pi/pi-coding-agent/config/registry";
 import type { InboxStream } from "./inbox";
@@ -331,15 +331,12 @@ export default function ompKata(pi: any) {
 		description: KATA_DESCRIPTION,
 		async handler(args: string, ctx: any) {
 			const at = main(ctx) ? ctx : !ctx?.agent && seen && main(seen) ? seen : undefined;
-			try {
-				ctx?.ui?.notify?.(at ? await kataCommand(core.session, at, args) : MAIN_ONLY, "info");
-				// The usage reply reads nothing, so it redraws nothing either; status has just checked the refs, so no second forced check.
-				if (at && parseKataCommand(args)) await drawFooter(at, "throttle");
-			}
+			// The core repaints the footer from the reads status and inbox make; the usage reply reads and paints nothing.
+			try { ctx?.ui?.notify?.(at ? await kataCommand(core.session, at, args) : MAIN_ONLY, "info"); }
 			catch (error) { debug(error); ctx?.ui?.notify?.(`Kata could not answer /kata: ${error instanceof Error ? error.message : String(error)}`, "warning"); }
 		},
 	});
-	// The footer: redrawn at once at session start, before each prompt and after a task call; after /kata and other tool results it is throttled.
+	// The footer: redrawn at once at session start, before each prompt and after a task call; other tool results are throttled.
 	const drawFooter = (ctx: any, mode: "force" | "throttle"): Promise<void> => main(ctx) ? core.session.footer(ctx, mode, footerText).catch(debug) : Promise.resolve();
 
 	// The Delegates that owns a delegate's record is the lead's, on the main thread; a worker's copy reaches it over the channel.

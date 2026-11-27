@@ -6,7 +6,7 @@ import { exportTranscriptSession, nodePlatform } from "./node-host";
 import { delegateCommand, kataCommands, quote } from "./shell";
 import type { DelegateRecord, DelegateStore } from "./delegates";
 import { lastText } from "./model";
-import { footerText, KATA_DESCRIPTION, kataCommand, MAIN_ONLY, parseKataCommand } from "./session-status";
+import { footerText, KATA_DESCRIPTION, kataCommand, MAIN_ONLY } from "./session-status";
 
 const NAMESPACE = "pi";
 
@@ -156,14 +156,13 @@ export default async function piKata(pi: ExtensionAPI) {
 			try {
 				// Kata's native pi adapter, when active here, supplies the contract and the inbox (unfiltered).
 				const native = nativeContractActive(ctx.cwd);
+				// The core repaints the footer from the reads status and inbox make; the usage reply reads and paints nothing.
 				ctx.ui.notify(inherited ? MAIN_ONLY : await kataCommand(core.session, ctx, args, { context: !native, nativeInbox: native }), "info");
-				// The usage reply reads nothing, so it redraws nothing either; status has just checked the refs, so no second forced check.
-				if (parseKataCommand(args)) await drawFooter(ctx, "throttle");
 			}
 			catch (error) { ctx.ui.notify(`Kata could not answer /kata: ${error instanceof Error ? error.message : String(error)}`, "warning"); }
 		},
 	});
-	// The footer: redrawn at once at session start, before each prompt and after a bash command that may start a pi child; after /kata and other tool results it is throttled.
+	// The footer: redrawn at once at session start, before each prompt and after a bash command that may start a pi child; other tool results are throttled.
 	const drawFooter = (ctx: ExtensionContext, mode: "force" | "throttle"): Promise<void> => inherited ? Promise.resolve() : core.session.footer(ctx, mode, footerText).catch(() => {});
 	pi.on("input", async (event) => {
 		if (event.source === "interactive" && !event.text.trim().startsWith("/")) core.session.input();

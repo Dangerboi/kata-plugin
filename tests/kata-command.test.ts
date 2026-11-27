@@ -116,10 +116,12 @@ test("omp registers /kata, answers status for the person and draws the footer", 
 	expect(status).toContain(`refs       ${parent}`);
 	await app.command("refresh");
 	expect(app.notes().at(-1)).toBe("Kata contract and actor cleared; the next prompt reads both again.");
-	const before = app.calls.length;
+	await quiet(app.calls);
+	const before = app.calls.length, paints = app.statuses.length;
 	await app.command("explode");
 	expect(app.notes().at(-1)).toBe(USAGE);
 	expect(app.calls.length).toBe(before);
+	expect(app.statuses.length).toBe(paints);
 	await app.event("session_shutdown"); apps.length = 0;
 	expect(app.statuses.at(-1)).toEqual(["kata", undefined]);
 });
