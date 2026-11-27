@@ -82,8 +82,9 @@ test("footer does no work without a UI and shutdown suppresses a pending redraw"
   await drawing;
   expect(writes).not.toContain("footer");
 });
-test("configured refs survive other ownership, reappear after a slow close and reopen, and a close during the check is not shown", async () => {
+test("configured refs survive other ownership, reappear after a slow close and reopen, keep their last confirmed state through an unreadable check, and a close during the check is not shown", async () => {
   let status = "open", slow = false, hold: { entered: PromiseWithResolvers<void>; gate: PromiseWithResolvers<void> } | undefined;
+  let unreadable: "error" | "newer" | undefined;
   const ctx = { cwd: "/tmp/kata-review-synthetic", hasUI: true };
   const core = createKataCore({ platform: nodePlatform, appendEntry() {}, delegateStore: memoryDelegateStore(), exec: async (_file, args) => {
     if (args[0] === "version") return { code: 0, stdout: JSON.stringify({ kata_api_version: 1, version: "0.23.0" }), stderr: "" };
@@ -91,14 +92,21 @@ test("configured refs survive other ownership, reappear after a slow close and r
       const seen = status, held = hold;
       if (held) { held.entered.resolve(); await held.gate.promise; }
       if (slow) await Bun.sleep(350);
-      return { code: 0, stdout: JSON.stringify({ kata_api_version: 1, issue_status: seen, owner: "other", actor: "alice" }), stderr: "" };
+      if (unreadable === "error") return { code: 1, stdout: "", stderr: "status failed" };
+      return { code: 0, stdout: JSON.stringify({ kata_api_version: unreadable === "newer" ? 2 : 1, issue_status: unreadable ? "open" : seen, owner: "other", actor: "alice" }), stderr: "" };
     }
     return { code: 0, stdout: JSON.stringify({ issues: [] }), stderr: "" };
   } }, { namespace: "test", executable: "/tmp/kata-fixture", executableVars: [], explicitRef: () => "test#one", env: name => name === "KATA_AUTHOR" ? "alice" : undefined });
   expect((await core.session.view(ctx, { reconcile: true }))?.refs).toEqual(["test#one"]);
   status = "closed"; slow = true;
   expect((await core.session.view(ctx, { reconcile: true }))?.refs).toEqual([]);
-  status = "open"; slow = false;
+  slow = false;
+  // A failed read or an answer in an envelope this plugin does not know confirms nothing: the ref stays as last confirmed.
+  for (const mode of ["error", "newer"] as const) {
+    unreadable = mode;
+    expect((await core.session.view(ctx, { reconcile: true }))?.refs, mode).toEqual([]);
+  }
+  unreadable = undefined; status = "open";
   expect((await core.session.view(ctx, { reconcile: true }))?.refs).toEqual(["test#one"]);
   // Closed while status's own check is in flight: that check read "open" and is voided, so status checks again.
   hold = { entered: Promise.withResolvers<void>(), gate: Promise.withResolvers<void>() };
@@ -390,8 +398,9 @@ test("a claimed ref uses the effective actor from its status response", async ()
   expect((await core.session.view(ctx, { reconcile: true }))?.refs).toContain("beta#abcd");
   response = { kata_api_version: 1, issue_status: "open", actor: "daemon-actor", owner: "other" };
   expect((await core.session.view(ctx, { reconcile: true }))?.refs).not.toContain("beta#abcd");
-  response = { kata_api_version: 2, issue_status: "closed", actor: "daemon-actor", owner: "other" };
-  expect((await core.session.view(ctx, { reconcile: true }))?.refs).toContain("beta#abcd");
+  // An envelope this plugin cannot read confirms nothing: the ref keeps its last confirmed state (hidden, another actor's).
+  response = { kata_api_version: 2, issue_status: "open", actor: "daemon-actor", owner: "daemon-actor" };
+  expect((await core.session.view(ctx, { reconcile: true }))?.refs).not.toContain("beta#abcd");
   response = { kata_api_version: 1, issue_status: "open", actor: "daemon-actor" };
   expect((await core.session.view(ctx, { reconcile: true }))?.refs).toContain("beta#abcd");
 });
