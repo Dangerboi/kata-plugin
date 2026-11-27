@@ -81,15 +81,16 @@ const apps: { event: (name: string, data?: any, ctx?: any) => Promise<any> }[] =
 afterEach(async () => { for (const app of apps.splice(0)) await app.event("session_shutdown"); });
 
 function omp(options: { agent?: object } = {}) {
-	const sid = `kcmd-${unique()}`, statuses: [string, string | undefined][] = [];
-	const app = ompHost({ run: (args, opts) => run(args, opts.cwd, opts.timeout), cwd, sid, sessionFile: `${scratch}/${sid}.jsonl`, agent: options.agent,
+	const sid = `kcmd-${unique()}`, statuses: [string, string | undefined][] = [], refChecks: string[] = [];
+	// A ref check is `kata status <ref>` with its own 3 s bound; the actor lookup's `kata status` has the CLI default.
+	const app = ompHost({ run: (args, opts) => { if (args[0] === "status" && opts.timeout === 3000) refChecks.push(args[1]); return run(args, opts.cwd, opts.timeout); }, cwd, sid, sessionFile: `${scratch}/${sid}.jsonl`, agent: options.agent,
 		afterEvent: () => { for (const key of TRANSCRIPT_ENV) delete process.env[key]; } });
 	Object.assign(app.ctx, { hasUI: true });
 	app.ctx.ui.setStatus = (key: string, value: string | undefined) => statuses.push([key, value]);
 	apps.push(app);
 	const command = (args: string, ctx: any = app.ctx) => app.commands.get("kata").handler(args, ctx);
 	const notes = () => app.notices.filter((n: any[]) => n[1] === "info").map((n: any[]) => String(n[0]));
-	return { ...app, statuses, command, notes, footer: () => statuses.filter(([key]) => key === "kata").at(-1)?.[1] };
+	return { ...app, statuses, refChecks, command, notes, footer: () => statuses.filter(([key]) => key === "kata").at(-1)?.[1] };
 }
 
 /** Resolves once `calls` has not grown for `ms`: the background draws and reads a test started have finished. */
@@ -106,10 +107,11 @@ test("omp registers /kata, answers status for the person and draws the footer", 
 	await app.event("before_agent_start", { systemPrompt: ["base"] });
 	expect(await until(() => !!app.footer()?.startsWith("kata kcmd-builder/omp-lead"))).toBe(true);
 	await quiet(app.calls);
-	const atStatus = app.calls.length;
+	const atStatus = app.refChecks.length;
 	await app.command("");
-	// Each ref is checked once: status reconciles, and the footer redraw after it does not force a second pass.
-	expect(app.calls.slice(atStatus).filter(args => args[0] === "show").map(args => args[1])).toEqual([parent]);
+	await quiet(app.calls);
+	// Each ref is checked once: status's own check, and its paint makes no second one.
+	expect(app.refChecks.slice(atStatus)).toEqual([parent]);
 	const status = app.notes().at(-1)!;
 	expect(status).toContain("actor      kcmd-builder");
 	expect(status).toContain("inbox      kcmd-builder/omp-lead · per prompt");
