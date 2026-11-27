@@ -86,7 +86,8 @@ export const onToolCall: Hook<"tool.call"> = async ($, e, next) => {
 		await rt.core.tools.result(contextOf($, rt, latest.held), {
 			toolName: String(e.tool).toLowerCase(),
 			isError: done?.isError === true || done?.deny !== undefined,
-			input: e
+			input: e,
+			content: typeof done?.result === "string" ? done.result : (done?.result as { stdout?: string } | undefined)?.stdout,
 		});
 	} catch (error) {
 		rt.debug(error);

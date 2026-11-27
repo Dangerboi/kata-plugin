@@ -337,7 +337,8 @@ test("omp keeps the refs a shell claim named across /tree and qualifies a bare c
   await app.switchSession("claims-fork", { fork: true });
   expect(await write(`// ${ref}`)).toMatchObject({ block: true });
   await app.switchSession("claims-new");
-  expect(await write(`// ${ref} and ${short}`)).toBeUndefined();
+  expect(await write(`// ${ref}`)).toMatchObject({ block: true });
+  expect(await write(`// ${short}`)).toBeUndefined();
 });
 
 test("a claimed bare id is known at once, though Kata is slow to resolve it, and the hook does not wait", async () => {
@@ -500,4 +501,12 @@ test("omp warn attaches each guard reason to its own result, then takes it once"
 		// omp drops an additionalContext equal to another in the same batch, so each call's must differ.
 		expect(contexts[0]).not.toBe(contexts[1]);
 	} finally { delete process.env.KATA_REF_GUARD; }
+});
+
+test("omp learns call arguments and lone issue output", async () => {
+  const app = host(); await app.event("session_start");
+  const call = (command: string) => app.event("tool_call", { toolName: "bash", input: { command } });
+  expect(await call('kata comment q7x2 -m done && git commit -m "fix q7x2"')).toMatchObject({ block: true });
+  await app.event("tool_result", { toolName: "bash", input: { command: "kata next --agent" }, content: [{ type: "text", text: "OK next issue=z7x2" }] });
+  expect(await call('git commit -m "fix z7x2"')).toMatchObject({ block: true });
 });

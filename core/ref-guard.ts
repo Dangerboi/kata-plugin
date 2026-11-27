@@ -1,4 +1,4 @@
-import { ASSIGNMENT, commandSegments, PREFIXES } from "./shell";
+import { ASSIGNMENT, commandSegments, foldDir, PREFIXES } from "./shell";
 import { projectOf, qualifiedRefs } from "./model";
 
 // Kata refs resolve only in the local tracker, so a write or commit that puts one into the repository is refused. This module is the
@@ -75,7 +75,6 @@ const GIT_MESSAGE_OPTIONS = new Map<string, { values: RegExp; trailer?: boolean 
 function gitMessages(command: string, cwd: string | undefined): Added[] {
 	const added: Added[] = [];
 	// Where each command runs: the call's folder, moved by a `cd` before it, then by `git -C` values in order (absolute replaces, relative appends).
-	const fold = (base: string | undefined, dir: string) => dir.startsWith("/") || dir.startsWith("~") || !base ? dir : `${base.replace(/\/+$/, "")}/${dir}`;
 	let base = cwd;
 	const segments = commandSegments(command);
 	for (const [index, { words, bodies: own }] of segments.entries()) {
@@ -83,16 +82,17 @@ function gitMessages(command: string, cwd: string | undefined): Added[] {
 		const bodies = own.length ? own : segments[index - 1]?.bodies ?? [];
 		let at = 0;
 		while (at < words.length && (ASSIGNMENT.test(words[at].value) || PREFIXES.includes(words[at].value))) at++;
-		if (words[at]?.value === "cd" && words[at + 1] && !words[at + 1].value.startsWith("-")) base = fold(base, words[at + 1].value);
+		if (words[at]?.value === "cd" && words[at + 1] && !words[at + 1].value.startsWith("-")) base = foldDir(base, words[at + 1].value);
 		if (!/(^|\/)git$/.test(words[at]?.value ?? "")) continue;
 		let place = base;
-		for (at++; at < words.length && words[at].value.startsWith("-"); at += GIT_VALUE_OPTIONS.has(words[at].value) ? 2 : 1) if (words[at].value === "-C" && words[at + 1]) place = fold(place, words[at + 1].value);
+		for (at++; at < words.length && words[at].value.startsWith("-"); at += GIT_VALUE_OPTIONS.has(words[at].value) ? 2 : 1) if (words[at].value === "-C" && words[at + 1]) place = foldDir(place, words[at + 1].value);
 		const subcommand = words[at]?.value, options = GIT_MESSAGE_OPTIONS.get(subcommand);
 		if (!options) continue;
 		if (subcommand === "notes") {
 			for (at++; words[at]?.value.startsWith("-"); at += words[at].value === "--ref" ? 2 : 1) { /* notes options precede its action */ }
 			if (!["add", "append"].includes(words[at]?.value)) continue;
 		}
+
 		const rest = words.slice(at + 1).map(word => word.value), parts: string[] = [];
 		for (let n = 0; n < rest.length; n++) {
 			const word = rest[n];
@@ -157,6 +157,7 @@ export interface RefGuardCall {
 	// The qualified refs the session knows; a bare short id counts when it is the id of one of these. Asked only when the call adds text, so
 	// a host that has to wait for them (a delegate on another thread) never does for a call that adds none.
 	known(): Promise<ReadonlySet<string>>;
+	projects?(): Promise<Iterable<string>>;
 }
 
 // The known refs `body` names: a qualified ref of a known project (`README.md#tasks` and a hashline tag look the same but name none),
@@ -175,7 +176,8 @@ export async function offendingRefs(call: RefGuardCall): Promise<string[]> {
 	const known = [...await call.known()];
 	const shortIds = [...new Set(known.map(ref => ref.slice(ref.lastIndexOf("#") + 1)))];
 	const projects = new Set(known.filter(ref => ref.includes("#")).map(ref => projectOf(ref)));
-	if (!shortIds.length) return [];
+	for (const project of await call.projects?.() ?? []) projects.add(project);
+	if (!shortIds.length && !projects.size) return [];
 	const found = new Set<string>();
 	for (const added of adds) {
 		const candidates = refsIn(added.text, projects, shortIds);
