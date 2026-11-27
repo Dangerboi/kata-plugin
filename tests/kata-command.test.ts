@@ -3,7 +3,7 @@ import { realKata, unique, until } from "./kata-fixture";
 import { ompHost } from "./omp-host";
 import { TRANSCRIPT_ENV } from "../core/kata-cli";
 import type { SessionView } from "../core/kata-core";
-import { footerText, inboxText, kataCommand, REFRESHED, statusText, USAGE } from "../core/session-status";
+import { footerText, inboxText, kataCommand, REFRESHED, statusText, SUPERSEDED, USAGE } from "../core/session-status";
 
 // `/kata status|inbox|refresh` and the `kata` footer: the text from plain views, then omp wiring against a real Kata.
 // pi's wiring is in pi-kata-command.test.ts, Claude Code's in claude-ui.test.ts.
@@ -71,6 +71,14 @@ test("an unknown /kata subcommand prints the usage and reads nothing", async () 
 	expect(touched).toEqual(["view"]);
 	expect(await kataCommand(source, {}, "refresh")).toBe(REFRESHED);
 	expect(touched).toEqual(["view", "refresh"]);
+});
+
+test("/kata status overtaken by a session change reads once more, then says the session changed", async () => {
+	let misses = 1;
+	const source = { view: async () => misses-- > 0 ? undefined : view(), inbox: async () => ({}), refresh: () => {} };
+	expect(await kataCommand(source, {}, "status")).toContain("workspace  /home/a/repo");
+	misses = 2;
+	expect(await kataCommand(source, {}, "status")).toBe(SUPERSEDED);
 });
 
 // ------------------------------------------------------------------ omp
