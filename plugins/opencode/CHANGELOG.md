@@ -4,6 +4,12 @@ All notable changes to `@dangerboi/kata-opencode` are listed here. The format fo
 
 ## [Unreleased]
 
+### Changed
+
+#### Delegates
+
+- The `todowrite` tool's description tells the lead to delegate by putting the work in the plan, not by creating child issues for `subagent` delegates to claim.
+
 ## [1.3.0] - 2026-11-26
 
 ### Added

@@ -4,6 +4,12 @@ All notable changes to `@dangerboi/kata-pi` are listed here. The format follows 
 
 ## [Unreleased]
 
+### Changed
+
+#### Delegates
+
+- The `todo` tool's description tells the lead to delegate by putting the work in the plan, not by creating child issues for child `pi` processes to claim.
+
 ## [1.13.0] - 2026-11-26
 
 ### Added

@@ -59,6 +59,6 @@ Or `claude plugin marketplace add Dangerboi/kata-plugin` and `claude plugin inst
 
 Requires Kata 0.23.0, plus the selected harness. Plan tools report incompatible installations; see [runtime compatibility](docs/how-to/install.md#runtime-compatibility). The omp plugin delegates session attention to `kata agent-hook attention-native`. Tested host versions are oh-my-pi 19.2.1, pi 1.6.1, OpenCode 2.4.2 and Claude Code 2.1.332. Bun and Node are needed for development.
 
-Start with the [first session tutorial](docs/tutorials/first-session.md), [installation guide](docs/how-to/install.md), or [development guide](docs/development.md). See [completion rules](docs/reference/closing-rules.md) and [limits](docs/explanation/limits.md) before adopting automatic closure.
+Start with the [first session tutorial](docs/tutorials/first-session.md), [installation guide](docs/how-to/install.md), [ready-queue guide](docs/how-to/work-a-ready-queue.md), or [development guide](docs/development.md). See [completion rules](docs/reference/closing-rules.md) and [limits](docs/explanation/limits.md) before adopting automatic closure.
 
 Originally created by [salmonumbrella](https://github.com/salmonumbrella).

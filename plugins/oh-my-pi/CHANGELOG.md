@@ -4,6 +4,12 @@ All notable changes to `@dangerboi/kata-omp` are listed here. The format follows
 
 ## [Unreleased]
 
+### Changed
+
+#### Delegates
+
+- The plan section of the system prompt tells the lead to delegate by putting the work in the plan, not by creating child issues for `task` subagents to claim.
+
 ## [3.1.0] - 2026-11-26
 
 ### Added
