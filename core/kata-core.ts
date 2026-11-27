@@ -434,7 +434,7 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 	let progressed = true;
 	// What one session's prompt reads from Kata, kept between turns. A core serves the lead and every delegate running in its
 	// process, so each has its own: the lead's by session id ("" when the host gives none), a delegate's by delegate id.
-	type PromptReads = { cwd: string; contract?: string; contractError?: string; contractNotice?: string; contractWarned?: boolean; inbox?: string; address?: string; pending?: Promise<void>; inboxPending?: Promise<void>; inboxNext?: Promise<void>; personInbox?: boolean };
+	type PromptReads = { cwd: string; contract?: string; contractError?: string; contractWarned?: boolean; inbox?: string; address?: string; pending?: Promise<void>; inboxPending?: Promise<void>; inboxNext?: Promise<void>; personInbox?: boolean };
 	const leadReads = new Map<string, PromptReads>();
 	const delegateReads = new Map<string, PromptReads>();
 	const leadKey = (id: string | undefined) => id ?? "";
@@ -2234,9 +2234,9 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 	// A contract failure reaches the user once, through the current main session's UI: when it settles, else at that session's next prompt.
 	function warnContract(ctx: HostContext | undefined, entry: PromptReads) {
 		const ui = uiOf(ctx);
-		if (sid(currentCtx) !== sid(ctx) || leadReads.get(leadKey(sid(ctx))) !== entry || !entry.contractNotice || !ui?.notify) return;
-		ui.notify(`Kata contract was unavailable (${entry.contractNotice}).`, "warning");
-		entry.contractNotice = undefined;
+		if (sid(currentCtx) !== sid(ctx) || leadReads.get(leadKey(sid(ctx))) !== entry || entry.contractWarned || !entry.contractError || !ui?.notify) return;
+		ui.notify(`Kata contract was unavailable (${entry.contractError}).`, "warning");
+		entry.contractWarned = true;
 	}
 
 	const contractReason = (error: unknown) => Array.from(messageOf(error).replace(/\s+/g, " ").trim()).slice(0, 80).join("") || "unknown error";
@@ -2276,7 +2276,7 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 				debug(error);
 				if (isKataCode(error, "unsupported_version")) { entry.contractError = undefined; return; }
 				entry.contractError = contractReason(error);
-				if (!record && !entry.contractWarned) { entry.contractWarned = true; entry.contractNotice = entry.contractError; warnContract(currentCtx, entry); }
+				if (!record) warnContract(currentCtx, entry);
 			}).finally(() => { entry.pending = undefined; });
 		}
 		const user = setting("KATA_INBOX_USER");

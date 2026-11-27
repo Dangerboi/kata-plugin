@@ -46,13 +46,16 @@ test("a late failure warns when it settles, and recovery does not warn again", a
   expect(a.warnings).toHaveLength(1);
 });
 
-for (const origin of ["advisor", "no-ui"] as const) test(`${origin} failure waits for a main prompt with UI`, async () => {
-  const a = fixture(n => n === 1 ? fail() : success("recovered"));
-  const first = origin === "advisor" ? a.context("lead", "advisor") : a.context("lead", "main", false);
-  expect((await a.core.session.beforePrompt(first)).sections.contract).toContain("boom");
-  expect(a.warnings).toEqual([]);
-  expect((await a.core.session.beforePrompt(a.context())).sections.contract).toBe("recovered");
-  expect(a.warnings).toHaveLength(1);
+for (const origin of ["advisor", "no-ui"] as const) test(`${origin} failure warns only if it persists until a main prompt with UI`, async () => {
+  for (const recovered of [true, false]) {
+    const a = fixture(n => n > 1 && recovered ? success("recovered") : fail());
+    const first = origin === "advisor" ? a.context("lead", "advisor") : a.context("lead", "main", false);
+    expect((await a.core.session.beforePrompt(first)).sections.contract).toContain("boom");
+    expect(a.warnings).toEqual([]);
+    const section = (await a.core.session.beforePrompt(a.context())).sections.contract;
+    if (recovered) { expect(section).toBe("recovered"); expect(a.warnings).toEqual([]); }
+    else { expect(section).toContain("boom"); expect(a.warnings).toHaveLength(1); }
+  }
 });
 
 test("a late failure from a replaced session cannot warn the new session", async () => {
