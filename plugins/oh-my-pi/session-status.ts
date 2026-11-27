@@ -51,9 +51,9 @@ export function statusText(view: SessionView): string {
 	return rows.map(([label, value]) => `${label.padEnd(11)}${value}`).join("\n");
 }
 
-/** The footer: `kata <address or actor> · <refs> · inbox N`; undefined clears it (Kata down). */
+/** The footer: `kata <address or actor> · <refs> · inbox N`; undefined clears it (Kata down, or the folder is no Kata workspace). */
 export function footerText(view: SessionView): string | undefined {
-	if (view.scope === "down") return undefined;
+	if (view.scope === "down" || view.scope === "unbound") return undefined;
 	const parts = [`kata${view.inbox.address ?? view.actor ? ` ${view.inbox.address ?? view.actor}` : ""}`];
 	if (view.refs.length) parts.push(view.refs.slice(0, 3).join(", ") + (view.refs.length > 3 ? ` +${view.refs.length - 3}` : ""));
 	if (view.counts?.trusted) parts.push(`inbox ${view.counts.trusted}`);
