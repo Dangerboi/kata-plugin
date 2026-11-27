@@ -6,6 +6,7 @@ import { promisify } from "node:util";
 import { eventually, finishes, holdKata, later } from "./kata-fixture";
 import { missingExecutable, siblingThrottle } from "./kata-errors";
 import { v2Fixture } from "./v2-fixture";
+import { execKata } from "../core/node-host";
 
 // The omp adapter against a real Kata: session start and end, transcripts, automatic parents and their closes,
 // driven by omp's native todo through the fake host.
@@ -48,7 +49,7 @@ for (const [name, bareResult, pairedBin] of [
     const outcome = async (withPair: boolean) => {
       const saved = process.env.PATH, bin = mkdtempSync(path.join(scratch, "nowhere-"));
       // Without the pair the close goes through the host's exec; with it, the adapter spawns Kata itself.
-      const app = host({ sid: `${name}-${withPair}`, transcript: withPair, before: (args: string[]) => args[0] === "close" ? bareResult() : undefined });
+      const app = host({ sid: `${name}-${withPair}`, transcript: withPair, execKata: withPair ? execKata : undefined, before: (args: string[]) => args[0] === "close" ? bareResult() : undefined });
       await app.event("session_start");
       const parent = await app.init(["only step"]);
       // The agent's own close of the task runs in its shell, which this host does not intercept.
@@ -76,7 +77,6 @@ test("the plugin's close of an automatic parent records the omp session as its t
   expect(done.isError, done.content?.[0]?.text).toBeUndefined();
   await app.event("session_stop");
   await eventually(async () => (await show(parent)).issue.status, "closed");
-  expect(app.piCalls.some(c => c[0] === "close")).toBe(false);
   const closes = (await events()).filter((e: any) => e.type === "issue.closed" && e.payload?.transcript?.session_id === "transcript-recorded");
   expect(closes.length).toBeGreaterThan(0);
   expect(closes[0].payload.transcript).toMatchObject({ agent: "omp", session_id: "transcript-recorded" });

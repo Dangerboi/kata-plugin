@@ -30,6 +30,8 @@ mock.module("@oh-my-pi/pi-coding-agent/config/registry", () => ({
 
 export interface OmpHostOptions extends Omit<FakeHostOptions, "exec"> {
   agent?: any;
+  /** Use the real runtime for a test of native execution failures. */
+  execKata?: typeof import("../core/node-host").execKata;
   /** Omitted: the session manager has no session file. */
   sessionFile?: string;
   /** Async-job snapshot; omitted: nothing is running. */
@@ -82,22 +84,21 @@ function loadAdapter(options: OmpHostOptions, makeManager?: (entries: any[]) => 
   ctx.agent = options.agent || { kind: "main", id: `main-${options.sid}` };
   ctx.getAsyncJobSnapshot = () => options.snapshot?.() || { running: [], recent: [] };
   void setBackend("kata");
-  const piCalls: string[][] = [];
   const detached: Promise<any>[] = [];
   const detachedCalls: { args: string[]; guard?: { show: string[]; owner: string; teammate: string } }[] = [];
   const runtime = {
-    execKata: (file: string, args: string[], opts: any) => host.api.exec(file, args, opts),
+    execKata: options.execKata ?? ((file: string, args: string[], opts: any) => host.api.exec(file, args, opts)),
     spawnDetached: (file: string, args: string[], opts: any) => {
       detachedCalls.push({ args, guard: opts.guard });
       detached.push(host.api.exec(file, args, opts));
     },
   };
   // omp's pi.exec ignores the env option; the separate runtime port is the path that can carry it.
-  const exec = (file: string, args: string[], { env: _env, ...opts }: any) => { piCalls.push(args); return host.api.exec(file, args, opts); };
+  const exec = (file: string, args: string[], { env: _env, ...opts }: any) => host.api.exec(file, args, opts);
   ompKata({ ...host.api, ...extra, exec, pi: { settings }, events: { on: bus.on }, ...options.sendUserMessage && { sendUserMessage: options.sendUserMessage } }, runtime);
   const event = host.event;
   host.event = async (...args: Parameters<typeof event>) => { const result = await event(...args); await Promise.all(detached.splice(0)); return result; };
-  return { host, bus, detachedCalls, piCalls };
+  return { host, bus, detachedCalls };
 }
 
 /**
@@ -153,7 +154,7 @@ export function kataViews(show: (ref: string) => Promise<any>) {
  * `contractReady` settles once the adapter's contract read has answered.
  */
 export function ompHost(options: OmpHostOptions) {
-  const { host, bus, detachedCalls, piCalls } = loadAdapter(options);
+  const { host, bus, detachedCalls } = loadAdapter(options);
   const { ctx } = host;
   const manager = ctx.sessionManager as FakeSessionManager;
 
@@ -255,7 +256,7 @@ export function ompHost(options: OmpHostOptions) {
     return ref;
   }
 
-  const app = { ctx, get sid() { return manager.getSessionId(); }, entries: host.entries, calls: host.calls, piCalls, detachedCalls, notices: host.notices, widgets: host.widgets,
+  const app = { ctx, get sid() { return manager.getSessionId(); }, entries: host.entries, calls: host.calls, detachedCalls, notices: host.notices, widgets: host.widgets,
     contractReady: host.answered("agent-contract-hook"),
     /** Every warning the adapter showed except the backend-off one: a failing or refused mirror shows only here, because the adapter catches a failing `replace` and tells the user. */
     mirrorFailures: () => mirrorFailures(host.notices),
