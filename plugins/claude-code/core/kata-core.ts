@@ -407,7 +407,7 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 	const aliases = new Set<string>(); // refs the plan's parent was rehomed from: they still name it
 	// Refs this session claimed in its shell or named with `/todo ref`: its work, though the plan may never hold them. Read by `tools.guard`.
 	const claimed = new Set<string>();
-	const warnings = new Map<string, string>();
+	const warnings = new Map<string, string[]>();
 	let requestedRef: string | undefined;
 	// A native host's list says what is in progress, so the core never starts a pending task itself (see nextTask).
 	const autoStart = options.autoStart !== false && !options.native;
@@ -2065,7 +2065,7 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 		return refs;
 	}
 
-	// Called before a tool runs: the text that refuses a call that would put a Kata ref into the repository, or undefined to let it run. It
+	// Called before a tool runs: returns a refusal or records a warning to attach to its result. Warn without a call id refuses. It
 	// never rejects: an error, a slow check or an off switch (KATA_REF_GUARD=off or 0) lets the call through. `also`: refs a host knows that
 	// this core does not (a delegate on another thread asks its lead); called once, inside the bound, and only for a call that adds text.
 	function refGuard(ctx: HostContext, call: { tool: string; input: unknown; id?: string }, also: MoreRefs = () => []): Promise<string | undefined> {
@@ -2097,7 +2097,7 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 				? `This ${call.tool} call asked to put ${refs} into the repository. ${why} To turn this check off, set KATA_REF_GUARD=off.`
 				: `Refused: this ${call.tool} call puts ${refs} into the repository. ${why} Rewrite it without the ref and retry. To turn this check off, set KATA_REF_GUARD=off.`;
 		})(), REF_GUARD_MS).then(reason => {
-			if (reason && warnId) { warnings.set(warnId, reason); return undefined; }
+			if (reason && warnId) { warnings.set(warnId, [...warnings.get(warnId) ?? [], reason]); return undefined; }
 			return reason;
 		});
 	}
@@ -2603,7 +2603,7 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 			guard: refGuard,
 			warning: (_ctx: HostContext, id: string | undefined): string | undefined => {
 				if (!id) return undefined;
-				const reason = warnings.get(id); warnings.delete(id); return reason;
+				const reasons = warnings.get(id); warnings.delete(id); return reasons?.join("\n");
 			},
 			// The refs this session works, for a delegate's host that checks calls against its lead's.
 			refs: (ctx: HostContext): string[] => [...knownRefs(ctx)],
