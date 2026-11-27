@@ -18,27 +18,29 @@ type ShellWord = { value: string; start: number; end: number };
 type Invocation = { executable: ShellWord; words: ShellWord[]; assignments: ShellWord[]; dir?: string };
 export const ASSIGNMENT = /^[A-Za-z_][A-Za-z0-9_]*=/;
 // The words of one simple command, and the bodies of the heredocs fed to it.
-type Segment = { words: ShellWord[]; bodies: string[] };
+type Segment = { words: ShellWord[]; bodies: string[]; unsafe?: boolean };
 // Words that may stand before a command without being it.
 export const PREFIXES = ["if", "then", "elif", "do", "else", "!", "command", "env", "time"];
 // Splits a command at `;`, `&`, `|`, parentheses and newlines. Quoted arguments and heredoc bodies are data (a body belongs to the
 // command whose line holds its `<<`); this lexer never infers whether a test/commit command proves completion.
 export function commandSegments(command: string): Segment[] {
 	const segments: Segment[] = [{ words: [], bodies: [] }];
-	let i = 0, heredoc: string | undefined, owner: Segment | undefined, wantDelimiter = false, hereString = false;
+	let i = 0, heredoc: string | undefined, owner: Segment | undefined, wantDelimiter = false, hereString = false, heredocQuoted = false;
 	while (i < command.length) {
 		if (command[i] === "\n" && heredoc) {
 			const end = command.indexOf(`\n${heredoc}`, i);
 			if (end < 0) break;
-			owner!.bodies.push(command.slice(i + 1, end));
+			const body = command.slice(i + 1, end);
+			owner!.bodies.push(body);
+			if (!heredocQuoted && /`|\$\(/.test(body)) owner!.unsafe = true;
 			i = command.indexOf("\n", end + 1);
 			if (i < 0) break;
 			heredoc = undefined;
 		}
 		if (/\s/.test(command[i])) { if (command[i] === "\n") segments.push({ words: [], bodies: [] }); i++; continue; }
 		if (command[i] === "#") { const end = command.indexOf("\n", i); if (end < 0) break; i = end; continue; }
-		if (";&|()".includes(command[i])) { segments.push({ words: [], bodies: [] }); i++; continue; }
-		if (command.slice(i, i + 3) === "<<<") { i += 3; hereString = true; continue; }
+		if (";&|()".includes(command[i])) { segments.at(-1)!.unsafe = true; segments.push({ words: [], bodies: [] }); i++; continue; }
+		if (command.slice(i, i + 3) === "<<<") { segments.at(-1)!.unsafe = true; i += 3; hereString = true; continue; }
 		if (command.slice(i, i + 2) === "<<") { i += command[i + 2] === "-" ? 3 : 2; wantDelimiter = true; continue; }
 		const start = i;
 		let value = "", open = "";
@@ -46,19 +48,26 @@ export function commandSegments(command: string): Segment[] {
 			const char = command[i];
 			if (!open && /[\s;&|()]/.test(char)) break;
 			if (char === "\\" && open !== "'") { value += command[i + 1] || ""; i += 2; continue; }
+			if (open !== "'" && (char === "`" || (char === "$" && command[i + 1] === "(") || (!open && (char === "<" || char === ">")))) segments.at(-1)!.unsafe = true;
 			if (char === open) { open = ""; i++; continue; }
 			if (!open && (char === "'" || char === '"')) { open = char; i++; continue; }
 			value += char; i++;
 		}
 		// A here-string is the next word, fed to the command as its input.
 		if (hereString) { segments.at(-1)!.bodies.push(value); hereString = false; continue; }
-		if (wantDelimiter) { heredoc = value; owner = segments.at(-1); wantDelimiter = false; continue; }
+		if (wantDelimiter) { heredoc = value; heredocQuoted = /['"\\]/.test(command.slice(start, i)); owner = segments.at(-1); wantDelimiter = false; continue; }
 		segments.at(-1)!.words.push({ value, start, end: i });
 	}
 	return segments;
 }
 
 export const foldDir = (base: string | undefined, dir: string) => dir.startsWith("/") || dir.startsWith("~") || !base ? dir : `${base.replace(/\/+$/, "")}/${dir}`;
+
+// True when the lexer found one command without shell control, redirects or substitutions.
+export function loneCommand(command: string): boolean {
+	const segments = commandSegments(command);
+	return segments.filter(segment => segment.words.length).length === 1 && segments.every(segment => !segment.unsafe);
+}
 
 // Inspect command positions only.
 export function kataCommands(path: Pick<PathOps, "basename">, command: string, configuredExecutable = "kata", executableVars: readonly string[] = [], callFolder?: string): Invocation[] {
