@@ -82,7 +82,7 @@ function commitMessages(command: string, cwd: string | undefined): Added[] {
 		const context = commandContext(words);
 		if (!context) continue;
 		let at = context.index;
-		if (words[at]?.value === "cd" && words[at + 1] && !words[at + 1].value.startsWith("-")) base = fold(base, words[at + 1].value);
+		if (context.parentShell && words[at]?.value === "cd" && words[at + 1] && !words[at + 1].value.startsWith("-")) base = fold(base, words[at + 1].value);
 		if (!/(^|\/)git$/.test(words[at]?.value ?? "")) continue;
 		let place = context.directories.reduce(fold, base);
 		for (at++; at < words.length && words[at].value.startsWith("-"); at += GIT_VALUE_OPTIONS.has(words[at].value) ? 2 : 1) if (words[at].value === "-C" && words[at + 1]) place = fold(place, words[at + 1].value);

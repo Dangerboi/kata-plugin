@@ -22,26 +22,29 @@ type Segment = { words: ShellWord[]; bodies: string[] };
 const RESERVED = new Set(["if", "then", "elif", "do", "else", "while", "until", "!", "{"]);
 const PREFIXES = new Set(["command", "env", "time", "nohup", "exec", "timeout"]);
 const PREFIX_VALUES: Record<string, Set<string>> = {
-	env: new Set(["-u", "--unset", "-C", "--chdir"]), exec: new Set(["-a"]),
+	env: new Set(["-u", "--unset", "-C", "--chdir", "-a", "--argv0"]), exec: new Set(["-a"]),
 	timeout: new Set(["-s", "--signal", "-k", "--kill-after"]),
 };
 
 // Find the executable without losing the original words' offsets. Prefix options belong to their own command,
-// and timeout also consumes a duration. Inspection and split-string modes do not execute the following words.
-export function commandContext(words: ShellWord[]): { index: number; assignments: ShellWord[]; directories: string[] } | undefined {
+// and timeout also consumes a duration. Inspection and split-string modes, and lookup-changing forms we cannot rewrite, are left unseen.
+export function commandContext(words: ShellWord[]): { index: number; assignments: ShellWord[]; directories: string[]; parentShell: boolean } | undefined {
 	let at = 0;
 	const assignments = new Map<string, ShellWord>(), directories: string[] = [];
+	let parentShell = true;
 	while (at < words.length) {
 		const word = words[at].value;
 		if (ASSIGNMENT.test(word)) { assignments.set(word.slice(0, word.indexOf("=")), words[at++]); continue; }
 		if (RESERVED.has(word)) { at++; continue; }
-		if (!PREFIXES.has(word) && word !== "/usr/bin/env") return { index: at, assignments: [...assignments.values()], directories };
+		if (!PREFIXES.has(word) && word !== "/usr/bin/env") return { index: at, assignments: [...assignments.values()], directories, parentShell };
 		const prefix = word === "/usr/bin/env" ? "env" : word;
+		if (prefix !== "time" && prefix !== "command") parentShell = false;
 		let directory: string | undefined;
 		at++;
-		while (at < words.length && words[at].value.startsWith("-") && words[at].value !== "-") {
+		while (at < words.length && words[at].value.startsWith("-") && (words[at].value !== "-" || prefix === "env")) {
 			const option = words[at++].value;
 			if (option === "--") break;
+			if (option === "-") { assignments.clear(); continue; }
 			if (option === "--help" || option === "--version") return undefined;
 			if (option.startsWith("--")) {
 				const [flag, ...parts] = option.split("="), attached = parts.length ? parts.join("=") : undefined;
@@ -57,8 +60,8 @@ export function commandContext(words: ShellWord[]): { index: number; assignments
 			}
 			for (let n = 1; n < option.length; n++) {
 				const flag = `-${option[n]}`;
-				if ((prefix === "command" && (flag === "-v" || flag === "-V")) || (prefix === "env" && (flag === "-S" || flag === "-P"))) return undefined;
-				if ((prefix === "env" && flag === "-i") || (prefix === "exec" && flag === "-c")) assignments.clear();
+				if ((prefix === "command" && (flag === "-v" || flag === "-V")) || (prefix === "env" && (flag === "-S" || flag === "-P")) || (prefix === "exec" && flag === "-c")) return undefined;
+				if (prefix === "env" && flag === "-i") assignments.clear();
 				if (PREFIX_VALUES[prefix]?.has(flag)) {
 					const value = option.slice(n + 1) || words[at++]?.value;
 					if (value === undefined) return undefined;
@@ -181,10 +184,8 @@ export function delegateCommand(path: Pick<PathOps, "basename">, command: string
 	for (const invocation of kataCommands(path, command, executable, executableVars)) {
 		const parsed = shellOptions(invocation.words);
 		if (parsed.options.has("--as")) throw new Error("Kata subagents keep the current actor. Use your assigned --teammate; --as is not permitted.");
-		const previous = parsed.occurrences.get("--teammate") ?? [];
-		const correct = previous.length === 1 && parsed.value("--teammate") === teammate;
-		if (!correct) for (const pair of previous) edits.push({ start: pair[0].start, end: pair.at(-1)!.end, value: "" });
-		let flags = correct ? "" : ` --teammate ${quote(teammate)}`;
+		for (const previous of parsed.occurrences.get("--teammate") ?? []) edits.push({ start: previous[0].start, end: previous.at(-1)!.end, value: "" });
+		let flags = ` --teammate ${quote(teammate)}`;
 		if (binding) {
 			if (!parsed.options.has("--workspace")) flags += ` --workspace ${quote(binding.workspace)}`;
 			if (!parsed.options.has("--project")) flags += ` --project ${quote(projectOf(binding.parent))}`;
