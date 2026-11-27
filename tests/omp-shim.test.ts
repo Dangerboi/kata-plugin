@@ -21,7 +21,7 @@ test("nested shells and scripts use the selected identity despite an export", ()
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
-test("a call declaring a foreign transcript agent keeps its own identity", () => {
+test("foreign transcript agents keep identity and the omp prefix restores its own", () => {
   const dir = mkdtempSync(join(tmpdir(), "kata-shim-foreign-"));
   try {
     const bin = join(dir, "bin"), real = join(dir, "real"); mkdirSync(bin);
@@ -34,23 +34,8 @@ test("a call declaring a foreign transcript agent keeps its own identity", () =>
       expect(out.exitCode).toBe(0); return out.stdout.toString();
     });
     expect(outputs).toEqual(["foreign-actor|foreign-mate|foreign/inbox|claude|foreign-session", "foreign-actor|foreign-mate|foreign/inbox|other-host|foreign-session"]);
-  } finally { rmSync(dir, { recursive: true, force: true }); }
-});
-
-test("omp transcript identity applies, including after an inherited foreign prefix", () => {
-  const dir = mkdtempSync(join(tmpdir(), "kata-shim-prefix-"));
-  try {
-    const bin = join(dir, "bin"), real = join(dir, "real"); mkdirSync(bin);
-    copyFileSync(new URL("../plugins/oh-my-pi/bin/kata", import.meta.url), join(bin, "kata")); chmodSync(join(bin, "kata"), 0o700);
-    writeFileSync(real, '#!/bin/sh\nprintf "%s|%s|%s" "$KATA_AUTHOR" "$KATA_TRANSCRIPT_AGENT" "$KATA_TRANSCRIPT_SESSION_ID"\n', { mode: 0o700 });
-    const shim = { dir, real };
-    writeIdentity(shim, "omp-child", { KATA_AUTHOR: "omp-actor", KATA_TRANSCRIPT_AGENT: "omp", KATA_TRANSCRIPT_SESSION_ID: "omp-session" });
-    const base = { PATH: `${bin}:/usr/bin:/bin`, KATA_OMP_SHIM_DIR: dir, KATA_OMP_SHIM_REAL: real, PI_SESSION_ID: "omp-child", KATA_AUTHOR: "evil" };
-    const marked = Bun.spawnSync(["/bin/sh", "-c", "export KATA_AUTHOR=evil; bash -c kata"], { env: { ...base, KATA_TRANSCRIPT_AGENT: "omp" } });
-    expect(marked.exitCode).toBe(0); expect(marked.stdout.toString()).toBe("omp-actor|omp|omp-session");
-    const env = { ...base, KATA_TRANSCRIPT_AGENT: "pi", KATA_TRANSCRIPT_SESSION_ID: "pi-session" };
-    const out = Bun.spawnSync(["/bin/sh", "-c", `${composePrefix(shim)} export KATA_AUTHOR=evil; kata`], { env });
-    expect(out.exitCode).toBe(0); expect(out.stdout.toString()).toBe("omp-actor|omp|omp-session");
+    const out = Bun.spawnSync(["/bin/sh", "-c", `${composePrefix({ dir, real })} export KATA_AUTHOR=evil; kata`], { env: { ...env, KATA_TRANSCRIPT_AGENT: "pi", KATA_TRANSCRIPT_SESSION_ID: "pi-session" } });
+    expect(out.exitCode).toBe(0); expect(out.stdout.toString()).toBe("omp-actor|omp-mate|omp/inbox|omp|omp-session");
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
@@ -71,27 +56,7 @@ test("unknown or invalid sessions do not load identity", () => {
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
-test("configured executable basename selects each session identity in nested shells and scripts", () => {
-  const modulePath = new URL("../plugins/oh-my-pi/shim.ts", import.meta.url).pathname;
-  const script = `import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs"; import { tmpdir } from "node:os"; import { join } from "node:path"; import { installShim, writeIdentity } from ${JSON.stringify(modulePath)};
-    const root = mkdtempSync(join(tmpdir(), "kata-shim-name-")), realBin = join(root, "real-bin"); mkdirSync(realBin);
-    try {
-      const real = join(realBin, "kata-dev"); writeFileSync(real, '#!/bin/sh\\nprintf "%s|%s|%s" "$KATA_AUTHOR" "$KATA_TEAMMATE" "$KATA_INBOX_USER"\\n', {mode: 0o700});
-      process.env.PATH = realBin + ":/usr/bin:/bin";
-      const shim = installShim("kata-dev", message => { throw new Error(message); }, {roots: [root]});
-      writeIdentity(shim, "lead", {KATA_AUTHOR: "lead", KATA_TEAMMATE: undefined, KATA_INBOX_USER: "lead-inbox"});
-      writeIdentity(shim, "child", {KATA_AUTHOR: "actor", KATA_TEAMMATE: "scout", KATA_INBOX_USER: "actor/scout"});
-      const run = (id, command, fallback = false) => { const env = {...process.env, PI_SESSION_ID: id, KATA_AUTHOR: "spoof", ...(fallback ? {KATA_OMP_SHIM_REAL: ""} : {})}; const out = Bun.spawnSync(["/bin/sh", "-c", command], {env}); return [out.exitCode, out.stdout.toString()]; };
-      console.log(JSON.stringify([run("lead", "kata-dev"), run("child", "export KATA_AUTHOR=spoof; bash -c kata-dev"), run("child", "kata"), run("child", "kata-dev", true)]));
-    } finally { rmSync(root, {recursive: true, force: true}); }`;
-  const result = Bun.spawnSync([process.execPath, "-e", script], { env: { PATH: "/usr/bin:/bin", HOME: process.env.HOME!, KATA_HOME: process.env.KATA_HOME! } });
-  expect(result.exitCode).toBe(0);
-  expect(JSON.parse(result.stdout.toString())).toEqual([
-    [0, "lead||lead-inbox"], [0, "actor|scout|actor/scout"], [0, "actor|scout|actor/scout"], [0, "actor|scout|actor/scout"],
-  ]);
-});
-
-test("an unresolved executable uses PATH instead of recursing when cwd contains kata", () => {
+test("real executable resolution handles unresolved names and configured paths", () => {
   const modulePath = new URL("../plugins/oh-my-pi/shim.ts", import.meta.url).pathname;
   const script = `import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs"; import { tmpdir } from "node:os"; import { join } from "node:path"; import { spawnSync } from "node:child_process"; import { installShim } from ${JSON.stringify(modulePath)};
     const root = mkdtempSync(join(tmpdir(), "shim-unresolved-")), cwd = join(root, "work"), real = join(root, "real"); mkdirSync(cwd); mkdirSync(real);
@@ -106,11 +71,7 @@ test("an unresolved executable uses PATH instead of recursing when cwd contains 
   const result = Bun.spawnSync([process.execPath, "-e", script], { env: { PATH: "/usr/bin:/bin", HOME: process.env.HOME!, KATA_HOME: process.env.KATA_HOME! } });
   expect(result.exitCode).toBe(0);
   expect(JSON.parse(result.stdout.toString())).toEqual([[0, null, "real"], [127, null, ""]]);
-});
-
-test("an unavailable configured path does not run a different kata from PATH", () => {
-  const modulePath = new URL("../plugins/oh-my-pi/shim.ts", import.meta.url).pathname;
-  const script = `import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs"; import { tmpdir } from "node:os"; import { join } from "node:path"; import { installShim } from ${JSON.stringify(modulePath)};
+  const configuredScript = `import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs"; import { tmpdir } from "node:os"; import { join } from "node:path"; import { installShim } from ${JSON.stringify(modulePath)};
     const root = mkdtempSync(join(tmpdir(), "shim-configured-")), configured = join(root, "configured", "kata"), fallback = join(root, "fallback"); mkdirSync(join(root, "configured")); mkdirSync(fallback);
     try {
       writeFileSync(join(fallback, "kata"), "#!/bin/sh\\nprintf wrong\\n", { mode: 0o700 });
@@ -123,7 +84,7 @@ test("an unavailable configured path does not run a different kata from PATH", (
       console.log(JSON.stringify([out.exitCode, out.stdout.toString(), out.stderr.toString().includes(configured)]));
     } finally { rmSync(root, { recursive: true, force: true }); }`;
   const run = (kind: string) => {
-    const out = Bun.spawnSync([process.execPath, "-e", script, kind], { env: { PATH: "/usr/bin:/bin", HOME: process.env.HOME!, KATA_HOME: process.env.KATA_HOME! } });
+    const out = Bun.spawnSync([process.execPath, "-e", configuredScript, kind], { env: { PATH: "/usr/bin:/bin", HOME: process.env.HOME!, KATA_HOME: process.env.KATA_HOME! } });
     expect(out.exitCode).toBe(0);
     return JSON.parse(out.stdout.toString());
   };
@@ -132,6 +93,25 @@ test("an unavailable configured path does not run a different kata from PATH", (
   expect([run("nonexec"), run("directory"), run("valid")]).toEqual([
     [126, "", true], [126, "", true], [0, "configured", false],
   ]);
+  {
+  const aliasModulePath = new URL("../plugins/oh-my-pi/shim.ts", import.meta.url).pathname;
+  const aliasScript = `import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs"; import { tmpdir } from "node:os"; import { join } from "node:path"; import { installShim, writeIdentity } from ${JSON.stringify(aliasModulePath)};
+    const root = mkdtempSync(join(tmpdir(), "kata-shim-name-")), realBin = join(root, "real-bin"); mkdirSync(realBin);
+    try {
+      const real = join(realBin, "kata-dev"); writeFileSync(real, '#!/bin/sh\\nprintf "%s|%s|%s" "$KATA_AUTHOR" "$KATA_TEAMMATE" "$KATA_INBOX_USER"\\n', {mode: 0o700});
+      process.env.PATH = realBin + ":/usr/bin:/bin";
+      const shim = installShim("kata-dev", message => { throw new Error(message); }, {roots: [root]});
+      writeIdentity(shim, "lead", {KATA_AUTHOR: "lead", KATA_TEAMMATE: undefined, KATA_INBOX_USER: "lead-inbox"});
+      writeIdentity(shim, "child", {KATA_AUTHOR: "actor", KATA_TEAMMATE: "scout", KATA_INBOX_USER: "actor/scout"});
+      const run = (id, command, fallback = false) => { const env = {...process.env, PI_SESSION_ID: id, KATA_AUTHOR: "spoof", KATA_TEAMMATE: "spoof", ...(fallback ? {KATA_OMP_SHIM_REAL: ""} : {})}; const out = Bun.spawnSync(["/bin/sh", "-c", command], {env}); return [out.exitCode, out.stdout.toString()]; };
+      console.log(JSON.stringify([run("lead", "kata-dev"), run("child", "kata"), run("child", "kata-dev", true)]));
+    } finally { rmSync(root, {recursive: true, force: true}); }`;
+  const aliasResult = Bun.spawnSync([process.execPath, "-e", aliasScript], { env: { PATH: "/usr/bin:/bin", HOME: process.env.HOME!, KATA_HOME: process.env.KATA_HOME! } });
+  expect(aliasResult.exitCode).toBe(0);
+  expect(JSON.parse(aliasResult.stdout.toString())).toEqual([
+    [0, "lead||lead-inbox"], [0, "actor|scout|actor/scout"], [0, "actor|scout|actor/scout"],
+  ]);
+  }
 });
 
 test("sweep removes only the known private layout for dead processes", async () => {
@@ -139,7 +119,7 @@ test("sweep removes only the known private layout for dead processes", async () 
   const { sweep } = await import("../plugins/oh-my-pi/shim");
   const root = mkdtempSync(join(tmpdir(), "kata-shim-sweep-"));
   try {
-    const stale = join(root, "omp-kata-99999999-Abc123"), unexpected = join(root, "omp-kata-99999998-Abc123"), live = join(root, `omp-kata-${process.pid}-Abc123`);
+    const stale = join(root, "omp-kata-99999999-Abc123"), unexpected = join(root, "omp-kata-99999998-Abc123"), live = join(root, `omp-kata-${process.ppid}-Abc123`);
     for (const dir of [stale, unexpected, live]) mkdirSync(dir, { mode: 0o700 });
     mkdirSync(join(stale, "bin")); writeFileSync(join(stale, "bin", "kata"), "");
     const { symlinkSync } = await import("node:fs"); symlinkSync("kata", join(stale, "bin", "kata-dev")); writeFileSync(join(stale, "id.env"), "");
