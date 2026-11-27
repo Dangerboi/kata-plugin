@@ -119,9 +119,10 @@ test("a heredoc body belongs to the command whose line holds its <<", async () =
   expect(await check("bash", { command: "git commit -m fix && cat <<'EOF'\nCloses demo#k9m2\nEOF" })).toEqual([]);
 });
 
-test("only the commit message is checked, in a workspace repo", async () => {
+test("commit messages and trailers are checked in a workspace repo", async () => {
   expect(await check("bash", { command: `git commit --author "ab3d <a@b.c>" --trailer "Ref: demo#k9m2" -m "fix" ab3d.ts` })).toEqual(["demo#k9m2"]);
   expect(await check("bash", { command: `git commit -m "fix" -- ab3d.ts` })).toEqual([]);
+  expect(await check("bash", { command: `git commit -- -m demo#ab3d` })).toEqual(["demo#ab3d"]);
   expect(await check("bash", { command: `git commit --message=demo#ab3d` })).toEqual(["demo#ab3d"]);
   expect(await check("bash", { command: `git -C /tmp/elsewhere commit -m "demo#ab3d"` })).toEqual([]);
   expect(await check("bash", { command: `git -C /work commit -m "demo#ab3d"` })).toEqual(["demo#ab3d"]);
@@ -132,8 +133,15 @@ test("git message options and stdin are checked for commits, merges, tags and no
     `git commit --trailer=Ref:demo#ab3d -m fix`,
     `git merge -m "merge demo#ab3d"`,
     `git merge --message=demo#ab3d`,
+    `git merge -F/dev/stdin <<< "demo#ab3d"`,
+    `git merge --file /dev/stdin <<< "demo#ab3d"`,
+    `git merge -s ours -m "demo#ab3d"`,
+    `git -C /work merge -m "demo#ab3d"`,
+    `git tag -a v1 -m "demo#ab3d"`,
     `git tag -am "demo#ab3d" v1`,
     `git tag -m "demo#ab3d" v1`,
+    `git tag -m release --trailer "Ref: demo#ab3d" v1`,
+    `git tag -m release --trailer=Ref:demo#ab3d v1`,
     `git notes add -m "demo#ab3d"`,
     `git notes append --message=demo#ab3d`,
     `git notes --ref=reviews add -m "demo#ab3d"`,
