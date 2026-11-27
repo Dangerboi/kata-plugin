@@ -29,6 +29,7 @@ mock.module("@oh-my-pi/pi-coding-agent/config/registry", () => ({
 }));
 
 export interface OmpHostOptions extends Omit<FakeHostOptions, "exec"> {
+  attentionRuntime?: boolean;
   agent?: any;
   /** Omitted: the session manager has no session file. */
   sessionFile?: string;
@@ -82,7 +83,16 @@ function loadAdapter(options: OmpHostOptions, makeManager?: (entries: any[]) => 
   ctx.agent = options.agent || { kind: "main", id: `main-${options.sid}` };
   ctx.getAsyncJobSnapshot = () => options.snapshot?.() || { running: [], recent: [] };
   void setBackend("kata");
-  ompKata({ ...host.api, ...extra, pi: { settings }, events: { on: bus.on }, ...options.sendUserMessage && { sendUserMessage: options.sendUserMessage } });
+  const detached: Promise<any>[] = [];
+  const runtime = options.attentionRuntime ? {
+    execKata: (file: string, args: string[], opts: any) => host.api.exec(file, args, opts),
+    spawnDetached: (file: string, args: string[], opts: any) => { detached.push(host.api.exec(file, args, opts)); },
+  } : undefined;
+  ompKata({ ...host.api, ...extra, pi: { settings }, events: { on: bus.on }, ...options.sendUserMessage && { sendUserMessage: options.sendUserMessage } }, runtime);
+  if (runtime) {
+    const event = host.event;
+    host.event = async (...args: Parameters<typeof event>) => { const result = await event(...args); await Promise.all(detached.splice(0)); return result; };
+  }
   return { host, bus };
 }
 

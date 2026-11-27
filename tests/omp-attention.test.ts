@@ -1,8 +1,9 @@
 import { afterEach, beforeAll, expect, jest, test } from "bun:test";
 import { mkdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
-import { finishes, holdKata, realKata, unique } from "./kata-fixture";
+import { eventually, finishes, holdKata, realKata, unique } from "./kata-fixture";
 import { ompHost } from "./omp-host";
+import { spawnDetached } from "../core/node-host";
 const store = realKata({ prefix: "omp-attention", author: "v2-builder", project: "omptest", adopt: true });
 const { binary, scratch, cwd, env, run, text, kata } = store;
 mkdirSync(path.join(cwd, "sub"));
@@ -12,7 +13,7 @@ const issue = async () => {
 };
 const apps: ReturnType<typeof ompHost>[] = [];
 function host(before?: Parameters<typeof ompHost>[0]["before"], dir = cwd) {
-  const app = ompHost({ cwd: dir, sid: `attention-${unique()}`, before, run: (args, opts) => run(args, opts.cwd, opts.timeout) });
+  const app = ompHost({ cwd: dir, sid: `attention-${unique()}`, before, attentionRuntime: true, run: (args, opts) => run(args, opts.cwd, opts.timeout, opts.env) });
   apps.push(app); return app;
 }
 beforeAll(async () => { await text(["agent-hook", "install", "pi", "--scope", "project", "--executable", binary]); });
@@ -344,3 +345,69 @@ test("two failed fork starts in a row still leave the ticket flagged when the la
   await app.event("session_shutdown");
   expect((await attention(ref)).state).toBe("needs-human");
 });
+
+test("shutdown ends attention before blocked work exceeds the OMP deadline", async () => {
+  process.env.KATA_REF = await issue();
+  let block = false;
+  const held = holdKata(args => block && args[0] === "show");
+  const app = host(held.before);
+  await app.event("session_start");
+  block = true;
+  const stop = app.event("session_shutdown");
+  try {
+    await held.entered;
+    await new Promise(r => setTimeout(r, 2100));
+    expect((await attention(process.env.KATA_REF!)).state).toBe("needs-human");
+    expect(process.env.KATA_ATTENTION_HOST).toBeUndefined();
+  } finally { held.release(); await stop; }
+}, 15000);
+
+
+test("a detached end works after the host process has died", async () => {
+  const ref = await issue();
+  const processHost = Bun.spawn(["/bin/sleep", "30"], { stdout: "ignore", stderr: "ignore" });
+  const session = `dead-host-${unique()}`, launcher = `omp-${processHost.pid}-${session}`;
+  const args = ["agent-hook", "attention-native", "pi", "start", "--session", session, "--host-pid", String(processHost.pid), "--ref", ref];
+  try {
+    await text(args, cwd, { KATA_SESSION_ID: launcher });
+    const before = await attention(ref);
+    expect(before.state).toBe("ok");
+    processHost.kill(); await processHost.exited;
+    spawnDetached(binary, ["agent-hook", "attention-native", "pi", "end", "--session", session, "--host-pid", String(processHost.pid), "--ref", ref, "--workspace", cwd], { cwd, env: { ...env as Record<string, string>, KATA_SESSION_ID: launcher } });
+    await eventually(async () => (await attention(ref)).state, "needs-human");
+    expect((await attention(ref)).session).toBe(`ended:${before.session}`);
+  } finally { processHost.kill(); await processHost.exited; }
+});
+
+test("attention uses one launcher across session switches", async () => {
+  process.env.KATA_REF = await issue();
+  const launches: { mode: string; session: string; launcher?: string }[] = [];
+  const app = host((args, opts) => {
+    if (args[1] === "attention-native") launches.push({ mode: args[3], session: args[5], launcher: opts.env?.KATA_SESSION_ID });
+  });
+  await app.event("session_start");
+  await app.event("session_switch", {}, switched(app, "other-session"));
+  await app.event("session_shutdown");
+  expect(launches.map(x => x.mode)).toEqual(["start", "end", "start", "end"]);
+  expect(new Set(launches.map(x => x.launcher)).size).toBe(1);
+  expect(launches[0].launcher).toBe(`omp-${process.pid}-${app.sid}`);
+  expect(launches.map(x => x.session)).toEqual([app.sid, app.sid, "other-session", "other-session"]);
+});
+
+test("shutdown spawns attention end before a slow parent-close sweep", async () => {
+  delete process.env.KATA_REF;
+  let slow = false;
+  const held = holdKata(args => slow && args[0] === "close");
+  const app = host(held.before);
+  await app.event("session_start");
+  await app.init(["Complete the parent task"]);
+  const ref = await fresh(); await claimed(app, ref);
+  await app.done("Complete the parent task");
+  slow = true;
+  const stop = app.event("session_shutdown");
+  try {
+    await held.entered;
+    await new Promise(r => setTimeout(r, 2100));
+    expect((await attention(ref)).state).toBe("needs-human");
+  } finally { held.release(); await stop; }
+}, 15000);

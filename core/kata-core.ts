@@ -37,6 +37,7 @@ export interface HostContext {
 interface CoreHost {
 	// What the core takes from the machine it runs on (environment, cwd, timers, filesystem): node-host.ts's `nodePlatform` on Node.
 	platform: Platform;
+	detached?(file: string, args: string[], options: { cwd: string; env?: Record<string, string> }): void;
 	// Timers the event's context owns, preferred over the platform's: omp's are contained in the session and cleared at its shutdown.
 	contextTimers?(ctx: any): Timers | undefined;
 	// `ctx` is the context of the event the call serves, for a host that spawns differently per agent (omp's transcript identity).
@@ -2337,12 +2338,21 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 	type Attended = Map<string, { cwd: string; sessions: Set<string> }>;
 	let attentionSession: { id: string; cwd: string; ref?: string; hostCwd: string; hostRef?: string; marker?: string; attended: Attended } | undefined;
 	const logSkip = (error: unknown) => debug(`Kata attention skipped: ${(error as Error).message}`);
+	let attentionLauncher: string | undefined;
+	const attentionEnv = (id: string) => ({ KATA_SESSION_ID: attentionLauncher ??= `omp-${platform.pid}-${id}` });
 	const attentionHook = (job: Job, mode: "start" | "end", sessionId: string, ref: string, cwd: string) =>
-		kata.run(job, ["agent-hook", "attention-native", options.attentionHarness!, mode, "--session", sessionId, "--host-pid", String(platform.pid), "--ref", ref], cwd, { timeout: mode === "start" ? 3000 : 1500 });
+		kata.run(job, ["agent-hook", "attention-native", options.attentionHarness!, mode, "--session", sessionId, "--host-pid", String(platform.pid), "--ref", ref], cwd, { timeout: mode === "start" ? 3000 : 1500, env: attentionEnv(sessionId) });
 	// Kata ends only what the given attention session holds, so no ownership check is needed here. Together, not one by one: omp gives a shutdown handler 2 s.
 	async function endAttended(job: Job, session: NonNullable<typeof attentionSession>) {
 		await Promise.all([...session.attended].flatMap(([ref, { cwd, sessions }]) => [...sessions].map(id => attentionHook(job, "end", id, ref, cwd).catch(logSkip))));
 		session.attended.clear();
+	}
+	function detachAttention(session: NonNullable<typeof attentionSession>) {
+		const end = (id: string, ref: string, cwd: string) => host.detached?.(options.executable, ["agent-hook", "attention-native", options.attentionHarness!, "end", "--session", id, "--host-pid", String(platform.pid), "--ref", ref, ...(sessionTeammate !== undefined ? ["--teammate", sessionTeammate] : []), "--workspace", path.resolve(cwd)], { cwd, env: attentionEnv(id) });
+		if (session.ref) end(session.id, session.ref, session.cwd);
+		for (const [ref, held] of session.attended) for (const id of held.sessions) end(id, ref, held.cwd);
+		session.attended.clear();
+		if (session.marker && platform.env.get("KATA_ATTENTION_HOST") === session.marker) platform.env.set("KATA_ATTENTION_HOST", undefined);
 	}
 	// Starts attention for the plan's explicit parent; true when the start may not have applied: a failure, including a timeout after Kata wrote ok. Kata's start would reset any `stuck` or `needs-human`
 	// to ok, Kata's own session-ended flag included, so those issues are skipped; `kata meta set <ref> work.attention ok` clears the flag and
@@ -2467,6 +2477,9 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 		if (!main(ctx)) { const own = host.delegateStore.of(ctx); if (own) delegateReads.delete(own.id); }
 		if (!main(ctx) && !closing.delegate) return;
 		stopFollower();
+		if (main(ctx) && options.attentionHarness && host.detached && attentionSession) {
+			const session = attentionSession; attentionSession = undefined; detachAttention(session);
+		}
 		// Left for the fork before the bounded work: pi starts the fork's instance once this shutdown returns or times out.
 		const forking = main(ctx) && closing.forking ? leaving() : undefined;
 		if (forking) forkSources.set(forking.session, forking);
@@ -2474,6 +2487,7 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 			await serial(async job => {
 				const session = attentionSession;
 				attentionSession = undefined;
+				if (session && host.detached && options.attentionHarness) detachAttention(session);
 				await load(job, plan.workspace).catch(debug);
 				const ends = main(ctx) && !closing.continues && !closing.forking;
 				// A pi child that started before this lead had a plan made the session's automatic parent itself (see join),
@@ -2484,7 +2498,7 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 				}
 				await sweep(job, options.closeParent !== "shutdown" || ends);
 				const ending = ends ? leaving() : undefined;
-				if (session) { await attention(job, "end", session); await endAttended(job, session); }
+				if (session && (!host.detached || !options.attentionHarness)) { await attention(job, "end", session); await endAttended(job, session); }
 				await moveMarks(job, ending, undefined);
 			});
 			if (closing.delegate?.report) await delegates.apply({ type: "reported", id: closing.delegate.id, text: closing.delegate.report }, NO_JOB);

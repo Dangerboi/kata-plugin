@@ -19,7 +19,7 @@ import { BroadcastChannel, isMainThread, threadId } from "node:worker_threads";
 import { closeSync, openSync, readSync } from "node:fs";
 import { createInterface } from "node:readline";
 import { createKataCore, NATIVE_TODO_COMMANDS, PROMPT_TAGS, snapshotEntry, tagged } from "./kata-core";
-import { execKata, exportTranscriptSession, nodePlatform, sessionKey } from "./node-host";
+import { execKata, exportTranscriptSession, nodePlatform, sessionKey, spawnDetached } from "./node-host";
 import { closeEnv, debugTo, NO_JOB } from "./kata-cli";
 import { delegateCommand, kataCommands as parseKataCommands } from "./shell";
 import { FINAL, isUntracked, Refusal, teammateFor } from "./delegates";
@@ -170,7 +170,7 @@ function spawnEvents([file, ...args]: string[], cwd: string): InboxStream {
 	return { lines: createInterface({ input: proc.stdout! }), exited, kill: () => { proc.kill("SIGKILL"); } };
 }
 
-export default function ompKata(pi: any) {
+export default function ompKata(pi: any, runtime = { execKata, spawnDetached }) {
 	const debug = debugTo(process.env.KATA_OMP_DEBUG, nodePlatform.appendFile);
 	const main = (ctx: any) => ctx?.agent?.kind === "main";
 	const sessionId = (ctx: any): string | undefined => ctx?.sessionManager?.getSessionId?.();
@@ -199,6 +199,7 @@ export default function ompKata(pi: any) {
 	};
 	const core = createKataCore({
 		platform: nodePlatform,
+		detached: runtime.spawnDetached,
 		// omp's timers, contained in the session and cleared at its shutdown.
 		contextTimers: ctx => typeof ctx?.setTimeout === "function" && typeof ctx.clearTimer === "function" ? { setTimer: (fire, ms) => ctx.setTimeout(fire, ms), clearTimer: handle => ctx.clearTimer(handle) } : undefined,
 		// omp's exec spawns with the environment it captured at startup and ignores an env option, so
@@ -206,8 +207,8 @@ export default function ompKata(pi: any) {
 		// A delegate runs in the lead's process: its closes carry its own session, never the lead's.
 		exec: (file, args, { ctx, ...options }) => {
 			const pair = transcriptPairOf(ctx);
-			const env = pair && closeEnv(nodePlatform.env, args, pair.agent, pair.id);
-			return env ? execKata(file, args, { ...options, env }) : pi.exec(file, args, options);
+			const env = options.env ?? (pair && closeEnv(nodePlatform.env, args, pair.agent, pair.id));
+			return env ? runtime.execKata(file, args, { ...options, env }) : pi.exec(file, args, options);
 		},
 		appendEntry: (type, data) => {
 			// A snapshot the core writes for a session that is no longer omp's live main session would land in the live
