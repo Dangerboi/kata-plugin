@@ -2,7 +2,7 @@ import { expect, spyOn, test } from "bun:test";
 import { eventually, holdKata, settle } from "./kata-fixture";
 import { v2Fixture } from "./v2-fixture";
 
-const { kata, issue, host } = v2Fixture();
+const { host } = v2Fixture();
 
 test("result polling coalesces a held read and skips task and nested results", async () => {
   process.env.KATA_INBOX_USER = "v2-builder/poll-result";
@@ -45,7 +45,7 @@ test("prompt delivery, invalid interval fallback, failure, and A to B to A chang
   const app = host({ before: (args: string[]) => {
     if (args[0] !== "inbox") return undefined;
     reads++;
-    return fail ? { code: 1, stdout: "", stderr: "offline" } : { code: 0, stdout: JSON.stringify({ requests: [{ ref: "v2test#clock", from: "v2-builder", message: text }] }), stderr: "" };
+    return fail ? { code: 1, stdout: "", stderr: "offline" } : { code: 0, stdout: JSON.stringify({ requests: text ? [{ ref: "v2test#clock", from: "v2-builder", message: text }] : [] }), stderr: "" };
   } });
   const event = { toolName: "read", content: [{ type: "text", text: "original" }], isError: false };
   const waitFor = async (condition: () => boolean) => {
@@ -78,6 +78,13 @@ test("prompt delivery, invalid interval fallback, failure, and A to B to A chang
     text = "A-message"; clock += 15000; await app.event("tool_result", event);
     await waitFor(() => reads === first + 3);
     expect(JSON.stringify(await app.event("tool_result", event))).toContain("A-message");
+    text = "";
+    const beforeClear = reads;
+    const emptyPrompt = await app.event("before_agent_start", { systemPrompt: ["base"] });
+    await waitFor(() => reads > beforeClear);
+    expect(JSON.stringify(emptyPrompt ?? {})).not.toContain("A-message");
+    expect(JSON.stringify(await app.event("tool_result", event))).toContain("inbox is now empty");
+    expect(await app.event("tool_result", event)).toBeUndefined();
   } finally { clockSpy.mockRestore(); }
 });
 
@@ -102,22 +109,4 @@ test("a personal inbox and an unrecorded advisor do not poll on results", async 
   const advisor = { ...lead.ctx, agent: { kind: "sub", id: "Advisor" } };
   expect(await lead.event("tool_result", event, advisor)).toBeUndefined();
   expect(JSON.stringify(await lead.event("tool_result", event))).toContain("lead-changed");
-});
-
-test("a cleared request shown by a prompt is announced on the next result", async () => {
-  process.env.KATA_INBOX_USER = "v2-builder/review-withdraw";
-  process.env.KATA_INBOX_POLL_SECONDS = "0";
-  const app = host(); await app.event("session_start");
-  await app.contractReady;
-  const prompt = () => app.event("before_agent_start", { systemPrompt: ["base"] });
-  const ref = await issue("withdraw across prompt");
-  await kata(["notify", ref, "--to", "v2-builder/review-withdraw", "--message", "withdraw-me", "--json"]);
-  await prompt();
-  expect(JSON.stringify(await prompt())).toContain("withdraw-me");
-  await kata(["notify", ref, "--to", "v2-builder/review-withdraw", "--clear", "--json"]);
-  await prompt();
-  expect(JSON.stringify(await prompt() ?? {})).not.toContain("withdraw-me");
-  const event = { toolName: "read", content: [{ type: "text", text: "original" }], isError: false };
-  expect(JSON.stringify((await app.event("tool_result", event)) ?? {})).toContain("inbox is now empty");
-  expect(await app.event("tool_result", event)).toBeUndefined();
 });
