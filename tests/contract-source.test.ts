@@ -35,6 +35,6 @@ test("missing source falls back and warns once even when the contract is fetched
   await app.event("before_agent_start", { systemPrompt: [] });
   await app.event("before_agent_start", { systemPrompt: [] });
   expect(app.calls.filter((args: string[]) => args[0] === "agent-contract-hook").length).toBeGreaterThan(1);
-  expect(app.calls.filter((args: string[]) => args[0] === "agent-contract-hook").every((args: string[]) => args[2] === "kata-agent-contract-hook")).toBe(true);
+  expect(app.calls.filter((args: string[]) => args[0] === "agent-contract-hook").every((args: string[]) => args[2] === path.join(cwd, "missing.md"))).toBe(true);
   expect(app.notices.filter((notice: any[]) => notice[1] === "warning" && String(notice[0]).includes("contract source"))).toHaveLength(1);
 });

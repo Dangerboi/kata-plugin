@@ -2257,8 +2257,8 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 				let source = "kata-agent-contract-hook";
 				const configured = setting("KATA_CONTRACT_SOURCE")?.trim();
 				if (configured) {
-					const absolute = path.resolve(cwd, configured);
-					try { await platform.realpath(absolute); source = absolute; }
+					const absolute = source = path.resolve(cwd, configured);
+					try { await platform.realpath(absolute); }
 					catch {
 						const session = leadKey(sid(ctx));
 						if (!contractSourceWarnings.has(session) && uiOf(ctx)?.notify) {
