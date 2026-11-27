@@ -10,7 +10,7 @@ All notable changes to `@dangerboi/kata-omp` are listed here. The format follows
 
 - Inbox and plan updates no longer change the system prompt, so they no longer make omp's prompt cache miss for the whole conversation. The inbox and the current plan go out as a hidden `kata-prompt` message, only when they changed since the last one on the current branch; the system prompt keeps the contract, delegate assignment and todo rules.
   - Each copy says it replaces earlier ones; an inbox or plan that was sent and is now empty gets one notice that it was cleared.
-  - After a compaction the inbox and plan are sent again.
+  - After a compaction or `/clear` the inbox and plan are sent again.
 
 ## [3.1.0] - 2026-11-26
 
