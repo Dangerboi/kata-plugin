@@ -2499,7 +2499,6 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 				}
 				await sweep(job, options.closeParent !== "shutdown" || ends);
 				const ending = ends ? leaving() : undefined;
-				if (session && !host.detached) { await attention(job, "end", session); await endAttended(job, session); }
 				await moveMarks(job, ending, undefined);
 			});
 			if (closing.delegate?.report) await delegates.apply({ type: "reported", id: closing.delegate.id, text: closing.delegate.report }, NO_JOB);
