@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { composePrefix, writeIdentity } from "../plugins/oh-my-pi/shim";
@@ -93,9 +93,7 @@ test("real executable resolution handles unresolved names and configured paths",
   expect([run("nonexec"), run("directory"), run("valid")]).toEqual([
     [126, "", true], [126, "", true], [0, "configured", false],
   ]);
-  {
-  const aliasModulePath = new URL("../plugins/oh-my-pi/shim.ts", import.meta.url).pathname;
-  const aliasScript = `import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs"; import { tmpdir } from "node:os"; import { join } from "node:path"; import { installShim, writeIdentity } from ${JSON.stringify(aliasModulePath)};
+  const aliasScript = `import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs"; import { tmpdir } from "node:os"; import { join } from "node:path"; import { installShim, writeIdentity } from ${JSON.stringify(modulePath)};
     const root = mkdtempSync(join(tmpdir(), "kata-shim-name-")), realBin = join(root, "real-bin"); mkdirSync(realBin);
     try {
       const real = join(realBin, "kata-dev"); writeFileSync(real, '#!/bin/sh\\nprintf "%s|%s|%s" "$KATA_AUTHOR" "$KATA_TEAMMATE" "$KATA_INBOX_USER"\\n', {mode: 0o700});
@@ -111,18 +109,16 @@ test("real executable resolution handles unresolved names and configured paths",
   expect(JSON.parse(aliasResult.stdout.toString())).toEqual([
     [0, "lead||lead-inbox"], [0, "actor|scout|actor/scout"], [0, "actor|scout|actor/scout"],
   ]);
-  }
 });
 
 test("sweep removes only the known private layout for dead processes", async () => {
-  const { existsSync } = await import("node:fs");
   const { sweep } = await import("../plugins/oh-my-pi/shim");
   const root = mkdtempSync(join(tmpdir(), "kata-shim-sweep-"));
   try {
     const stale = join(root, "omp-kata-99999999-Abc123"), unexpected = join(root, "omp-kata-99999998-Abc123"), live = join(root, `omp-kata-${process.ppid}-Abc123`);
     for (const dir of [stale, unexpected, live]) mkdirSync(dir, { mode: 0o700 });
     mkdirSync(join(stale, "bin")); writeFileSync(join(stale, "bin", "kata"), "");
-    const { symlinkSync } = await import("node:fs"); symlinkSync("kata", join(stale, "bin", "kata-dev")); writeFileSync(join(stale, "id.env"), "");
+    symlinkSync("kata", join(stale, "bin", "kata-dev")); writeFileSync(join(stale, "id.env"), "");
     writeFileSync(join(unexpected, "other"), "");
     sweep(root);
     expect(existsSync(stale)).toBe(false); expect(existsSync(unexpected)).toBe(true); expect(existsSync(live)).toBe(true);
