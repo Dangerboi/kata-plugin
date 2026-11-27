@@ -6,7 +6,7 @@ import { writeIdentity } from "../plugins/oh-my-pi/shim";
 import { realKata } from "./kata-fixture";
 import { openCodeHost } from "./opencode-host";
 
-const store = realKata({ prefix: "opencode-inherited-shim", author: "actor-a", project: "octest" });
+const store = realKata({ prefix: "opencode-inherited-shim", author: "actor-a", project: "omptest" });
 
 test("OpenCode activation prevents inherited omp identity from overriding its own Kata calls", async () => {
   const { cwd, scratch, binary, env, events } = store;
