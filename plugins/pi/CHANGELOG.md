@@ -4,6 +4,14 @@ All notable changes to `@dangerboi/kata-pi` are listed here. The format follows 
 
 ## [Unreleased]
 
+### Changed
+
+#### Repository content
+
+- The ref guard knows more refs. A `<project>#<id>` of the workspace project (from a version 1 `.kata.toml` as `kata init` writes it, else the plan parent's) counts before any of its issues is known.
+  - Each `kata` command in a `bash` call teaches, before it runs, every argument that is a whole qualified ref, the bare id it takes as an issue and the project it runs under, so `kata comment q7x2 -m done && git commit -am "fix q7x2"` is refused.
+  - A `kata show`, `create`, `next` or `claim` the lead runs alone teaches the issue it prints; `kata list` or `kata search` alone teaches only the projects it prints, so a listed bare id stays an ordinary word. Output of a chained command teaches nothing.
+
 ### Fixed
 
 #### Repository content
