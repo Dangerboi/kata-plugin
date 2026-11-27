@@ -50,7 +50,7 @@ A `kata close` in a `Bash` call, the lead's or a delegate's, is rewritten to set
 
 A delegate assigned an issue, and any delegate the mod can name, also runs `kata` commands in `Bash` under its own teammate: the command is rewritten to add `--teammate <teammate>` (an earlier one is replaced), and `--workspace` and `--project` of the assignment unless the command sets them. A delegate's `--as` is refused. Only commands in command position are touched, and rewriting is lexical, not a sandbox.
 
-Claude Code matches no allow rule past the assignment of a variable it does not know, so a rule such as `Bash(kata *)` would no longer cover a rewritten close. At the permission check (`tool.check`) a rewritten call that Claude Code's own rules would ask about is allowed when the command the model wrote is allowed outright. An ask from a hook (a `PreToolUse` guard, another plugin) stands, as does every other verdict.
+At the permission check (`tool.check`) a rewritten call that Claude Code's own rules would ask about is allowed when the command the model wrote is allowed outright. An ask from a hook (a `PreToolUse` guard, another plugin) stands, as does every other verdict.
 
 Under auto permission mode Claude Code refuses a tool call a hook changed after the classifier read it. Then the mod denies the call instead, with the exact command to run (`… Run it again exactly like this: …`), and the model's next call already carries the change. A delegate spawned under auto mode is refused before the rewrite is tried; the lead's call is refused once Claude Code refuses the rewrite.
 

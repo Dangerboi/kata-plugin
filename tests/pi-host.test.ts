@@ -183,7 +183,6 @@ test("pi mutates Bash input in place to use the selected executable without chan
   const result = await app.event("tool_call", { toolName: "bash", input });
   expect(result).toBeUndefined(); expect(input.command).toContain(`'${binary}' claim pitest#abcd --teammate author`);
   expect(input.command).toContain("echo 'kata claim prose'"); expect(input.command).toContain("\nkata close quoted\n");
-
 });
 
 test("pi refuses a write or commit that names a ref of the plan until KATA_REF_GUARD is off", async () => {
