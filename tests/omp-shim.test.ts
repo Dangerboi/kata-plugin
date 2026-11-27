@@ -76,6 +76,32 @@ test("an unresolved executable uses PATH instead of recursing when cwd contains 
   expect(JSON.parse(result.stdout.toString())).toEqual([[0, null, "real"], [127, null, ""]]);
 });
 
+test("an unavailable configured path does not run a different kata from PATH", () => {
+  const modulePath = new URL("../plugins/oh-my-pi/shim.ts", import.meta.url).pathname;
+  const script = `import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs"; import { tmpdir } from "node:os"; import { join } from "node:path"; import { installShim } from ${JSON.stringify(modulePath)};
+    const root = mkdtempSync(join(tmpdir(), "shim-configured-")), configured = join(root, "configured", "kata"), fallback = join(root, "fallback"); mkdirSync(join(root, "configured")); mkdirSync(fallback);
+    try {
+      writeFileSync(join(fallback, "kata"), "#!/bin/sh\\nprintf wrong\\n", { mode: 0o700 });
+      if (process.argv[1] === "nonexec") writeFileSync(configured, "#!/bin/sh\\nprintf configured\\n", { mode: 0o600 });
+      if (process.argv[1] === "directory") mkdirSync(configured);
+      if (process.argv[1] === "valid") writeFileSync(configured, "#!/bin/sh\\nprintf configured\\n", { mode: 0o700 });
+      process.env.PATH = fallback + ":/usr/bin:/bin";
+      const shim = installShim(configured, message => { throw new Error(message); }, { roots: [root] });
+      const out = Bun.spawnSync([join(shim.dir, "bin/kata")], { env: process.env });
+      console.log(JSON.stringify([out.exitCode, out.stdout.toString(), out.stderr.toString().includes(configured)]));
+    } finally { rmSync(root, { recursive: true, force: true }); }`;
+  const run = (kind: string) => {
+    const out = Bun.spawnSync([process.execPath, "-e", script, kind], { env: { PATH: "/usr/bin:/bin", HOME: process.env.HOME!, KATA_HOME: process.env.KATA_HOME! } });
+    expect(out.exitCode).toBe(0);
+    return JSON.parse(out.stdout.toString());
+  };
+  const missing = run("missing");
+  expect([126, 127]).toContain(missing[0]); expect(missing.slice(1)).toEqual(["", true]);
+  expect([run("nonexec"), run("directory"), run("valid")]).toEqual([
+    [126, "", true], [126, "", true], [0, "configured", false],
+  ]);
+});
+
 test("sweep removes only the known private layout for dead processes", async () => {
   const { existsSync } = await import("node:fs");
   const { sweep } = await import("../plugins/oh-my-pi/shim");

@@ -8,7 +8,7 @@ case ${PI_SESSION_ID:-} in
      [ -n "${KATA_OMP_SHIM_DIR:-}" ] && [ -f "$file" ] && . "$file" ;;
 esac
 case ${KATA_OMP_SHIM_REAL:-} in
-  /*) if [ -x "$KATA_OMP_SHIM_REAL" ] && [ ! -d "$KATA_OMP_SHIM_REAL" ]; then exec "$KATA_OMP_SHIM_REAL" "$@"; fi ;;
+  /*) exec "$KATA_OMP_SHIM_REAL" "$@" ;;
 esac
 set -f
 oldifs=$IFS
