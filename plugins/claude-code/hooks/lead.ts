@@ -62,7 +62,7 @@ async function create($: EngineInterface): Promise<Runtime> {
 	const env = await readEnv($);
 	const settings = resolveSettings(options, env);
 	// The core reads the switch from its environment, where the option becomes the variable.
-	if (!settings.refGuard) env.set("KATA_REF_GUARD", "off");
+	env.set("KATA_REF_GUARD", settings.refGuard);
 	const state = { cwd: "" };
 	const platform = platformOf($, env, state);
 	const exec = execOf($, env, () => rt.latest);
@@ -96,7 +96,7 @@ async function create($: EngineInterface): Promise<Runtime> {
 				),
 				liveInbox: settings.liveInbox ? liveInboxOf($, () => rt.busy) : undefined
 			},
-			{ namespace: NAMESPACE, executable: settings.executable, executableVars: EXECUTABLE_VARS, debugFile: settings.debugFile, widget: (_line, view) => view }
+			{ namespace: NAMESPACE, executable: settings.executable, executableVars: EXECUTABLE_VARS, debugFile: settings.debugFile, warn: true, widget: (_line, view) => view }
 		)
 	};
 	return rt;

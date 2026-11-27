@@ -4,6 +4,8 @@ import { assignmentOf } from "./kata-fixture";
 import { openCodeKata, qref, todos } from "./opencode-fixture";
 import { SUBAGENT_PREFIX } from "../plugins/opencode/subagents";
 import { teammateFor } from "../core/delegates";
+import opencode from "../plugins/opencode/kata";
+import { guardWarning } from "./ref-guard-warning";
 
 const { binary, cwd, kata, sh, closeEvents, startHost, startLead, parentOf } = openCodeKata("opencode-shell");
 
@@ -167,14 +169,37 @@ test("a write, patch or commit that names a ref of the plan is refused until the
 
 
 test("refGuard warn runs interleaved calls and appends each reason once", async () => {
-  const { host, id } = await startLead({ refGuard: "warn" });
-  await host.callTool(id, "todowrite", todos(["Guarded warning task", "in_progress"]));
-  const ref = qref(await parentOf(id));
-  const call = () => host.callTool(id, "shell", { command: `git commit -m "fix ${ref}"` }, { execute: () => "ok" });
-  for (const result of await Promise.all([call(), call()])) {
-    expect(result.status).toBe("completed"); expect(result.text).toContain(ref); expect(result.text).toContain("KATA_REF_GUARD=off");
-  }
-  expect((await shell(host, id, "echo clean")).text).toBe("ok");
-  const failed = await host.callTool(id, "shell", { command: `git commit -m "fix ${ref}"` }, { execute: () => { throw new Error("tool failed"); } });
-  expect(failed.status).toBe("error"); expect(failed.text).toContain("tool failed"); expect(failed.text).toContain(ref);
+	const { host, id } = await startLead({ refGuard: "warn" });
+	await host.callTool(id, "todowrite", todos(["Guarded warning task", "in_progress"]));
+	const ref = qref(await parentOf(id));
+	const call = () => host.callTool(id, "shell", { command: `git commit -m "fix ${ref}"` }, { execute: () => "ok" });
+	for (const result of await Promise.all([call(), call()])) {
+		expect(result.status).toBe("completed"); expect(result.text).toBe(`ok\n${guardWarning("shell", ref)}`);
+	}
+	expect((await shell(host, id, "echo clean")).text).toBe("ok");
+	const failed = await host.callTool(id, "shell", { command: `git commit -m "fix ${ref}"` }, { execute: () => { throw new Error("tool failed"); } });
+	expect(failed.status).toBe("error"); expect(failed.text).toContain("tool failed"); expect(failed.text).toContain(ref);
+});
+
+test("refGuard warn keeps earlier hook content and metadata in every result shape", async () => {
+	let shape: "string" | "absent" | "array" = "string";
+	const plugin = { id: opencode.id, async setup(ctx: any) {
+		await ctx.tool.hook("execute.after", (event: any) => {
+			if (event.tool !== "shell" || event.status !== "completed") return;
+			if (shape === "string") event.result.content = "earlier hook";
+			else if (shape === "absent") delete event.result.content;
+			else event.result.content = [{ type: "text", text: "earlier part" }];
+		});
+		return opencode.setup(ctx);
+	} };
+	const { host, id } = await startLead({ refGuard: "warn", plugin });
+	await host.callTool(id, "todowrite", todos(["Guarded warning task", "in_progress"]));
+	const ref = qref(await parentOf(id));
+	for (shape of ["string", "absent", "array"] as const) {
+		const result = await host.callTool(id, "shell", { command: `git commit -m "fix ${ref}"` }, { execute: () => ({ output: "original output", content: "original content", metadata: { kept: true } }) });
+		expect(result.status).toBe("completed");
+		expect(result.text).toContain(shape === "string" ? "earlier hook" : shape === "array" ? "earlier part" : "original output");
+		expect(result.text).toContain(guardWarning("shell", ref));
+		expect(result.metadata).toEqual({ kept: true });
+	}
 });

@@ -4,7 +4,7 @@ import { expect, mock, test } from "claude-code/testing";
 // in the repository's tests/claude-delegates.test.ts (a real Kata needs a process, which this sandbox lacks); here Kata is
 // unreachable, which is the case a spawn and a shell call must survive.
 
-function engine(on: any) {
+function engine(on: any, env: Record<string, string> = {}) {
 	const saved = new Map<string, unknown>();
 	on("store.get", ($: unknown, e: { key: string }) => ({ value: saved.get(e.key) }));
 	on("store.set", ($: unknown, e: { key: string; value: unknown }) => {
@@ -20,7 +20,7 @@ function engine(on: any) {
 	on("session.cwd", () => ({ value: "/work" }));
 	on("fs.stat", () => ({ value: { kind: "dir", size: 0, mtimeMs: 0, isLink: false, realPath: "/work" } }));
 	on("process.run", () => ({ value: { exitCode: 1, stdout: "", stderr: "kata unavailable", isStdoutTruncated: false, isStderrTruncated: false } }));
-	on("env.get", () => ({ value: undefined }));
+	on("env.get", ($: unknown, e: { name: string }) => ({ value: env[e.name] }));
 	on("session.start", () => ({ cwd: "/work" }));
 	on("turn.complete", () => ({ text: "" }));
 }
@@ -65,4 +65,39 @@ test("a subagent that has no issue is told so when it calls todo", async ($, on)
 	await $.session.start({ surface: "terminal", isInteractive: false, cwd: "/work" });
 	const sub = await $.tool.call({ tool: "todo", op: "view", agentId: "a1" } as any);
 	expect(sub.isError).toBe(true);
+});
+
+
+test("warn returns prior tool result and context alongside its guard reason", async ($, on) => {
+	engine(on, { KATA_REF_GUARD: "warn", KATA_REF: "proj#ab3d", KATA_CLAUDE_LIVE_INBOX: "0" });
+	mock.clock(on);
+	on("tool.call", () => ({ result: { output: "ok" }, context: ["earlier context"] }));
+	await $.session.start({ surface: "terminal", isInteractive: false, cwd: "/work" });
+	const result = await $.tool.call({ tool: "Bash", command: 'git commit -m "fix proj#ab3d"' } as any);
+	expect(result.deny).toBeUndefined();
+	expect(result.result).toEqual({ output: "ok" });
+	expect(result.context?.[0]).toBe("earlier context");
+	expect(result.context?.[1]).toContain("This Bash call ran; it asked to put proj#ab3d");
+});
+
+
+test("a saved boolean false still turns off the guard", { options: { refGuard: false } }, async ($, on) => {
+	engine(on, { KATA_REF: "proj#ab3d", KATA_CLAUDE_LIVE_INBOX: "0" });
+	mock.clock(on);
+	on("tool.call", () => ({ result: "ok" }));
+	await $.session.start({ surface: "terminal", isInteractive: false, cwd: "/work" });
+	const result = await $.tool.call({ tool: "Bash", command: 'git commit -m "fix proj#ab3d"' } as any);
+	expect(result.deny).toBeUndefined();
+	expect(result.result).toBe("ok");
+	expect(result.context).toBeUndefined();
+});
+
+
+test("a saved boolean true still blocks the guarded call", { options: { refGuard: true } }, async ($, on) => {
+	engine(on, { KATA_REF: "proj#ab3d", KATA_CLAUDE_LIVE_INBOX: "0" });
+	mock.clock(on);
+	on("tool.call", () => ({ result: "ok" }));
+	await $.session.start({ surface: "terminal", isInteractive: false, cwd: "/work" });
+	const result = await $.tool.call({ tool: "Bash", command: 'git commit -m "fix proj#ab3d"' } as any);
+	expect(result.deny).toContain("Refused:");
 });

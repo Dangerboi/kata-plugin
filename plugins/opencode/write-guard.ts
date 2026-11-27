@@ -14,7 +14,13 @@ export function install(seam: Seam): void {
 		if (role.kind === "other") return;
 		const warning = role.lead.warning(event.sessionID, event.id);
 		if (!warning) return;
-		if (event.status === "completed") event.result.content.push({ type: "text", text: warning });
+		if (event.status === "completed") {
+			const { content, output } = event.result;
+			const parts = typeof content === "string" ? [{ type: "text", text: content }]
+				: Array.isArray(content) && content.length ? content
+				: [{ type: "text", text: typeof output === "string" ? output : JSON.stringify(output) ?? String(output) }];
+			event.result.content = [...parts, { type: "text", text: warning }];
+		}
 		else if (event.error) event.error.message += `\n${warning}`;
 	});
 }
