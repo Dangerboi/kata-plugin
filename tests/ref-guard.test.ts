@@ -114,7 +114,7 @@ test("a commit behind env, command, time, if or ! is checked", async () => {
 });
 
 test("commit messages behind prefix options are checked without treating inspections as calls", async () => {
-  for (const prefix of ["nohup", "exec", "timeout 60", "timeout --signal=TERM --kill-after 1 60", "env -u GIT_DIR", "env -i PATH=/usr/bin", "env --unset=GIT_DIR -C /work --", "time -p", "command -p", "exec -a name", "time nohup", "{", "while", "until"]) {
+  for (const prefix of ["nohup", "exec", "timeout 60", "timeout --signal=TERM --kill-after 1 60", "env -u GIT_DIR", "env -i PATH=/usr/bin", "env - PATH=/usr/bin", "env -a name", "env --argv0=name", "env --unset=GIT_DIR -C /work --", "time -p", "command -p", "exec -a name", "time nohup", "{", "while", "until"]) {
     const command = `${prefix} git commit -m 'fix demo#ab3d'`;
     expect(await check("bash", { command }), command).toEqual(["demo#ab3d"]);
   }
@@ -208,6 +208,18 @@ test("git -C values fold in order, and a cd moves the folder of later commands",
   expect(await check("bash", { command: `cd .. && git -C work commit ${msg}`, cwd: "/work/sub" })).toEqual(["demo#ab3d"]);
   expect(await check("bash", { command: `cd ../.. && git commit ${msg}`, cwd: "/work/sub" })).toEqual([]);
   expect(await check("bash", { command: `git -C ../../tmp commit ${msg}`, cwd: "/work/sub" })).toEqual([]);
+});
+
+test("only a parent-shell cd changes the directory of a later commit", async () => {
+  const commit = "git commit -m demo#ab3d";
+  for (const prefix of ["nohup", "env", "timeout 30", "exec", "time nohup", "command env"]) {
+    const command = `${prefix} cd /outside; ${commit}`;
+    expect(await check("bash", { cwd: "/work", command }), command).toEqual(["demo#ab3d"]);
+  }
+  for (const prefix of ["", "command ", "command -p ", "time ", "time -p ", "X=1 "]) {
+    const command = `${prefix}cd /outside; ${commit}`;
+    expect(await check("bash", { cwd: "/work", command }), command).toEqual([]);
+  }
 });
 
 test("a sloppy opener without a path continues the current file", async () => {

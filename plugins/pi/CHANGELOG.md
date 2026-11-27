@@ -4,6 +4,16 @@ All notable changes to `@dangerboi/kata-pi` are listed here. The format follows 
 
 ## [Unreleased]
 
+### Fixed
+
+#### Delegates
+
+- A `kata` command behind `nohup`, `exec`, `timeout`, `env`, `command` or `time` (with their common options) is handled like a bare one: a child pi's command gets its `--teammate`, `--workspace` and `--project` and refuses `--as`, and a claim is recorded.
+
+#### Repository content
+
+- The ref guard also checks a `bash` `git commit` behind these prefixes.
+
 ## [1.13.0] - 2026-11-26
 
 ### Added

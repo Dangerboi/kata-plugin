@@ -4,6 +4,16 @@ All notable changes to `@dangerboi/kata-omp` are listed here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+
+#### Delegates
+
+- A `kata` command behind `nohup`, `exec`, `timeout`, `env`, `command` or `time` (with their common options) is handled like a bare one: a `task` delegate's command gets its `--teammate`, `--workspace`, `--project` and close transcript and refuses `--as`, and a claim is recorded.
+
+#### Repository content
+
+- The ref guard also checks a `bash` `git commit` behind these prefixes.
+
 ## [3.1.0] - 2026-11-26
 
 ### Added
