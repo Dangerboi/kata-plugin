@@ -10,7 +10,7 @@
 // --live uses a real model instead, through your own omp agent directory and its
 // logins (prefer a subscription), so omp may update it as in any run. KATA_HOME is
 // a throwaway store either way; your live Kata store is never written.
-import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
+import { spawn, spawnSync, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync, type Dirent } from "node:fs";
 import path from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
@@ -113,7 +113,9 @@ async function run(scenario: Scenario) {
 	const work = path.join(dir, "repo"), agentDir = path.join(dir, "agent"), kataHome = path.join(dir, "kata"), ompConfig = path.join(dir, "omp-config.yml");
 	const records = path.join(dir, "requests.jsonl"), prompts = path.join(dir, "prompts.jsonl"), tools = path.join(dir, "tools.jsonl");
 	mkdirSync(work, { recursive: true }); mkdirSync(agentDir); mkdirSync(kataHome);
-	const env: NodeJS.ProcessEnv = { ...base, ...scenario.env, KATA_HOME: kataHome, PI_NO_TITLE: "1", KATA_SMOKE_SCENARIO: scenario.name, KATA_SMOKE_RECORD: records, KATA_SMOKE_PROMPTS: prompts, KATA_SMOKE_TOOLS: tools };
+	const settingsCase = scenario.name.startsWith("settings-");
+	const home = settingsCase ? { HOME: dir, XDG_CONFIG_HOME: path.join(dir, "config"), XDG_DATA_HOME: path.join(dir, "data"), XDG_CACHE_HOME: path.join(dir, "cache") } : {};
+	const env: NodeJS.ProcessEnv = { ...base, ...scenario.env, ...home, KATA_HOME: kataHome, PI_NO_TITLE: "1", KATA_SMOKE_SCENARIO: scenario.name, KATA_SMOKE_RECORD: records, KATA_SMOKE_PROMPTS: prompts, KATA_SMOKE_TOOLS: tools };
 	const project = kataProject(env, work, PROJECT);
 	const store: Store = { requests: () => linesIn<Request>(records), prompts: () => linesIn<Prompt>(prompts), tools: () => linesIn<ToolUse>(tools), live, issues: project.issues };
 	try {
@@ -122,11 +124,32 @@ async function run(scenario: Scenario) {
 		env.KATA_SMOKE_VARS = JSON.stringify(vars);
 		// Scripted runs need no login, so omp gets a throwaway agent directory; live runs use yours (inherited PI_CODING_AGENT_DIR, else omp's default).
 		if (!live) env.PI_CODING_AGENT_DIR = agentDir;
+		let extension = path.join(root, "plugins/oh-my-pi/kata.ts");
+		if (settingsCase) {
+			delete env.CODEX_HOME; delete env.CLAUDE_CONFIG_DIR;
+			const omp = (...args: string[]) => {
+				const result = spawnSync("omp", args, { cwd: work, env, encoding: "utf8", timeout: 60_000 });
+				if (result.status !== 0) throw new Error(`omp ${args.join(" ")}: ${result.stdout} ${result.stderr} ${result.error ?? ""}`);
+				return result.stdout;
+			};
+			if (scenario.name === "settings-marketplace") {
+				omp("plugin", "marketplace", "add", root);
+				omp("plugin", "install", "kata@kata-plugin");
+				const list = JSON.parse(omp("plugin", "list", "--json"));
+				extension = path.join(list.marketplace.find((item: any) => item.id === "kata@kata-plugin").entries[0].installPath, "kata.ts");
+			} else {
+				omp("plugin", "link", path.join(root, "plugins/oh-my-pi"));
+				extension = path.join(dir, ".omp", "plugins", "node_modules", "@dangerboi", "kata-omp", "kata.ts");
+			}
+			omp("plugin", "config", "set", "@dangerboi/kata-omp", "refGuard", "off");
+			const list = omp("plugin", "config", "list", "@dangerboi/kata-omp");
+			report("config list shows refGuard off and its variable", /refGuard:\s*off/.test(list) && list.includes("KATA_REF_GUARD"), list);
+		}
 		// The plugin mirrors and guards omp's native todo only while the `kata` backend is selected, so every run selects it; the scenario's own settings follow.
 		writeFileSync(ompConfig, `todo:\n  backend: kata\n${scenario.ompConfig ?? ""}`);
 		// The smoke extension also records each agent's system prompt, so it loads after the plugin in live runs too.
 		const args = ["--no-extensions", "--no-skills", "--no-rules", "--no-context-files", "--no-lsp", "--no-title", ...(scenario.persist ? [] : ["--no-session"]),
-			"-e", path.join(root, "plugins/oh-my-pi/kata.ts"), "-e", path.join(root, "scripts/smoke-omp-provider.ts"), "--config", ompConfig];
+			"-e", extension, "-e", path.join(root, "scripts/smoke-omp-provider.ts"), "--config", ompConfig];
 		args.push("--model", live ? liveModel! : `${PROVIDER}/${MODEL}`);
 		const { code, output, checks } = scenario.drive ? await drive(scenario, args, env, work, project.kata)
 			: { ...await runToEnd("omp", ["-p", "--wait-async", ...(verbose ? ["--mode", "json"] : []), ...args, live ? scenario.livePrompt!(vars) : scenario.prompt!], { env, cwd: work, timeout: TIMEOUT_MS }), checks: [] };

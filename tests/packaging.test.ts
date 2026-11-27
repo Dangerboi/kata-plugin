@@ -55,6 +55,20 @@ test("the omp package is listed as an omp plugin and has a publish job of its ow
   expect(publishJobs["publish-omp"]).toContain("working-directory: plugins/oh-my-pi");
 });
 
+test("omp settings schema and reference match the resolver", async () => {
+  const { KEYS, REF_GUARD_VALUES } = await import("../plugins/oh-my-pi/settings");
+  const settings = json("plugins/oh-my-pi/package.json").omp.settings;
+  const docs = readFileSync(path.join(root, "docs/reference/oh-my-pi.md"), "utf8");
+  expect(Object.keys(settings).sort()).toEqual(Object.keys(KEYS).sort());
+  for (const [name, key] of Object.entries(KEYS)) {
+    expect(settings[name].default).toBe(key.default);
+    expect(settings[name].env).toBe(key.env);
+    expect(settings[name].type).toBe(name === "refGuard" ? "enum" : typeof key.default);
+    expect(docs).toContain(`| \`${key.env}\` | \`${name}\` | \`${JSON.stringify(key.default)}\` |`);
+  }
+  expect(settings.refGuard.values).toEqual([...REF_GUARD_VALUES]);
+});
+
 test("each plugin's newest changelog release is the version its manifest ships", () => {
   const manifests = { pi: "package.json", "oh-my-pi": "package.json", opencode: "package.json", "claude-code": ".claude-plugin/plugin.json" };
   for (const [plugin, manifest] of Object.entries(manifests)) {

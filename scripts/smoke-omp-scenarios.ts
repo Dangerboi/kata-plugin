@@ -616,3 +616,24 @@ export const SCENARIOS: Scenario[] = [{
 const workers = SCENARIOS.find(s => s.name === "workers")!;
 SCENARIOS.push({ ...workers, name: "workers-slow-kata", livePrompt: undefined,
 	env: { KATA_OMP_EXECUTABLE: fileURLToPath(new URL("./smoke-slow-kata.sh", import.meta.url)) } });
+
+// These use omp's actual plugin installation and config commands in the driver.
+for (const [name, blocked] of [["settings-package", false], ["settings-marketplace", false]] as const) {
+	SCENARIOS.push({
+		name, prompt: `${MAIN} Exercise the configured ref guard.`,
+		scripts: { [MAIN]: [
+			[{ tool: "todo", args: { op: "init", items: ["Settings guard smoke"] } }],
+			[{ tool: "bash", args: { command: showChild("Settings guard smoke") } }],
+			ctx => {
+				const ref = lastRef(ctx, /child-state (omp-smoke#[a-z0-9]+)/)?.split(" ")[1];
+				return ref ? [{ tool: "write", args: { path: "settings-guard.txt", content: ref } }] : ["Missing plan ref."];
+			},
+			["Settings smoke finished."],
+		] },
+		async check(store) {
+			const results = store.requests().flatMap(request => request.results);
+			const evidence = blocked ? /Refused: this write call puts/ : /Successfully wrote .*settings-guard\.txt/;
+			return [{ name: `configured ref guard ${blocked ? "blocks" : "permits"} a known ref`, ok: results.some(result => evidence.test(result)), detail: JSON.stringify(results) }];
+		},
+	});
+}

@@ -7,6 +7,11 @@ import { clonePhases, executeTodo, type TodoPhase, type TodoResult } from "./omp
 /** omp's `todo.backend` setting. One settings object serves the whole process, so every host shares it and its listeners. */
 type SettingsListener = (next: string, prev: string) => unknown;
 const settings = { backend: "kata", listeners: new Set<SettingsListener>() };
+export let pluginSettings: (cwd: string) => unknown | Promise<unknown> = () => ({});
+export function setPluginSettings(next: typeof pluginSettings) { pluginSettings = next; }
+mock.module("@oh-my-pi/pi-coding-agent/extensibility/plugins", () => ({
+  getPluginSettings: (_name: string, cwd: string) => pluginSettings(cwd),
+}));
 
 /** Sets the backend; the listeners fire only when the value changes. */
 async function setBackend(value: string): Promise<void> {
@@ -28,7 +33,7 @@ mock.module("@oh-my-pi/pi-coding-agent/config/registry", () => ({
   },
 }));
 
-export interface OmpHostOptions extends Omit<FakeHostOptions, "exec"> {
+export interface OmpHostOptions extends FakeHostOptions {
   agent?: any;
   /** Omitted: the session manager has no session file. */
   sessionFile?: string;

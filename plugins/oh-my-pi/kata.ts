@@ -24,6 +24,7 @@ import { closeEnv, debugTo, NO_JOB } from "./kata-cli";
 import { delegateCommand, kataCommands as parseKataCommands } from "./shell";
 import { FINAL, isUntracked, Refusal, teammateFor } from "./delegates";
 import { textOf } from "./model";
+import { loadPluginSettings, resolveSettings, type StoredSettings } from "./settings";
 import type { DelegateOutcome, DelegateRecord, Delegates, DelegateStore } from "./delegates";
 import type { Setting } from "@oh-my-pi/pi-coding-agent/config/registry";
 import type { InboxStream } from "./inbox";
@@ -197,6 +198,9 @@ export default function ompKata(pi: any) {
 			return record?.id === ctx.agent?.id ? record : undefined;
 		},
 	};
+	let stored: StoredSettings = {};
+	const reload = async (ctx: any) => { stored = await loadPluginSettings(ctx.cwd); };
+	const resolved = () => resolveSettings(stored);
 	const core = createKataCore({
 		platform: nodePlatform,
 		// omp's timers, contained in the session and cleared at its shutdown.
@@ -222,10 +226,10 @@ export default function ompKata(pi: any) {
 		delegateStore: store,
 		// Live delivery needs the aside delivery, and no opt-out (tern-kata delivers for the agents it starts).
 		get liveInbox() {
-			if (process.env.KATA_OMP_LIVE_INBOX === "0" || typeof pi.sendUserMessage !== "function") return undefined;
+			if (!resolved().liveInbox || typeof pi.sendUserMessage !== "function") return undefined;
 			return { spawn: spawnEvents, deliver: (text: string) => pi.sendUserMessage(text, { deliverAs: "aside", attribution: "agent" }) };
 		},
-	}, { namespace: NAMESPACE, executable: EXECUTABLE, executableVars: EXECUTABLE_VARS, debugFile: process.env.KATA_OMP_DEBUG, attentionHarness: "pi", prefetch: true,
+	}, { env: name => resolved().env(name), namespace: NAMESPACE, executable: EXECUTABLE, executableVars: EXECUTABLE_VARS, debugFile: process.env.KATA_OMP_DEBUG, attentionHarness: "pi", prefetch: true,
 		native: true });
 	// The task calls of the lead session `callsLead` that are not over yet.
 	const taskCalls = new Map<string, TaskCall>();
@@ -508,6 +512,7 @@ export default function ompKata(pi: any) {
 	});
 
 	async function begin(ctx: any) {
+		await reload(ctx);
 		await enter(ctx);
 		if (!main(ctx)) { await core.session.start(ctx, { after: nextUseOf(ctx) }); return; }
 		core.offerTickets(ctx.ui);
@@ -519,7 +524,7 @@ export default function ompKata(pi: any) {
 
 	pi.on("session_start", (_event: any, ctx: any) => begin(ctx));
 	pi.on("session_switch", (_event: any, ctx: any) => begin(ctx));
-	pi.on("session_branch", async (_event: any, ctx: any) => { await enter(ctx); await core.session.branch(ctx); });
+	pi.on("session_branch", async (_event: any, ctx: any) => { await reload(ctx); await enter(ctx); await core.session.branch(ctx); });
 	pi.on("session_tree", async (_event: any, ctx: any) => { await enter(ctx); await core.session.tree(ctx); });
 	// The transcript pair is left for the next session_start to overwrite: clearing after a slow cleanup could delete the pair of an instance omp already started in this process.
 	pi.on("session_shutdown", async (_event: any, ctx: any) => {
