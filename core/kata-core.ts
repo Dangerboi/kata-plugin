@@ -2632,8 +2632,11 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 	async function footer(ctx: HostContext, mode: "force" | "throttle", format: (view: SessionView) => string | undefined): Promise<void> {
 		if (!main(ctx) || ctx.hasUI !== true || !ctx.ui?.setStatus) return;
 		footerFormat = format; footerCtx = ctx;
-		const id = currentId, generation = footerGeneration;
-		const pending = checkRefs(ctx, mode === "force");
+		const id = currentId, generation = footerGeneration, parent = plan.parent;
+		const identity = actor(NO_JOB, ctx.cwd).then(who => {
+			if (generation === footerGeneration && id === currentId && parent === plan.parent) footerActor = who;
+		}).catch(debug);
+		const pending = Promise.all([checkRefs(ctx, mode === "force"), identity]).then(() => undefined);
 		let finished = false;
 		void pending.then(() => { finished = true; }).catch(debug);
 		const draw = () => { if (generation === footerGeneration && id === currentId) paint(footerCtx ?? ctx); };

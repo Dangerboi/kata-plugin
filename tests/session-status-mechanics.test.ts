@@ -408,3 +408,51 @@ test("status reads the inbox now and reports failure then recovery", async () =>
   fail = true; expect((await core.session.view(ctx, { reconcile: true }))?.inbox.delivery).toBe("failed");
   fail = false; expect((await core.session.view(ctx, { reconcile: true }))?.inbox.delivery).toBe("per prompt");
 });
+
+test("footer resolves the current actor after refresh without an inbox", async () => {
+  const writes: string[] = [];
+  let held: { entered: PromiseWithResolvers<void>; result: PromiseWithResolvers<string> } | undefined;
+  const ctx = { cwd: "/tmp/kata-footer-actor", sessionManager: { getSessionId: () => "actor-session", getBranch: () => [] }, hasUI: true, ui: { setStatus: (_key: string, value: string | undefined) => writes.push(value ?? "") } };
+  const core = createKataCore({ platform: nodePlatform, appendEntry() {}, delegateStore: memoryDelegateStore(), exec: async (_file, args, opts) => {
+    if (args[0] === "version") return { code: 0, stdout: JSON.stringify({ kata_api_version: 1, version: "0.24.0" }), stderr: "" };
+    if (args[0] === "status") {
+      let actor = "daemon-actor";
+      if (opts.timeout !== 3000 && held) { const current = held; current.entered.resolve(); actor = await current.result.promise; }
+      return { code: 0, stdout: JSON.stringify({ kata_api_version: 1, issue_status: "open", actor }), stderr: "" };
+    }
+    if (args[0] === "show") return { code: 0, stdout: JSON.stringify({ issue: { project_id: "pid", short_id: "one", status: "open", metadata: {} }, children: [] }), stderr: "" };
+    if (args[0] === "projects") return { code: 0, stdout: JSON.stringify({ projects: [{ id: "pid", name: "test" }] }), stderr: "" };
+    return { code: 0, stdout: JSON.stringify({ issues: [] }), stderr: "" };
+  } }, { namespace: "test", executable: "/tmp/kata-fixture", executableVars: [], explicitRef: () => "test#one", env: n => n === "USER" ? "local-user" : undefined });
+  await core.session.start(ctx, { wait: 1000 });
+  await core.session.view(ctx, { reconcile: true });
+  core.session.refresh();
+  await core.session.footer(ctx, "force", view => `kata ${view.actor ?? ""}`);
+  expect(writes.at(-1)).toBe("kata daemon-actor");
+  for (const interruption of ["refresh", "shutdown"] as const) {
+    core.session.refresh();
+    const gate = held = { entered: Promise.withResolvers<void>(), result: Promise.withResolvers<string>() };
+    try {
+      const drawing = core.session.footer(ctx, "force", view => `kata ${view.actor ?? ""}`);
+      expect(await Promise.race([gate.entered.promise.then(() => true), Bun.sleep(2000).then(() => false)])).toBe(true);
+      if (interruption === "refresh") core.session.refresh(); else await core.session.shutdown(ctx);
+      gate.result.resolve("stale-actor");
+      await drawing;
+      expect(writes.at(-1)).not.toContain("stale-actor");
+    } finally { held = undefined; gate.result.resolve("stale-actor"); }
+  }
+});
+
+test("a delegate exit rechecks the lead footer after the delegate settles", async () => {
+  const { NO_JOB } = await import("../core/kata-cli");
+  let status = "open";
+  const { core, ctx } = fixture(undefined, () => ({ status }));
+  const writes: string[] = [];
+  const visible = { ...ctx, ui: { setStatus: (_key: string, value: string | undefined) => writes.push(value ?? "") } };
+  await core.session.footer(visible, "force", view => view.refs.join(","));
+  status = "closed";
+  await core.delegates.apply({ type: "exited", id: "background", outcome: "completed" }, NO_JOB);
+  const deadline = Date.now() + 2000;
+  while (writes.at(-1) !== "" && Date.now() < deadline) await Bun.sleep(1);
+  expect(writes.at(-1)).toBe("");
+});
