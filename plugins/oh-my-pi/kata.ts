@@ -14,19 +14,16 @@
 // (labeled with the repo) or in its inferred project, registered on first use.
 // The plan is session-local only while Kata is unreachable, then it replays.
 
-import { spawn } from "node:child_process";
 import { BroadcastChannel, isMainThread, threadId } from "node:worker_threads";
 import { closeSync, openSync, readSync } from "node:fs";
-import { createInterface } from "node:readline";
 import { createKataCore, NATIVE_TODO_COMMANDS, PROMPT_TAGS, snapshotEntry, tagged } from "./kata-core";
-import { execKata, exportTranscriptSession, nodePlatform, sessionKey } from "./node-host";
+import { execKata, exportTranscriptSession, nodePlatform, sessionKey, spawnEvents } from "./node-host";
 import { closeEnv, debugTo, NO_JOB } from "./kata-cli";
 import { delegateCommand, kataCommands as parseKataCommands } from "./shell";
 import { FINAL, isUntracked, Refusal, teammateFor } from "./delegates";
 import { textOf } from "./model";
 import type { DelegateOutcome, DelegateRecord, Delegates, DelegateStore } from "./delegates";
 import type { Setting } from "@oh-my-pi/pi-coding-agent/config/registry";
-import type { InboxStream } from "./inbox";
 
 // What the lead's Delegates takes from an adapter other than the lead itself: a delegate's next use runs in the lead's queue.
 type DelegateEvents = Pick<Delegates, "apply" | "start">;
@@ -157,17 +154,6 @@ function askRefs(key: string): Promise<string[]> {
 		awaitingRefs.set(req, refs => { clearTimeout(timer); resolve(refs); });
 		delegateChannel.postMessage({ kind: "refsAsk", req, key } satisfies DelegateWire);
 	});
-}
-
-// ------------------------------------------------------------- live inbox stream feed
-
-function spawnEvents([file, ...args]: string[], cwd: string): InboxStream {
-	const proc = spawn(file, args, { cwd, stdio: ["ignore", "pipe", "ignore"] });
-	const exited = new Promise<void>(resolve => { proc.on("error", () => resolve()); proc.on("close", () => resolve()); });
-	// Never keep omp alive for the stream.
-	proc.unref();
-	if ("unref" in proc.stdout! && typeof proc.stdout.unref === "function") proc.stdout.unref();
-	return { lines: createInterface({ input: proc.stdout! }), exited, kill: () => { proc.kill("SIGKILL"); } };
 }
 
 export default function ompKata(pi: any) {

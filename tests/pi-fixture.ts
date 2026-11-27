@@ -13,8 +13,8 @@ const globalRegistry = globalThis as any;
  * daemon, and a fake pi host per call. Call it once at the top of a test file; it registers that file's hooks, so every
  * file gets its own store.
  */
-export function piFixture() {
-  const store = realKata({ prefix: "pi", author: "pi-builder", project: "pitest", process: { KATA_PI_EXECUTABLE: process.env.KATA_TEST_EXECUTABLE! } });
+export function piFixture(options: { adopt?: boolean } = {}) {
+  const store = realKata({ prefix: "pi", author: "pi-builder", project: "pitest", adopt: options.adopt, process: { KATA_PI_EXECUTABLE: process.env.KATA_TEST_EXECUTABLE! } });
   const { binary, scratch, cwd, run } = store;
   const outside = path.join(scratch, "outside");
   mkdirSync(outside);

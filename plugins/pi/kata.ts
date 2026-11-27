@@ -2,7 +2,7 @@ import path from "node:path";
 import type { BeforeAgentStartEvent, ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { createKataCore, DESCRIPTION, PROMPT_TAGS, TODO_OPS, TODO_PARAMS, type Lead, type ChildParent } from "./kata-core";
 import { NO_JOB } from "./kata-cli";
-import { exportTranscriptSession, nodePlatform } from "./node-host";
+import { exportTranscriptSession, nodePlatform, spawnEvents } from "./node-host";
 import { delegateCommand, kataCommands, quote } from "./shell";
 import type { DelegateRecord, DelegateStore } from "./delegates";
 import { lastText } from "./model";
@@ -83,8 +83,15 @@ export default async function piKata(pi: ExtensionAPI) {
 	const { Type } = await import("typebox");
 	const EXECUTABLE_VARS = ["KATA_PI_EXECUTABLE", "KATA_OMP_EXECUTABLE"];
 	const executable = process.env.KATA_PI_EXECUTABLE || process.env.KATA_OMP_EXECUTABLE || "kata";
+	let liveAllowed = false, liveCwd = "";
 	const core = createKataCore({
 		platform: nodePlatform,
+		get liveInbox() {
+			if (!liveAllowed || process.env.KATA_PI_LIVE_INBOX === "0") return undefined;
+			return { spawn: spawnEvents, deliver: (text: string) => {
+				if (!nativeContractActive(liveCwd)) pi.sendMessage({ customType: "kata.inbox", content: text, display: true }, { triggerTurn: true, deliverAs: "steer" });
+			} };
+		},
 		exec: (file, args, { ctx: _ctx, ...options }) => pi.exec(file, args, options),
 		appendEntry: (...args) => pi.appendEntry(...args),
 		getSessionName: () => pi.getSessionName(),
@@ -183,6 +190,7 @@ export default async function piKata(pi: ExtensionAPI) {
 		if (inherited) await core.delegates.join(ctx, inherited, startingText(event));
 		exportParent(ctx);
 		const native = !inherited && nativeContractActive(ctx.cwd);
+		if (native) core.session.stopInbox();
 		const { sections: text, lead: next } = await core.session.beforePrompt(ctx, { context: !native });
 		if (!inherited) lead = next;
 		const sections = event.systemPromptOptions.sections;
@@ -215,8 +223,10 @@ export default async function piKata(pi: ExtensionAPI) {
 		}
 		// A /fork replaces the source session in this process: the fork takes the tasks the source holds.
 		const forked = event?.reason === "fork";
+		liveCwd = ctx.cwd;
+		liveAllowed = !inherited && (ctx.mode === "tui" || ctx.mode === "rpc") && !nativeContractActive(ctx.cwd);
 		let next = await core.session.start(ctx, { child: inherited && !inherited.ref ? inherited.workspace : undefined, forked });
-		if (!next) { inherited = undefined; next = await core.session.start(ctx, { forked }) as Lead; } // Kata does not answer from the child's workspace
+		if (!next) { inherited = undefined; liveAllowed = (ctx.mode === "tui" || ctx.mode === "rpc") && !nativeContractActive(ctx.cwd); next = await core.session.start(ctx, { forked }) as Lead; } // Kata does not answer from the child's workspace
 		if (inherited?.provider && inherited.model) {
 			const inherit = inheritsModel(process.argv);
 			const model = inherit.model ? ctx.modelRegistry?.find(inherited.provider, inherited.model) : undefined;

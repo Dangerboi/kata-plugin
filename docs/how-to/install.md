@@ -68,6 +68,8 @@ Tested with oh-my-pi 19.2.1. To check another omp release, run `bun run smoke:om
 
 ## Pi
 
+Requires pi 1.2.0 or later.
+
 ```sh
 pi install npm:@dangerboi/kata-pi
 # or, from a checkout:
