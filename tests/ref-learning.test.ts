@@ -78,8 +78,24 @@ test('lone output learns', async () => {
  {
  const h = setup();
  await h.result('kata show q7x2 --agent', 'OK show q7x2\nLinks:\n  type=related issue=other#r7x2\n  type=related issue=third#t7x2');
- expect(await h.commit('r7x2')).toContain('r7x2');
- expect(await h.commit('t7x2')).toContain('t7x2');
+ expect(await h.commit('q7x2')).toContain('q7x2');
+ expect(await h.commit('other#r7x2')).toContain('other#r7x2');
+ expect(await h.commit('r7x2')).toBeUndefined();
+ expect(await h.commit('t7x2')).toBeUndefined();
+ }
+ {
+ const h = setup();
+ await h.result('kata show q7x2 --json', JSON.stringify({ issue: { short_id: 'q7x2' }, links: [{ issue: 'other#r7x2' }], children: [{ short_id: 't7x2' }], body: 'see README.md#tasks and third#w7x2' }));
+ expect(await h.commit('q7x2')).toContain('q7x2');
+ for (const word of ['r7x2', 't7x2', 'tasks', 'w7x2']) expect(await h.commit(word)).toBeUndefined();
+ expect(await h.commit('third#w7x2')).toContain('third#w7x2');
+ }
+ {
+ const h = setup();
+ await h.core.tools.result(h.ctx, { toolName: 'bash', input: { command: 'kata show q7x2 --agent' }, content: 'OK show q7x2', isError: true } as any);
+ await h.core.tools.result(h.ctx, { toolName: 'bash', input: { command: 'kata next --agent' }, content: 'OK next issue=z7x2', details: { exitCode: 1 } } as any);
+ expect(await h.commit('q7x2')).toBeUndefined();
+ expect(await h.commit('z7x2')).toBeUndefined();
  }
 });
 

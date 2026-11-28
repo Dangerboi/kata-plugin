@@ -2098,7 +2098,8 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 			for (const ref of refs) claimed.add(ref.includes("#") || !project ? ref : `${project}#${ref}`);
 		}
 	}
-	async function learn(ctx: HostContext, event: { toolName: string; input?: any; content?: unknown }): Promise<void> {
+	async function learn(ctx: HostContext, event: { toolName: string; input?: any; content?: unknown; isError?: boolean; details?: any }): Promise<void> {
+		if (event.isError || (event.details?.exitCode !== undefined && event.details.exitCode !== 0)) return;
 		if (!main(ctx) || event.toolName !== "bash" || typeof event.input?.command !== "string") return;
 		const command: string = event.input.command;
 		if (!loneCommand(command)) return;
@@ -2111,7 +2112,8 @@ function buildCore(host: CoreHost, options: CoreOptions, newSession: () => void)
 		if (kind === "list" || kind === "search") { for (const ref of output.refs) learnedProjects.add(projectOf(ref)); return; }
 		const project = await invocationProject(invocation, cwd);
 		for (const ref of output.lines) claimed.add(ref.includes("#") || !project ? ref : `${project}#${ref}`);
-		for (const ref of output.refs) claimed.add(ref);
+		// Only the issue the command prints is this session's work; every other ref in its text (links, children, parent, prose) teaches its project.
+		for (const ref of output.refs) learnedProjects.add(projectOf(ref));
 	}
 	// Called before a tool runs: the text that refuses a call that would put a Kata ref into the repository, or undefined to let it run. It
 	// never rejects: an error, a slow check or an off switch (KATA_REF_GUARD=off or 0) lets the call through. `also`: refs a host knows that

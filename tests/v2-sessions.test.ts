@@ -325,7 +325,7 @@ test("omp refuses a write or commit that names a ref of the plan, for the lead a
 
 test("omp keeps the refs a shell claim named across /tree and qualifies a bare claimed id", async () => {
   const app = host(); await app.event("session_start");
-  const short = await issue(), ref = `v2test#${short}`;
+  const short = await issue(), ref = `v2test#${short}`, foreign = "elsewhere#q7x2";
   const write = (content: string) => app.event("tool_call", { toolName: "write", input: { path: `${cwd}/claimed.ts`, content } });
   // A claim inside a compound command is recorded, not adopted; a bare id is recorded with the project it resolves in.
   await app.event("tool_result", { toolName: "bash", input: { command: `kata claim ${short} && echo claimed` }, isError: false, details: { exitCode: 0 } });
@@ -333,11 +333,15 @@ test("omp keeps the refs a shell claim named across /tree and qualifies a bare c
   await eventually(async () => !!(await write(`// ${ref}`))?.block, true);
   await app.event("session_tree");
   expect(await write(`// ${ref}`)).toMatchObject({ block: true });
+  // A claim of another project's issue is recorded as written.
+  await app.event("tool_result", { toolName: "bash", input: { command: `kata claim ${foreign} && echo claimed` }, isError: false, details: { exitCode: 0 } });
+  expect(await write(`// ${foreign}`)).toMatchObject({ block: true });
   // A fork shares its source's claims; any other new session starts with none.
   await app.switchSession("claims-fork", { fork: true });
   expect(await write(`// ${ref}`)).toMatchObject({ block: true });
+  expect(await write(`// ${foreign}`)).toMatchObject({ block: true });
   await app.switchSession("claims-new");
-  expect(await write(`// ${short}`)).toBeUndefined();
+  expect(await write(`// ${foreign} and ${short}`)).toBeUndefined();
 });
 
 test("a claimed bare id is known at once, though Kata is slow to resolve it, and the hook does not wait", async () => {
