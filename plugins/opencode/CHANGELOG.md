@@ -8,11 +8,15 @@ All notable changes to `@dangerboi/kata-opencode` are listed here. The format fo
 
 #### Repository content
 
-- The ref guard knows more refs. A `<project>#<id>` of the workspace project (from a version 1 `.kata.toml` as `kata init` writes it, else the plan parent's) counts before any of its issues is known.
+- The ref guard knows more refs. A `<project>#<id>` of the workspace project (from a version 1 `.kata.toml` as `kata init` writes it, else the plan parent's) counts before any of its issues is known. Thanks to @salmonumbrella ([#115](https://github.com/Dangerboi/kata-plugin/pull/115)).
   - Each `kata` command in a lead's `shell` call teaches, before it runs, every argument that is a whole qualified ref, the bare id it takes as an issue and the project it runs under, so `kata comment q7x2 -m done && git commit -am "fix q7x2"` is refused.
-  - A `kata show`, `create`, `next` or `claim` the lead runs alone teaches the issue it prints; `kata list` or `kata search` alone teaches only the projects it prints, so a listed bare id stays an ordinary word. Output of a chained command teaches nothing. The plugin now reads `shell` output for this.
+  - A `kata show`, `create`, `next` or `claim` the lead runs alone teaches only the issue it prints as a ref; every other ref in its output (linked issues, children, the parent, refs in the text) and every ref `kata list` or `kata search` prints teaches only its project, so such a bare id stays an ordinary word. A failed command teaches nothing. Output of a chained command teaches nothing. The plugin now reads `shell` output for this.
 
 ### Fixed
+
+#### Plans
+
+- `kata claim --ttl 2h <ref>` and the other `kata` options that take a value are read as option values, so the ref is the issue it adopts as the plan parent, and a delegate's `kata` call in `shell` is rewritten around them. Thanks to @salmonumbrella ([#115](https://github.com/Dangerboi/kata-plugin/pull/115)).
 
 #### Repository content
 
